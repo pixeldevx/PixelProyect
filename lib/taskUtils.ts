@@ -1,0 +1,52 @@
+import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from './firebase';
+
+export const updateParentTaskStatus = async (projectId: string, parentTaskId: string) => {
+  try {
+    // Get all subtasks for this parent
+    const subtasksQuery = query(
+      collection(db, 'projects', projectId, 'tasks'),
+      where('parentTaskId', '==', parentTaskId)
+    );
+    const snapshot = await getDocs(subtasksQuery);
+    
+    if (snapshot.empty) return;
+
+    const subtasks = snapshot.docs.map(doc => doc.data());
+    
+    // Determine parent status
+    let allDone = true;
+    let anyStarted = false;
+    let anyPending = false;
+    
+    let totalProgress = 0;
+
+    subtasks.forEach(task => {
+      const status = task.status || 'todo';
+      if (status !== 'completed') allDone = false;
+      if (status === 'in_progress' || status === 'completed') anyStarted = true;
+      if (status === 'todo' || status === 'pending') anyPending = true;
+      
+      totalProgress += (task.progress || 0);
+    });
+
+    let newStatus = 'todo';
+    if (allDone) {
+      newStatus = 'completed';
+    } else if (anyStarted) {
+      newStatus = 'in_progress';
+    }
+
+    const avgProgress = Math.round(totalProgress / subtasks.length);
+
+    // Update parent task
+    await updateDoc(doc(db, 'projects', projectId, 'tasks', parentTaskId), {
+      status: newStatus,
+      progress: avgProgress,
+      updatedAt: serverTimestamp()
+    });
+
+  } catch (error) {
+    console.error("Error updating parent task status:", error);
+  }
+};

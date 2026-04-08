@@ -1,0 +1,340 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.ownerId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() &&
+        (
+          (request.auth.token.email == "ing.zambranog@gmail.com" && request.auth.token.email_verified == true) ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+        );
+    }
+
+    function uidUnchanged() {
+      return !('ownerId' in request.resource.data) ||
+        request.resource.data.ownerId == request.auth.uid;
+    }
+    
+    function uidNotModified() {
+      return !('ownerId' in request.resource.data) ||
+        request.resource.data.ownerId == resource.data.ownerId;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+    
+    function isAssignedToProject(projectData) {
+      return ('assignedUsers' in projectData && request.auth.uid in projectData.assignedUsers) ||
+             ('assignedEmails' in projectData && request.auth.token.email in projectData.assignedEmails);
+    }
+    
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidProject(data) {
+      return hasOnlyAllowedFields(['name', 'description', 'status', 'createdAt', 'updatedAt', 'ownerId', 'assignedUsers', 'assignedTeamMembers', 'assignedEmails']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             (!('description' in data) || (data.description is string && data.description.size() < 1000)) &&
+             (!('assignedUsers' in data) || data.assignedUsers is list) &&
+             (!('assignedTeamMembers' in data) || data.assignedTeamMembers is list) &&
+             (!('assignedEmails' in data) || data.assignedEmails is list) &&
+             data.status in ['active', 'completed', 'on-hold'] &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp &&
+             data.ownerId is string;
+    }
+    
+    function isValidDocument(data) {
+      return hasOnlyAllowedFields(['projectId', 'taskId', 'name', 'type', 'url', 'uploadedAt', 'uploadedBy', 'storagePath', 'fileName', 'fileSize']) &&
+             data.projectId is string &&
+             (!('taskId' in data) || data.taskId is string) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.type in ['contract', 'proposal', 'other', 'workflow_start'] &&
+             data.url is string && data.url.size() < 1000 &&
+             (!('storagePath' in data) || data.storagePath is string) &&
+             (!('fileName' in data) || data.fileName is string) &&
+             (!('fileSize' in data) || data.fileSize is number) &&
+             data.uploadedAt is timestamp &&
+             data.uploadedBy is string;
+    }
+
+    function isValidTask(data) {
+      return hasOnlyAllowedFields(['projectId', 'title', 'description', 'startDate', 'endDate', 'assignedTo', 'indicator', 'indicatorValue', 'status', 'progress', 'priority', 'type', 'requiresDocument', 'linkedDocumentId', 'isRateCardTask', 'rateCardId', 'unitsToAdd', 'syncExternal', 'currentValue', 'displayOrder', 'workflowSteps', 'currentStepIndex', 'workflowHistory', 'createdAt', 'updatedAt', 'createdBy', 'workflowCycles', 'currentCycle', 'isParentTask', 'totalCycles', 'parentTaskId', 'cycleNumber', 'documentation', 'externalWorkflowId', 'initialObservation', 'startDocumentId']) &&
+             data.projectId is string &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             (!('description' in data) || (data.description is string && data.description.size() < 2000)) &&
+             data.startDate is timestamp &&
+             data.endDate is timestamp &&
+             data.assignedTo is string &&
+             (!('indicator' in data) || (data.indicator == null || data.indicator is string)) &&
+             (!('indicatorValue' in data) || (data.indicatorValue == null || data.indicatorValue is number)) &&
+             data.status is string &&
+             data.progress is number &&
+             (!('priority' in data) || data.priority is string) &&
+             (!('type' in data) || data.type is string) &&
+             (!('requiresDocument' in data) || data.requiresDocument is bool) &&
+             (!('linkedDocumentId' in data) || (data.linkedDocumentId == null || data.linkedDocumentId is string)) &&
+             (!('isRateCardTask' in data) || data.isRateCardTask is bool) &&
+             (!('rateCardId' in data) || (data.rateCardId == null || data.rateCardId is string)) &&
+             (!('unitsToAdd' in data) || (data.unitsToAdd == null || data.unitsToAdd is number)) &&
+             (!('syncExternal' in data) || data.syncExternal is bool) &&
+             (!('currentValue' in data) || data.currentValue is number) &&
+             (!('displayOrder' in data) || data.displayOrder is number) &&
+             (!('workflowSteps' in data) || data.workflowSteps is list) &&
+             (!('workflowHistory' in data) || data.workflowHistory is list) &&
+             (!('currentStepIndex' in data) || data.currentStepIndex is number) &&
+             (!('workflowCycles' in data) || data.workflowCycles is number) &&
+             (!('currentCycle' in data) || data.currentCycle is number) &&
+             (!('isParentTask' in data) || data.isParentTask is bool) &&
+             (!('totalCycles' in data) || data.totalCycles is number) &&
+             (!('parentTaskId' in data) || data.parentTaskId is string) &&
+             (!('cycleNumber' in data) || data.cycleNumber is number) &&
+             (!('documentation' in data) || data.documentation is string) &&
+             (!('externalWorkflowId' in data) || (data.externalWorkflowId == null || data.externalWorkflowId is string)) &&
+             (!('initialObservation' in data) || (data.initialObservation == null || data.initialObservation is string)) &&
+             (!('startDocumentId' in data) || (data.startDocumentId == null || data.startDocumentId is string)) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp &&
+             data.createdBy is string;
+    }
+
+    function isCurrentWorkflowAssignee(taskData) {
+      return taskData.type == 'workflow' && 
+             'workflowSteps' in taskData && 
+             'currentStepIndex' in taskData && 
+             taskData.currentStepIndex >= 0 && 
+             taskData.currentStepIndex < taskData.workflowSteps.size() &&
+             taskData.workflowSteps[taskData.currentStepIndex].assignedTo == request.auth.uid;
+    }
+
+    function isValidRateCard(data) {
+      return hasOnlyAllowedFields(['projectId', 'name', 'indicator', 'rate', 'currency', 'currentValue', 'userStats', 'reworkValue', 'userReworkStats', 'syncExternal', 'budgetLineId', 'createdAt', 'createdBy']) &&
+             data.projectId is string &&
+             data.name is string && data.name.size() > 0 &&
+             data.indicator is string &&
+             data.rate is number &&
+             data.currency is string &&
+             (!('currentValue' in data) || data.currentValue is number) &&
+             (!('userStats' in data) || data.userStats is map) &&
+             (!('reworkValue' in data) || data.reworkValue is number) &&
+             (!('userReworkStats' in data) || data.userReworkStats is map) &&
+             (!('syncExternal' in data) || data.syncExternal is bool) &&
+             (!('budgetLineId' in data) || data.budgetLineId == null || data.budgetLineId is string) &&
+             data.createdAt is timestamp &&
+             data.createdBy is string;
+    }
+
+    function isValidAlertRule(data) {
+      return hasOnlyAllowedFields(['title', 'description', 'type', 'condition', 'threshold', 'thresholdUnit', 'targetProjects', 'targetTasks', 'notificationChannels', 'recipients', 'isActive', 'createdAt', 'updatedAt', 'createdBy']) &&
+             data.title is string && data.title.size() > 0 &&
+             (!('description' in data) || data.description is string) &&
+             data.type in ['overdue', 'inactive', 'custom'] &&
+             data.condition in ['greater_than', 'less_than', 'equals'] &&
+             data.threshold is number &&
+             data.thresholdUnit in ['days', 'hours', 'minutes'] &&
+             (!('targetProjects' in data) || data.targetProjects is list) &&
+             (!('targetTasks' in data) || data.targetTasks is list) &&
+             data.notificationChannels is list &&
+             data.recipients is list &&
+             data.isActive is bool &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp &&
+             data.createdBy is string;
+    }
+
+    function isValidAlert(data) {
+      return hasOnlyAllowedFields(['ruleId', 'title', 'message', 'type', 'projectId', 'taskId', 'status', 'createdAt', 'readAt', 'userId']) &&
+             data.ruleId is string &&
+             data.title is string &&
+             data.message is string &&
+             data.type in ['overdue', 'inactive', 'custom'] &&
+             (!('projectId' in data) || data.projectId is string) &&
+             (!('taskId' in data) || data.taskId is string) &&
+             data.status in ['unread', 'read', 'dismissed'] &&
+             data.createdAt is timestamp &&
+             (!('readAt' in data) || data.readAt is timestamp) &&
+             data.userId is string;
+    }
+
+    function isValidInvoice(data) {
+      return hasOnlyAllowedFields(['projectId', 'invoiceNumber', 'description', 'amount', 'date', 'status', 'createdAt', 'createdBy']) &&
+             data.projectId is string &&
+             data.invoiceNumber is string && data.invoiceNumber.size() > 0 &&
+             (!('description' in data) || data.description is string) &&
+             data.amount is number &&
+             data.date is timestamp &&
+             data.status in ['pending', 'paid', 'cancelled'] &&
+             data.createdAt is timestamp &&
+             data.createdBy is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    match /alert_rules/{ruleId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidAlertRule(request.resource.data);
+      allow update: if isAuthenticated() && isValidAlertRule(request.resource.data);
+      allow delete: if isAuthenticated();
+    }
+
+    match /alerts/{alertId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidAlert(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && isValidAlert(request.resource.data);
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId) || isAdmin() || (isAuthenticated() && resource != null && resource.data.email == request.auth.token.email);
+    }
+
+    match /roles/{roleId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /team_members/{memberId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Allow collectionGroup queries for tasks, rateCards, and activities
+    match /{path=**}/tasks/{taskId} {
+      allow read: if isAuthenticated();
+    }
+    match /{path=**}/rateCards/{rateCardId} {
+      allow read: if isAuthenticated();
+    }
+    match /{path=**}/activities/{activityId} {
+      allow read: if isAuthenticated();
+    }
+    match /{path=**}/documents/{documentId} {
+      allow read: if isAuthenticated();
+    }
+
+    match /projects/{projectId} {
+      // Allow read for all authenticated users to avoid permission-denied on list queries
+      // In a production app, we would use more granular filters in queries
+      allow read: if isAuthenticated();
+      allow list: if isAuthenticated();
+      allow get: if isAuthenticated();
+      
+      allow create: if isAuthenticated() && 
+                    hasRequiredFields(['name', 'status', 'createdAt', 'updatedAt', 'ownerId']) &&
+                    isValidProject(request.resource.data) && 
+                    uidUnchanged();
+      allow update: if isAuthenticated() && (isDocOwner() || isAssignedToProject(resource.data) || isAdmin()) && 
+                    isValidProject(request.resource.data) && 
+                    uidNotModified() &&
+                    request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isDocOwner() || isAdmin();
+      
+      match /documents/{documentId} {
+        allow read: if isAuthenticated();
+        allow list: if isAuthenticated();
+        allow get: if isAuthenticated();
+        allow create: if isAuthenticated() && 
+                      (
+                        get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || 
+                        isAssignedToProject(get(/databases/$(database)/documents/projects/$(projectId)).data) || 
+                        isAdmin() ||
+                        (request.resource.data.taskId != null && get(/databases/$(database)/documents/projects/$(projectId)/tasks/$(request.resource.data.taskId)).data.assignedTo == request.auth.uid)
+                      ) &&
+                      hasRequiredFields(['projectId', 'name', 'type', 'url', 'uploadedAt', 'uploadedBy']) &&
+                      isValidDocument(request.resource.data) &&
+                      request.resource.data.uploadedBy == request.auth.uid &&
+                      request.resource.data.projectId == projectId;
+        allow update: if isAuthenticated() && 
+                      (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAssignedToProject(get(/databases/$(database)/documents/projects/$(projectId)).data) || isAdmin()) &&
+                      isValidDocument(request.resource.data) &&
+                      request.resource.data.uploadedBy == resource.data.uploadedBy &&
+                      request.resource.data.uploadedAt == resource.data.uploadedAt &&
+                      request.resource.data.projectId == resource.data.projectId;
+        allow delete: if isAuthenticated() && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAssignedToProject(get(/databases/$(database)/documents/projects/$(projectId)).data) || isAdmin());
+      }
+
+      match /activities/{activityId} {
+        allow read: if isAuthenticated();
+        allow list: if isAuthenticated();
+        allow get: if isAuthenticated();
+        allow create, update, delete: if isAuthenticated() && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAssignedToProject(get(/databases/$(database)/documents/projects/$(projectId)).data) || isAdmin());
+      }
+
+      match /rateCards/{rateCardId} {
+        allow read: if isAuthenticated();
+        allow list: if isAuthenticated();
+        allow get: if isAuthenticated();
+        allow create, update, delete: if isAuthenticated() && (
+          isAdmin() ||
+          (exists(/databases/$(database)/documents/projects/$(projectId)) && (
+            get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || 
+            isAssignedToProject(get(/databases/$(database)/documents/projects/$(projectId)).data) ||
+            (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager')
+          ))
+        );
+      }
+
+      match /budgetLines/{budgetLineId} {
+        allow read: if isAuthenticated();
+        allow list: if isAuthenticated();
+        allow get: if isAuthenticated();
+        allow create, update, delete: if isAuthenticated() && (
+          isAdmin() ||
+          (exists(/databases/$(database)/documents/projects/$(projectId)) && (
+            get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || 
+            isAssignedToProject(get(/databases/$(database)/documents/projects/$(projectId)).data)
+          ))
+        );
+      }
+
+      match /invoices/{invoiceId} {
+        allow read: if isAuthenticated();
+        allow list: if isAuthenticated();
+        allow get: if isAuthenticated();
+        allow create, update, delete: if isAuthenticated() && (
+          isAdmin() ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'manager', 'administrativo']
+          )
+        );
+      }
+
+      match /tasks/{taskId} {
+        allow read: if isAuthenticated();
+        allow list: if isAuthenticated();
+        allow get: if isAuthenticated();
+        allow create: if isAuthenticated() && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAssignedToProject(get(/databases/$(database)/documents/projects/$(projectId)).data) || isAdmin()) && isValidTask(request.resource.data);
+        allow update: if isAuthenticated() && (
+          get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || 
+          isAssignedToProject(get(/databases/$(database)/documents/projects/$(projectId)).data) || 
+          isAdmin() ||
+          isCurrentWorkflowAssignee(resource.data) ||
+          resource.data.assignedTo == request.auth.uid
+        ) && isValidTask(request.resource.data);
+        allow delete: if isAuthenticated() && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAssignedToProject(get(/databases/$(database)/documents/projects/$(projectId)).data) || isAdmin());
+      }
+    }
+  }
+}
