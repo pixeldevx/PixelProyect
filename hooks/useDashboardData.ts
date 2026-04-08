@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, getDocs } from 'firebase/firestore';
+import { collection, query, onSnapshot, getDocs, where } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 
@@ -12,7 +12,7 @@ export interface DashboardMetrics {
   acceptanceRate: number;
   utilizationRate: number;
   dailyProduction: { name: string; realizados: number; devueltos: number; meta: number }[];
-  teamPerformance: { name: string; value: number; reworkValue: number }[];
+  teamPerformance: { name: string; value: number; reworkValue: number; photoURL?: string }[];
   projectSummary: string;
   loading: boolean;
 }
@@ -48,7 +48,7 @@ export function useDashboardData() {
       
       const allTasks: any[] = [];
       const allRateCards: any[] = [];
-      const userTotals: Record<string, { name: string; value: number; reworkValue: number }> = {};
+      const userTotals: Record<string, { name: string; value: number; reworkValue: number; photoURL?: string }> = {};
 
       // For each project, fetch its subcollections
       // Note: In a real large-scale app, we'd optimize this with better indexing or aggregation
@@ -78,13 +78,17 @@ export function useDashboardData() {
           // Aggregate user stats
           if (data.userStats) {
             Object.entries(data.userStats).forEach(([uid, units]: [string, any]) => {
-              if (!userTotals[uid]) userTotals[uid] = { name: 'Usuario', value: 0, reworkValue: 0 };
+              if (!userTotals[uid]) {
+                userTotals[uid] = { name: 'Usuario', value: 0, reworkValue: 0 };
+              }
               userTotals[uid].value += units * (data.rate || 0);
             });
           }
           if (data.userReworkStats) {
             Object.entries(data.userReworkStats).forEach(([uid, units]: [string, any]) => {
-              if (!userTotals[uid]) userTotals[uid] = { name: 'Usuario', value: 0, reworkValue: 0 };
+              if (!userTotals[uid]) {
+                userTotals[uid] = { name: 'Usuario', value: 0, reworkValue: 0 };
+              }
               userTotals[uid].reworkValue += units * (data.rate || 0);
             });
           }
@@ -122,6 +126,19 @@ export function useDashboardData() {
         meta: Math.floor(totalProd / 4)
       }));
 
+      // Fetch user details for teamPerformance
+      const userIds = Object.keys(userTotals);
+      if (userIds.length > 0) {
+        const usersSnapshot = await getDocs(query(collection(db, 'users'), where('uid', 'in', userIds)));
+        usersSnapshot.forEach(doc => {
+          const userData = doc.data();
+          if (userTotals[userData.uid]) {
+            userTotals[userData.uid].name = userData.displayName || userData.name || 'Usuario';
+            userTotals[userData.uid].photoURL = userData.photoURL;
+          }
+        });
+      }
+
       setMetrics({
         totalPlannedBudget: totalPlanned,
         totalActualCost: totalActual,
@@ -132,7 +149,8 @@ export function useDashboardData() {
         teamPerformance: Object.values(userTotals).map(u => ({
           name: u.name,
           value: Math.round(u.value),
-          reworkValue: Math.round(u.reworkValue)
+          reworkValue: Math.round(u.reworkValue),
+          photoURL: u.photoURL
         })),
         projectSummary: `Proyecto con ${projectsData.length} frentes activos. Presupuesto ejecutado al ${Math.round(utilizationRate)}%.`,
         loading: false,
