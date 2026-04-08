@@ -10,9 +10,10 @@ import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import Link from 'next/link';
 import { toast } from 'sonner';
+import Image from 'next/image';
 
 export default function ProjectsPage() {
-  const { user } = useAuth();
+  const { user, userRole } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,19 +30,25 @@ export default function ProjectsPage() {
   useEffect(() => {
     if (!user) return;
 
-    const conditions = [
-      where('ownerId', '==', user.uid),
-      where('assignedUsers', 'array-contains', user.uid)
-    ];
+    let q;
+    if (userRole === 'admin') {
+      q = query(collection(db, 'projects'));
+    } else {
+      const conditions = [
+        where('ownerId', '==', user.uid),
+        where('assignedUsers', 'array-contains', user.uid)
+      ];
 
-    if (user.email) {
-      conditions.push(where('assignedEmails', 'array-contains', user.email));
+      if (user.email) {
+        conditions.push(where('assignedEmails', 'array-contains', user.email));
+      }
+
+      q = query(
+        collection(db, 'projects'),
+        or(...conditions)
+      );
     }
 
-    const q = query(
-      collection(db, 'projects'),
-      or(...conditions)
-    );
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const projectsData = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -73,7 +80,7 @@ export default function ProjectsPage() {
       unsubscribe();
       unsubscribeTeam();
     };
-  }, [user]);
+  }, [user, userRole]);
 
   const toggleMemberSelection = (memberId: string) => {
     setSelectedMembers(prev => 
@@ -165,6 +172,10 @@ export default function ProjectsPage() {
     }
   };
 
+  const canEditProject = (project: any) => {
+    return userRole === 'admin' || userRole === 'coordinador' || project.ownerId === user?.uid;
+  };
+
   return (
     <DashboardLayout>
       <div className="flex justify-between items-center mb-8">
@@ -172,10 +183,12 @@ export default function ProjectsPage() {
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Proyectos</h1>
           <p className="text-slate-500 mt-1">Gestiona tus proyectos y documentos asociados.</p>
         </div>
-        <Button onClick={() => setIsCreating(!isCreating)} className="bg-indigo-600 hover:bg-indigo-700 gap-2">
-          <Plus size={16} />
-          Nuevo Proyecto
-        </Button>
+        {(userRole === 'admin' || userRole === 'coordinador') && (
+          <Button onClick={() => setIsCreating(!isCreating)} className="bg-indigo-600 hover:bg-indigo-700 gap-2">
+            <Plus size={16} />
+            Nuevo Proyecto
+          </Button>
+        )}
       </div>
 
       {isCreating && (
@@ -299,7 +312,7 @@ export default function ProjectsPage() {
                         {project.assignedTeamMembers.length} miembro{project.assignedTeamMembers.length !== 1 ? 's' : ''}
                       </span>
                     </div>
-                    {project.ownerId === user?.uid && (
+                    {canEditProject(project) && (
                       <Button variant="ghost" size="sm" onClick={() => handleOpenEditTeam(project)} className="h-8 px-2 text-slate-500 hover:text-indigo-600">
                         <Users size={14} className="mr-1" /> Editar
                       </Button>
@@ -307,7 +320,7 @@ export default function ProjectsPage() {
                   </div>
                 )}
                 
-                {(!project.assignedTeamMembers || project.assignedTeamMembers.length === 0) && project.ownerId === user?.uid && (
+                {(!project.assignedTeamMembers || project.assignedTeamMembers.length === 0) && canEditProject(project) && (
                   <div className="flex items-center justify-between mb-4">
                     <span className="text-xs text-slate-400">Sin equipo asignado</span>
                     <Button variant="ghost" size="sm" onClick={() => handleOpenEditTeam(project)} className="h-8 px-2 text-slate-500 hover:text-indigo-600">
@@ -353,8 +366,12 @@ export default function ProjectsPage() {
                         className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                       />
                       <div className="flex items-center gap-3 overflow-hidden">
-                        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-sm shrink-0">
-                          {member.name.charAt(0).toUpperCase()}
+                        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-sm shrink-0 overflow-hidden relative">
+                          {member.photoURL ? (
+                            <Image src={member.photoURL} alt={member.name} fill className="object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            member.name.charAt(0).toUpperCase()
+                          )}
                         </div>
                         <div className="truncate">
                           <p className="text-sm font-medium text-slate-900 truncate">{member.name}</p>

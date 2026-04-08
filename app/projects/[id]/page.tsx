@@ -25,14 +25,16 @@ import { UploadDocumentModal } from '@/components/projects/modals/UploadDocument
 import { AssignMemberModal } from '@/components/projects/modals/AssignMemberModal';
 import { RemoveMemberModal } from '@/components/projects/modals/RemoveMemberModal';
 import { CompleteTaskModal } from '@/components/projects/modals/CompleteTaskModal';
+import { ProjectOrgChart } from '@/components/projects/ProjectOrgChart';
 import { handleFirestoreError, OperationType } from '@/lib/firebase-utils';
 import { toast } from 'sonner';
+import Image from 'next/image';
 
 export default function ProjectDetailsPage() {
   const params = useParams();
   const router = useRouter();
   const projectId = params.id as string;
-  const { user } = useAuth();
+  const { user, userRole } = useAuth();
   
   const [project, setProject] = useState<any>(null);
   const [documents, setDocuments] = useState<any[]>([]);
@@ -47,7 +49,7 @@ export default function ProjectDetailsPage() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'documents' | 'tasks' | 'tasksList' | 'rateCards' | 'budget' | 'billing'>('documents');
+  const [activeTab, setActiveTab] = useState<'documents' | 'tasks' | 'tasksList' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('documents');
   const [tasks, setTasks] = useState<any[]>([]);
   const [rateCards, setRateCards] = useState<any[]>([]);
   const [budgetLines, setBudgetLines] = useState<any[]>([]);
@@ -181,6 +183,8 @@ export default function ProjectDetailsPage() {
       setMemberToRemove({ id: memberId, name: member.name || member.email });
     }
   };
+
+  const canManageProject = userRole === 'admin' || userRole === 'coordinador' || project?.ownerId === user?.uid;
 
   const handleUpdateTaskProgress = async (taskId: string, newProgress: number, task: any) => {
     if (!task) return;
@@ -735,6 +739,19 @@ export default function ProjectDetailsPage() {
               Facturación
             </div>
           </button>
+          <button
+            onClick={() => setActiveTab('orgChart')}
+            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'orgChart'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Users size={16} />
+              Organigrama
+            </div>
+          </button>
         </div>
       </div>
 
@@ -929,6 +946,21 @@ export default function ProjectDetailsPage() {
         </div>
       )}
 
+      {activeTab === 'orgChart' && (
+        <div className="mt-6">
+          <div className="flex justify-between items-center mb-6">
+            <div>
+              <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <Users size={20} className="text-indigo-500" />
+                Organigrama del Proyecto
+              </h2>
+              <p className="text-sm text-slate-500 mt-1">Visualiza y edita la estructura organizacional del equipo.</p>
+            </div>
+          </div>
+          <ProjectOrgChart projectId={projectId} teamMembers={teamMembers} />
+        </div>
+      )}
+
       {/* Team Members Section Moved to Bottom */}
       <div className="mt-12 grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
         <Card className="lg:col-span-3 border-slate-200 shadow-sm">
@@ -942,9 +974,11 @@ export default function ProjectDetailsPage() {
                 Miembros asignados a este proyecto.
               </CardDescription>
             </div>
-            <Button onClick={() => setIsAssignModalOpen(true)} variant="outline" size="sm" className="h-8">
-              <Plus size={16} className="mr-1" /> Asignar Miembro
-            </Button>
+            {canManageProject && (
+              <Button onClick={() => setIsAssignModalOpen(true)} variant="outline" size="sm" className="h-8">
+                <Plus size={16} className="mr-1" /> Asignar Miembro
+              </Button>
+            )}
           </CardHeader>
           <CardContent className="pt-6">
             {(!project.assignedTeamMembers || project.assignedTeamMembers.length === 0) ? (
@@ -960,21 +994,27 @@ export default function ProjectDetailsPage() {
                   return (
                     <div key={memberId} className="flex items-center justify-between p-3 border border-slate-200 rounded-lg bg-white">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-sm">
-                          {member.name.charAt(0).toUpperCase()}
+                        <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-sm overflow-hidden relative">
+                          {member.photoURL ? (
+                            <Image src={member.photoURL} alt={member.name} fill className="object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            member.name.charAt(0).toUpperCase()
+                          )}
                         </div>
                         <div>
                           <p className="text-sm font-medium text-slate-900">{member.name}</p>
                           <p className="text-xs text-slate-500">{member.roleName}</p>
                         </div>
                       </div>
-                      <button 
-                        onClick={() => handleRemoveMember(memberId)}
-                        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                        title="Remover"
-                      >
-                        <X size={16} />
-                      </button>
+                      {canManageProject && (
+                        <button 
+                          onClick={() => handleRemoveMember(memberId)}
+                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                          title="Remover"
+                        >
+                          <X size={16} />
+                        </button>
+                      )}
                     </div>
                   );
                 })}

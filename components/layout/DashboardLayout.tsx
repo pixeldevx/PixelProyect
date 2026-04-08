@@ -22,10 +22,11 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
+import { ProfileModal } from '@/components/settings/ProfileModal';
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { user, loading, login, loginWithEmail, registerWithEmail, logout } = useAuth();
+  const { user, userRole, loading, login, loginWithEmail, registerWithEmail, logout } = useAuth();
   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -33,6 +34,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [authError, setAuthError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -206,16 +208,21 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           <NavItem href="/settlements" icon={<FileText size={18} />} label="Settlements" active={pathname?.startsWith('/settlements')} collapsed={isCollapsed} />
           <NavItem href="/rate-cards" icon={<FileText size={18} />} label="Rate Cards" active={pathname?.startsWith('/rate-cards')} collapsed={isCollapsed} />
           
-          {!isCollapsed && (
+          {userRole === 'admin' && !isCollapsed && (
             <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 mt-8 px-2 whitespace-nowrap">
               System
             </div>
           )}
-          <NavItem href="/settings" icon={<Settings size={18} />} label="Settings" active={pathname?.startsWith('/settings')} collapsed={isCollapsed} />
+          {userRole === 'admin' && (
+            <NavItem href="/settings" icon={<Settings size={18} />} label="Settings" active={pathname?.startsWith('/settings')} collapsed={isCollapsed} />
+          )}
         </nav>
         
         <div className="p-4 border-t border-slate-200">
-          <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-2'} py-2 rounded-md hover:bg-slate-100 transition-colors group relative`}>
+          <div 
+            className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-2'} py-2 rounded-md hover:bg-slate-100 transition-colors group relative cursor-pointer`}
+            onClick={() => setIsProfileModalOpen(true)}
+          >
             <div className="w-8 h-8 rounded-full bg-slate-200 overflow-hidden shrink-0 relative">
               {user.photoURL ? (
                 <Image 
@@ -237,14 +244,18 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
                   <p className="text-sm font-medium text-slate-900 truncate">{user.displayName || 'Usuario'}</p>
                   <p className="text-xs text-slate-500 truncate">{user.email}</p>
                 </div>
-                <button onClick={logout} className="text-slate-400 hover:text-red-500 transition-colors" title="Cerrar sesión">
+                <button 
+                  onClick={(e) => { e.stopPropagation(); logout(); }} 
+                  className="text-slate-400 hover:text-red-500 transition-colors" 
+                  title="Cerrar sesión"
+                >
                   <LogOut size={16} />
                 </button>
               </>
             )}
             {isCollapsed && (
               <button 
-                onClick={logout} 
+                onClick={(e) => { e.stopPropagation(); logout(); }} 
                 className="absolute -top-2 -right-2 w-5 h-5 bg-white border border-slate-200 rounded-full flex items-center justify-center text-slate-400 hover:text-red-500 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
                 title="Cerrar sesión"
               >
@@ -292,6 +303,12 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </main>
+
+      <ProfileModal 
+        user={user} 
+        isOpen={isProfileModalOpen} 
+        onClose={() => setIsProfileModalOpen(false)} 
+      />
     </div>
   );
 }

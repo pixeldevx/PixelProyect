@@ -7,6 +7,7 @@ import { auth, db } from '@/lib/firebase';
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
+  const [userRole, setUserRole] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -74,14 +75,17 @@ export function useAuth() {
           console.log("User profile saved/updated with role:", userRole);
           
           setUser(currentUser);
+          setUserRole(userRole);
         } catch (error) {
           console.error("Error verifying user or saving profile:", error);
           // If there's an error (e.g., permission denied), we should probably log them out
           await signOut(auth);
           setUser(null);
+          setUserRole(null);
         }
       } else {
         setUser(null);
+        setUserRole(null);
       }
       
       setLoading(false);
@@ -143,5 +147,5 @@ export function useAuth() {
     }
   };
 
-  return { user, loading, login, loginWithEmail, registerWithEmail, logout };
+  return { user, userRole, loading, login, loginWithEmail, registerWithEmail, logout };
 }

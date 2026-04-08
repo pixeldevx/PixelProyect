@@ -9,9 +9,11 @@ import { Plus, Edit2, Shield, User as UserIcon, AlertCircle } from 'lucide-react
 import { collection, query, onSnapshot, doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { toast } from 'sonner';
+import { uploadProfilePicture } from '@/lib/storage-utils';
 
 export function UserManagement() {
   const [users, setUsers] = useState<any[]>([]);
+  const [projectRoles, setProjectRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -20,17 +22,22 @@ export function UserManagement() {
   const [userEmail, setUserEmail] = useState('');
   const [userRole, setUserRole] = useState('user');
   const [userName, setUserName] = useState('');
+  const [projectRoleId, setProjectRoleId] = useState('');
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
   const systemRoles = [
     { id: 'admin', name: 'Administrador' },
     { id: 'manager', name: 'Gerente' },
+    { id: 'coordinador', name: 'Coordinador' },
     { id: 'administrativo', name: 'Administrativo' },
     { id: 'user', name: 'Usuario' }
   ];
 
   useEffect(() => {
-    const q = query(collection(db, 'users'));
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+    const qUsers = query(collection(db, 'users'));
+    const unsubscribeUsers = onSnapshot(qUsers, (querySnapshot) => {
       const usersData: any[] = [];
       querySnapshot.forEach((doc) => {
         usersData.push({ id: doc.id, ...doc.data() });
@@ -42,7 +49,22 @@ export function UserManagement() {
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    const qRoles = query(collection(db, 'roles'));
+    const unsubscribeRoles = onSnapshot(qRoles, (querySnapshot) => {
+      const rolesData: any[] = [];
+      querySnapshot.forEach((doc) => {
+        rolesData.push({ id: doc.id, ...doc.data() });
+      });
+      setProjectRoles(rolesData);
+      if (rolesData.length > 0) {
+        setProjectRoleId(rolesData[0].id);
+      }
+    });
+
+    return () => {
+      unsubscribeUsers();
+      unsubscribeRoles();
+    };
   }, []);
 
   const handleOpenModal = (user?: any) => {
@@ -51,44 +73,68 @@ export function UserManagement() {
       setUserEmail(user.email || '');
       setUserRole(user.role || 'user');
       setUserName(user.displayName || '');
+      setPhotoPreview(user.photoURL || null);
+      setPhotoFile(null);
     } else {
       setEditingUser(null);
       setUserEmail('');
       setUserRole('user');
       setUserName('');
+      setPhotoPreview(null);
+      setPhotoFile(null);
+      if (projectRoles.length > 0) {
+        setProjectRoleId(projectRoles[0].id);
+      }
     }
     setIsModalOpen(true);
+  };
+
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setPhotoFile(file);
+      setPhotoPreview(URL.createObjectURL(file));
+    }
   };
 
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!userEmail.trim()) return;
 
+    setIsUploading(true);
     try {
       const normalizedEmail = userEmail.toLowerCase();
       
+      let uploadedPhotoURL = editingUser?.photoURL || null;
+
       if (editingUser) {
+        if (photoFile) {
+          uploadedPhotoURL = await uploadProfilePicture(editingUser.id, photoFile);
+        }
+
         await updateDoc(doc(db, 'users', editingUser.id), {
           role: userRole,
-          ...(userName && { displayName: userName })
+          ...(userName && { displayName: userName }),
+          ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL })
         });
         toast.success("Rol de usuario actualizado exitosamente.");
       } else {
-        // Create a pre-registered user document
-        // We use the email as the document ID temporarily, or a random ID
-        // When they log in, useAuth will create a document with their UID.
-        // To link them, we might need to rely on the email.
-        // Actually, it's better to add them to team_members so they can log in,
-        // and also create a placeholder in users collection.
+        const selectedProjectRole = projectRoles.find(r => r.id === projectRoleId);
         
         // Let's create a new doc in users collection with a random ID
         const newUserRef = doc(collection(db, 'users'));
+
+        if (photoFile) {
+          uploadedPhotoURL = await uploadProfilePicture(newUserRef.id, photoFile);
+        }
+
         await setDoc(newUserRef, {
           email: normalizedEmail,
           displayName: userName || normalizedEmail.split('@')[0],
           role: userRole,
           createdAt: serverTimestamp(),
-          isPreRegistered: true
+          isPreRegistered: true,
+          ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL })
         });
         
         // Also add to team_members so they can log in
@@ -96,9 +142,10 @@ export function UserManagement() {
         await setDoc(newTeamMemberRef, {
           email: normalizedEmail,
           name: userName || normalizedEmail.split('@')[0],
-          roleId: 'system_created', // Placeholder role
-          roleName: 'Usuario del Sistema',
+          roleId: projectRoleId || 'system_created',
+          roleName: selectedProjectRole?.name || 'Usuario del Sistema',
           createdAt: serverTimestamp(),
+          ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL })
         });
         
         toast.success("Usuario invitado exitosamente.");
@@ -107,6 +154,8 @@ export function UserManagement() {
     } catch (error) {
       console.error("Error saving user:", error);
       toast.error("Error al guardar el usuario");
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -208,6 +257,21 @@ export function UserManagement() {
             
             <form onSubmit={handleSaveUser}>
               <div className="space-y-4 mb-6">
+                <div className="flex flex-col items-center mb-4">
+                  <div className="w-20 h-20 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center overflow-hidden mb-2 relative group">
+                    {photoPreview ? (
+                      <Image src={photoPreview} alt="Preview" fill className="object-cover" />
+                    ) : (
+                      <UserIcon size={32} className="text-slate-400" />
+                    )}
+                    <label className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity">
+                      <span className="text-white text-xs font-medium">Cambiar</span>
+                      <input type="file" accept="image/*" className="hidden" onChange={handlePhotoChange} />
+                    </label>
+                  </div>
+                  <p className="text-xs text-slate-500">Foto de perfil (opcional)</p>
+                </div>
+
                 {!editingUser && (
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -255,6 +319,27 @@ export function UserManagement() {
                     El rol del sistema determina los permisos globales (ej. facturación, configuración).
                   </p>
                 </div>
+
+                {!editingUser && projectRoles.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      Rol de Proyecto (Cargo) *
+                    </label>
+                    <select
+                      value={projectRoleId}
+                      onChange={(e) => setProjectRoleId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                      required
+                    >
+                      {projectRoles.map(role => (
+                        <option key={role.id} value={role.id}>{role.name}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Este rol define la función del usuario dentro de los proyectos.
+                    </p>
+                  </div>
+                )}
               </div>
               
               <div className="flex justify-end gap-3">
@@ -268,9 +353,10 @@ export function UserManagement() {
                 </Button>
                 <Button 
                   type="submit"
+                  disabled={isUploading}
                   className="bg-indigo-600 hover:bg-indigo-700 text-white"
                 >
-                  Guardar
+                  {isUploading ? 'Guardando...' : 'Guardar'}
                 </Button>
               </div>
             </form>

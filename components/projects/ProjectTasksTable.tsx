@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'motion/react';
+import Image from 'next/image';
 
 interface ProjectTasksTableProps {
   tasks: any[];
@@ -138,8 +139,12 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
           <td className="px-2 py-2 text-center border-l border-slate-200 w-16 relative">
             <div className="flex justify-center">
               {assignee ? (
-                <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-sm font-bold shadow-sm" title={assignee.name}>
-                  {assignee.name.charAt(0).toUpperCase()}
+                <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-sm font-bold shadow-sm overflow-hidden relative" title={assignee.name}>
+                  {assignee.photoURL ? (
+                    <Image src={assignee.photoURL} alt={assignee.name} fill className="object-cover" referrerPolicy="no-referrer" />
+                  ) : (
+                    assignee.name.charAt(0).toUpperCase()
+                  )}
                 </div>
               ) : (
                 <div className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center text-sm border border-dashed border-slate-300 hover:bg-slate-200 transition-colors" title="Sin asignar">

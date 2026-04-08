@@ -14,6 +14,7 @@ import { Progress } from '@/components/ui/progress';
 import { handleFirestoreError, OperationType } from '@/lib/firebase-utils';
 import { toast } from 'sonner';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts';
+import Image from 'next/image';
 
 export default function RateCardsPage() {
   const { user } = useAuth();
@@ -366,8 +367,12 @@ export default function RateCardsPage() {
                       onClick={() => handleSelectMember(member.id)}
                       className={`w-full text-left p-4 hover:bg-slate-50 transition-colors flex items-center gap-3 ${selectedMemberId === member.id ? 'bg-indigo-50 border-r-4 border-indigo-500' : ''}`}
                     >
-                      <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold">
-                        {member.name.charAt(0)}
+                      <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold overflow-hidden relative">
+                        {member.photoURL ? (
+                          <Image src={member.photoURL} alt={member.name} fill className="object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          member.name.charAt(0)
+                        )}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-slate-900 truncate">{member.name}</p>

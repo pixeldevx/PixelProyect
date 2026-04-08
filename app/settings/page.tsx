@@ -13,7 +13,7 @@ import { toast } from 'sonner';
 import { UserManagement } from '@/components/settings/UserManagement';
 
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const { user, userRole } = useAuth();
   const [activeTab, setActiveTab] = useState<'roles' | 'users'>('roles');
   const [roles, setRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -22,6 +22,9 @@ export default function SettingsPage() {
   const [editingRole, setEditingRole] = useState<any>(null);
   const [roleName, setRoleName] = useState('');
   const [roleDescription, setRoleDescription] = useState('');
+
+  const [roleToDelete, setRoleToDelete] = useState<{id: string, name: string} | null>(null);
+  const [isDeletingRole, setIsDeletingRole] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -41,6 +44,20 @@ export default function SettingsPage() {
 
     return () => unsubscribe();
   }, [user]);
+
+  if (userRole !== 'admin') {
+    return (
+      <DashboardLayout>
+        <div className="flex justify-center items-center h-full">
+          <div className="text-center">
+            <Shield className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+            <h2 className="text-xl font-bold text-slate-700">Acceso Denegado</h2>
+            <p className="text-slate-500 mt-2">No tienes permisos para ver esta página.</p>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
 
   const handleOpenModal = (role?: any) => {
     if (role) {
@@ -80,9 +97,6 @@ export default function SettingsPage() {
       toast.error("Error al guardar el rol");
     }
   };
-
-  const [roleToDelete, setRoleToDelete] = useState<{id: string, name: string} | null>(null);
-  const [isDeletingRole, setIsDeletingRole] = useState(false);
 
   const handleDeleteRole = (id: string) => {
     const role = roles.find(r => r.id === id);

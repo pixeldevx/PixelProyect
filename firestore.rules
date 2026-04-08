@@ -321,6 +321,19 @@ service cloud.firestore {
         );
       }
 
+      match /orgChart/{documentId} {
+        allow read: if isAuthenticated();
+        allow list: if isAuthenticated();
+        allow get: if isAuthenticated();
+        allow create, update, delete: if isAuthenticated() && (
+          isAdmin() ||
+          (exists(/databases/$(database)/documents/projects/$(projectId)) && (
+            get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || 
+            isAssignedToProject(get(/databases/$(database)/documents/projects/$(projectId)).data)
+          ))
+        );
+      }
+
       match /tasks/{taskId} {
         allow read: if isAuthenticated();
         allow list: if isAuthenticated();

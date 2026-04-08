@@ -10,6 +10,7 @@ import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp,
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
+import Image from 'next/image';
 
 export default function TeamPage() {
   const { user } = useAuth();
@@ -176,8 +177,12 @@ export default function TeamPage() {
                   <TableRow key={member.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs">
-                          {member.name.charAt(0).toUpperCase()}
+                        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs overflow-hidden relative">
+                          {member.photoURL ? (
+                            <Image src={member.photoURL} alt={member.name} fill className="object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            member.name.charAt(0).toUpperCase()
+                          )}
                         </div>
                         {member.name}
                       </div>

@@ -4,6 +4,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { DashboardMetrics } from '@/hooks/useDashboardData';
+import Image from 'next/image';
 
 export function TeamTable({ metrics }: { metrics: DashboardMetrics }) {
   const teamData = metrics.teamPerformance;
@@ -48,8 +49,12 @@ export function TeamTable({ metrics }: { metrics: DashboardMetrics }) {
                   <TableRow key={index} className="border-slate-100 hover:bg-slate-50/50">
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-xs font-bold text-slate-500">
-                          {row.name.split(' ').map(n => n[0]).join('')}
+                        <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-xs font-bold text-slate-500 overflow-hidden relative">
+                          {row.photoURL ? (
+                            <Image src={row.photoURL} alt={row.name} fill className="object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            row.name.split(' ').map(n => n[0]).join('')
+                          )}
                         </div>
                         <div>
                           <div className="text-slate-900">{row.name}</div>
