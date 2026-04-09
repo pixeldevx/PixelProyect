@@ -30,7 +30,7 @@ interface ProjectOrgChartProps {
 const initialEdges: Edge[] = [];
 
 export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps) {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
