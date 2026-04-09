@@ -34,6 +34,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
 
   const nodeTypes = useMemo(() => ({ orgChartNode: OrgChartNode }), []);
 
@@ -140,7 +141,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
     }
   }, [projectId, nodes, edges]);
 
-  const addNode = () => {
+  const addCustomNode = () => {
     const newId = `node_${new Date().getTime()}`;
     const newNode: Node = {
       id: newId,
@@ -152,6 +153,24 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
       position: { x: Math.random() * 300, y: Math.random() * 300 },
     };
     setNodes((nds) => nds.concat(newNode));
+    setIsAddMenuOpen(false);
+  };
+
+  const addTeamMemberNode = (member: any) => {
+    const newId = `node_${new Date().getTime()}`;
+    const newNode: Node = {
+      id: newId,
+      type: 'orgChartNode',
+      data: { 
+        label: member.name || member.email || 'Miembro del equipo',
+        member: member.role || 'Miembro',
+        photoURL: member.photoURL || null,
+        onChange: (newLabel: string) => handleNodeLabelChange(newId, newLabel)
+      },
+      position: { x: Math.random() * 300, y: Math.random() * 300 },
+    };
+    setNodes((nds) => nds.concat(newNode));
+    setIsAddMenuOpen(false);
   };
 
   const deleteSelected = () => {
@@ -176,9 +195,50 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
         attributionPosition="bottom-right"
       >
         <Panel position="top-right" className="flex gap-2">
-          <Button onClick={addNode} variant="outline" size="sm" className="bg-white shadow-sm">
-            <Plus size={16} className="mr-1" /> Nuevo Nodo
-          </Button>
+          <div className="relative">
+            <Button onClick={() => setIsAddMenuOpen(!isAddMenuOpen)} variant="outline" size="sm" className="bg-white shadow-sm">
+              <Plus size={16} className="mr-1" /> Nuevo Nodo
+            </Button>
+            
+            {isAddMenuOpen && (
+              <div className="absolute top-full mt-1 right-0 w-64 bg-white border border-slate-200 rounded-md shadow-lg z-50 max-h-80 overflow-y-auto">
+                <div className="p-2">
+                  <div className="text-xs font-semibold text-slate-500 mb-1 px-2">Básico</div>
+                  <button 
+                    onClick={addCustomNode}
+                    className="w-full text-left px-2 py-1.5 text-sm hover:bg-slate-100 rounded-md"
+                  >
+                    Nodo Personalizado
+                  </button>
+                  
+                  {teamMembers && teamMembers.length > 0 && (
+                    <>
+                      <div className="text-xs font-semibold text-slate-500 mt-3 mb-1 px-2">Miembros del Equipo</div>
+                      {teamMembers.map(member => (
+                        <button 
+                          key={member.id}
+                          onClick={() => addTeamMemberNode(member)}
+                          className="w-full text-left px-2 py-1.5 text-sm hover:bg-slate-100 rounded-md flex items-center gap-2"
+                        >
+                          <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center overflow-hidden shrink-0">
+                            {member.photoURL ? (
+                              <img src={member.photoURL} alt={member.name} className="w-full h-full object-cover" />
+                            ) : (
+                              <Users size={12} />
+                            )}
+                          </div>
+                          <div className="truncate">
+                            <div className="font-medium">{member.name || member.email}</div>
+                            <div className="text-xs text-slate-500">{member.role || 'Miembro'}</div>
+                          </div>
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
           <Button onClick={deleteSelected} variant="outline" size="sm" className="bg-white shadow-sm text-red-600 hover:text-red-700">
             <Trash2 size={16} className="mr-1" /> Eliminar Selección
           </Button>
