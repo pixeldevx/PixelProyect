@@ -10,8 +10,8 @@ export function OrgChartNode({ data, isConnectable, selected }: NodeProps) {
 
   const onBlur = () => {
     setIsEditing(false);
-    if (data.onChange) {
-      data.onChange(label);
+    if (typeof data.onChange === 'function') {
+      (data.onChange as (label: string) => void)(label);
     }
   };
 
