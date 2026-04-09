@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useState, useEffect } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -33,6 +33,7 @@ import Image from 'next/image';
 export default function ProjectDetailsPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const projectId = params.id as string;
   const { user, userRole } = useAuth();
   
@@ -50,6 +51,13 @@ export default function ProjectDetailsPage() {
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'documents' | 'tasks' | 'tasksList' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('documents');
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam && ['documents', 'tasks', 'tasksList', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
+      setActiveTab(tabParam as any);
+    }
+  }, [searchParams]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [rateCards, setRateCards] = useState<any[]>([]);
   const [budgetLines, setBudgetLines] = useState<any[]>([]);
