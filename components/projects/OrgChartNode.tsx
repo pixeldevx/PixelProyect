@@ -49,7 +49,7 @@ export function OrgChartNode({ data, isConnectable, selected }: NodeProps) {
         )}
         {data.member && (
           <div className="text-xs text-slate-500 mt-1 text-center">
-            {data.member}
+            {data.member as string}
           </div>
         )}
       </div>
