@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, ListTodo, Plus, ClipboardList, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { doc, collection, addDoc, writeBatch, serverTimestamp, increment } from 'firebase/firestore';
+import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, query, getDocs } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { toast } from 'sonner';
 import { WorkflowStepFormBuilderModal, CustomForm } from '@/components/projects/WorkflowStepFormBuilderModal';
@@ -48,6 +48,27 @@ export function CreateTaskModal({
   const [newTaskUnitsToAdd, setNewTaskUnitsToAdd] = useState(1);
   const [newTaskPriority, setNewTaskPriority] = useState('medium');
 
+  const [workflowTemplates, setWorkflowTemplates] = useState<any[]>([]);
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      const fetchTemplates = async () => {
+        try {
+          const q = query(collection(db, 'workflow_templates'));
+          const snap = await getDocs(q);
+          const templates = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          setWorkflowTemplates(templates);
+        } catch (error) {
+          console.error("Error fetching templates:", error);
+        }
+      };
+      fetchTemplates();
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   const resetForm = () => {
@@ -73,6 +94,41 @@ export function CreateTaskModal({
   const handleClose = () => {
     resetForm();
     onClose();
+  };
+
+  const handleSaveTemplate = async () => {
+    if (!templateName.trim() || workflowSteps.length === 0) {
+      toast.warning("Ingresa un nombre y asegúrate de tener pasos definidos.");
+      return;
+    }
+    setIsSavingTemplate(true);
+    try {
+      const newTemplate = {
+        name: templateName,
+        steps: workflowSteps,
+        createdAt: serverTimestamp(),
+        createdBy: user?.uid || 'unknown'
+      };
+      const docRef = await addDoc(collection(db, 'workflow_templates'), newTemplate);
+      setWorkflowTemplates([...workflowTemplates, { id: docRef.id, ...newTemplate }]);
+      setShowTemplateModal(false);
+      setTemplateName('');
+      toast.success("Plantilla guardada correctamente.");
+    } catch (error: any) {
+      console.error("Error saving template:", error);
+      toast.error("Error al guardar la plantilla.");
+    } finally {
+      setIsSavingTemplate(false);
+    }
+  };
+
+  const handleLoadTemplate = (templateId: string) => {
+    if (!templateId) return;
+    const template = workflowTemplates.find(t => t.id === templateId);
+    if (template && template.steps) {
+      setWorkflowSteps(template.steps);
+      toast.success("Plantilla cargada.");
+    }
   };
 
   const handleCreateTask = async (e: React.FormEvent) => {
@@ -323,15 +379,40 @@ export function CreateTaskModal({
 
                 <div className="flex items-center justify-between border-t border-indigo-100 pt-4">
                   <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">Pasos del Workflow</label>
-                  <Button 
-                    type="button" 
-                    variant="ghost" 
-                    size="sm" 
-                    onClick={() => setWorkflowSteps([...workflowSteps, { assignedTo: '', label: '', unitsToAdd: 1 }])}
-                    className="h-7 text-[10px] font-bold text-indigo-600 hover:bg-indigo-100"
-                  >
-                    <Plus size={12} className="mr-1" /> AGREGAR PASO
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {workflowTemplates.length > 0 && (
+                      <select 
+                        className="h-7 text-[10px] rounded border border-indigo-200 px-2 bg-white"
+                        onChange={(e) => handleLoadTemplate(e.target.value)}
+                        defaultValue=""
+                      >
+                        <option value="" disabled>Cargar Plantilla...</option>
+                        {workflowTemplates.map(t => (
+                          <option key={t.id} value={t.id}>{t.name}</option>
+                        ))}
+                      </select>
+                    )}
+                    {workflowSteps.length > 0 && (
+                      <Button 
+                        type="button" 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setShowTemplateModal(true)}
+                        className="h-7 text-[10px] font-bold text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+                      >
+                        GUARDAR PLANTILLA
+                      </Button>
+                    )}
+                    <Button 
+                      type="button" 
+                      variant="ghost" 
+                      size="sm" 
+                      onClick={() => setWorkflowSteps([...workflowSteps, { assignedTo: '', label: '', unitsToAdd: 1 }])}
+                      className="h-7 text-[10px] font-bold text-indigo-600 hover:bg-indigo-100"
+                    >
+                      <Plus size={12} className="mr-1" /> AGREGAR PASO
+                    </Button>
+                  </div>
                 </div>
                 
                 {workflowSteps.length === 0 ? (
@@ -546,6 +627,48 @@ export function CreateTaskModal({
             setWorkflowSteps(newSteps);
           }}
         />
+      )}
+
+      {/* Save Template Modal */}
+      {showTemplateModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                <ClipboardList className="text-indigo-600" size={24} />
+                Guardar Plantilla
+              </h2>
+              <button onClick={() => setShowTemplateModal(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="text-sm font-bold text-slate-700 mb-1 block">Nombre de la Plantilla</label>
+                <input 
+                  type="text" 
+                  value={templateName}
+                  onChange={(e) => setTemplateName(e.target.value)}
+                  placeholder="Ej. Flujo de Aprobación Estándar"
+                  className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                />
+              </div>
+            </div>
+            <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+              <Button type="button" variant="ghost" onClick={() => setShowTemplateModal(false)} className="text-slate-600 hover:bg-slate-200 rounded-xl">
+                Cancelar
+              </Button>
+              <Button 
+                type="button" 
+                onClick={handleSaveTemplate} 
+                disabled={isSavingTemplate || !templateName.trim()} 
+                className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-md shadow-indigo-200"
+              >
+                {isSavingTemplate ? <><Loader2 size={16} className="animate-spin mr-2" /> Guardando...</> : 'Guardar'}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
