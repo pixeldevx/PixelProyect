@@ -26,12 +26,18 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   const [observation, setObservation] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [isStarting, setIsStarting] = useState(false);
+  const [firstStepAssignee, setFirstStepAssignee] = useState<string>('');
 
   if (!isOpen || !task) return null;
 
   const handleStart = async () => {
     if (!workflowId.trim()) {
       toast.warning("Por favor ingrese un ID de Workflow.");
+      return;
+    }
+
+    if (task.workflowSteps?.[0]?.assignedTo === 'DYNAMIC' && !firstStepAssignee) {
+      toast.warning("Por favor asigne el primer paso a un miembro del equipo.");
       return;
     }
 
@@ -78,6 +84,9 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
           status: 'en_curso',
           startedAt: new Date()
         };
+        if (updatedSteps[0].assignedTo === 'DYNAMIC' && firstStepAssignee) {
+          updatedSteps[0].assignedTo = firstStepAssignee;
+        }
       }
 
       await updateDoc(doc(db, 'projects', projectId, 'tasks', task.id), {
@@ -192,11 +201,27 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
             <p className="text-sm font-medium text-indigo-900">
               El workflow será enviado a:
             </p>
-            <p className="text-sm text-indigo-700 font-bold mt-1">
-              {task.workflowSteps && task.workflowSteps.length > 0 
-                ? teamMembers.find(m => m.id === task.workflowSteps[0].assignedTo)?.name || 'Usuario no encontrado'
-                : 'No hay pasos definidos'}
-            </p>
+            {task.workflowSteps && task.workflowSteps.length > 0 && task.workflowSteps[0].assignedTo === 'DYNAMIC' ? (
+              <div className="mt-2">
+                <select
+                  value={firstStepAssignee}
+                  onChange={(e) => setFirstStepAssignee(e.target.value)}
+                  className="w-full bg-white border border-indigo-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  required
+                >
+                  <option value="">Seleccione un responsable...</option>
+                  {teamMembers.map(member => (
+                    <option key={member.id} value={member.id}>{member.name}</option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <p className="text-sm text-indigo-700 font-bold mt-1">
+                {task.workflowSteps && task.workflowSteps.length > 0 
+                  ? teamMembers.find(m => m.id === task.workflowSteps[0].assignedTo)?.name || 'Usuario no encontrado'
+                  : 'No hay pasos definidos'}
+              </p>
+            )}
           </div>
         </div>
 

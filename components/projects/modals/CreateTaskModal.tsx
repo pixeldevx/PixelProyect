@@ -38,7 +38,7 @@ export function CreateTaskModal({
   const [newTaskProgress, setNewTaskProgress] = useState(0);
   const [newTaskStatus, setNewTaskStatus] = useState('todo');
   const [newTaskType, setNewTaskType] = useState<'quantitative' | 'state' | 'workflow'>('workflow');
-  const [workflowSteps, setWorkflowSteps] = useState<{assignedTo: string, label: string, form?: CustomForm, rateCardId?: string, unitsToAdd?: number}[]>([]);
+  const [workflowSteps, setWorkflowSteps] = useState<{assignedTo: string, label: string, form?: CustomForm, rateCardId?: string, unitsToAdd?: number, assignsNextStep?: boolean}[]>([]);
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
   const [currentStepIndexForForm, setCurrentStepIndexForForm] = useState<number | null>(null);
   const [workflowCycles, setWorkflowCycles] = useState<number>(1);
@@ -469,6 +469,7 @@ export function CreateTaskModal({
                             required
                           >
                             <option value="">Asignar a...</option>
+                            <option value="DYNAMIC">Asignación dinámica (por paso anterior)</option>
                             {project?.assignedTeamMembers?.map((memberId: string) => {
                               const member = teamMembers.find(m => m.id === memberId);
                               if (!member) return null;
@@ -507,6 +508,29 @@ export function CreateTaskModal({
                             />
                           )}
                         </div>
+                        
+                        {idx < workflowSteps.length - 1 && (
+                          <div className="flex items-center gap-2 pl-8 mt-1">
+                            <label className="flex items-center gap-2 text-[10px] text-slate-500 cursor-pointer">
+                              <input 
+                                type="checkbox"
+                                checked={step.assignsNextStep || false}
+                                onChange={(e) => {
+                                  const newSteps = [...workflowSteps];
+                                  newSteps[idx].assignsNextStep = e.target.checked;
+                                  if (e.target.checked) {
+                                    newSteps[idx + 1].assignedTo = 'DYNAMIC';
+                                  } else if (newSteps[idx + 1].assignedTo === 'DYNAMIC') {
+                                    newSteps[idx + 1].assignedTo = '';
+                                  }
+                                  setWorkflowSteps(newSteps);
+                                }}
+                                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-3 h-3"
+                              />
+                              Este paso decide el responsable del siguiente paso
+                            </label>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

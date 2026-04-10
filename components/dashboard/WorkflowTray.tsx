@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, where, onSnapshot, doc, updateDoc, arrayUnion, Timestamp, writeBatch, increment } from 'firebase/firestore';
 import { db, auth } from '@/lib/firebase';
-import { CheckCircle2, XCircle, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, AlertCircle, X, ClipboardList } from 'lucide-react';
+import { CheckCircle2, XCircle, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, AlertCircle, X, ClipboardList, Play, Pause } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -21,9 +21,11 @@ export default function WorkflowTray() {
   const [activeTab, setActiveTab] = useState<'pending' | 'reviewed'>('pending');
   const [memberId, setMemberId] = useState<string | null>(null);
   
-  const [actionModal, setActionModal] = useState<{ isOpen: boolean, task: any, type: 'approve' | 'return' }>({ isOpen: false, task: null, type: 'approve' });
+  const [actionModal, setActionModal] = useState<{ isOpen: boolean, task: any, type: 'approve' | 'return' | 'stop' | 'resume' }>({ isOpen: false, task: null, type: 'approve' });
   const [actionComment, setActionComment] = useState('');
   const [formData, setFormData] = useState<Record<string, any>>({});
+  const [nextStepAssignee, setNextStepAssignee] = useState<string>('');
+  const [projectTeamMembers, setProjectTeamMembers] = useState<any[]>([]);
   const [docsModalTask, setDocsModalTask] = useState<any>(null);
   const [historyModalTask, setHistoryModalTask] = useState<any>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -197,6 +199,11 @@ export default function WorkflowTray() {
           nextIndex = currentIndex + 1;
           steps[nextIndex].status = 'en_curso';
           newStatus = 'in_progress';
+          
+          // Apply dynamic assignee if configured
+          if (currentStep.assignsNextStep && nextStepAssignee) {
+            steps[nextIndex].assignedTo = nextStepAssignee;
+          }
         } else {
           // Last step approved
           newStatus = 'completed';
@@ -225,7 +232,7 @@ export default function WorkflowTray() {
             batch.update(rcRef, updateData);
           }
         }
-      } else {
+      } else if (action === 'return') {
         // Return
         steps[currentIndex].status = 'devuelto';
         
@@ -233,6 +240,12 @@ export default function WorkflowTray() {
           nextIndex = currentIndex - 1;
           steps[nextIndex].status = 'reproceso';
         }
+      } else if (action === 'stop') {
+        steps[currentIndex].status = 'detenido';
+      } else if (action === 'resume') {
+        // Find if it was reproceso before, or just en_curso
+        const wasReproceso = task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex && h.action === 'return');
+        steps[currentIndex].status = wasReproceso ? 'reproceso' : 'en_curso';
       }
 
       progress = Math.round((nextIndex / steps.length) * 100);
@@ -251,6 +264,7 @@ export default function WorkflowTray() {
           action: action,
           comment: actionComment,
           formData: action === 'approve' ? formData : null,
+          nextStepAssignee: action === 'approve' && currentStep.assignsNextStep ? nextStepAssignee : null,
           timestamp: Timestamp.now()
         })
       });
@@ -272,10 +286,37 @@ export default function WorkflowTray() {
     }
   };
 
-  const openActionModal = (task: any, type: 'approve' | 'return') => {
+  const openActionModal = async (task: any, type: 'approve' | 'return' | 'stop' | 'resume') => {
     setActionModal({ isOpen: true, task, type });
     setActionComment('');
     setFormData({});
+    setNextStepAssignee('');
+    
+    const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
+    if (type === 'approve' && currentStep?.assignsNextStep) {
+      try {
+        const { getDoc } = await import('firebase/firestore');
+        const projectRef = doc(db, 'projects', task.projectId);
+        const projectSnap = await getDoc(projectRef);
+        
+        if (projectSnap.exists()) {
+          const projectData = projectSnap.data();
+          const assignedMemberIds = projectData.assignedTeamMembers || [];
+          
+          if (assignedMemberIds.length > 0) {
+            const { getDocs } = await import('firebase/firestore');
+            const teamQ = query(collection(db, 'team_members'), where('__name__', 'in', assignedMemberIds));
+            const teamSnap = await getDocs(teamQ);
+            const members = teamSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setProjectTeamMembers(members);
+          } else {
+            setProjectTeamMembers([]);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching team members:', error);
+      }
+    }
   };
 
   if (loading) {
@@ -472,9 +513,9 @@ export default function WorkflowTray() {
                     </div>
                   )}
                   {task.workflowSteps[task.currentStepIndex]?.status === 'detenido' && (
-                    <div className="mt-3 flex items-start gap-2 text-sm text-red-600 bg-red-100/50 p-3 rounded-md">
+                    <div className="mt-3 flex items-start gap-2 text-sm text-orange-600 bg-orange-100/50 p-3 rounded-md">
                       <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                      <p>Este workflow ha sido detenido manualmente. Debe reanudarse desde el diagrama de Gantt para poder continuar.</p>
+                      <p>Este workflow ha sido detenido manualmente. Debe reanudarlo para poder continuar con el flujo.</p>
                     </div>
                   )}
                 </div>
@@ -483,6 +524,29 @@ export default function WorkflowTray() {
                   <div className="flex items-center gap-4">
                     {activeTab === 'pending' && (
                       <>
+                        {task.workflowSteps[task.currentStepIndex]?.status === 'detenido' ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openActionModal(task, 'resume')}
+                            disabled={processingId === task.id}
+                            className="text-blue-600 border-blue-100 hover:bg-blue-50"
+                          >
+                            <Play className="w-4 h-4 mr-2" />
+                            Reanudar
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openActionModal(task, 'stop')}
+                            disabled={processingId === task.id}
+                            className="text-orange-600 border-orange-100 hover:bg-orange-50"
+                          >
+                            <Pause className="w-4 h-4 mr-2" />
+                            Detener
+                          </Button>
+                        )}
                         <Button
                           variant="outline"
                           size="sm"
@@ -562,10 +626,14 @@ export default function WorkflowTray() {
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
             <div className="p-6 border-b border-slate-100">
               <h2 className="text-xl font-bold text-slate-800">
-                {actionModal.type === 'approve' ? 'Aprobar y Continuar' : 'Devolver Tarea'}
+                {actionModal.type === 'approve' ? 'Aprobar y Continuar' : 
+                 actionModal.type === 'return' ? 'Devolver Tarea' :
+                 actionModal.type === 'stop' ? 'Detener Workflow' : 'Reanudar Workflow'}
               </h2>
               <p className="text-sm text-slate-500 mt-1">
-                ¿Está seguro de {actionModal.type === 'approve' ? 'remitir' : 'devolver'} la tarea &quot;{actionModal.task.title}&quot;?
+                ¿Está seguro de {actionModal.type === 'approve' ? 'remitir' : 
+                                 actionModal.type === 'return' ? 'devolver' :
+                                 actionModal.type === 'stop' ? 'detener' : 'reanudar'} la tarea &quot;{actionModal.task.title}&quot;?
               </p>
             </div>
             
@@ -647,6 +715,25 @@ export default function WorkflowTray() {
                 </div>
               )}
 
+              {actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && (
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Asignar siguiente paso a <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={nextStepAssignee}
+                    onChange={(e) => setNextStepAssignee(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    required
+                  >
+                    <option value="">Seleccione un responsable...</option>
+                    {projectTeamMembers.map(member => (
+                      <option key={member.id} value={member.id}>{member.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
                   Observaciones <span className="text-red-500">*</span>
@@ -670,17 +757,28 @@ export default function WorkflowTray() {
               </Button>
               <Button
                 onClick={confirmAction}
-                disabled={!actionComment.trim() || processingId === actionModal.task.id}
-                className={actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-red-600 hover:bg-red-700 text-white'}
+                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee)}
+                className={
+                  actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 
+                  actionModal.type === 'return' ? 'bg-red-600 hover:bg-red-700 text-white' :
+                  actionModal.type === 'stop' ? 'bg-orange-600 hover:bg-orange-700 text-white' :
+                  'bg-blue-600 hover:bg-blue-700 text-white'
+                }
               >
                 {processingId === actionModal.task.id ? (
                   <Loader2 className="w-4 h-4 animate-spin mr-2" />
                 ) : actionModal.type === 'approve' ? (
                   <CheckCircle2 className="w-4 h-4 mr-2" />
-                ) : (
+                ) : actionModal.type === 'return' ? (
                   <ArrowLeft className="w-4 h-4 mr-2" />
+                ) : actionModal.type === 'stop' ? (
+                  <Pause className="w-4 h-4 mr-2" />
+                ) : (
+                  <Play className="w-4 h-4 mr-2" />
                 )}
-                {actionModal.type === 'approve' ? 'Confirmar y Remitir' : 'Confirmar Devolución'}
+                {actionModal.type === 'approve' ? 'Confirmar y Remitir' : 
+                 actionModal.type === 'return' ? 'Confirmar Devolución' :
+                 actionModal.type === 'stop' ? 'Confirmar Detención' : 'Confirmar Reanudación'}
               </Button>
             </div>
           </div>
@@ -716,6 +814,14 @@ export default function WorkflowTray() {
                         <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center text-red-600">
                           <ArrowLeft size={16} />
                         </div>
+                      ) : history.action === 'stop' ? (
+                        <div className="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600">
+                          <Pause size={16} />
+                        </div>
+                      ) : history.action === 'resume' ? (
+                        <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
+                          <Play size={16} />
+                        </div>
                       ) : (
                         <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600">
                           <MessageSquare size={16} />
@@ -736,9 +842,14 @@ export default function WorkflowTray() {
                           <span className={`text-xs font-medium px-2 py-1 rounded-full ${
                             history.action === 'approve' ? 'bg-emerald-50 text-emerald-700' :
                             history.action === 'return' ? 'bg-red-50 text-red-700' :
+                            history.action === 'stop' ? 'bg-orange-50 text-orange-700' :
+                            history.action === 'resume' ? 'bg-blue-50 text-blue-700' :
                             'bg-slate-100 text-slate-700'
                           }`}>
-                            {history.action === 'approve' ? 'Aprobado' : history.action === 'return' ? 'Devuelto' : 'Comentario'}
+                            {history.action === 'approve' ? 'Aprobado' : 
+                             history.action === 'return' ? 'Devuelto' : 
+                             history.action === 'stop' ? 'Detenido' :
+                             history.action === 'resume' ? 'Reanudado' : 'Comentario'}
                           </span>
                           <p className="text-[10px] text-slate-400 mt-1">
                             {history.timestamp?.toDate ? format(history.timestamp.toDate(), "d MMM yyyy, h:mm a", { locale: es }) : 'Fecha desconocida'}

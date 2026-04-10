@@ -73,6 +73,121 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
     }
   };
 
+  const getWorkflowStepStatusColor = (status: string) => {
+    switch (status) {
+      case 'listo': return 'bg-emerald-500 text-white';
+      case 'en_curso': return 'bg-amber-500 text-white';
+      case 'detenido': return 'bg-red-500 text-white';
+      case 'devuelto': return 'bg-orange-500 text-white';
+      case 'reproceso': return 'bg-purple-500 text-white';
+      case 'not_started':
+      default: return 'bg-slate-400 text-white';
+    }
+  };
+
+  const getWorkflowStepStatusLabel = (status: string) => {
+    switch (status) {
+      case 'listo': return 'Listo';
+      case 'en_curso': return 'En curso';
+      case 'detenido': return 'Detenido';
+      case 'devuelto': return 'Devuelto';
+      case 'reproceso': return 'Reproceso';
+      case 'not_started':
+      default: return 'Pendiente';
+    }
+  };
+
+  const renderWorkflowStepRow = (step: any, parentTask: any, depth: number, index: number, isLastChild: boolean) => {
+    const assignee = teamMembers.find(m => m.id === step.assignedTo);
+    
+    return (
+      <motion.tr 
+        key={`step-${parentTask.id}-${index}`}
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -10 }}
+        transition={{ duration: 0.2 }}
+        className={`border-b border-slate-200 hover:bg-slate-50 transition-colors group bg-slate-50/50`}
+      >
+        <td className={`px-4 py-2 border-l-8 border-transparent relative`}>
+          <div className="flex items-center gap-2" style={{ paddingLeft: `${depth * 1.5}rem` }}>
+            <div className="absolute flex items-center justify-center text-slate-300" style={{ left: `${(depth - 1) * 1.5 + 1.5}rem` }}>
+              <CornerDownRight size={16} strokeWidth={2.5} />
+            </div>
+            
+            <div className="w-5 h-5 flex items-center justify-center text-slate-300 z-10">
+              <div className="w-1.5 h-1.5 rounded-full bg-slate-300"></div>
+            </div>
+            <div className="font-medium text-slate-600 flex items-center gap-2">
+              <span className="text-xs bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-bold">Paso {index + 1}</span>
+              {step.label}
+            </div>
+          </div>
+        </td>
+        
+        <td className="px-2 py-2 text-center border-l border-slate-200 w-16 relative">
+          <div className="flex justify-center">
+            {step.assignedTo === 'DYNAMIC' ? (
+              <div className="w-8 h-8 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center text-sm font-bold shadow-sm border border-dashed border-orange-300" title="Asignación Dinámica">
+                ?
+              </div>
+            ) : assignee ? (
+              <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-sm font-bold shadow-sm overflow-hidden relative" title={assignee.name}>
+                {assignee.photoURL ? (
+                  <Image src={assignee.photoURL} alt={assignee.name} fill className="object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  assignee.name.charAt(0).toUpperCase()
+                )}
+              </div>
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center text-sm border border-dashed border-slate-300" title="Sin asignar">
+                <Plus size={14} />
+              </div>
+            )}
+          </div>
+        </td>
+
+        <td className="p-0 border-l border-white w-32 relative">
+          <div className={`absolute inset-0 flex items-center justify-center ${getWorkflowStepStatusColor(step.status || 'not_started')} transition-colors`}>
+            <span className="font-medium text-sm text-white">{getWorkflowStepStatusLabel(step.status || 'not_started')}</span>
+          </div>
+        </td>
+
+        <td className="px-4 py-2 border-l border-slate-200 w-48">
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-5 bg-slate-200 rounded-full overflow-hidden relative">
+              <div 
+                className={`h-full rounded-full transition-all duration-500 ${step.status === 'listo' ? 'bg-emerald-500' : 'bg-blue-500'}`}
+                style={{ width: `${step.status === 'listo' ? 100 : step.status === 'en_curso' || step.status === 'reproceso' ? 50 : 0}%` }}
+              />
+            </div>
+            <span className="text-xs font-medium text-slate-500 w-8 text-right">
+              {step.status === 'listo' ? '100%' : step.status === 'en_curso' || step.status === 'reproceso' ? '50%' : '0%'}
+            </span>
+          </div>
+        </td>
+
+        <td className="px-4 py-2 text-center border-l border-slate-200 w-28 text-sm text-slate-500 italic">
+          -
+        </td>
+
+        <td className="px-4 py-2 text-center border-l border-slate-200 w-32 relative">
+          <div className="flex items-center justify-center gap-0.5 opacity-50">
+            {[1, 2, 3, 4, 5].map(star => (
+              <span key={star} className={`text-lg leading-none text-slate-200`}>
+                ★
+              </span>
+            ))}
+          </div>
+        </td>
+
+        <td className="px-2 py-2 text-center border-l border-slate-200 w-16">
+          {/* No actions for workflow steps in this view */}
+        </td>
+      </motion.tr>
+    );
+  };
+
   const rootTasks = tasks.filter(t => !t.parentTaskId).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
 
   if (tasks.length === 0) {
@@ -100,7 +215,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
     }
 
     const subtasks = tasks.filter(t => t.parentTaskId === task.id).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
-    const hasSubtasks = subtasks.length > 0;
+    const hasSubtasks = subtasks.length > 0 || (task.type === 'workflow' && task.workflowSteps && task.workflowSteps.length > 0);
     const isExpanded = expandedTasks[task.id] !== false;
 
     return (
@@ -249,7 +364,8 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
           </td>
         </motion.tr>
         <AnimatePresence>
-          {isExpanded && subtasks.map((subtask, index) => renderTaskRow(subtask, depth + 1, index === subtasks.length - 1))}
+          {isExpanded && subtasks.map((subtask, index) => renderTaskRow(subtask, depth + 1, index === subtasks.length - 1 && (!task.workflowSteps || task.workflowSteps.length === 0)))}
+          {isExpanded && task.type === 'workflow' && task.workflowSteps && task.workflowSteps.map((step: any, index: number) => renderWorkflowStepRow(step, task, depth + 1, index, index === task.workflowSteps.length - 1))}
         </AnimatePresence>
       </React.Fragment>
     );

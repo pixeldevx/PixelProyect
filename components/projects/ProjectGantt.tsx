@@ -344,7 +344,14 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             </div>
 
                             <div className="w-24 px-2 flex justify-center">
-                              {assignedMember ? (
+                              {task.assignedTo === 'DYNAMIC' ? (
+                                <div className="flex items-center gap-1.5">
+                                  <div className="w-7 h-7 rounded-full bg-orange-50 border border-orange-200 flex items-center justify-center shadow-sm" title="Asignación Dinámica">
+                                    <span className="text-[10px] font-bold text-orange-600">?</span>
+                                  </div>
+                                  <span className="text-[10px] text-slate-500 hidden lg:block truncate max-w-[50px]">Dinámica</span>
+                                </div>
+                              ) : assignedMember ? (
                                 <div className="flex items-center gap-1.5">
                                   <div className="w-7 h-7 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center overflow-hidden shadow-sm" title={assignedMember.name}>
                                     {assignedMember.photoURL ? (

@@ -78,7 +78,7 @@ export const GanttOverview: React.FC = () => {
   const [newTaskEnd, setNewTaskEnd] = useState('');
   const [newTaskAssignedTo, setNewTaskAssignedTo] = useState('');
   const [newTaskType, setNewTaskType] = useState<'quantitative' | 'state' | 'workflow'>('workflow');
-  const [workflowSteps, setWorkflowSteps] = useState<{assignedTo: string, label: string}[]>([]);
+  const [workflowSteps, setWorkflowSteps] = useState<{assignedTo: string, label: string, assignsNextStep?: boolean}[]>([]);
   const [newTaskIndicator, setNewTaskIndicator] = useState('');
   const [newTaskIndicatorValue, setNewTaskIndicatorValue] = useState(0);
   const [newTaskStatus, setNewTaskStatus] = useState('todo');
@@ -587,46 +587,71 @@ export const GanttOverview: React.FC = () => {
                     ) : (
                       <div className="space-y-3">
                         {workflowSteps.map((step, idx) => (
-                          <div key={idx} className="flex items-center gap-2 bg-white p-2 rounded-lg border border-indigo-100 shadow-sm">
-                            <div className="w-6 h-6 rounded-full bg-indigo-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">
-                              {idx + 1}
+                          <div key={idx} className="flex flex-col gap-2 bg-white p-2 rounded-lg border border-indigo-100 shadow-sm">
+                            <div className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-full bg-indigo-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">
+                                {idx + 1}
+                              </div>
+                              <input 
+                                type="text"
+                                placeholder="Nombre del paso"
+                                value={step.label}
+                                onChange={(e) => {
+                                  const newSteps = [...workflowSteps];
+                                  newSteps[idx].label = e.target.value;
+                                  setWorkflowSteps(newSteps);
+                                }}
+                                className="flex-1 h-8 px-2 text-xs border-none focus:ring-0"
+                                required
+                              />
+                              <select
+                                value={step.assignedTo}
+                                onChange={(e) => {
+                                  const newSteps = [...workflowSteps];
+                                  newSteps[idx].assignedTo = e.target.value;
+                                  setWorkflowSteps(newSteps);
+                                }}
+                                className="w-32 h-8 px-2 text-[10px] border-none focus:ring-0 bg-slate-50 rounded"
+                                required
+                              >
+                                <option value="">Asignar a...</option>
+                                <option value="DYNAMIC">Asignación dinámica</option>
+                                {projectData?.assignedTeamMembers?.map((memberId: string) => {
+                                  const member = teamMembers.find(m => m.id === memberId);
+                                  if (!member) return null;
+                                  return <option key={member.id} value={member.id}>{member.name}</option>;
+                                })}
+                              </select>
+                              <button 
+                                type="button"
+                                onClick={() => setWorkflowSteps(workflowSteps.filter((_, i) => i !== idx))}
+                                className="p-1 text-slate-300 hover:text-red-500"
+                              >
+                                <X size={14} />
+                              </button>
                             </div>
-                            <input 
-                              type="text"
-                              placeholder="Nombre del paso (ej. Aprobación Técnica)"
-                              value={step.label}
-                              onChange={(e) => {
-                                const newSteps = [...workflowSteps];
-                                newSteps[idx].label = e.target.value;
-                                setWorkflowSteps(newSteps);
-                              }}
-                              className="flex-1 h-8 px-2 text-xs border-none focus:ring-0"
-                              required
-                            />
-                            <select
-                              value={step.assignedTo}
-                              onChange={(e) => {
-                                const newSteps = [...workflowSteps];
-                                newSteps[idx].assignedTo = e.target.value;
-                                setWorkflowSteps(newSteps);
-                              }}
-                              className="w-32 h-8 px-2 text-[10px] border-none focus:ring-0 bg-slate-50 rounded"
-                              required
-                            >
-                              <option value="">Asignar a...</option>
-                              {projectData?.assignedTeamMembers?.map((memberId: string) => {
-                                const member = teamMembers.find(m => m.id === memberId);
-                                if (!member) return null;
-                                return <option key={member.id} value={member.id}>{member.name}</option>;
-                              })}
-                            </select>
-                            <button 
-                              type="button"
-                              onClick={() => setWorkflowSteps(workflowSteps.filter((_, i) => i !== idx))}
-                              className="p-1 text-slate-300 hover:text-red-500"
-                            >
-                              <X size={14} />
-                            </button>
+                            {idx < workflowSteps.length - 1 && (
+                              <div className="flex items-center gap-2 pl-8">
+                                <label className="flex items-center gap-2 text-[10px] text-slate-500 cursor-pointer">
+                                  <input 
+                                    type="checkbox"
+                                    checked={step.assignsNextStep || false}
+                                    onChange={(e) => {
+                                      const newSteps = [...workflowSteps];
+                                      newSteps[idx].assignsNextStep = e.target.checked;
+                                      if (e.target.checked) {
+                                        newSteps[idx + 1].assignedTo = 'DYNAMIC';
+                                      } else if (newSteps[idx + 1].assignedTo === 'DYNAMIC') {
+                                        newSteps[idx + 1].assignedTo = '';
+                                      }
+                                      setWorkflowSteps(newSteps);
+                                    }}
+                                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-3 h-3"
+                                  />
+                                  Este paso decide el responsable del siguiente paso
+                                </label>
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
