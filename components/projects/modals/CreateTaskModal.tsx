@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
-import { X, ListTodo, Plus, ClipboardList, Loader2 } from 'lucide-react';
+import { X, ListTodo, Plus, ClipboardList, Loader2, Save, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { doc, collection, addDoc, writeBatch, serverTimestamp, increment } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { toast } from 'sonner';
 import { WorkflowStepFormBuilderModal, CustomForm } from '@/components/projects/WorkflowStepFormBuilderModal';
+import { SaveWorkflowTemplateModal } from './SaveWorkflowTemplateModal';
+import { LoadWorkflowTemplateModal } from './LoadWorkflowTemplateModal';
 
 interface CreateTaskModalProps {
   isOpen: boolean;
@@ -41,6 +43,8 @@ export function CreateTaskModal({
   const [workflowSteps, setWorkflowSteps] = useState<{assignedTo: string, label: string, form?: CustomForm, rateCardId?: string, unitsToAdd?: number}[]>([]);
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
   const [currentStepIndexForForm, setCurrentStepIndexForForm] = useState<number | null>(null);
+  const [isSaveTemplateOpen, setIsSaveTemplateOpen] = useState(false);
+  const [isLoadTemplateOpen, setIsLoadTemplateOpen] = useState(false);
   const [workflowCycles, setWorkflowCycles] = useState<number>(1);
   const [newTaskRequiresDoc, setNewTaskRequiresDoc] = useState(false);
   const [newTaskIsRateCard, setNewTaskIsRateCard] = useState(false);
@@ -323,15 +327,37 @@ export function CreateTaskModal({
 
                 <div className="flex items-center justify-between border-t border-indigo-100 pt-4">
                   <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">Pasos del Workflow</label>
-                  <Button 
-                    type="button" 
-                    variant="ghost" 
-                    size="sm" 
-                    onClick={() => setWorkflowSteps([...workflowSteps, { assignedTo: '', label: '', unitsToAdd: 1 }])}
-                    className="h-7 text-[10px] font-bold text-indigo-600 hover:bg-indigo-100"
-                  >
-                    <Plus size={12} className="mr-1" /> AGREGAR PASO
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      type="button" 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={() => setIsLoadTemplateOpen(true)}
+                      className="h-7 text-[10px] font-bold text-emerald-600 border-emerald-200 hover:bg-emerald-50"
+                    >
+                      <Download size={12} className="mr-1" /> PLANTILLA
+                    </Button>
+                    {workflowSteps.length > 0 && (
+                      <Button 
+                        type="button" 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setIsSaveTemplateOpen(true)}
+                        className="h-7 text-[10px] font-bold text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+                      >
+                        <Save size={12} className="mr-1" /> GUARDAR
+                      </Button>
+                    )}
+                    <Button 
+                      type="button" 
+                      variant="ghost" 
+                      size="sm" 
+                      onClick={() => setWorkflowSteps([...workflowSteps, { assignedTo: '', label: '', unitsToAdd: 1 }])}
+                      className="h-7 text-[10px] font-bold text-indigo-600 hover:bg-indigo-100"
+                    >
+                      <Plus size={12} className="mr-1" /> AGREGAR PASO
+                    </Button>
+                  </div>
                 </div>
                 
                 {workflowSteps.length === 0 ? (
@@ -547,6 +573,19 @@ export function CreateTaskModal({
           }}
         />
       )}
+
+      <SaveWorkflowTemplateModal 
+        isOpen={isSaveTemplateOpen}
+        onClose={() => setIsSaveTemplateOpen(false)}
+        workflowSteps={workflowSteps}
+        user={user}
+      />
+
+      <LoadWorkflowTemplateModal 
+        isOpen={isLoadTemplateOpen}
+        onClose={() => setIsLoadTemplateOpen(false)}
+        onSelectTemplate={(steps) => setWorkflowSteps(steps)}
+      />
     </div>
   );
 }
