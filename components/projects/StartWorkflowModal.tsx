@@ -75,7 +75,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
       if (updatedSteps.length > 0) {
         updatedSteps[0] = {
           ...updatedSteps[0],
-          status: 'pending',
+          status: 'en_curso',
           startedAt: new Date()
         };
       }

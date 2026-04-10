@@ -67,7 +67,47 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         const subTasks = sortedTasks.filter(t => t.parentTaskId === task.id);
         // Sort subtasks by cycleNumber if available
         subTasks.sort((a, b) => (a.cycleNumber || 0) - (b.cycleNumber || 0));
-        result.push(...subTasks);
+        
+        subTasks.forEach(subTask => {
+          result.push(subTask);
+          // Generate visual sub-tasks for workflow steps
+          if (subTask.type === 'workflow' && subTask.workflowSteps && expandedParents[subTask.id]) {
+            subTask.workflowSteps.forEach((step: any, idx: number) => {
+              result.push({
+                id: `${subTask.id}-step-${idx}`,
+                title: `Paso ${idx + 1}: ${step.label}`,
+                parentTaskId: subTask.id,
+                isWorkflowStep: true,
+                stepIndex: idx,
+                status: step.status || 'not_started',
+                assignedTo: step.assignedTo,
+                startDate: subTask.startDate,
+                endDate: subTask.endDate,
+                progress: step.status === 'listo' ? 100 : (step.status === 'en_curso' || step.status === 'reproceso' ? 50 : 0),
+                type: 'workflow_step',
+                originalTask: subTask
+              });
+            });
+          }
+        });
+      } else if (task.type === 'workflow' && task.workflowSteps && expandedParents[task.id]) {
+        // Generate visual sub-tasks for workflow steps (no cycles)
+        task.workflowSteps.forEach((step: any, idx: number) => {
+          result.push({
+            id: `${task.id}-step-${idx}`,
+            title: `Paso ${idx + 1}: ${step.label}`,
+            parentTaskId: task.id,
+            isWorkflowStep: true,
+            stepIndex: idx,
+            status: step.status || 'not_started',
+            assignedTo: step.assignedTo,
+            startDate: task.startDate,
+            endDate: task.endDate,
+            progress: step.status === 'listo' ? 100 : (step.status === 'en_curso' || step.status === 'reproceso' ? 50 : 0),
+            type: 'workflow_step',
+            originalTask: task
+          });
+        });
       }
     });
     
@@ -139,11 +179,17 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'completed': return 'bg-[#00c875] text-white';
-      case 'in_progress': return 'bg-[#fdab3d] text-white';
-      case 'stuck': return 'bg-[#e2445c] text-white';
+      case 'completed': 
+      case 'listo': return 'bg-[#00c875] text-white';
+      case 'in_progress': 
+      case 'en_curso': return 'bg-[#fdab3d] text-white';
+      case 'stuck': 
+      case 'detenido': return 'bg-[#e2445c] text-white';
+      case 'devuelto': return 'bg-[#ff7575] text-white';
+      case 'reproceso': return 'bg-[#f59e0b] text-white';
       case 'todo':
-      case 'pending': return 'bg-[#c4c4c4] text-white';
+      case 'pending': 
+      case 'not_started': return 'bg-[#c4c4c4] text-white';
       default: return 'bg-[#c4c4c4] text-white';
     }
   };
@@ -155,6 +201,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       case 'stuck': return 'ESTANCADO';
       case 'todo':
       case 'pending': return 'PENDIENTE';
+      case 'en_curso': return 'EN CURSO';
+      case 'listo': return 'LISTO';
+      case 'devuelto': return 'DEVUELTO';
+      case 'reproceso': return 'REPROCESO';
+      case 'detenido': return 'DETENIDO';
+      case 'not_started': return 'NO INICIADO';
       default: return status?.toUpperCase();
     }
   };
@@ -262,8 +314,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               <GripVertical size={14} />
                             </div>
                             
-                            <div className={`flex-1 min-w-0 px-2 flex items-center gap-2 ${isSubTask ? 'pl-6' : ''}`}>
-                              {isParent && (
+                            <div className={`flex-1 min-w-0 px-2 flex items-center gap-2 ${task.isWorkflowStep ? 'pl-10' : isSubTask ? 'pl-6' : ''}`}>
+                              {(isParent || task.type === 'workflow') && !task.isWorkflowStep && (
                                 <button 
                                   onClick={() => toggleParent(task.id)}
                                   className="w-4 h-4 flex items-center justify-center rounded bg-slate-200 text-slate-600 hover:bg-slate-300"
@@ -271,7 +323,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   {isExpanded ? <ChevronLeft className="w-3 h-3 -rotate-90" /> : <ChevronRight className="w-3 h-3" />}
                                 </button>
                               )}
-                              <span className={`text-sm font-medium truncate ${task.status === 'completed' ? 'text-slate-400 line-through' : 'text-slate-700'}`}>
+                              <span className={`text-sm font-medium truncate ${task.status === 'completed' || task.status === 'listo' ? 'text-slate-400 line-through' : 'text-slate-700'}`}>
                                 {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{task.title}
                               </span>
                               {task.isRateCardTask && (
@@ -318,16 +370,40 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             </div>
 
                             <div className="w-28 h-full relative group/status">
-                              <select
-                                value={task.status}
-                                onChange={(e) => onUpdateTaskStatus(task.id, e.target.value, task)}
-                                className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 cursor-pointer text-center focus:outline-none transition-all hover:brightness-105 ${getStatusColor(task.status)}`}
-                              >
-                                <option value="todo" className="bg-white text-slate-700">PENDIENTE</option>
-                                <option value="in_progress" className="bg-white text-slate-700">TRABAJANDO</option>
-                                <option value="stuck" className="bg-white text-slate-700">ESTANCADO</option>
-                                <option value="completed" className="bg-white text-slate-700">LISTO</option>
-                              </select>
+                              {task.isWorkflowStep ? (
+                                <select
+                                  value={task.status}
+                                  onChange={(e) => {
+                                    // Update the specific step status in the parent task
+                                    const newStatus = e.target.value;
+                                    const parentTask = task.originalTask;
+                                    const updatedSteps = [...parentTask.workflowSteps];
+                                    updatedSteps[task.stepIndex].status = newStatus;
+                                    onUpdateTaskStatus(parentTask.id, parentTask.status, { ...parentTask, workflowSteps: updatedSteps });
+                                  }}
+                                  className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 cursor-pointer text-center focus:outline-none transition-all hover:brightness-105 ${getStatusColor(task.status)}`}
+                                >
+                                  <option value="not_started" className="bg-white text-slate-700" disabled>NO INICIADO</option>
+                                  <option value="en_curso" className="bg-white text-slate-700" disabled>EN CURSO</option>
+                                  <option value="listo" className="bg-white text-slate-700" disabled>LISTO</option>
+                                  <option value="devuelto" className="bg-white text-slate-700" disabled>DEVUELTO</option>
+                                  <option value="reproceso" className="bg-white text-slate-700" disabled>REPROCESO</option>
+                                  <option value="detenido" className="bg-white text-slate-700">DETENIDO</option>
+                                  {/* Allow changing back to en_curso if it was manually stopped */}
+                                  {task.status === 'detenido' && <option value="en_curso" className="bg-white text-slate-700">REANUDAR (EN CURSO)</option>}
+                                </select>
+                              ) : (
+                                <select
+                                  value={task.status}
+                                  onChange={(e) => onUpdateTaskStatus(task.id, e.target.value, task)}
+                                  className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 cursor-pointer text-center focus:outline-none transition-all hover:brightness-105 ${getStatusColor(task.status)}`}
+                                >
+                                  <option value="todo" className="bg-white text-slate-700">PENDIENTE</option>
+                                  <option value="in_progress" className="bg-white text-slate-700">TRABAJANDO</option>
+                                  <option value="stuck" className="bg-white text-slate-700">ESTANCADO</option>
+                                  <option value="completed" className="bg-white text-slate-700">LISTO</option>
+                                </select>
+                              )}
                               <div className="absolute inset-0 pointer-events-none opacity-0 group-hover/status:opacity-100 bg-black/5 transition-opacity" />
                             </div>
 

@@ -246,7 +246,7 @@ export default function ProjectDetailsPage() {
             // Also update all steps if completing/reverting the whole task
             if (task.workflowSteps) {
               const updatedSteps = task.workflowSteps.map((step: any) => {
-                const stepWasApproved = step.status === 'approved';
+                const stepWasApproved = step.status === 'listo';
                 const stepIsApproved = isCompleted;
                 
                 if (stepWasApproved !== stepIsApproved && step.rateCardId) {
@@ -260,7 +260,7 @@ export default function ProjectDetailsPage() {
                   }
                   batch.update(stepRcRef, stepUpdateData);
                 }
-                return { ...step, status: stepIsApproved ? 'approved' : 'pending' };
+                return { ...step, status: stepIsApproved ? 'listo' : 'not_started' };
               });
               
               batch.update(taskRef, { workflowSteps: updatedSteps });
@@ -413,7 +413,7 @@ export default function ProjectDetailsPage() {
             // Also update all steps if completing/reverting the whole task
             if (task.workflowSteps) {
               const updatedSteps = task.workflowSteps.map((step: any) => {
-                const stepWasApproved = step.status === 'approved';
+                const stepWasApproved = step.status === 'listo';
                 const stepIsApproved = isCompleted;
                 
                 if (stepWasApproved !== stepIsApproved && step.rateCardId) {
@@ -427,7 +427,7 @@ export default function ProjectDetailsPage() {
                   }
                   batch.update(stepRcRef, stepUpdateData);
                 }
-                return { ...step, status: stepIsApproved ? 'approved' : 'pending' };
+                return { ...step, status: stepIsApproved ? 'listo' : 'not_started' };
               });
               
               batch.update(taskRef, { workflowSteps: updatedSteps });

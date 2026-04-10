@@ -333,7 +333,7 @@ export const GanttOverview: React.FC = () => {
       if (newTaskType === 'workflow') {
         taskData.workflowSteps = workflowSteps.map(step => ({
           ...step,
-          status: 'pending'
+          status: 'not_started'
         }));
         taskData.currentStepIndex = 0;
         taskData.workflowHistory = [];

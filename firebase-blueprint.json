@@ -132,7 +132,7 @@
             "properties": {
               "assignedTo": { "type": "string" },
               "label": { "type": "string" },
-              "status": { "type": "string", "enum": ["pending", "approved", "returned"] },
+              "status": { "type": "string", "enum": ["not_started", "en_curso", "listo", "reproceso", "devuelto", "detenido"] },
               "rateCardId": { "type": "string", "description": "Associated rate card for this step" },
               "unitsToAdd": { "type": "number", "description": "Units to add when step is approved" }
             }

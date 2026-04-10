@@ -85,7 +85,7 @@ export default function WorkflowTray() {
                   .filter((task: any) => {
                     const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
                     const isAssigned = currentStep?.assignedTo === mId || currentStep?.assignedTo === user.uid;
-                    const isPending = currentStep?.status === 'pending';
+                    const isPending = currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido';
                     const hasInteracted = task.workflowHistory?.some((h: any) => h.userId === user.uid);
                     
                     return (isAssigned && isPending) || hasInteracted;
@@ -187,7 +187,7 @@ export default function WorkflowTray() {
       }
 
       if (action === 'approve') {
-        steps[currentIndex].status = 'approved';
+        steps[currentIndex].status = 'listo';
         // Save form data to the step
         if (Object.keys(formData).length > 0) {
           steps[currentIndex].formData = formData;
@@ -195,7 +195,7 @@ export default function WorkflowTray() {
 
         if (currentIndex < steps.length - 1) {
           nextIndex = currentIndex + 1;
-          steps[nextIndex].status = 'pending';
+          steps[nextIndex].status = 'en_curso';
           newStatus = 'in_progress';
         } else {
           // Last step approved
@@ -227,11 +227,11 @@ export default function WorkflowTray() {
         }
       } else {
         // Return
-        steps[currentIndex].status = 'returned';
+        steps[currentIndex].status = 'devuelto';
         
         if (currentIndex > 0) {
           nextIndex = currentIndex - 1;
-          steps[nextIndex].status = 'pending';
+          steps[nextIndex].status = 'reproceso';
         }
       }
 
@@ -298,7 +298,8 @@ export default function WorkflowTray() {
     
     // We need to re-evaluate isPending for the current user
     // Let's use a more robust check
-    const isPendingForMe = (currentStep?.assignedTo === user?.uid || currentStep?.assignedTo === memberId) && currentStep?.status === 'pending';
+    const isPendingForMe = (currentStep?.assignedTo === user?.uid || currentStep?.assignedTo === memberId) && 
+                           (currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido');
     const hasInteracted = task.workflowHistory?.some((h: any) => h.userId === user?.uid);
 
     if (activeTab === 'pending') {
@@ -366,15 +367,15 @@ export default function WorkflowTray() {
       ) : (
         <div className="grid gap-4">
           {filteredWorkflows.map((task) => {
-            const isReturned = task.workflowSteps[task.currentStepIndex]?.status === 'returned';
+            const isReturned = task.workflowSteps[task.currentStepIndex]?.status === 'devuelto' || task.workflowSteps[task.currentStepIndex]?.status === 'returned';
             return (
             <div key={task.id} className={`bg-white rounded-xl border shadow-sm overflow-hidden hover:shadow-md transition-shadow ${isReturned ? 'border-red-300' : 'border-slate-200'}`}>
               <div className="p-5">
                 <div className="flex items-start justify-between mb-4">
                   <div>
                     <div className="flex items-center gap-2 mb-1">
-                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${isReturned ? 'bg-red-50 text-red-600' : 'bg-indigo-50 text-indigo-600'}`}>
-                        Workflow {isReturned && '- Devuelto'}
+                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${isReturned || task.workflowSteps[task.currentStepIndex]?.status === 'detenido' ? 'bg-red-50 text-red-600' : 'bg-indigo-50 text-indigo-600'}`}>
+                        Workflow {isReturned && '- Devuelto'} {task.workflowSteps[task.currentStepIndex]?.status === 'detenido' && '- Detenido'}
                       </span>
                       <span className="text-xs text-slate-400">
                         Paso {task.currentStepIndex + 1} de {task.workflowSteps.length}
@@ -414,6 +415,9 @@ export default function WorkflowTray() {
                         if (index === task.currentStepIndex) {
                           stepStatus = isReturned ? 'returned' : 'current'; // red or indigo
                         }
+                        if (task.workflowSteps[index].status === 'detenido') {
+                          stepStatus = 'stopped';
+                        }
 
                         let bgColor = 'bg-slate-200';
                         let borderColor = 'border-slate-200';
@@ -431,6 +435,10 @@ export default function WorkflowTray() {
                           bgColor = 'bg-white';
                           borderColor = 'border-red-500';
                           textColor = 'text-red-600';
+                        } else if (stepStatus === 'stopped') {
+                          bgColor = 'bg-white';
+                          borderColor = 'border-red-500';
+                          textColor = 'text-red-600';
                         }
 
                         return (
@@ -440,6 +448,8 @@ export default function WorkflowTray() {
                                 <CheckCircle2 className="w-3 h-3 text-emerald-500" />
                               ) : stepStatus === 'returned' ? (
                                 <XCircle className="w-3 h-3 text-red-500" />
+                              ) : stepStatus === 'stopped' ? (
+                                <AlertCircle className="w-3 h-3 text-red-500" />
                               ) : (
                                 <span className={`text-[10px] font-bold ${stepStatus === 'current' ? 'text-indigo-600' : 'text-slate-400'}`}>
                                   {index + 1}
@@ -461,6 +471,12 @@ export default function WorkflowTray() {
                       <p>Esta tarea ha sido devuelta. Por favor revise las observaciones en el historial.</p>
                     </div>
                   )}
+                  {task.workflowSteps[task.currentStepIndex]?.status === 'detenido' && (
+                    <div className="mt-3 flex items-start gap-2 text-sm text-red-600 bg-red-100/50 p-3 rounded-md">
+                      <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                      <p>Este workflow ha sido detenido manualmente. Debe reanudarse desde el diagrama de Gantt para poder continuar.</p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between">
@@ -471,7 +487,7 @@ export default function WorkflowTray() {
                           variant="outline"
                           size="sm"
                           onClick={() => openActionModal(task, 'return')}
-                          disabled={processingId === task.id || task.currentStepIndex === 0}
+                          disabled={processingId === task.id || task.currentStepIndex === 0 || task.workflowSteps[task.currentStepIndex]?.status === 'detenido'}
                           className="text-red-600 border-red-100 hover:bg-red-50"
                         >
                           <ArrowLeft className="w-4 h-4 mr-2" />
@@ -480,7 +496,7 @@ export default function WorkflowTray() {
                         <Button
                           size="sm"
                           onClick={() => openActionModal(task, 'approve')}
-                          disabled={processingId === task.id}
+                          disabled={processingId === task.id || task.workflowSteps[task.currentStepIndex]?.status === 'detenido'}
                           className="bg-emerald-600 hover:bg-emerald-700 text-white"
                         >
                           {task.currentStepIndex === task.workflowSteps.length - 1 ? (

@@ -132,7 +132,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       let newStatus = task.status;
       
       if (task.type === 'workflow' && workflowSteps.length > 0) {
-        const approvedCount = workflowSteps.filter(s => s.status === 'approved').length;
+        const approvedCount = workflowSteps.filter(s => s.status === 'listo').length;
         newProgress = Math.round((approvedCount / workflowSteps.length) * 100);
         
         if (newProgress === 100) {
@@ -149,8 +149,8 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       const oldSteps = task.workflowSteps || [];
       workflowSteps.forEach((step, idx) => {
         const oldStep = oldSteps[idx];
-        const wasApproved = oldStep?.status === 'approved';
-        const isApproved = step.status === 'approved';
+        const wasApproved = oldStep?.status === 'listo';
+        const isApproved = step.status === 'listo';
         
         if (wasApproved !== isApproved && step.rateCardId) {
           const rcRef = doc(db, 'projects', projectId, 'rateCards', step.rateCardId);
@@ -169,8 +169,8 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
 
       // 2. Check task-level rate card changes (when whole workflow completes)
       if (task.type === 'workflow' && task.isRateCardTask && task.rateCardId) {
-        const wasAllApproved = oldSteps.length > 0 && oldSteps.every((s: any) => s.status === 'approved');
-        const isAllApproved = workflowSteps.length > 0 && workflowSteps.every((s: any) => s.status === 'approved');
+        const wasAllApproved = oldSteps.length > 0 && oldSteps.every((s: any) => s.status === 'listo');
+        const isAllApproved = workflowSteps.length > 0 && workflowSteps.every((s: any) => s.status === 'listo');
         
         if (wasAllApproved !== isAllApproved) {
           const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
@@ -218,10 +218,10 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       return;
     }
     const newSteps = [...workflowSteps];
-    const currentStatus = newSteps[index].status || 'pending';
+    const currentStatus = newSteps[index].status || 'not_started';
     newSteps[index] = {
       ...newSteps[index],
-      status: currentStatus === 'approved' ? 'pending' : 'approved'
+      status: currentStatus === 'listo' ? 'not_started' : 'listo'
     };
     setWorkflowSteps(newSteps);
   };
@@ -251,7 +251,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
               <h3 className="text-sm font-semibold text-slate-800 mb-4 uppercase tracking-wider">Pasos del Flujo de Trabajo</h3>
               <div className="space-y-2">
                 {workflowSteps.map((step, index) => {
-                  const isApproved = step.status === 'approved';
+                  const isApproved = step.status === 'listo';
                   return (
                     <div 
                       key={index}
