@@ -188,15 +188,6 @@ service cloud.firestore {
              data.createdBy is string;
     }
 
-    function isValidWorkflowTemplate(data) {
-      return hasOnlyAllowedFields(['name', 'description', 'steps', 'createdAt', 'createdBy']) &&
-             data.name is string && data.name.size() > 0 &&
-             (!('description' in data) || data.description is string) &&
-             data.steps is list &&
-             data.createdAt is timestamp &&
-             data.createdBy is string;
-    }
-
     // ===============================================================
     // Rules
     // ===============================================================
@@ -205,13 +196,6 @@ service cloud.firestore {
       allow create: if isAuthenticated() && isValidAlertRule(request.resource.data);
       allow update: if isAuthenticated() && isValidAlertRule(request.resource.data);
       allow delete: if isAuthenticated();
-    }
-
-    match /workflow_templates/{templateId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidWorkflowTemplate(request.resource.data);
-      allow update: if isAuthenticated() && isValidWorkflowTemplate(request.resource.data);
-      allow delete: if isAdmin() || request.auth.uid == resource.data.createdBy;
     }
 
     match /alerts/{alertId} {
