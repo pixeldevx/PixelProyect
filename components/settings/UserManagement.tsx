@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Plus, Edit2, Shield, User as UserIcon, AlertCircle } from 'lucide-react';
-import { collection, query, onSnapshot, doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, onSnapshot, doc, updateDoc, setDoc, serverTimestamp, getDocs, where } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { toast } from 'sonner';
 import { uploadProfilePicture } from '@/lib/storage-utils';
@@ -114,10 +114,25 @@ export function UserManagement() {
 
         await updateDoc(doc(db, 'users', editingUser.id), {
           role: userRole,
-          ...(userName && { displayName: userName }),
+          email: normalizedEmail,
+          displayName: userName || normalizedEmail.split('@')[0],
           ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL })
         });
-        toast.success("Rol de usuario actualizado exitosamente.");
+
+        // Also update team_members collection if the user exists there
+        if (editingUser.email) {
+          const tmQuery = query(collection(db, 'team_members'), where('email', '==', editingUser.email));
+          const tmSnapshot = await getDocs(tmQuery);
+          tmSnapshot.forEach(async (tmDoc) => {
+            await updateDoc(doc(db, 'team_members', tmDoc.id), {
+              email: normalizedEmail,
+              name: userName || normalizedEmail.split('@')[0],
+              ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL })
+            });
+          });
+        }
+
+        toast.success("Usuario actualizado exitosamente.");
       } else {
         const selectedProjectRole = projectRoles.find(r => r.id === projectRoleId);
         
@@ -272,20 +287,18 @@ export function UserManagement() {
                   <p className="text-xs text-slate-500">Foto de perfil (opcional)</p>
                 </div>
 
-                {!editingUser && (
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Nombre (Opcional)
-                    </label>
-                    <input
-                      type="text"
-                      value={userName}
-                      onChange={(e) => setUserName(e.target.value)}
-                      placeholder="Ej: Juan Pérez"
-                      className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                  </div>
-                )}
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Nombre (Opcional)
+                  </label>
+                  <input
+                    type="text"
+                    value={userName}
+                    onChange={(e) => setUserName(e.target.value)}
+                    placeholder="Ej: Juan Pérez"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
                 
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -296,9 +309,8 @@ export function UserManagement() {
                     required
                     value={userEmail}
                     onChange={(e) => setUserEmail(e.target.value)}
-                    disabled={!!editingUser}
                     placeholder="correo@ejemplo.com"
-                    className={`w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 ${editingUser ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
                 
