@@ -490,7 +490,7 @@ export function CreateTaskModal({
                             value={step.rateCardId || ''}
                             onChange={(e) => {
                               const newSteps = [...workflowSteps];
-                              newSteps[idx].rateCardId = e.target.value || null;
+                              newSteps[idx].rateCardId = e.target.value || undefined;
                               setWorkflowSteps(newSteps);
                             }}
                             className="flex-1 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
