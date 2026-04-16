@@ -184,10 +184,19 @@ export function CreateTaskModal({
       }
 
       if (newTaskType === 'workflow') {
-        taskData.workflowSteps = workflowSteps.map(step => ({
-          ...step,
-          status: 'not_started'
-        }));
+        taskData.workflowSteps = workflowSteps.map(step => {
+          const cleanStep: any = {
+            ...step,
+            status: 'not_started'
+          };
+          // Firestore doesn't support undefined values
+          Object.keys(cleanStep).forEach(key => {
+            if (cleanStep[key] === undefined) {
+              cleanStep[key] = null;
+            }
+          });
+          return cleanStep;
+        });
         taskData.currentStepIndex = 0;
         taskData.workflowHistory = [];
         taskData.progress = 0;
@@ -481,7 +490,7 @@ export function CreateTaskModal({
                             value={step.rateCardId || ''}
                             onChange={(e) => {
                               const newSteps = [...workflowSteps];
-                              newSteps[idx].rateCardId = e.target.value || undefined;
+                              newSteps[idx].rateCardId = e.target.value || null;
                               setWorkflowSteps(newSteps);
                             }}
                             className="flex-1 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
