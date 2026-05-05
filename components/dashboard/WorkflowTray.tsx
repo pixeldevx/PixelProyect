@@ -22,6 +22,7 @@ export default function WorkflowTray() {
   const [memberId, setMemberId] = useState<string | null>(null);
   
   const [actionModal, setActionModal] = useState<{ isOpen: boolean, task: any, type: 'approve' | 'return' | 'stop' | 'resume' }>({ isOpen: false, task: null, type: 'approve' });
+  const [overrideUnits, setOverrideUnits] = useState<number | ''>('');
   const [actionComment, setActionComment] = useState('');
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [nextStepAssignee, setNextStepAssignee] = useState<string>('');
@@ -163,12 +164,12 @@ export default function WorkflowTray() {
       let newStatus = task.status;
       let progress = task.progress || 0;
 
-      const hasBeenActedUpon = task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex);
+      const hasBeenActedUpon = task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex && (h.action === 'approve' || h.action === 'return'));
 
       // Rate Card Update for the current step (whether approved or returned)
-      if (currentStep.rateCardId) {
+      if (currentStep.rateCardId && (action === 'approve' || action === 'return')) {
         const rcRef = doc(db, 'projects', task.projectId, 'rateCards', currentStep.rateCardId);
-        const units = currentStep.unitsToAdd || 1;
+        const units = (currentStep.autoAddUnits === false && overrideUnits !== '') ? Number(overrideUnits) : (currentStep.unitsToAdd || 1);
         const assignedUser = currentStep.assignedTo || user?.uid;
         
         const updateData: any = {};
@@ -293,6 +294,8 @@ export default function WorkflowTray() {
     setNextStepAssignee('');
     
     const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
+    setOverrideUnits(currentStep?.unitsToAdd || 1);
+
     if (type === 'approve' && currentStep?.assignsNextStep) {
       try {
         const { getDoc } = await import('firebase/firestore');
@@ -734,6 +737,25 @@ export default function WorkflowTray() {
                 </div>
               )}
 
+              {actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && 
+               actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && (
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Unidades a sumar para este paso <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={overrideUnits}
+                    onChange={(e) => setOverrideUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    required
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">Este paso requiere confirmación manual de las unidades a sumar al Rate Card.</p>
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
                   Observaciones <span className="text-red-500">*</span>
@@ -757,7 +779,7 @@ export default function WorkflowTray() {
               </Button>
               <Button
                 onClick={confirmAction}
-                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee)}
+                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || (actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && overrideUnits === '')}
                 className={
                   actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 
                   actionModal.type === 'return' ? 'bg-red-600 hover:bg-red-700 text-white' :

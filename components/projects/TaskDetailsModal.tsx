@@ -1,8 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import { X, Save, CheckCircle2, Circle } from 'lucide-react';
-import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
-import { toast } from 'sonner';
+import React, { useState, useEffect } from "react";
+import { X, Save, CheckCircle2, Circle } from "lucide-react";
+import {
+  doc,
+  updateDoc,
+  serverTimestamp,
+  addDoc,
+  collection,
+  writeBatch,
+  increment,
+} from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import { toast } from "sonner";
 
 interface TaskDetailsModalProps {
   isOpen: boolean;
@@ -15,17 +23,21 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   isOpen,
   onClose,
   task,
-  projectId
+  projectId,
 }) => {
-  const [documentation, setDocumentation] = useState('');
+  const [documentation, setDocumentation] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [workflowSteps, setWorkflowSteps] = useState<any[]>([]);
+  const [stepUnitPrompt, setStepUnitPrompt] = useState<{
+    index: number;
+    units: number;
+  } | null>(null);
   const [additionalCycles, setAdditionalCycles] = useState(1);
   const [isAddingCycles, setIsAddingCycles] = useState(false);
 
   useEffect(() => {
     if (task) {
-      setDocumentation(task.documentation || '');
+      setDocumentation(task.documentation || "");
       setWorkflowSteps(task.workflowSteps || []);
       setAdditionalCycles(1);
     }
@@ -38,11 +50,11 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     setIsAddingCycles(true);
     try {
       const batch = writeBatch(db);
-      const parentRef = doc(db, 'projects', projectId, 'tasks', task.id);
-      
+      const parentRef = doc(db, "projects", projectId, "tasks", task.id);
+
       let currentTotalCycles = task.totalCycles || 1;
       const newTotalCycles = currentTotalCycles + additionalCycles;
-      
+
       const { id, ...taskWithoutId } = task;
 
       // If it wasn't a parent task before, we need to convert it and create the first cycle subtask
@@ -51,11 +63,11 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
           isParentTask: true,
           totalCycles: newTotalCycles,
           workflowCycles: newTotalCycles,
-          updatedAt: serverTimestamp()
+          updatedAt: serverTimestamp(),
         });
 
         // Create Ciclo 1 with the current task's progress and status
-        const cycle1Ref = doc(collection(db, 'projects', projectId, 'tasks'));
+        const cycle1Ref = doc(collection(db, "projects", projectId, "tasks"));
         const cycle1Data = {
           ...taskWithoutId,
           title: task.title,
@@ -71,46 +83,49 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         batch.update(parentRef, {
           totalCycles: newTotalCycles,
           workflowCycles: newTotalCycles,
-          updatedAt: serverTimestamp()
+          updatedAt: serverTimestamp(),
         });
       }
 
       // Add new subtasks for the additional cycles
       for (let i = 1; i <= additionalCycles; i++) {
         const cycleNumber = currentTotalCycles + i;
-        const subTaskRef = doc(collection(db, 'projects', projectId, 'tasks'));
-        
+        const subTaskRef = doc(collection(db, "projects", projectId, "tasks"));
+
         const subTaskData = {
           ...taskWithoutId,
-          title: task.title.replace(/ \(Ciclo \d+\)$/, ''),
+          title: task.title.replace(/ \(Ciclo \d+\)$/, ""),
           isParentTask: false,
           parentTaskId: task.id,
           cycleNumber: cycleNumber,
           displayOrder: (task.displayOrder || 0) + cycleNumber,
-          status: 'todo',
+          status: "todo",
           progress: 0,
           currentStepIndex: 0,
           workflowHistory: [],
-          workflowSteps: task.workflowSteps?.map((step: any) => {
-            const { formData, ...cleanStep } = step;
-            return { ...cleanStep, completed: false, status: 'not_started' };
-          }) || [],
+          workflowSteps:
+            task.workflowSteps?.map((step: any) => {
+              const { formData, ...cleanStep } = step;
+              return { ...cleanStep, completed: false, status: "not_started" };
+            }) || [],
           startDocumentId: null,
           linkedDocumentId: null,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         };
-        
+
         batch.set(subTaskRef, subTaskData);
       }
-      
+
       await batch.commit();
-      
+
       // Update parent task status and progress based on the new subtasks
-      const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+      const { updateParentTaskStatus } = await import("@/lib/taskUtils");
       await updateParentTaskStatus(projectId, task.id);
-      
-      toast.success(`Se agregaron ${additionalCycles} repeticiones exitosamente.`);
+
+      toast.success(
+        `Se agregaron ${additionalCycles} repeticiones exitosamente.`,
+      );
       setAdditionalCycles(1);
       onClose();
     } catch (error) {
@@ -125,22 +140,29 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     setIsSaving(true);
     try {
       const batch = writeBatch(db);
-      const taskRef = doc(db, 'projects', projectId, 'tasks', task.id);
-      
+      const taskRef = doc(db, "projects", projectId, "tasks", task.id);
+
       // Calculate progress and status for workflow tasks
       let newProgress = task.progress;
       let newStatus = task.status;
-      
-      if (task.type === 'workflow' && workflowSteps.length > 0) {
-        const approvedCount = workflowSteps.filter(s => s.status === 'listo').length;
+
+      if (task.type === "workflow" && workflowSteps.length > 0) {
+        const approvedCount = workflowSteps.filter(
+          (s) => s.status === "listo",
+        ).length;
         newProgress = Math.round((approvedCount / workflowSteps.length) * 100);
-        
+
         if (newProgress === 100) {
-          newStatus = 'completed';
+          newStatus = "completed";
         } else if (newProgress > 0) {
-          newStatus = 'in_progress';
+          newStatus = "in_progress";
         } else {
-          newStatus = 'todo';
+          // If the task was already in progress or stuck, don't revert to todo
+          if (task.status === "in_progress" || task.status === "stuck") {
+            newStatus = task.status;
+          } else {
+            newStatus = "todo";
+          }
         }
       }
 
@@ -149,40 +171,60 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       const oldSteps = task.workflowSteps || [];
       workflowSteps.forEach((step, idx) => {
         const oldStep = oldSteps[idx];
-        const wasApproved = oldStep?.status === 'listo';
-        const isApproved = step.status === 'listo';
-        
+        const wasApproved = oldStep?.status === "listo";
+        const isApproved = step.status === "listo";
+
         if (wasApproved !== isApproved && step.rateCardId) {
-          const rcRef = doc(db, 'projects', projectId, 'rateCards', step.rateCardId);
+          const rcRef = doc(
+            db,
+            "projects",
+            projectId,
+            "rateCards",
+            step.rateCardId,
+          );
           const units = step.unitsToAdd || 1;
           const updateData: any = {
-            currentValue: increment(isApproved ? units : -units)
+            currentValue: increment(isApproved ? units : -units),
           };
-          
+
           if (step.assignedTo) {
-            updateData[`userStats.${step.assignedTo}`] = increment(isApproved ? units : -units);
+            updateData[`userStats.${step.assignedTo}`] = increment(
+              isApproved ? units : -units,
+            );
           }
-          
+
           batch.update(rcRef, updateData);
         }
       });
 
       // 2. Check task-level rate card changes (when whole workflow completes)
-      if (task.type === 'workflow' && task.isRateCardTask && task.rateCardId) {
-        const wasAllApproved = oldSteps.length > 0 && oldSteps.every((s: any) => s.status === 'listo');
-        const isAllApproved = workflowSteps.length > 0 && workflowSteps.every((s: any) => s.status === 'listo');
-        
+      if (task.type === "workflow" && task.isRateCardTask && task.rateCardId) {
+        const wasAllApproved =
+          oldSteps.length > 0 &&
+          oldSteps.every((s: any) => s.status === "listo");
+        const isAllApproved =
+          workflowSteps.length > 0 &&
+          workflowSteps.every((s: any) => s.status === "listo");
+
         if (wasAllApproved !== isAllApproved) {
-          const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
+          const rcRef = doc(
+            db,
+            "projects",
+            projectId,
+            "rateCards",
+            task.rateCardId,
+          );
           const units = task.unitsToAdd || 1;
           const updateData: any = {
-            currentValue: increment(isAllApproved ? units : -units)
+            currentValue: increment(isAllApproved ? units : -units),
           };
-          
+
           if (task.assignedTo) {
-            updateData[`userStats.${task.assignedTo}`] = increment(isAllApproved ? units : -units);
+            updateData[`userStats.${task.assignedTo}`] = increment(
+              isAllApproved ? units : -units,
+            );
           }
-          
+
           batch.update(rcRef, updateData);
         }
       }
@@ -192,13 +234,13 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         workflowSteps,
         progress: newProgress,
         status: newStatus,
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
       });
 
       await batch.commit();
 
       if (task.parentTaskId) {
-        const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+        const { updateParentTaskStatus } = await import("@/lib/taskUtils");
         await updateParentTaskStatus(projectId, task.parentTaskId);
       }
 
@@ -214,16 +256,41 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
 
   const toggleStep = (index: number) => {
     if (task.isParentTask) {
-      toast.info("No puedes modificar los pasos de una tarea madre. Modifica las subtareas.");
+      toast.info(
+        "No puedes modificar los pasos de una tarea madre. Modifica las subtareas.",
+      );
       return;
     }
     const newSteps = [...workflowSteps];
-    const currentStatus = newSteps[index].status || 'not_started';
+    const currentStatus = newSteps[index].status || "not_started";
+    const step = newSteps[index];
+
+    if (
+      currentStatus !== "listo" &&
+      step.rateCardId &&
+      step.autoAddUnits === false
+    ) {
+      setStepUnitPrompt({ index, units: step.unitsToAdd || 1 });
+      return;
+    }
+
     newSteps[index] = {
       ...newSteps[index],
-      status: currentStatus === 'listo' ? 'not_started' : 'listo'
+      status: currentStatus === "listo" ? "not_started" : "listo",
     };
     setWorkflowSteps(newSteps);
+  };
+
+  const confirmStepUnitToggle = () => {
+    if (!stepUnitPrompt) return;
+    const newSteps = [...workflowSteps];
+    newSteps[stepUnitPrompt.index] = {
+      ...newSteps[stepUnitPrompt.index],
+      unitsToAdd: stepUnitPrompt.units,
+      status: "listo",
+    };
+    setWorkflowSteps(newSteps);
+    setStepUnitPrompt(null);
   };
 
   return (
@@ -232,11 +299,14 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         <div className="flex items-center justify-between p-6 border-b border-slate-100">
           <div>
             <h2 className="text-xl font-bold text-slate-800">
-              {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{task.title}
+              {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ""}
+              {task.title}
             </h2>
-            <p className="text-sm text-slate-500 mt-1">Detalles y Documentación</p>
+            <p className="text-sm text-slate-500 mt-1">
+              Detalles y Documentación
+            </p>
           </div>
-          <button 
+          <button
             onClick={onClose}
             className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
           >
@@ -248,20 +318,24 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
           {/* Workflow Steps */}
           {workflowSteps.length > 0 && (
             <div>
-              <h3 className="text-sm font-semibold text-slate-800 mb-4 uppercase tracking-wider">Pasos del Flujo de Trabajo</h3>
+              <h3 className="text-sm font-semibold text-slate-800 mb-4 uppercase tracking-wider">
+                Pasos del Flujo de Trabajo
+              </h3>
               <div className="space-y-2">
                 {workflowSteps.map((step, index) => {
-                  const isApproved = step.status === 'listo';
+                  const isApproved = step.status === "listo";
                   return (
-                    <div 
+                    <div
                       key={index}
                       onClick={() => toggleStep(index)}
                       className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${
-                        task.isParentTask ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'
+                        task.isParentTask
+                          ? "cursor-not-allowed opacity-70"
+                          : "cursor-pointer"
                       } ${
-                        isApproved 
-                          ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
-                          : 'bg-white border-slate-200 hover:border-indigo-300'
+                        isApproved
+                          ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                          : "bg-white border-slate-200 hover:border-indigo-300"
                       }`}
                     >
                       {isApproved ? (
@@ -270,11 +344,15 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                         <Circle className="w-5 h-5 text-slate-300 shrink-0" />
                       )}
                       <div className="flex-1">
-                        <p className={`font-medium ${isApproved ? 'line-through opacity-70' : 'text-slate-700'}`}>
+                        <p
+                          className={`font-medium ${isApproved ? "line-through opacity-70" : "text-slate-700"}`}
+                        >
                           {step.label}
                         </p>
                         {step.assignedTo && (
-                          <p className="text-xs opacity-70 mt-0.5">Asignado a: {step.assignedTo}</p>
+                          <p className="text-xs opacity-70 mt-0.5">
+                            Asignado a: {step.assignedTo}
+                          </p>
                         )}
                       </div>
                     </div>
@@ -286,7 +364,9 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
 
           {/* Documentation */}
           <div>
-            <h3 className="text-sm font-semibold text-slate-800 mb-4 uppercase tracking-wider">Documentación</h3>
+            <h3 className="text-sm font-semibold text-slate-800 mb-4 uppercase tracking-wider">
+              Documentación
+            </h3>
             <textarea
               value={documentation}
               onChange={(e) => setDocumentation(e.target.value)}
@@ -296,20 +376,27 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
           </div>
 
           {/* Add Cycles for Workflow Tasks */}
-          {(task.isParentTask || (task.type === 'workflow' && !task.parentTaskId)) && (
+          {(task.isParentTask ||
+            (task.type === "workflow" && !task.parentTaskId)) && (
             <div className="pt-6 border-t border-slate-100">
-              <h3 className="text-sm font-semibold text-slate-800 mb-4 uppercase tracking-wider">Agregar Repeticiones (Sub-tareas)</h3>
+              <h3 className="text-sm font-semibold text-slate-800 mb-4 uppercase tracking-wider">
+                Agregar Repeticiones (Sub-tareas)
+              </h3>
               <div className="flex items-center gap-4 bg-indigo-50/50 p-4 rounded-xl border border-indigo-100">
                 <div className="flex-1">
                   <p className="text-sm text-slate-700 mb-2">
-                    Esta tarea tiene actualmente <strong>{task.totalCycles || 1}</strong> repeticiones. ¿Deseas agregar más?
+                    Esta tarea tiene actualmente{" "}
+                    <strong>{task.totalCycles || 1}</strong> repeticiones.
+                    ¿Deseas agregar más?
                   </p>
                   <div className="flex items-center gap-3">
                     <input
                       type="number"
                       min="1"
                       value={additionalCycles}
-                      onChange={(e) => setAdditionalCycles(Number(e.target.value))}
+                      onChange={(e) =>
+                        setAdditionalCycles(Number(e.target.value))
+                      }
                       className="w-24 h-10 px-3 rounded-lg border border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                     />
                     <button
@@ -317,7 +404,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                       disabled={isAddingCycles || additionalCycles <= 0}
                       className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
                     >
-                      {isAddingCycles ? 'Agregando...' : 'Agregar Repeticiones'}
+                      {isAddingCycles ? "Agregando..." : "Agregar Repeticiones"}
                     </button>
                   </div>
                 </div>
@@ -339,10 +426,57 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
             className="flex items-center gap-2 px-6 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
           >
             <Save size={16} />
-            {isSaving ? 'Guardando...' : 'Guardar Cambios'}
+            {isSaving ? "Guardando..." : "Guardar Cambios"}
           </button>
         </div>
       </div>
+
+      {stepUnitPrompt && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+            <h3 className="text-lg font-bold text-slate-800 mb-2">
+              Ingresar Unidades
+            </h3>
+            <p className="text-sm text-slate-500 mb-4">
+              Por favor, confirma la cantidad de unidades que se sumarán al
+              completar este paso.
+            </p>
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-slate-700 mb-1">
+                Unidades Acumuladas
+              </label>
+              <input
+                type="number"
+                min="0.1"
+                step="0.1"
+                value={stepUnitPrompt.units}
+                onChange={(e) =>
+                  setStepUnitPrompt({
+                    ...stepUnitPrompt,
+                    units: Number(e.target.value),
+                  })
+                }
+                className="w-full text-center text-lg h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                autoFocus
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setStepUnitPrompt(null)}
+                className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmStepUnitToggle}
+                className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg transition-colors"
+              >
+                Confirmar y Completar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

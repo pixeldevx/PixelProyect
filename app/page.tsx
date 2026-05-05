@@ -38,10 +38,10 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold shadow-sm">
-                RP
+              <div className="w-8 h-8 bg-violet-600 rounded-lg flex items-center justify-center text-white font-bold shadow-sm">
+                PX
               </div>
-              <span className="text-xl font-bold text-slate-900 tracking-tight">RealProyect</span>
+              <span className="text-xl font-bold font-[family-name:var(--font-outfit)] text-slate-900 tracking-tight">Pixel Project</span>
             </div>
             <div className="hidden md:flex items-center gap-8">
               <a href="#features" className="text-sm font-medium text-slate-600 hover:text-indigo-600 transition-colors">Características</a>
@@ -57,7 +57,7 @@ export default function LandingPage() {
               </Link>
               <Link 
                 href="/dashboard" 
-                className="inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-lg shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all"
+                className="inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-white bg-violet-600 border border-transparent rounded-lg shadow-sm hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-all font-[family-name:var(--font-outfit)]"
               >
                 Comenzar Ahora
               </Link>
@@ -77,16 +77,16 @@ export default function LandingPage() {
               <span className="flex h-2 w-2 rounded-full bg-indigo-600 animate-pulse"></span>
               La nueva forma de gestionar proyectos
             </div>
-            <h1 className="text-5xl lg:text-7xl font-extrabold text-slate-900 tracking-tight mb-8 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-100 leading-tight">
-              Transforma el Caos en <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-violet-600">Control Absoluto</span>
+            <h1 className="text-5xl lg:text-7xl font-extrabold font-[family-name:var(--font-outfit)] text-slate-900 tracking-tight mb-8 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-100 leading-tight">
+              Transforma el Caos en <span className="text-transparent bg-clip-text bg-gradient-to-r from-violet-600 to-fuchsia-600">Control Absoluto</span>
             </h1>
             <p className="text-xl text-slate-600 mb-10 animate-in fade-in slide-in-from-bottom-8 duration-700 delay-200 leading-relaxed">
-              RealProyect centraliza tu operación. Gestiona tareas, controla presupuestos, aprueba flujos de trabajo y toma decisiones basadas en datos en tiempo real. Todo en un solo lugar.
+              Pixel Project centraliza tu operación. Gestiona tareas, controla presupuestos, aprueba flujos de trabajo y toma decisiones basadas en datos en tiempo real. Todo en un solo lugar.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-in fade-in slide-in-from-bottom-10 duration-700 delay-300">
               <Link 
                 href="/dashboard" 
-                className="w-full sm:w-auto inline-flex items-center justify-center px-8 py-4 text-base font-medium text-white bg-indigo-600 border border-transparent rounded-xl shadow-lg hover:bg-indigo-700 hover:shadow-xl hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all"
+                className="w-full sm:w-auto inline-flex items-center justify-center px-8 py-4 text-base font-bold text-white bg-violet-600 border border-transparent rounded-xl shadow-lg hover:bg-violet-700 hover:shadow-xl hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-all font-[family-name:var(--font-outfit)]"
               >
                 Ir al Dashboard
                 <ArrowRight className="ml-2 -mr-1 w-5 h-5" />
@@ -106,7 +106,7 @@ export default function LandingPage() {
       <section id="features" className="py-20 bg-white border-y border-slate-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center max-w-3xl mx-auto mb-16">
-            <h2 className="text-3xl font-bold text-slate-900 mb-4">Todo lo que necesitas para el éxito de tus proyectos</h2>
+            <h2 className="text-3xl font-bold font-[family-name:var(--font-outfit)] text-slate-900 mb-4">Todo lo que necesitas para el éxito de tus proyectos</h2>
             <p className="text-lg text-slate-600">
               Diseñado para equipos de alto rendimiento que requieren trazabilidad, control financiero y ejecución impecable.
             </p>
@@ -118,7 +118,7 @@ export default function LandingPage() {
               <div className="w-12 h-12 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600 mb-6 group-hover:scale-110 transition-transform">
                 <LayoutDashboard className="w-6 h-6" />
               </div>
-              <h3 className="text-xl font-bold text-slate-900 mb-3">Dashboard en Tiempo Real</h3>
+              <h3 className="text-xl font-bold font-[family-name:var(--font-outfit)] text-slate-900 mb-3">Dashboard en Tiempo Real</h3>
               <p className="text-slate-600 leading-relaxed">
                 Visualiza el estado de todos tus proyectos, KPIs, avance físico y financiero en un panel centralizado e intuitivo. Toma decisiones con datos actualizados al segundo.
               </p>
@@ -129,7 +129,7 @@ export default function LandingPage() {
               <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center text-blue-600 mb-6 group-hover:scale-110 transition-transform">
                 <FolderKanban className="w-6 h-6" />
               </div>
-              <h3 className="text-xl font-bold text-slate-900 mb-3">Seguimiento de Tareas y Gantt</h3>
+              <h3 className="text-xl font-bold font-[family-name:var(--font-outfit)] text-slate-900 mb-3">Seguimiento de Tareas y Gantt</h3>
               <p className="text-slate-600 leading-relaxed">
                 Planifica y ejecuta con precisión. Utiliza vistas de lista o diagramas de Gantt interactivos para gestionar dependencias, plazos y responsables de cada actividad.
               </p>
@@ -140,7 +140,7 @@ export default function LandingPage() {
               <div className="w-12 h-12 bg-emerald-100 rounded-xl flex items-center justify-center text-emerald-600 mb-6 group-hover:scale-110 transition-transform">
                 <FileText className="w-6 h-6" />
               </div>
-              <h3 className="text-xl font-bold text-slate-900 mb-3">Flujos de Trabajo (Workflows)</h3>
+              <h3 className="text-xl font-bold font-[family-name:var(--font-outfit)] text-slate-900 mb-3">Flujos de Trabajo (Workflows)</h3>
               <p className="text-slate-600 leading-relaxed">
                 Diseña procesos de aprobación personalizados. El sistema registra cada ciclo de revisión, devoluciones y aprobaciones, manteniendo un historial inmutable de la trazabilidad.
               </p>
@@ -151,7 +151,7 @@ export default function LandingPage() {
               <div className="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center text-amber-600 mb-6 group-hover:scale-110 transition-transform">
                 <TrendingUp className="w-6 h-6" />
               </div>
-              <h3 className="text-xl font-bold text-slate-900 mb-3">Control Financiero y Tarifarios</h3>
+              <h3 className="text-xl font-bold font-[family-name:var(--font-outfit)] text-slate-900 mb-3">Control Financiero y Tarifarios</h3>
               <p className="text-slate-600 leading-relaxed">
                 Vincula el trabajo directamente con el presupuesto. Mide unidades producidas, calcula costos, gestiona facturación y cuantifica el valor del retrabajo automáticamente.
               </p>
@@ -162,7 +162,7 @@ export default function LandingPage() {
               <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center text-purple-600 mb-6 group-hover:scale-110 transition-transform">
                 <Zap className="w-6 h-6" />
               </div>
-              <h3 className="text-xl font-bold text-slate-900 mb-3">Alertas Proactivas con IA</h3>
+              <h3 className="text-xl font-bold font-[family-name:var(--font-outfit)] text-slate-900 mb-3">Alertas Proactivas con IA</h3>
               <p className="text-slate-600 leading-relaxed">
                 Deja que el sistema vigile por ti. Configura reglas automáticas para tareas atrasadas o inactivas, y recibe insights generados por IA sobre el rendimiento del proyecto.
               </p>
@@ -173,7 +173,7 @@ export default function LandingPage() {
               <div className="w-12 h-12 bg-rose-100 rounded-xl flex items-center justify-center text-rose-600 mb-6 group-hover:scale-110 transition-transform">
                 <ShieldCheck className="w-6 h-6" />
               </div>
-              <h3 className="text-xl font-bold text-slate-900 mb-3">Gestión de Roles y Seguridad</h3>
+              <h3 className="text-xl font-bold font-[family-name:var(--font-outfit)] text-slate-900 mb-3">Gestión de Roles y Seguridad</h3>
               <p className="text-slate-600 leading-relaxed">
                 Seguridad de nivel empresarial. Controla el acceso con precisión mediante roles de sistema globales y cargos específicos por proyecto para cada miembro de tu equipo.
               </p>
@@ -187,7 +187,7 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col lg:flex-row items-center gap-16">
             <div className="lg:w-1/2">
-              <h2 className="text-3xl font-bold text-slate-900 mb-6">La Metodología RealProyect</h2>
+              <h2 className="text-3xl font-bold font-[family-name:var(--font-outfit)] text-slate-900 mb-6">La Metodología Pixel Project</h2>
               <p className="text-lg text-slate-600 mb-8 leading-relaxed">
                 No somos solo una lista de tareas. Entendemos que el trabajo real requiere procesos iterativos y control financiero estricto.
               </p>
@@ -262,7 +262,7 @@ export default function LandingPage() {
         <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-violet-600 rounded-full mix-blend-multiply filter blur-3xl opacity-50 animate-blob animation-delay-2000"></div>
         
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10 text-center">
-          <h2 className="text-4xl font-extrabold text-white mb-6">
+          <h2 className="text-4xl font-extrabold font-[family-name:var(--font-outfit)] text-white mb-6">
             ¿Listo para tomar el control de tus proyectos?
           </h2>
           <p className="text-xl text-indigo-200 mb-10">
@@ -282,13 +282,13 @@ export default function LandingPage() {
       <footer className="bg-slate-900 py-12 border-t border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row justify-between items-center gap-6">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold">
-              RP
+            <div className="w-8 h-8 bg-violet-600 rounded-lg flex items-center justify-center text-white font-bold">
+              PX
             </div>
-            <span className="text-xl font-bold text-white tracking-tight">RealProyect</span>
+            <span className="text-xl font-bold font-[family-name:var(--font-outfit)] text-white tracking-tight">Pixel Project</span>
           </div>
           <p className="text-slate-400 text-sm text-center md:text-left">
-            © {new Date().getFullYear()} RealProyect. Todos los derechos reservados.
+            © {new Date().getFullYear()} Pixel Project. Todos los derechos reservados.
           </p>
           <div className="flex gap-6">
             <a href="#" className="text-slate-400 hover:text-white transition-colors text-sm">Términos</a>

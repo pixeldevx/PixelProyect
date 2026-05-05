@@ -75,9 +75,9 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
         <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8">
           <div className="text-center mb-8">
             <div className="w-16 h-16 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-2xl font-bold mx-auto mb-6 shadow-md">
-              RP
+              PX
             </div>
-            <h1 className="text-2xl font-bold text-slate-900 mb-2">Bienvenido a RealProyect</h1>
+            <h1 className="text-2xl font-bold text-slate-900 mb-2">Bienvenido a Pixel Project</h1>
             <p className="text-slate-500">Inicia sesión para gestionar tus proyectos y documentos.</p>
           </div>
 
@@ -174,9 +174,9 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
         <div className={`h-16 flex items-center ${isCollapsed ? 'justify-center' : 'px-6'} border-b border-slate-200`}>
           <div className="flex items-center gap-2 font-bold text-lg tracking-tight overflow-hidden">
             <div className="w-8 h-8 bg-indigo-600 rounded-md flex items-center justify-center text-white shrink-0">
-              RP
+              PX
             </div>
-            {!isCollapsed && <span className="whitespace-nowrap">RealProyect</span>}
+            {!isCollapsed && <span className="whitespace-nowrap">Pixel Project</span>}
           </div>
           
           <button 

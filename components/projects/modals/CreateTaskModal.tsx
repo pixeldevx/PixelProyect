@@ -1,10 +1,22 @@
-import React, { useState } from 'react';
-import { X, ListTodo, Plus, ClipboardList, Loader2 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, query, getDocs } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
-import { toast } from 'sonner';
-import { WorkflowStepFormBuilderModal, CustomForm } from '@/components/projects/WorkflowStepFormBuilderModal';
+import React, { useState } from "react";
+import { X, ListTodo, Plus, ClipboardList, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  doc,
+  collection,
+  addDoc,
+  writeBatch,
+  serverTimestamp,
+  increment,
+  query,
+  getDocs,
+} from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import { toast } from "sonner";
+import {
+  WorkflowStepFormBuilderModal,
+  CustomForm,
+} from "@/components/projects/WorkflowStepFormBuilderModal";
 
 interface CreateTaskModalProps {
   isOpen: boolean;
@@ -25,41 +37,58 @@ export function CreateTaskModal({
   user,
   teamMembers,
   rateCards,
-  tasksLength
+  tasksLength,
 }: CreateTaskModalProps) {
   const [isCreatingTask, setIsCreatingTask] = useState(false);
-  const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [newTaskDesc, setNewTaskDesc] = useState('');
-  const [newTaskStart, setNewTaskStart] = useState('');
-  const [newTaskEnd, setNewTaskEnd] = useState('');
-  const [newTaskAssignedTo, setNewTaskAssignedTo] = useState('');
-  const [newTaskIndicator, setNewTaskIndicator] = useState('');
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [newTaskDesc, setNewTaskDesc] = useState("");
+  const [newTaskStart, setNewTaskStart] = useState("");
+  const [newTaskEnd, setNewTaskEnd] = useState("");
+  const [newTaskAssignedTo, setNewTaskAssignedTo] = useState("");
+  const [newTaskIndicator, setNewTaskIndicator] = useState("");
   const [newTaskIndicatorValue, setNewTaskIndicatorValue] = useState(0);
   const [newTaskProgress, setNewTaskProgress] = useState(0);
-  const [newTaskStatus, setNewTaskStatus] = useState('todo');
-  const [newTaskType, setNewTaskType] = useState<'quantitative' | 'state' | 'workflow'>('workflow');
-  const [workflowSteps, setWorkflowSteps] = useState<{assignedTo: string, label: string, form?: CustomForm, rateCardId?: string, unitsToAdd?: number, assignsNextStep?: boolean}[]>([]);
+  const [newTaskStatus, setNewTaskStatus] = useState("todo");
+  const [newTaskType, setNewTaskType] = useState<
+    "quantitative" | "state" | "workflow"
+  >("workflow");
+  const [workflowSteps, setWorkflowSteps] = useState<
+    {
+      assignedTo: string;
+      label: string;
+      form?: CustomForm;
+      rateCardId?: string;
+      unitsToAdd?: number;
+      autoAddUnits?: boolean;
+      assignsNextStep?: boolean;
+    }[]
+  >([]);
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
-  const [currentStepIndexForForm, setCurrentStepIndexForForm] = useState<number | null>(null);
+  const [currentStepIndexForForm, setCurrentStepIndexForForm] = useState<
+    number | null
+  >(null);
   const [workflowCycles, setWorkflowCycles] = useState<number>(1);
   const [newTaskRequiresDoc, setNewTaskRequiresDoc] = useState(false);
   const [newTaskIsRateCard, setNewTaskIsRateCard] = useState(false);
-  const [newTaskRateCardId, setNewTaskRateCardId] = useState('');
+  const [newTaskRateCardId, setNewTaskRateCardId] = useState("");
   const [newTaskUnitsToAdd, setNewTaskUnitsToAdd] = useState(1);
-  const [newTaskPriority, setNewTaskPriority] = useState('medium');
+  const [newTaskPriority, setNewTaskPriority] = useState("medium");
 
   const [workflowTemplates, setWorkflowTemplates] = useState<any[]>([]);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
-  const [templateName, setTemplateName] = useState('');
+  const [templateName, setTemplateName] = useState("");
   const [showTemplateModal, setShowTemplateModal] = useState(false);
 
   React.useEffect(() => {
     if (isOpen) {
       const fetchTemplates = async () => {
         try {
-          const q = query(collection(db, 'workflow_templates'));
+          const q = query(collection(db, "workflow_templates"));
           const snap = await getDocs(q);
-          const templates = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          const templates = snap.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }));
           setWorkflowTemplates(templates);
         } catch (error) {
           console.error("Error fetching templates:", error);
@@ -72,22 +101,22 @@ export function CreateTaskModal({
   if (!isOpen) return null;
 
   const resetForm = () => {
-    setNewTaskTitle('');
-    setNewTaskDesc('');
-    setNewTaskStart('');
-    setNewTaskEnd('');
-    setNewTaskAssignedTo('');
-    setNewTaskIndicator('');
+    setNewTaskTitle("");
+    setNewTaskDesc("");
+    setNewTaskStart("");
+    setNewTaskEnd("");
+    setNewTaskAssignedTo("");
+    setNewTaskIndicator("");
     setNewTaskIndicatorValue(0);
     setNewTaskProgress(0);
-    setNewTaskStatus('todo');
-    setNewTaskPriority('medium');
-    setNewTaskType('quantitative');
+    setNewTaskStatus("todo");
+    setNewTaskPriority("medium");
+    setNewTaskType("quantitative");
     setWorkflowSteps([]);
     setWorkflowCycles(1);
     setNewTaskRequiresDoc(false);
     setNewTaskIsRateCard(false);
-    setNewTaskRateCardId('');
+    setNewTaskRateCardId("");
     setNewTaskUnitsToAdd(1);
   };
 
@@ -107,12 +136,18 @@ export function CreateTaskModal({
         name: templateName,
         steps: workflowSteps,
         createdAt: serverTimestamp(),
-        createdBy: user?.uid || 'unknown'
+        createdBy: user?.uid || "unknown",
       };
-      const docRef = await addDoc(collection(db, 'workflow_templates'), newTemplate);
-      setWorkflowTemplates([...workflowTemplates, { id: docRef.id, ...newTemplate }]);
+      const docRef = await addDoc(
+        collection(db, "workflow_templates"),
+        newTemplate,
+      );
+      setWorkflowTemplates([
+        ...workflowTemplates,
+        { id: docRef.id, ...newTemplate },
+      ]);
       setShowTemplateModal(false);
-      setTemplateName('');
+      setTemplateName("");
       toast.success("Plantilla guardada correctamente.");
     } catch (error: any) {
       console.error("Error saving template:", error);
@@ -124,7 +159,7 @@ export function CreateTaskModal({
 
   const handleLoadTemplate = (templateId: string) => {
     if (!templateId) return;
-    const template = workflowTemplates.find(t => t.id === templateId);
+    const template = workflowTemplates.find((t) => t.id === templateId);
     if (template && template.steps) {
       setWorkflowSteps(template.steps);
       toast.success("Plantilla cargada.");
@@ -133,7 +168,13 @@ export function CreateTaskModal({
 
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !newTaskTitle.trim() || !newTaskStart || !newTaskEnd || !newTaskAssignedTo) {
+    if (
+      !user ||
+      !newTaskTitle.trim() ||
+      !newTaskStart ||
+      !newTaskEnd ||
+      !newTaskAssignedTo
+    ) {
       toast.warning("Por favor completa todos los campos obligatorios.");
       return;
     }
@@ -145,37 +186,53 @@ export function CreateTaskModal({
         projectId: projectId,
         title: newTaskTitle,
         description: newTaskDesc,
-        startDate: new Date(newTaskStart + 'T00:00:00'),
-        endDate: new Date(newTaskEnd + 'T00:00:00'),
+        startDate: new Date(newTaskStart + "T00:00:00"),
+        endDate: new Date(newTaskEnd + "T00:00:00"),
         assignedTo: newTaskAssignedTo,
-        indicator: newTaskType === 'quantitative' ? newTaskIndicator : null,
-        indicatorValue: newTaskType === 'quantitative' ? Number(newTaskIndicatorValue) : null,
-        status: newTaskType === 'state' ? 'pending' : newTaskStatus,
-        progress: newTaskType === 'state' ? 0 : Number(newTaskProgress),
+        indicator: newTaskType === "quantitative" ? newTaskIndicator : null,
+        indicatorValue:
+          newTaskType === "quantitative" ? Number(newTaskIndicatorValue) : null,
+        status: newTaskType === "state" ? "pending" : newTaskStatus,
+        progress: newTaskType === "state" ? 0 : Number(newTaskProgress),
         type: newTaskType,
         requiresDocument: newTaskRequiresDoc,
         linkedDocumentId: null,
         isRateCardTask: newTaskIsRateCard,
         rateCardId: newTaskIsRateCard ? newTaskRateCardId : null,
         unitsToAdd: newTaskIsRateCard ? Number(newTaskUnitsToAdd) : null,
-        syncExternal: newTaskIsRateCard ? (rateCards.find(rc => rc.id === newTaskRateCardId)?.syncExternal || false) : false,
+        syncExternal: newTaskIsRateCard
+          ? rateCards.find((rc) => rc.id === newTaskRateCardId)?.syncExternal ||
+            false
+          : false,
         priority: newTaskPriority,
         currentValue: 0,
         displayOrder: tasksLength,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-        createdBy: user.uid
+        createdBy: user.uid,
       };
 
       const batch = writeBatch(db);
-      const taskRef = doc(collection(db, 'projects', projectId, 'tasks'));
-      
+      const taskRef = doc(collection(db, "projects", projectId, "tasks"));
+
       // Handle Rate Card update for initial progress
-      if (taskData.isRateCardTask && taskData.rateCardId && taskData.unitsToAdd && taskData.progress > 0 && taskData.type !== 'workflow') {
-        const rcRef = doc(db, 'projects', projectId, 'rateCards', taskData.rateCardId);
+      if (
+        taskData.isRateCardTask &&
+        taskData.rateCardId &&
+        taskData.unitsToAdd &&
+        taskData.progress > 0 &&
+        taskData.type !== "workflow"
+      ) {
+        const rcRef = doc(
+          db,
+          "projects",
+          projectId,
+          "rateCards",
+          taskData.rateCardId,
+        );
         const units = (taskData.progress / 100) * taskData.unitsToAdd;
         const updateData: any = {
-          currentValue: increment(units)
+          currentValue: increment(units),
         };
         if (taskData.assignedTo) {
           updateData[`userStats.${taskData.assignedTo}`] = increment(units);
@@ -183,14 +240,14 @@ export function CreateTaskModal({
         batch.update(rcRef, updateData);
       }
 
-      if (newTaskType === 'workflow') {
-        taskData.workflowSteps = workflowSteps.map(step => {
+      if (newTaskType === "workflow") {
+        taskData.workflowSteps = workflowSteps.map((step) => {
           const cleanStep: any = {
             ...step,
-            status: 'not_started'
+            status: "not_started",
           };
           // Firestore doesn't support undefined values
-          Object.keys(cleanStep).forEach(key => {
+          Object.keys(cleanStep).forEach((key) => {
             if (cleanStep[key] === undefined) {
               cleanStep[key] = null;
             }
@@ -206,10 +263,15 @@ export function CreateTaskModal({
         if (workflowCycles > 1) {
           taskData.isParentTask = true;
           taskData.totalCycles = workflowCycles;
-          const parentDocRef = await addDoc(collection(db, 'projects', projectId, 'tasks'), taskData);
-          
+          const parentDocRef = await addDoc(
+            collection(db, "projects", projectId, "tasks"),
+            taskData,
+          );
+
           for (let i = 1; i <= workflowCycles; i++) {
-            const subTaskRef = doc(collection(db, 'projects', projectId, 'tasks'));
+            const subTaskRef = doc(
+              collection(db, "projects", projectId, "tasks"),
+            );
             const subTaskData = {
               ...taskData,
               title: newTaskTitle,
@@ -231,7 +293,7 @@ export function CreateTaskModal({
         batch.set(taskRef, taskData);
         await batch.commit();
       }
-      
+
       toast.success("Tarea creada exitosamente");
       handleClose();
     } catch (error: any) {
@@ -252,10 +314,12 @@ export function CreateTaskModal({
             </div>
             <div>
               <h3 className="text-lg font-bold text-slate-900">Nueva Tarea</h3>
-              <p className="text-xs text-slate-500">Proyecto: {project?.name}</p>
+              <p className="text-xs text-slate-500">
+                Proyecto: {project?.name}
+              </p>
             </div>
           </div>
-          <button 
+          <button
             onClick={handleClose}
             className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
           >
@@ -266,9 +330,11 @@ export function CreateTaskModal({
         <form onSubmit={handleCreateTask} className="p-6 space-y-6">
           <div className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-bold text-slate-700">Título de la Tarea</label>
-              <input 
-                type="text" 
+              <label className="text-sm font-bold text-slate-700">
+                Título de la Tarea
+              </label>
+              <input
+                type="text"
                 value={newTaskTitle}
                 onChange={(e) => setNewTaskTitle(e.target.value)}
                 className="w-full h-11 px-4 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
@@ -278,8 +344,10 @@ export function CreateTaskModal({
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-bold text-slate-700">Descripción (Opcional)</label>
-              <textarea 
+              <label className="text-sm font-bold text-slate-700">
+                Descripción (Opcional)
+              </label>
+              <textarea
                 value={newTaskDesc}
                 onChange={(e) => setNewTaskDesc(e.target.value)}
                 className="w-full min-h-[80px] p-4 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm resize-none"
@@ -289,9 +357,11 @@ export function CreateTaskModal({
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-700">Fecha Inicio</label>
-                <input 
-                  type="date" 
+                <label className="text-sm font-bold text-slate-700">
+                  Fecha Inicio
+                </label>
+                <input
+                  type="date"
                   value={newTaskStart}
                   onChange={(e) => setNewTaskStart(e.target.value)}
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
@@ -299,9 +369,11 @@ export function CreateTaskModal({
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-700">Fecha Fin</label>
-                <input 
-                  type="date" 
+                <label className="text-sm font-bold text-slate-700">
+                  Fecha Fin
+                </label>
+                <input
+                  type="date"
                   value={newTaskEnd}
                   onChange={(e) => setNewTaskEnd(e.target.value)}
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
@@ -312,8 +384,10 @@ export function CreateTaskModal({
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-700">Asignar a</label>
-                <select 
+                <label className="text-sm font-bold text-slate-700">
+                  Asignar a
+                </label>
+                <select
                   value={newTaskAssignedTo}
                   onChange={(e) => setNewTaskAssignedTo(e.target.value)}
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
@@ -321,15 +395,21 @@ export function CreateTaskModal({
                 >
                   <option value="">Seleccionar miembro...</option>
                   {project?.assignedTeamMembers?.map((memberId: string) => {
-                    const member = teamMembers.find(m => m.id === memberId);
+                    const member = teamMembers.find((m) => m.id === memberId);
                     if (!member) return null;
-                    return <option key={member.id} value={member.id}>{member.name}</option>;
+                    return (
+                      <option key={member.id} value={member.id}>
+                        {member.name}
+                      </option>
+                    );
                   })}
                 </select>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-700">Prioridad</label>
-                <select 
+                <label className="text-sm font-bold text-slate-700">
+                  Prioridad
+                </label>
+                <select
                   value={newTaskPriority}
                   onChange={(e) => setNewTaskPriority(e.target.value)}
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
@@ -343,8 +423,10 @@ export function CreateTaskModal({
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-700">Estado Inicial</label>
-                <select 
+                <label className="text-sm font-bold text-slate-700">
+                  Estado Inicial
+                </label>
+                <select
                   value={newTaskStatus}
                   onChange={(e) => setNewTaskStatus(e.target.value)}
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
@@ -357,12 +439,20 @@ export function CreateTaskModal({
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-sm font-bold text-slate-700">Tipo de Tarea</label>
-                  <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 uppercase tracking-tighter">Workflow</span>
+                  <label className="text-sm font-bold text-slate-700">
+                    Tipo de Tarea
+                  </label>
+                  <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 uppercase tracking-tighter">
+                    Workflow
+                  </span>
                 </div>
-                <select 
+                <select
                   value={newTaskType}
-                  onChange={(e) => setNewTaskType(e.target.value as 'quantitative' | 'state' | 'workflow')}
+                  onChange={(e) =>
+                    setNewTaskType(
+                      e.target.value as "quantitative" | "state" | "workflow",
+                    )
+                  }
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                 >
                   <option value="workflow">Workflow (Flujo)</option>
@@ -372,69 +462,90 @@ export function CreateTaskModal({
               </div>
             </div>
 
-            {newTaskType === 'workflow' && (
+            {newTaskType === "workflow" && (
               <div className="space-y-4 p-4 bg-indigo-50/50 rounded-xl border border-indigo-100">
                 <div className="space-y-2 mb-4">
-                  <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">Cantidad de Repeticiones (Sub-tareas)</label>
-                  <input 
-                    type="number" 
+                  <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">
+                    Cantidad de Repeticiones (Sub-tareas)
+                  </label>
+                  <input
+                    type="number"
                     min="1"
                     value={workflowCycles}
                     onChange={(e) => setWorkflowCycles(Number(e.target.value))}
                     className="w-full h-10 px-3 rounded-lg border border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                   />
-                  <p className="text-[10px] text-indigo-500">Si es mayor a 1, se crearán múltiples subtareas para este flujo.</p>
+                  <p className="text-[10px] text-indigo-500">
+                    Si es mayor a 1, se crearán múltiples subtareas para este
+                    flujo.
+                  </p>
                 </div>
 
                 <div className="flex items-center justify-between border-t border-indigo-100 pt-4">
-                  <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">Pasos del Workflow</label>
+                  <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">
+                    Pasos del Workflow
+                  </label>
                   <div className="flex items-center gap-2">
                     {workflowTemplates.length > 0 && (
-                      <select 
+                      <select
                         className="h-7 text-[10px] rounded border border-indigo-200 px-2 bg-white"
                         onChange={(e) => handleLoadTemplate(e.target.value)}
                         defaultValue=""
                       >
-                        <option value="" disabled>Cargar Plantilla...</option>
-                        {workflowTemplates.map(t => (
-                          <option key={t.id} value={t.id}>{t.name}</option>
+                        <option value="" disabled>
+                          Cargar Plantilla...
+                        </option>
+                        {workflowTemplates.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name}
+                          </option>
                         ))}
                       </select>
                     )}
                     {workflowSteps.length > 0 && (
-                      <Button 
-                        type="button" 
-                        variant="outline" 
-                        size="sm" 
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
                         onClick={() => setShowTemplateModal(true)}
                         className="h-7 text-[10px] font-bold text-indigo-600 border-indigo-200 hover:bg-indigo-50"
                       >
                         GUARDAR PLANTILLA
                       </Button>
                     )}
-                    <Button 
-                      type="button" 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => setWorkflowSteps([...workflowSteps, { assignedTo: '', label: '', unitsToAdd: 1 }])}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setWorkflowSteps([
+                          ...workflowSteps,
+                          { assignedTo: "", label: "", unitsToAdd: 1 },
+                        ])
+                      }
                       className="h-7 text-[10px] font-bold text-indigo-600 hover:bg-indigo-100"
                     >
                       <Plus size={12} className="mr-1" /> AGREGAR PASO
                     </Button>
                   </div>
                 </div>
-                
+
                 {workflowSteps.length === 0 ? (
-                  <p className="text-[10px] text-slate-400 text-center py-2 italic">No hay pasos definidos. Agrega al menos uno.</p>
+                  <p className="text-[10px] text-slate-400 text-center py-2 italic">
+                    No hay pasos definidos. Agrega al menos uno.
+                  </p>
                 ) : (
                   <div className="space-y-3">
                     {workflowSteps.map((step, idx) => (
-                      <div key={idx} className="flex flex-col gap-2 bg-white p-3 rounded-lg border border-indigo-100 shadow-sm">
+                      <div
+                        key={idx}
+                        className="flex flex-col gap-2 bg-white p-3 rounded-lg border border-indigo-100 shadow-sm"
+                      >
                         <div className="flex items-center gap-2">
                           <div className="w-6 h-6 rounded-full bg-indigo-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">
                             {idx + 1}
                           </div>
-                          <input 
+                          <input
                             type="text"
                             placeholder="Nombre del paso (ej. Aprobación Técnica)"
                             value={step.label}
@@ -452,20 +563,28 @@ export function CreateTaskModal({
                               setCurrentStepIndexForForm(idx);
                               setIsFormBuilderOpen(true);
                             }}
-                            className={`p-1.5 rounded-md transition-colors ${step.form ? 'text-indigo-600 bg-indigo-50 hover:bg-indigo-100' : 'text-slate-400 hover:text-indigo-600 hover:bg-slate-100'}`}
-                            title={step.form ? "Editar Formulario" : "Agregar Formulario"}
+                            className={`p-1.5 rounded-md transition-colors ${step.form ? "text-indigo-600 bg-indigo-50 hover:bg-indigo-100" : "text-slate-400 hover:text-indigo-600 hover:bg-slate-100"}`}
+                            title={
+                              step.form
+                                ? "Editar Formulario"
+                                : "Agregar Formulario"
+                            }
                           >
                             <ClipboardList size={14} />
                           </button>
-                          <button 
+                          <button
                             type="button"
-                            onClick={() => setWorkflowSteps(workflowSteps.filter((_, i) => i !== idx))}
+                            onClick={() =>
+                              setWorkflowSteps(
+                                workflowSteps.filter((_, i) => i !== idx),
+                              )
+                            }
                             className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
                           >
                             <X size={14} />
                           </button>
                         </div>
-                        
+
                         <div className="flex items-center gap-2 pl-8">
                           <select
                             value={step.assignedTo}
@@ -478,59 +597,100 @@ export function CreateTaskModal({
                             required
                           >
                             <option value="">Asignar a...</option>
-                            <option value="DYNAMIC">Asignación dinámica (por paso anterior)</option>
-                            {project?.assignedTeamMembers?.map((memberId: string) => {
-                              const member = teamMembers.find(m => m.id === memberId);
-                              if (!member) return null;
-                              return <option key={member.id} value={member.id}>{member.name}</option>;
-                            })}
+                            <option value="DYNAMIC">
+                              Asignación dinámica (por paso anterior)
+                            </option>
+                            {project?.assignedTeamMembers?.map(
+                              (memberId: string) => {
+                                const member = teamMembers.find(
+                                  (m) => m.id === memberId,
+                                );
+                                if (!member) return null;
+                                return (
+                                  <option key={member.id} value={member.id}>
+                                    {member.name}
+                                  </option>
+                                );
+                              },
+                            )}
                           </select>
 
                           <select
-                            value={step.rateCardId || ''}
+                            value={step.rateCardId || ""}
                             onChange={(e) => {
                               const newSteps = [...workflowSteps];
-                              newSteps[idx].rateCardId = e.target.value || undefined;
+                              newSteps[idx].rateCardId =
+                                e.target.value || undefined;
                               setWorkflowSteps(newSteps);
                             }}
                             className="flex-1 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
                           >
                             <option value="">Sin Rate Card</option>
-                            {rateCards.map(rc => (
-                              <option key={rc.id} value={rc.id}>{rc.name}</option>
+                            {rateCards.map((rc) => (
+                              <option key={rc.id} value={rc.id}>
+                                {rc.name}
+                              </option>
                             ))}
                           </select>
 
                           {step.rateCardId && (
-                            <input 
-                              type="number"
-                              min="0.1"
-                              step="0.1"
-                              value={step.unitsToAdd || 1}
-                              onChange={(e) => {
-                                const newSteps = [...workflowSteps];
-                                newSteps[idx].unitsToAdd = Number(e.target.value);
-                                setWorkflowSteps(newSteps);
-                              }}
-                              className="w-16 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
-                              placeholder="Unid."
-                            />
+                            <div className="flex flex-col gap-1 items-end">
+                              <div className="flex items-center gap-1">
+                                <label
+                                  className="flex items-center gap-1 text-[10px] text-slate-500 cursor-pointer"
+                                  title="Si se desmarca, se le preguntará al usuario las unidades al completar el paso."
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={step.autoAddUnits !== false}
+                                    onChange={(e) => {
+                                      const newSteps = [...workflowSteps];
+                                      newSteps[idx].autoAddUnits =
+                                        e.target.checked;
+                                      setWorkflowSteps(newSteps);
+                                    }}
+                                    className="w-3 h-3 text-indigo-600 border-slate-300 rounded focus:ring-indigo-500"
+                                  />
+                                  Sumar auto.
+                                </label>
+                              </div>
+                              {step.autoAddUnits !== false && (
+                                <input
+                                  type="number"
+                                  min="0.1"
+                                  step="0.1"
+                                  value={step.unitsToAdd || 1}
+                                  onChange={(e) => {
+                                    const newSteps = [...workflowSteps];
+                                    newSteps[idx].unitsToAdd = Number(
+                                      e.target.value,
+                                    );
+                                    setWorkflowSteps(newSteps);
+                                  }}
+                                  className="w-16 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
+                                  placeholder="Unid."
+                                />
+                              )}
+                            </div>
                           )}
                         </div>
-                        
+
                         {idx < workflowSteps.length - 1 && (
                           <div className="flex items-center gap-2 pl-8 mt-1">
                             <label className="flex items-center gap-2 text-[10px] text-slate-500 cursor-pointer">
-                              <input 
+                              <input
                                 type="checkbox"
                                 checked={step.assignsNextStep || false}
                                 onChange={(e) => {
                                   const newSteps = [...workflowSteps];
-                                  newSteps[idx].assignsNextStep = e.target.checked;
+                                  newSteps[idx].assignsNextStep =
+                                    e.target.checked;
                                   if (e.target.checked) {
-                                    newSteps[idx + 1].assignedTo = 'DYNAMIC';
-                                  } else if (newSteps[idx + 1].assignedTo === 'DYNAMIC') {
-                                    newSteps[idx + 1].assignedTo = '';
+                                    newSteps[idx + 1].assignedTo = "DYNAMIC";
+                                  } else if (
+                                    newSteps[idx + 1].assignedTo === "DYNAMIC"
+                                  ) {
+                                    newSteps[idx + 1].assignedTo = "";
                                   }
                                   setWorkflowSteps(newSteps);
                                 }}
@@ -547,12 +707,14 @@ export function CreateTaskModal({
               </div>
             )}
 
-            {newTaskType === 'quantitative' && (
+            {newTaskType === "quantitative" && (
               <div className="grid grid-cols-2 gap-4 p-4 bg-slate-50 rounded-xl border border-slate-100">
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Indicador</label>
-                  <input 
-                    type="text" 
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Indicador
+                  </label>
+                  <input
+                    type="text"
                     value={newTaskIndicator}
                     onChange={(e) => setNewTaskIndicator(e.target.value)}
                     className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
@@ -560,11 +722,15 @@ export function CreateTaskModal({
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Meta</label>
-                  <input 
-                    type="number" 
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Meta
+                  </label>
+                  <input
+                    type="number"
                     value={newTaskIndicatorValue}
-                    onChange={(e) => setNewTaskIndicatorValue(Number(e.target.value))}
+                    onChange={(e) =>
+                      setNewTaskIndicatorValue(Number(e.target.value))
+                    }
                     className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                   />
                 </div>
@@ -572,14 +738,17 @@ export function CreateTaskModal({
             )}
 
             <div className="flex items-center gap-3 pt-4 border-t border-slate-100">
-              <input 
-                type="checkbox" 
+              <input
+                type="checkbox"
                 id="isRateCardModal"
                 checked={newTaskIsRateCard}
                 onChange={(e) => setNewTaskIsRateCard(e.target.checked)}
                 className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
               />
-              <label htmlFor="isRateCardModal" className="text-sm font-medium text-slate-700 cursor-pointer">
+              <label
+                htmlFor="isRateCardModal"
+                className="text-sm font-medium text-slate-700 cursor-pointer"
+              >
                 Vincular a un perfil de Rate Card
               </label>
             </div>
@@ -587,46 +756,54 @@ export function CreateTaskModal({
             {newTaskIsRateCard && (
               <div className="grid grid-cols-2 gap-4 p-4 bg-emerald-50 rounded-xl border border-emerald-100 animate-in slide-in-from-top-2 duration-200">
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Seleccionar Perfil</label>
-                  <select 
+                  <label className="text-xs font-bold text-emerald-600 uppercase tracking-wider">
+                    Seleccionar Perfil
+                  </label>
+                  <select
                     value={newTaskRateCardId}
                     onChange={(e) => {
                       setNewTaskRateCardId(e.target.value);
-                      const rc = rateCards.find(r => r.id === e.target.value);
+                      const rc = rateCards.find((r) => r.id === e.target.value);
                       if (rc) setNewTaskIndicator(rc.indicator);
                     }}
                     className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                     required={newTaskIsRateCard}
                   >
                     <option value="">Seleccionar...</option>
-                    {rateCards.map(rc => (
-                      <option key={rc.id} value={rc.id}>{rc.name}</option>
+                    {rateCards.map((rc) => (
+                      <option key={rc.id} value={rc.id}>
+                        {rc.name}
+                      </option>
                     ))}
                   </select>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Unidades a sumar</label>
-                  <input 
-                    type="number" 
+                  <label className="text-xs font-bold text-emerald-600 uppercase tracking-wider">
+                    Unidades a sumar
+                  </label>
+                  <input
+                    type="number"
                     step="0.1"
                     min="0.1"
                     value={newTaskUnitsToAdd}
-                    onChange={(e) => setNewTaskUnitsToAdd(Number(e.target.value))}
+                    onChange={(e) =>
+                      setNewTaskUnitsToAdd(Number(e.target.value))
+                    }
                     className="w-full h-10 px-3 rounded-lg border border-emerald-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-sm"
                     required={newTaskIsRateCard}
                   />
                 </div>
                 <p className="col-span-2 text-[10px] text-emerald-600">
-                  {newTaskType === 'workflow' 
-                    ? 'Las unidades se sumarán automáticamente al finalizar todo el workflow.' 
-                    : 'Las unidades se sumarán proporcionalmente al progreso de la tarea.'}
+                  {newTaskType === "workflow"
+                    ? "Las unidades se sumarán automáticamente al finalizar todo el workflow."
+                    : "Las unidades se sumarán proporcionalmente al progreso de la tarea."}
                 </p>
               </div>
             )}
           </div>
 
           <div className="flex gap-3 pt-4">
-            <Button 
+            <Button
               type="button"
               variant="outline"
               onClick={handleClose}
@@ -634,12 +811,16 @@ export function CreateTaskModal({
             >
               Cancelar
             </Button>
-            <Button 
-              type="submit" 
+            <Button
+              type="submit"
               disabled={isCreatingTask}
               className="flex-1 h-12 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold"
             >
-              {isCreatingTask ? <Loader2 className="animate-spin" size={20} /> : 'Crear Tarea'}
+              {isCreatingTask ? (
+                <Loader2 className="animate-spin" size={20} />
+              ) : (
+                "Crear Tarea"
+              )}
             </Button>
           </div>
         </form>
@@ -652,7 +833,10 @@ export function CreateTaskModal({
             setIsFormBuilderOpen(false);
             setCurrentStepIndexForForm(null);
           }}
-          stepName={workflowSteps[currentStepIndexForForm]?.label || `Paso ${currentStepIndexForForm + 1}`}
+          stepName={
+            workflowSteps[currentStepIndexForForm]?.label ||
+            `Paso ${currentStepIndexForForm + 1}`
+          }
           initialForm={workflowSteps[currentStepIndexForForm]?.form}
           onSave={(form) => {
             const newSteps = [...workflowSteps];
@@ -671,15 +855,20 @@ export function CreateTaskModal({
                 <ClipboardList className="text-indigo-600" size={24} />
                 Guardar Plantilla
               </h2>
-              <button onClick={() => setShowTemplateModal(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
+              <button
+                onClick={() => setShowTemplateModal(false)}
+                className="text-slate-400 hover:text-slate-600 transition-colors"
+              >
                 <X size={24} />
               </button>
             </div>
             <div className="p-6 space-y-4">
               <div>
-                <label className="text-sm font-bold text-slate-700 mb-1 block">Nombre de la Plantilla</label>
-                <input 
-                  type="text" 
+                <label className="text-sm font-bold text-slate-700 mb-1 block">
+                  Nombre de la Plantilla
+                </label>
+                <input
+                  type="text"
                   value={templateName}
                   onChange={(e) => setTemplateName(e.target.value)}
                   placeholder="Ej. Flujo de Aprobación Estándar"
@@ -688,16 +877,28 @@ export function CreateTaskModal({
               </div>
             </div>
             <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
-              <Button type="button" variant="ghost" onClick={() => setShowTemplateModal(false)} className="text-slate-600 hover:bg-slate-200 rounded-xl">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setShowTemplateModal(false)}
+                className="text-slate-600 hover:bg-slate-200 rounded-xl"
+              >
                 Cancelar
               </Button>
-              <Button 
-                type="button" 
-                onClick={handleSaveTemplate} 
-                disabled={isSavingTemplate || !templateName.trim()} 
+              <Button
+                type="button"
+                onClick={handleSaveTemplate}
+                disabled={isSavingTemplate || !templateName.trim()}
                 className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-md shadow-indigo-200"
               >
-                {isSavingTemplate ? <><Loader2 size={16} className="animate-spin mr-2" /> Guardando...</> : 'Guardar'}
+                {isSavingTemplate ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin mr-2" />{" "}
+                    Guardando...
+                  </>
+                ) : (
+                  "Guardar"
+                )}
               </Button>
             </div>
           </div>
