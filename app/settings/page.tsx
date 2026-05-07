@@ -11,10 +11,12 @@ import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { UserManagement } from '@/components/settings/UserManagement';
+import { OrganizationManagement } from '@/components/settings/OrganizationManagement';
+import { Building } from 'lucide-react';
 
 export default function SettingsPage() {
-  const { user, userRole } = useAuth();
-  const [activeTab, setActiveTab] = useState<'roles' | 'users'>('roles');
+  const { user, userRole, userOrganizationId } = useAuth();
+  const [activeTab, setActiveTab] = useState<'roles' | 'users' | 'organizations'>('roles');
   const [roles, setRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
@@ -27,10 +29,15 @@ export default function SettingsPage() {
   const [isDeletingRole, setIsDeletingRole] = useState(false);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || (!userRole)) return;
 
-    const q = query(collection(db, 'roles'));
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+    let qRoles = query(collection(db, 'roles'));
+    if (userRole !== 'admin' && userOrganizationId) {
+      const { where } = require('firebase/firestore');
+      qRoles = query(collection(db, 'roles'), where('organizationId', '==', userOrganizationId));
+    }
+
+    const unsubscribe = onSnapshot(qRoles, (querySnapshot) => {
       const rolesData: any[] = [];
       querySnapshot.forEach((doc) => {
         rolesData.push({ id: doc.id, ...doc.data() });
@@ -43,9 +50,9 @@ export default function SettingsPage() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, userRole, userOrganizationId]);
 
-  if (userRole !== 'admin') {
+  if (userRole !== 'admin' && userRole !== 'org_admin') {
     return (
       <DashboardLayout>
         <div className="flex justify-center items-center h-full">
@@ -82,14 +89,15 @@ export default function SettingsPage() {
           name: roleName,
           description: roleDescription,
         });
-        toast.success("Rol actualizado exitosamente.");
+        toast.success("Cargo actualizado exitosamente.");
       } else {
         await addDoc(collection(db, 'roles'), {
           name: roleName,
           description: roleDescription,
           createdAt: serverTimestamp(),
+          ...(userOrganizationId && userRole !== 'admin' ? { organizationId: userOrganizationId } : {})
         });
-        toast.success("Rol creado exitosamente.");
+        toast.success("Cargo creado exitosamente.");
       }
       setIsModalOpen(false);
     } catch (error) {
@@ -163,10 +171,28 @@ export default function SettingsPage() {
               Usuarios del Sistema
             </div>
           </button>
+          
+          {userRole === 'admin' && (
+            <button
+              onClick={() => setActiveTab('organizations')}
+              className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'organizations'
+                  ? 'border-indigo-600 text-indigo-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Building size={16} />
+                Organizaciones
+              </div>
+            </button>
+          )}
         </div>
       </div>
 
-      {activeTab === 'roles' ? (
+      {activeTab === 'organizations' && userRole === 'admin' ? (
+        <OrganizationManagement />
+      ) : activeTab === 'roles' ? (
         <Card>
           <CardHeader>
             <CardTitle>Cargos (Roles de Proyecto)</CardTitle>

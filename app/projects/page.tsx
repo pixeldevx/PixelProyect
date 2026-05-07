@@ -4,8 +4,8 @@ import React, { useState, useEffect } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, Folder, Clock, CheckCircle, AlertCircle, FileText, Users, X } from 'lucide-react';
-import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, where, or, updateDoc, doc } from 'firebase/firestore';
+import { Plus, Folder, Clock, CheckCircle, AlertCircle, FileText, Users, X, Trash2 } from 'lucide-react';
+import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, where, or, updateDoc, doc, deleteDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import Link from 'next/link';
@@ -13,18 +13,21 @@ import { toast } from 'sonner';
 import Image from 'next/image';
 
 export default function ProjectsPage() {
-  const { user, userRole } = useAuth();
+  const { user, userRole, userOrganizationId } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [organizations, setOrganizations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectDesc, setNewProjectDesc] = useState('');
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [selectedProjectOrgId, setSelectedProjectOrgId] = useState('');
 
   // Edit Team State
   const [editingTeamProjectId, setEditingTeamProjectId] = useState<string | null>(null);
   const [editSelectedMembers, setEditSelectedMembers] = useState<string[]>([]);
+  const [editSelectedOrgId, setEditSelectedOrgId] = useState<string>('');
   const [isSavingTeam, setIsSavingTeam] = useState(false);
 
   useEffect(() => {
@@ -33,6 +36,8 @@ export default function ProjectsPage() {
     let q;
     if (userRole === 'admin') {
       q = query(collection(db, 'projects'));
+    } else if (userRole === 'org_admin' && userOrganizationId) {
+      q = query(collection(db, 'projects'), where('organizationId', '==', userOrganizationId));
     } else {
       const conditions = [
         where('ownerId', '==', user.uid),
@@ -48,6 +53,12 @@ export default function ProjectsPage() {
         or(...conditions)
       );
     }
+    
+    // Everyone needs to know organizations to create projects or assign them
+    const unsubscribeOrgs = onSnapshot(query(collection(db, 'organizations')), (snap) => {
+      const orgsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setOrganizations(orgsData);
+    });
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const projectsData = snapshot.docs.map(doc => ({
@@ -65,7 +76,10 @@ export default function ProjectsPage() {
     });
 
     // Fetch team members for assignment
-    const qTeam = query(collection(db, 'team_members'));
+    let qTeam = query(collection(db, 'team_members'));
+    if (userRole !== 'admin' && userOrganizationId) {
+       qTeam = query(collection(db, 'team_members'), where('organizationId', '==', userOrganizationId));
+    }
     const unsubscribeTeam = onSnapshot(qTeam, (snapshot) => {
       const teamData = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -78,9 +92,10 @@ export default function ProjectsPage() {
 
     return () => {
       unsubscribe();
+      unsubscribeOrgs();
       unsubscribeTeam();
     };
-  }, [user, userRole]);
+  }, [user, userRole, userOrganizationId]);
 
   const toggleMemberSelection = (memberId: string) => {
     setSelectedMembers(prev => 
@@ -93,6 +108,7 @@ export default function ProjectsPage() {
   const handleOpenEditTeam = (project: any) => {
     setEditingTeamProjectId(project.id);
     setEditSelectedMembers(project.assignedTeamMembers || []);
+    setEditSelectedOrgId(project.organizationId || '');
   };
 
   const toggleEditMemberSelection = (memberId: string) => {
@@ -111,15 +127,21 @@ export default function ProjectsPage() {
         .map(id => teamMembers.find(m => m.id === id)?.email)
         .filter(email => !!email);
 
-      await updateDoc(doc(db, 'projects', editingTeamProjectId), {
+      const updateData: any = {
         assignedTeamMembers: editSelectedMembers,
         assignedEmails: assignedEmails
-      });
-      toast.success("Equipo actualizado exitosamente.");
+      };
+
+      if (userRole === 'admin') {
+         updateData.organizationId = editSelectedOrgId;
+      }
+
+      await updateDoc(doc(db, 'projects', editingTeamProjectId), updateData);
+      toast.success("Proyecto actualizado exitosamente.");
       setEditingTeamProjectId(null);
     } catch (error) {
-      console.error("Error updating team:", error);
-      toast.error("Error al actualizar el equipo");
+      console.error("Error updating project:", error);
+      toast.error("Error al actualizar el proyecto");
     } finally {
       setIsSavingTeam(false);
     }
@@ -143,12 +165,14 @@ export default function ProjectsPage() {
         ownerId: user.uid,
         assignedUsers: [],
         assignedTeamMembers: selectedMembers,
-        assignedEmails: assignedEmails
+        assignedEmails: assignedEmails,
+        organizationId: (!userOrganizationId || userRole === 'admin') ? selectedProjectOrgId : userOrganizationId
       });
       setIsCreating(false);
       setNewProjectName('');
       setNewProjectDesc('');
       setSelectedMembers([]);
+      setSelectedProjectOrgId('');
     } catch (error) {
       console.error("Error creating project:", error);
     }
@@ -173,7 +197,23 @@ export default function ProjectsPage() {
   };
 
   const canEditProject = (project: any) => {
-    return userRole === 'admin' || userRole === 'coordinador' || project.ownerId === user?.uid;
+    return userRole === 'admin' || userRole === 'org_admin' || userRole === 'manager' || userRole === 'coordinador' || project.ownerId === user?.uid;
+  };
+
+  const canDeleteProject = (project: any) => {
+    return userRole === 'admin' || (userRole === 'org_admin' && project.organizationId === userOrganizationId) || project.ownerId === user?.uid;
+  };
+
+  const handleDeleteProject = async (projectId: string) => {
+    if (window.confirm("¿Estás seguro de que deseas eliminar este proyecto? Esta acción no se puede deshacer.")) {
+      try {
+        await deleteDoc(doc(db, 'projects', projectId));
+        toast.success("Proyecto eliminado exitosamente.");
+      } catch (error) {
+        console.error("Error al eliminar proyecto:", error);
+        toast.error("Error al eliminar el proyecto");
+      }
+    }
   };
 
   return (
@@ -183,7 +223,7 @@ export default function ProjectsPage() {
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Proyectos</h1>
           <p className="text-slate-500 mt-1">Gestiona tus proyectos y documentos asociados.</p>
         </div>
-        {(userRole === 'admin' || userRole === 'coordinador') && (
+        {(userRole === 'admin' || userRole === 'org_admin' || userRole === 'manager' || userRole === 'coordinador') && (
           <Button onClick={() => setIsCreating(!isCreating)} className="bg-indigo-600 hover:bg-indigo-700 gap-2">
             <Plus size={16} />
             Nuevo Proyecto
@@ -218,6 +258,23 @@ export default function ProjectsPage() {
                   />
                 </div>
               </div>
+
+              {(!userOrganizationId || userRole === 'admin') && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700">Organización *</label>
+                  <select 
+                    value={selectedProjectOrgId}
+                    onChange={(e) => setSelectedProjectOrgId(e.target.value)}
+                    className="w-full h-10 px-3 rounded-md border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-white"
+                    required
+                  >
+                    <option value="">Selecciona una organización</option>
+                    {organizations.map(org => (
+                      <option key={org.id} value={org.id}>{org.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">Asignar Equipo (Opcional)</label>
@@ -276,7 +333,18 @@ export default function ProjectsPage() {
                   <div className="p-2 bg-slate-50 rounded-md border border-slate-100">
                     <Folder className="w-5 h-5 text-indigo-500" />
                   </div>
-                  {getStatusBadge(project.status)}
+                  <div className="flex items-center gap-2">
+                    {getStatusBadge(project.status)}
+                    {canDeleteProject(project) && (
+                      <button 
+                        onClick={() => handleDeleteProject(project.id)}
+                        className="text-slate-400 hover:text-red-500 transition-colors p-1"
+                        title="Eliminar proyecto"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <CardTitle className="text-lg font-semibold text-slate-900 line-clamp-1">{project.name}</CardTitle>
                 <p className="text-sm text-slate-500 line-clamp-2 mt-1 h-10">
@@ -346,12 +414,30 @@ export default function ProjectsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-slate-900">Editar Equipo del Proyecto</h3>
+              <h3 className="text-lg font-semibold text-slate-900">Editar Configuración del Proyecto</h3>
               <button onClick={() => setEditingTeamProjectId(null)} className="text-slate-400 hover:text-slate-600">
                 <X size={20} />
               </button>
             </div>
             
+            {userRole === 'admin' && (
+              <div className="space-y-2 mb-4">
+                <label className="text-sm font-medium text-slate-700">Organización *</label>
+                <select 
+                  value={editSelectedOrgId}
+                  onChange={(e) => setEditSelectedOrgId(e.target.value)}
+                  className="w-full h-10 px-3 rounded-md border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-white"
+                  required
+                >
+                  <option value="">Selecciona una organización</option>
+                  {organizations.map(org => (
+                    <option key={org.id} value={org.id}>{org.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            
+            <label className="text-sm font-medium text-slate-700 mb-2 block">Asignar Equipo</label>
             <div className="border border-slate-200 rounded-md p-3 max-h-60 overflow-y-auto bg-white mb-6">
               {teamMembers.length === 0 ? (
                 <p className="text-sm text-slate-500 text-center py-2">No hay miembros en el equipo. Puedes añadirlos en la sección &quot;Team Performance&quot;.</p>

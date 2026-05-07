@@ -20,9 +20,23 @@ service cloud.firestore {
     function isAdmin() {
       return isAuthenticated() &&
         (
-          (request.auth.token.email == "ing.zambranog@gmail.com" && request.auth.token.email_verified == true) ||
+          (request.auth.token.email == "ing.zambranog@gmail.com") ||
           (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
         );
+    }
+
+    function getUserOrgId() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.organizationId : null;
+    }
+
+    function isOrgAdmin(orgId) {
+       return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'org_admin' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.organizationId == orgId;
+    }
+
+    function isOrgMember(orgId) {
+      return isAuthenticated() && (orgId == null || getUserOrgId() == orgId);
     }
 
     function uidUnchanged() {
@@ -52,12 +66,13 @@ service cloud.firestore {
     // Domain Validators
     // ===============================================================
     function isValidProject(data) {
-      return hasOnlyAllowedFields(['name', 'description', 'status', 'createdAt', 'updatedAt', 'ownerId', 'assignedUsers', 'assignedTeamMembers', 'assignedEmails']) &&
+      return hasOnlyAllowedFields(['name', 'description', 'status', 'createdAt', 'updatedAt', 'ownerId', 'assignedUsers', 'assignedTeamMembers', 'assignedEmails', 'organizationId']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
              (!('description' in data) || (data.description is string && data.description.size() < 1000)) &&
              (!('assignedUsers' in data) || data.assignedUsers is list) &&
              (!('assignedTeamMembers' in data) || data.assignedTeamMembers is list) &&
              (!('assignedEmails' in data) || data.assignedEmails is list) &&
+             (!('organizationId' in data) || data.organizationId == null || data.organizationId is string) &&
              data.status in ['active', 'completed', 'on-hold'] &&
              data.createdAt is timestamp &&
              data.updatedAt is timestamp &&
@@ -144,6 +159,14 @@ service cloud.firestore {
              data.createdBy is string;
     }
 
+    function isValidOrganization(data) {
+      return hasOnlyAllowedFields(['name', 'ownerId', 'createdAt', 'updatedAt']) &&
+             data.name is string && data.name.size() > 0 &&
+             data.ownerId is string &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
     function isValidAlertRule(data) {
       return hasOnlyAllowedFields(['title', 'description', 'type', 'condition', 'threshold', 'thresholdUnit', 'targetProjects', 'targetTasks', 'notificationChannels', 'recipients', 'isActive', 'createdAt', 'updatedAt', 'createdBy']) &&
              data.title is string && data.title.size() > 0 &&
@@ -212,19 +235,27 @@ service cloud.firestore {
       allow delete: if isAuthenticated();
     }
 
-    match /users/{userId} {
+    match /organizations/{orgId} {
       allow read: if isAuthenticated();
-      allow write: if isOwner(userId) || isAdmin() || (isAuthenticated() && resource != null && resource.data.email == request.auth.token.email);
+      allow list: if isAuthenticated();
+      allow create: if (isAdmin() || (isAuthenticated() && request.resource.data.ownerId == request.auth.uid)) && isValidOrganization(request.resource.data);
+      allow update: if (isAdmin() || isOrgAdmin(orgId) || (isAuthenticated() && resource.data.ownerId == request.auth.uid)) && isValidOrganization(request.resource.data) && uidNotModified() && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.ownerId == request.auth.uid);
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (isOwner(userId) || isAdmin() || (resource != null && resource.data.organizationId != null && resource.data.organizationId == getUserOrgId()));
+      allow write: if isOwner(userId) || isAdmin() || (isAuthenticated() && resource != null && (resource.data.email == request.auth.token.email || ('organizationId' in request.resource.data && isOrgAdmin(request.resource.data.organizationId))));
     }
 
     match /roles/{roleId} {
-      allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow read: if isAuthenticated() && (isAdmin() || (resource.data.organizationId == null) || isOrgMember(resource.data.organizationId));
+      allow write: if isAdmin() || (isAuthenticated() && 'organizationId' in request.resource.data && isOrgAdmin(request.resource.data.organizationId));
     }
 
     match /team_members/{memberId} {
-      allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow read: if isAuthenticated() && (isAdmin() || (resource.data.organizationId == null) || isOrgMember(resource.data.organizationId));
+      allow write: if isAdmin() || (isAuthenticated() && 'organizationId' in request.resource.data && isOrgAdmin(request.resource.data.organizationId));
     }
 
     // Allow collectionGroup queries for tasks, rateCards, and activities
@@ -244,19 +275,19 @@ service cloud.firestore {
     match /projects/{projectId} {
       // Allow read for all authenticated users to avoid permission-denied on list queries
       // In a production app, we would use more granular filters in queries
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() && (isAdmin() || isOrgMember(resource.data.organizationId) || isDocOwner());
       allow list: if isAuthenticated();
-      allow get: if isAuthenticated();
+      allow get: if isAuthenticated() && (isAdmin() || isOrgMember(resource.data.organizationId) || isDocOwner() || isAssignedToProject(resource.data));
       
       allow create: if isAuthenticated() && 
                     hasRequiredFields(['name', 'status', 'createdAt', 'updatedAt', 'ownerId']) &&
                     isValidProject(request.resource.data) && 
-                    uidUnchanged();
-      allow update: if isAuthenticated() && (isDocOwner() || isAssignedToProject(resource.data) || isAdmin()) && 
+                    uidUnchanged() && (isAdmin() || !('organizationId' in request.resource.data) || isOrgMember(request.resource.data.organizationId));
+      allow update: if isAuthenticated() && (isDocOwner() || isAssignedToProject(resource.data) || isAdmin() || isOrgAdmin(resource.data.organizationId)) && 
                     isValidProject(request.resource.data) && 
                     uidNotModified() &&
                     request.resource.data.createdAt == resource.data.createdAt;
-      allow delete: if isDocOwner() || isAdmin();
+      allow delete: if isDocOwner() || isAdmin() || isOrgAdmin(resource.data.organizationId);
       
       match /documents/{documentId} {
         allow read: if isAuthenticated();

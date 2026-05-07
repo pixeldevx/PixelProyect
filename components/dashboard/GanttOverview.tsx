@@ -61,7 +61,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 }
 
 export const GanttOverview: React.FC = () => {
-  const { user } = useAuth();
+  const { user, userRole, userOrganizationId } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>('');
   const [tasks, setTasks] = useState<any[]>([]);
@@ -94,21 +94,37 @@ export const GanttOverview: React.FC = () => {
 
   // Fetch all projects
   useEffect(() => {
-    if (!user) return;
-    const q = query(collection(db, 'projects'), orderBy('createdAt', 'desc'));
+    if (!user || !userRole) return;
+    
+    let q;
+    if (userRole === 'admin') {
+      q = query(collection(db, 'projects'), orderBy('createdAt', 'desc'));
+    } else if (userRole === 'org_admin' && userOrganizationId) {
+      q = query(collection(db, 'projects'), where('organizationId', '==', userOrganizationId));
+    } else {
+      q = query(collection(db, 'projects'), where('assignedTeamMembers', 'array-contains', user.uid));
+    }
+    
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Sort in memory if 'where' was used (Firebase limitation)
+      if (userRole !== 'admin') {
+        data.sort((a: any, b: any) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
+      }
       setProjects(data);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'projects');
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, userRole, userOrganizationId]);
 
   // Fetch team members
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, 'team_members'));
+    let q = query(collection(db, 'team_members'));
+    if (userRole !== 'admin' && userOrganizationId) {
+      q = query(collection(db, 'team_members'), where('organizationId', '==', userOrganizationId));
+    }
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setTeamMembers(data);
@@ -116,7 +132,7 @@ export const GanttOverview: React.FC = () => {
       handleFirestoreError(error, OperationType.LIST, 'team_members');
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, userRole, userOrganizationId]);
 
   // Fetch tasks and project details when a project is selected
   useEffect(() => {

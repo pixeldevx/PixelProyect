@@ -1,5 +1,60 @@
 {
   "entities": {
+    "Organization": {
+      "title": "Organization",
+      "description": "An organization that acts as a workspace for users and projects",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["name", "ownerId", "createdAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "System user with auth details",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "org_admin", "manager", "coordinador", "administrativo", "user"] },
+        "organizationId": { "type": "string" },
+        "isPreRegistered": { "type": "boolean" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "lastLoginAt": { "type": "timestamp" }
+      },
+      "required": ["email", "role"]
+    },
+    "TeamMember": {
+      "title": "Team Member",
+      "description": "A user assigned to a workspace",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "roleId": { "type": "string" },
+        "roleName": { "type": "string" },
+        "organizationId": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["email", "name", "roleId"]
+    },
+    "Role": {
+      "title": "Role",
+      "description": "Custom role for a project within an organization",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "permissions": { "type": "array", "items": { "type": "string" } },
+        "organizationId": { "type": "string" },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["name"]
+    },
     "Project": {
       "title": "Project",
       "description": "A project in the system",
@@ -25,6 +80,10 @@
         "updatedAt": {
           "type": "timestamp",
           "description": "When the project was last updated"
+        },
+        "organizationId": {
+          "type": "string",
+          "description": "ID of the organization this project belongs to"
         },
         "ownerId": {
           "type": "string",
@@ -218,6 +277,22 @@
     }
   },
   "firestore": {
+    "/organizations/{organizationId}": {
+      "schema": { "$ref": "#/entities/Organization" },
+      "description": "Stores organizations workspaces"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Stores user system data"
+    },
+    "/team_members/{memberId}": {
+      "schema": { "$ref": "#/entities/TeamMember" },
+      "description": "Stores workspace team members"
+    },
+    "/roles/{roleId}": {
+      "schema": { "$ref": "#/entities/Role" },
+      "description": "Stores custom project roles"
+    },
     "/projects/{projectId}": {
       "schema": { "$ref": "#/entities/Project" },
       "description": "Stores all projects"

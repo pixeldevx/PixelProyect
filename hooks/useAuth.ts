@@ -8,6 +8,7 @@ import { auth, db } from '@/lib/firebase';
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
+  const [userOrganizationId, setUserOrganizationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -15,50 +16,46 @@ export function useAuth() {
     const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
       console.log("Auth state changed, user:", currentUser?.email);
       if (currentUser) {
-        // Check if they are in team_members or admin
         try {
           const userEmail = currentUser.email?.toLowerCase();
           const isAdmin = userEmail === 'ing.zambranog@gmail.com';
-          console.log("Is admin:", isAdmin);
           
-          if (!isAdmin) {
-            const { collection, query, where, getDocs } = await import('firebase/firestore');
-            const q = query(collection(db, 'team_members'), where('email', '==', userEmail));
-            const querySnapshot = await getDocs(q);
-            console.log("Team members query snapshot empty:", querySnapshot.empty);
-            
-            if (querySnapshot.empty) {
-              // Not in team_members, sign out and throw error
-              await signOut(auth);
-              setUser(null);
-              setLoading(false);
-              return;
-            }
-          }
-          
-          // Check if there's a pre-registered user document with this email
           let userRole = isAdmin ? 'admin' : 'user';
+          let orgId = null;
+
           const { collection, query, where, getDocs, deleteDoc } = await import('firebase/firestore');
+
+          // Check if there's a pre-registered user document with this email
           const qUsers = query(collection(db, 'users'), where('email', '==', currentUser.email?.toLowerCase()));
           const usersSnapshot = await getDocs(qUsers);
           
           if (!usersSnapshot.empty) {
-            // Find if any of these is a pre-registered user (different ID than current uid)
             for (const docSnap of usersSnapshot.docs) {
               if (docSnap.id !== currentUser.uid) {
                 const data = docSnap.data();
-                if (data.role) {
-                  userRole = data.role;
-                }
-                // Delete the pre-registered document
+                if (data.role) userRole = data.role;
+                if (data.organizationId) orgId = data.organizationId;
                 await deleteDoc(docSnap.ref);
               } else {
-                // If the document already exists with the correct UID, keep its role
                 const data = docSnap.data();
-                if (data.role) {
-                  userRole = data.role;
-                }
+                if (data.role) userRole = data.role;
+                if (data.organizationId) orgId = data.organizationId;
               }
+            }
+          }
+
+          if (!isAdmin && !orgId && userRole !== 'admin') {
+            // Check team_members if users doc didn't give orgId
+            const q = query(collection(db, 'team_members'), where('email', '==', userEmail));
+            const querySnapshot = await getDocs(q);
+            
+            if (querySnapshot.empty) {
+              await signOut(auth);
+              setUser(null);
+              setLoading(false);
+              return;
+            } else {
+              orgId = querySnapshot.docs[0].data().organizationId || null;
             }
           }
 
@@ -70,22 +67,24 @@ export function useAuth() {
             displayName: currentUser.displayName || currentUser.email?.split('@')[0],
             photoURL: currentUser.photoURL,
             lastLoginAt: serverTimestamp(),
-            role: userRole, // Ensure role is preserved or set from pre-registration
+            role: userRole,
+            ...(orgId ? { organizationId: orgId } : {})
           }, { merge: true });
-          console.log("User profile saved/updated with role:", userRole);
           
           setUser(currentUser);
           setUserRole(userRole);
+          setUserOrganizationId(orgId);
         } catch (error) {
           console.error("Error verifying user or saving profile:", error);
-          // If there's an error (e.g., permission denied), we should probably log them out
           await signOut(auth);
           setUser(null);
           setUserRole(null);
+          setUserOrganizationId(null);
         }
       } else {
         setUser(null);
         setUserRole(null);
+        setUserOrganizationId(null);
       }
       
       setLoading(false);
@@ -147,5 +146,5 @@ export function useAuth() {
     }
   };
 
-  return { user, userRole, loading, login, loginWithEmail, registerWithEmail, logout };
+  return { user, userRole, userOrganizationId, loading, login, loginWithEmail, registerWithEmail, logout };
 }
