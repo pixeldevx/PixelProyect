@@ -111,6 +111,18 @@ export const createUserWithEmailAndPassword = async (
   return { user: auth.currentUser };
 };
 
+export const resetPasswordForEmail = async (
+  _auth: SupabaseAuthShim,
+  email: string,
+  redirectTo: string
+) => {
+  const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo,
+  });
+  if (error) throw error;
+  return data;
+};
+
 export const signOut = async (_auth?: SupabaseAuthShim) => {
   const { error } = await supabase.auth.signOut();
   if (error) throw error;
@@ -129,6 +141,13 @@ export const updateProfile = async (
   });
   if (error) throw error;
   auth.currentUser = mapUser(data.user);
+};
+
+export const updatePassword = async (password: string) => {
+  const { data, error } = await supabase.auth.updateUser({ password });
+  if (error) throw error;
+  auth.currentUser = mapUser(data.user);
+  return { user: auth.currentUser };
 };
 
 export const deleteUser = async (_user?: User | null) => {

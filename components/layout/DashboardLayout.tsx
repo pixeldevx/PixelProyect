@@ -26,12 +26,14 @@ import { ProfileModal } from '@/components/settings/ProfileModal';
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { user, userRole, loading, loginWithEmail, registerWithEmail, logout } = useAuth();
+  const { user, userRole, loading, loginWithEmail, registerWithEmail, requestPasswordReset, logout } = useAuth();
   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
+  const [isRecoveringPassword, setIsRecoveringPassword] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [authMessage, setAuthMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
@@ -39,10 +41,14 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
+    setAuthMessage('');
     setIsSubmitting(true);
     
     try {
-      if (isRegistering) {
+      if (isRecoveringPassword) {
+        await requestPasswordReset(email);
+        setAuthMessage('Te enviamos un enlace para restablecer tu contraseña. Revisa tu correo.');
+      } else if (isRegistering) {
         await registerWithEmail(email, password);
       } else {
         await loginWithEmail(email, password);
@@ -81,6 +87,12 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
             <p className="text-slate-500">Inicia sesión para gestionar tus proyectos y documentos.</p>
           </div>
 
+          {authMessage && (
+            <div className="mb-6 p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm rounded-lg text-center">
+              {authMessage}
+            </div>
+          )}
+
           {authError && (
             <div className="mb-6 p-3 bg-red-50 border border-red-200 text-red-600 text-sm rounded-lg text-center">
               {authError}
@@ -104,40 +116,63 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
                 />
               </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña</label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Lock className="h-5 w-5 text-slate-400" />
+            {!isRecoveringPassword && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Lock className="h-5 w-5 text-slate-400" />
+                  </div>
+                  <input
+                    type="password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                    placeholder="••••••••"
+                  />
                 </div>
-                <input
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  placeholder="••••••••"
-                />
               </div>
-            </div>
+            )}
             <Button 
               type="submit" 
               disabled={isSubmitting}
               className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5"
             >
-              {isSubmitting ? 'Procesando...' : (isRegistering ? 'Configurar contraseña' : 'Iniciar sesión')}
+              {isSubmitting ? 'Procesando...' : isRecoveringPassword ? 'Enviar enlace' : (isRegistering ? 'Configurar contraseña' : 'Iniciar sesión')}
             </Button>
           </form>
 
           <div className="mt-6 text-center text-sm text-slate-600">
-            {isRegistering ? '¿Ya tienes contraseña?' : '¿Primera vez iniciando sesión?'}
+            {isRecoveringPassword ? '¿Recordaste tu contraseña?' : isRegistering ? '¿Ya tienes contraseña?' : '¿Primera vez iniciando sesión?'}
             <button 
-              onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }}
+              onClick={() => {
+                setIsRegistering(isRecoveringPassword ? false : !isRegistering);
+                setIsRecoveringPassword(false);
+                setAuthError('');
+                setAuthMessage('');
+              }}
               className="ml-1 text-indigo-600 hover:text-indigo-800 font-medium"
             >
-              {isRegistering ? 'Inicia sesión' : 'Configura tu contraseña'}
+              {isRecoveringPassword ? 'Inicia sesión' : isRegistering ? 'Inicia sesión' : 'Configura tu contraseña'}
             </button>
           </div>
+
+          {!isRegistering && !isRecoveringPassword && (
+            <div className="mt-3 text-center text-sm">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRecoveringPassword(true);
+                  setAuthError('');
+                  setAuthMessage('');
+                }}
+                className="text-slate-500 hover:text-indigo-700 font-medium"
+              >
+                ¿Olvidaste tu contraseña?
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );

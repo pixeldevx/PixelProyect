@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from 'react';
-import { User, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword } from '@/lib/supabase/auth-shim';
+import { User, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword, resetPasswordForEmail } from '@/lib/supabase/auth-shim';
 import { doc, setDoc, serverTimestamp } from '@/lib/supabase/document-store';
 import { auth, db } from '@/lib/backend';
 
@@ -139,5 +139,10 @@ export function useAuth() {
     }
   };
 
-  return { user, userRole, userOrganizationId, loading, login, loginWithEmail, registerWithEmail, logout };
+  const requestPasswordReset = async (email: string) => {
+    const redirectTo = `${window.location.origin}/reset-password`;
+    await resetPasswordForEmail(auth, email, redirectTo);
+  };
+
+  return { user, userRole, userOrganizationId, loading, login, loginWithEmail, registerWithEmail, requestPasswordReset, logout };
 }
