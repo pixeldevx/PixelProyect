@@ -7,9 +7,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, ListTodo, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign } from 'lucide-react';
-import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-import { db, storage } from '@/lib/firebase';
+import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment } from '@/lib/supabase/document-store';
+import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
+import { db, storage } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import Link from 'next/link';
 import { ProjectRateCards } from '@/components/projects/ProjectRateCards';
@@ -26,7 +26,7 @@ import { AssignMemberModal } from '@/components/projects/modals/AssignMemberModa
 import { RemoveMemberModal } from '@/components/projects/modals/RemoveMemberModal';
 import { CompleteTaskModal } from '@/components/projects/modals/CompleteTaskModal';
 import { ProjectOrgChart } from '@/components/projects/ProjectOrgChart';
-import { handleFirestoreError, OperationType } from '@/lib/firebase-utils';
+import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 import Image from 'next/image';
 
@@ -81,7 +81,7 @@ export default function ProjectDetailsPage() {
         router.push('/projects');
       }
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `projects/${projectId}`);
+      handleDataError(error, OperationType.GET, `projects/${projectId}`);
     });
 
     // Listen to documents
@@ -94,7 +94,7 @@ export default function ProjectDetailsPage() {
       setDocuments(docsData);
       setLoading(false);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, `projects/${projectId}/documents`);
+      handleDataError(error, OperationType.LIST, `projects/${projectId}/documents`);
       setLoading(false);
     });
 
@@ -107,7 +107,7 @@ export default function ProjectDetailsPage() {
       }));
       setTasks(tasksData);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, `projects/${projectId}/tasks`);
+      handleDataError(error, OperationType.LIST, `projects/${projectId}/tasks`);
     });
 
     // Fetch all team members
@@ -119,7 +119,7 @@ export default function ProjectDetailsPage() {
       }));
       setTeamMembers(teamData);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'team_members');
+      handleDataError(error, OperationType.LIST, 'team_members');
     });
 
     // Listen to rate cards
@@ -131,7 +131,7 @@ export default function ProjectDetailsPage() {
       }));
       setRateCards(data);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, `projects/${projectId}/rateCards`);
+      handleDataError(error, OperationType.LIST, `projects/${projectId}/rateCards`);
     });
 
     // Listen to budget lines
@@ -143,7 +143,7 @@ export default function ProjectDetailsPage() {
       }));
       setBudgetLines(data);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, `projects/${projectId}/budgetLines`);
+      handleDataError(error, OperationType.LIST, `projects/${projectId}/budgetLines`);
     });
 
     return () => {
@@ -171,7 +171,7 @@ export default function ProjectDetailsPage() {
         await deleteObject(fileRef);
       }
       
-      // Delete from Firestore
+      // Delete from Supabase
       await deleteDoc(doc(db, 'projects', projectId, 'documents', documentToDelete.id));
       
       setDocumentToDelete(null);
@@ -202,7 +202,7 @@ export default function ProjectDetailsPage() {
         return;
       }
 
-      let status = 'in-progress';
+      let status = 'in_progress';
       if (newProgress === 0) status = 'todo';
       if (newProgress === 100) status = 'completed';
 
@@ -292,7 +292,7 @@ export default function ProjectDetailsPage() {
         return;
       }
 
-      let status = 'in-progress';
+      let status = 'in_progress';
       if (progress === 0) status = 'todo';
       if (progress === 100) status = 'completed';
 
@@ -341,7 +341,7 @@ export default function ProjectDetailsPage() {
       const finalValue = Math.min(simulatedValue, task.indicatorValue);
       
       await handleUpdateTaskValue(taskId, finalValue, task);
-      toast.error(`Sincronizado con éxito. Nuevo valor: ${finalValue} ${task.indicator}`);
+      toast.success(`Sincronizado con éxito. Nuevo valor: ${finalValue} ${task.indicator}`);
     } catch (error: any) {
       console.error("Error syncing task:", error);
       toast.error(`Error al sincronizar: ${error.message}`);
@@ -542,7 +542,7 @@ export default function ProjectDetailsPage() {
       // Update local state first for immediate feedback
       setTasks(newTasks);
       
-      // Update Firestore for each task that changed its order
+      // Update Supabase for each task that changed its order
       const promises = newTasks.map((task) => {
         return updateDoc(doc(db, 'projects', projectId, 'tasks', task.id), {
           displayOrder: task.displayOrder,

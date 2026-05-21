@@ -6,8 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Plus, Trash2, Edit2, AlertCircle, Shield, Users } from 'lucide-react';
-import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc, where } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { UserManagement } from '@/components/settings/UserManagement';
@@ -33,7 +33,6 @@ export default function SettingsPage() {
 
     let qRoles = query(collection(db, 'roles'));
     if (userRole !== 'admin' && userOrganizationId) {
-      const { where } = require('firebase/firestore');
       qRoles = query(collection(db, 'roles'), where('organizationId', '==', userOrganizationId));
     }
 

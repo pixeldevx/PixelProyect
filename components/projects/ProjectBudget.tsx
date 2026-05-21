@@ -3,8 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Plus, Trash2, DollarSign, TrendingUp, AlertCircle, X } from 'lucide-react';
-import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
 

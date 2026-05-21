@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, orderBy, getDoc } from 'firebase/firestore';
-import { db, auth } from '@/lib/firebase';
-import { handleFirestoreError, OperationType } from '@/lib/firebase-utils';
+import { collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, orderBy, getDoc } from '@/lib/supabase/document-store';
+import { db, auth } from '@/lib/backend';
+import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Plus, Trash2, Edit, FileText, DollarSign, TrendingUp, AlertCircle } from 'lucide-react';
@@ -70,7 +70,7 @@ export default function ProjectBilling({ projectId, rateCards, tasks }: ProjectB
       })) as Invoice[];
       setInvoices(invoiceData);
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `projects/${projectId}/invoices`);
+      handleDataError(error, OperationType.GET, `projects/${projectId}/invoices`);
     });
 
     const qBudget = query(collection(db, `projects/${projectId}/budgetLines`));
@@ -81,7 +81,7 @@ export default function ProjectBilling({ projectId, rateCards, tasks }: ProjectB
       }));
       setBudgetLines(data);
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `projects/${projectId}/budgetLines`);
+      handleDataError(error, OperationType.GET, `projects/${projectId}/budgetLines`);
     });
 
     return () => {
@@ -157,7 +157,7 @@ export default function ProjectBilling({ projectId, rateCards, tasks }: ProjectB
       setEditingInvoice(null);
       setFormData({ invoiceNumber: '', description: '', amount: '', date: new Date().toISOString().split('T')[0], status: 'pending' });
     } catch (error) {
-      handleFirestoreError(error, editingInvoice ? OperationType.UPDATE : OperationType.CREATE, `projects/${projectId}/invoices`);
+      handleDataError(error, editingInvoice ? OperationType.UPDATE : OperationType.CREATE, `projects/${projectId}/invoices`);
       toast.error('Error al guardar la factura');
     }
   };
@@ -168,7 +168,7 @@ export default function ProjectBilling({ projectId, rateCards, tasks }: ProjectB
       await deleteDoc(doc(db, `projects/${projectId}/invoices`, id));
       toast.success('Factura eliminada');
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `projects/${projectId}/invoices/${id}`);
+      handleDataError(error, OperationType.DELETE, `projects/${projectId}/invoices/${id}`);
       toast.error('Error al eliminar la factura');
     }
   };

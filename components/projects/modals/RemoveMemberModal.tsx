@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { db } from '@/lib/firebase';
-import { doc, updateDoc, arrayRemove } from 'firebase/firestore';
+import { db } from '@/lib/backend';
+import { doc, updateDoc, arrayRemove } from '@/lib/supabase/document-store';
 import { toast } from 'sonner';
 
 interface RemoveMemberModalProps {

@@ -2,9 +2,9 @@ import React, { useState, useRef } from 'react';
 import Image from 'next/image';
 import { Button } from '@/components/ui/button';
 import { User as UserIcon, X, Camera } from 'lucide-react';
-import { doc, updateDoc } from 'firebase/firestore';
-import { updateProfile } from 'firebase/auth';
-import { db, auth } from '@/lib/firebase';
+import { doc, updateDoc } from '@/lib/supabase/document-store';
+import { updateProfile } from '@/lib/supabase/auth-shim';
+import { db, auth } from '@/lib/backend';
 import { toast } from 'sonner';
 import { uploadProfilePicture } from '@/lib/storage-utils';
 
@@ -43,7 +43,7 @@ export function ProfileModal({ user, isOpen, onClose }: ProfileModalProps) {
         uploadedPhotoURL = await uploadProfilePicture(user.uid, photoFile);
       }
 
-      // Update Firebase Auth Profile
+      // Update Supabase Auth Profile
       if (auth.currentUser) {
         await updateProfile(auth.currentUser, {
           displayName: displayName,
@@ -51,7 +51,7 @@ export function ProfileModal({ user, isOpen, onClose }: ProfileModalProps) {
         });
       }
 
-      // Update Firestore User Document
+      // Update Supabase User Document
       const userRef = doc(db, 'users', user.uid);
       await updateDoc(userRef, {
         displayName: displayName,

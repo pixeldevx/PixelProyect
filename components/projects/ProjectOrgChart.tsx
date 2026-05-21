@@ -16,10 +16,10 @@ import {
 import '@xyflow/react/dist/style.css';
 import { Button } from '@/components/ui/button';
 import { Save, Plus, Trash2, Users } from 'lucide-react';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { doc, getDoc, setDoc } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
 import { toast } from 'sonner';
-import { handleFirestoreError, OperationType } from '@/lib/firebase-utils';
+import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { OrgChartNode } from './OrgChartNode';
 
 interface ProjectOrgChartProps {
@@ -99,7 +99,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
         }
       } catch (error) {
         console.error("Error fetching org chart:", error);
-        handleFirestoreError(error, OperationType.GET, `projects/${projectId}/orgChart/data`);
+        handleDataError(error, OperationType.GET, `projects/${projectId}/orgChart/data`);
       } finally {
         setIsLoading(false);
       }
@@ -135,7 +135,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
     } catch (error: any) {
       console.error("Error saving org chart:", error);
       toast.error(`Error al guardar: ${error.message}`);
-      handleFirestoreError(error, OperationType.WRITE, `projects/${projectId}/orgChart/data`);
+      handleDataError(error, OperationType.WRITE, `projects/${projectId}/orgChart/data`);
     } finally {
       setIsSaving(false);
     }

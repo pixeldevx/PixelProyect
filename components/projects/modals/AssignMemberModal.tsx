@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { db } from '@/lib/firebase';
-import { doc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { db } from '@/lib/backend';
+import { doc, updateDoc, arrayUnion } from '@/lib/supabase/document-store';
 import { toast } from 'sonner';
 
 interface AssignMemberModalProps {

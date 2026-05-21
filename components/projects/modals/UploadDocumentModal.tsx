@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { Upload, X, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { db, storage } from '@/lib/firebase';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db, storage } from '@/lib/backend';
+import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
+import { collection, addDoc, serverTimestamp } from '@/lib/supabase/document-store';
 import { toast } from 'sonner';
 
 interface UploadDocumentModalProps {
@@ -60,7 +60,7 @@ export function UploadDocumentModal({ isOpen, onClose, projectId, user }: Upload
       const downloadURL = await getDownloadURL(snapshot.ref);
       setUploadProgress(75);
       
-      // Save document metadata to Firestore
+      // Save document metadata to Supabase
       await addDoc(collection(db, 'projects', projectId, 'documents'), {
         projectId: projectId,
         name: docName,

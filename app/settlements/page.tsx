@@ -6,8 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { FileText, Search, ExternalLink, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { collection, query, onSnapshot, where, or } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { collection, query, onSnapshot, where, or } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import Link from 'next/link';
 

@@ -1,9 +1,9 @@
 "use client"
 
 import { useState, useEffect } from 'react';
-import { User, signInWithPopup, GoogleAuthProvider, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebase';
+import { User, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword } from '@/lib/supabase/auth-shim';
+import { doc, setDoc, serverTimestamp } from '@/lib/supabase/document-store';
+import { auth, db } from '@/lib/backend';
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
@@ -21,9 +21,9 @@ export function useAuth() {
           const isAdmin = userEmail === 'ing.zambranog@gmail.com';
           
           let userRole = isAdmin ? 'admin' : 'user';
-          let orgId = null;
+          let orgId: string | null = null;
 
-          const { collection, query, where, getDocs, deleteDoc } = await import('firebase/firestore');
+          const { collection, query, where, getDocs, deleteDoc } = await import('@/lib/supabase/document-store');
 
           // Check if there's a pre-registered user document with this email
           const qUsers = query(collection(db, 'users'), where('email', '==', currentUser.email?.toLowerCase()));
@@ -59,7 +59,7 @@ export function useAuth() {
             }
           }
 
-          // Save or update user profile in Firestore
+          // Save or update user profile in Supabase.
           const userRef = doc(db, 'users', currentUser.uid);
           await setDoc(userRef, {
             uid: currentUser.uid,
@@ -94,13 +94,7 @@ export function useAuth() {
   }, []);
 
   const login = async () => {
-    const provider = new GoogleAuthProvider();
-    try {
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error("Error signing in with Google", error);
-      throw error;
-    }
+    throw new Error('El acceso con proveedores externos fue deshabilitado. Usa correo y contraseña con Supabase.');
   };
 
   const loginWithEmail = async (email: string, password: string) => {
@@ -114,21 +108,20 @@ export function useAuth() {
 
   const registerWithEmail = async (email: string, password: string) => {
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      await createUserWithEmailAndPassword(auth, email, password);
       
       // Check if they are in team_members or admin
       const userEmail = email.toLowerCase();
       const isAdmin = userEmail === 'ing.zambranog@gmail.com';
       
       if (!isAdmin) {
-        const { collection, query, where, getDocs } = await import('firebase/firestore');
+        const { collection, query, where, getDocs } = await import('@/lib/supabase/document-store');
         const q = query(collection(db, 'team_members'), where('email', '==', userEmail));
         const querySnapshot = await getDocs(q);
         
         if (querySnapshot.empty) {
-          // Not in team_members, delete account and throw error
-          const { deleteUser } = await import('firebase/auth');
-          await deleteUser(userCredential.user);
+          // Supabase Auth user deletion requires a trusted server key.
+          await signOut(auth);
           throw new Error('Tu correo no está registrado en el equipo. Contacta al administrador.');
         }
       }

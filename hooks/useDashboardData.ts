@@ -1,8 +1,8 @@
 "use client"
 
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, getDocs, where } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { collection, query, onSnapshot, getDocs, where } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 
 export interface DashboardMetrics {

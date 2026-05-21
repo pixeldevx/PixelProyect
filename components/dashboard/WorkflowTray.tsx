@@ -1,14 +1,14 @@
 'use client'
 
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot, doc, updateDoc, arrayUnion, Timestamp, writeBatch, increment } from 'firebase/firestore';
-import { db, auth } from '@/lib/firebase';
+import { collection, query, where, onSnapshot, doc, updateDoc, arrayUnion, Timestamp, writeBatch, increment } from '@/lib/supabase/document-store';
+import { db, auth } from '@/lib/backend';
 import { CheckCircle2, XCircle, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, AlertCircle, X, ClipboardList, Play, Pause } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { TaskDocumentsViewer } from '@/components/projects/TaskDocumentsViewer';
-import { handleFirestoreError, OperationType } from '@/lib/firebase-utils';
+import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 
 import { useAuth } from '@/hooks/useAuth';
@@ -45,7 +45,7 @@ export default function WorkflowTray() {
       // First, get the current user's team_member ID
       const fetchUserTeamMemberId = async () => {
         try {
-          const { getDocs } = await import('firebase/firestore');
+          const { getDocs } = await import('@/lib/supabase/document-store');
           const qTeam = query(collection(db, 'team_members'), where('email', '==', user.email));
           const querySnapshot = await getDocs(qTeam);
           
@@ -105,13 +105,13 @@ export default function WorkflowTray() {
                   setLoading(false);
                 }
               }, (error) => {
-                handleFirestoreError(error, OperationType.GET, `projects/${projectId}/tasks`);
+                handleDataError(error, OperationType.GET, `projects/${projectId}/tasks`);
               });
               
               taskUnsubscribes.push(unsubTask);
             });
           }, (error) => {
-            handleFirestoreError(error, OperationType.LIST, 'projects');
+            handleDataError(error, OperationType.LIST, 'projects');
             setLoading(false);
           });
 
@@ -298,7 +298,7 @@ export default function WorkflowTray() {
 
     if (type === 'approve' && currentStep?.assignsNextStep) {
       try {
-        const { getDoc } = await import('firebase/firestore');
+        const { getDoc } = await import('@/lib/supabase/document-store');
         const projectRef = doc(db, 'projects', task.projectId);
         const projectSnap = await getDoc(projectRef);
         
@@ -307,7 +307,7 @@ export default function WorkflowTray() {
           const assignedMemberIds = projectData.assignedTeamMembers || [];
           
           if (assignedMemberIds.length > 0) {
-            const { getDocs } = await import('firebase/firestore');
+            const { getDocs } = await import('@/lib/supabase/document-store');
             const teamQ = query(collection(db, 'team_members'), where('__name__', 'in', assignedMemberIds));
             const teamSnap = await getDocs(teamQ);
             const members = teamSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
