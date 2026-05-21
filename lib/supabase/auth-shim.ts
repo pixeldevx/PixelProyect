@@ -92,25 +92,6 @@ export const signInWithEmailAndPassword = async (
   return { user: auth.currentUser };
 };
 
-export const createUserWithEmailAndPassword = async (
-  _auth: SupabaseAuthShim,
-  email: string,
-  password: string
-) => {
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      data: {
-        displayName: email.split('@')[0],
-      },
-    },
-  });
-  if (error) throw error;
-  auth.currentUser = mapUser(data.user);
-  return { user: auth.currentUser };
-};
-
 export const resetPasswordForEmail = async (
   _auth: SupabaseAuthShim,
   email: string,

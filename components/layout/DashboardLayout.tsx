@@ -26,11 +26,10 @@ import { ProfileModal } from '@/components/settings/ProfileModal';
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { user, userRole, loading, loginWithEmail, registerWithEmail, requestPasswordReset, logout } = useAuth();
+  const { user, userRole, loading, accessError, loginWithEmail, requestPasswordReset, logout } = useAuth();
   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [isRegistering, setIsRegistering] = useState(false);
   const [isRecoveringPassword, setIsRecoveringPassword] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authMessage, setAuthMessage] = useState('');
@@ -48,16 +47,23 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
       if (isRecoveringPassword) {
         await requestPasswordReset(email);
         setAuthMessage('Te enviamos un enlace para restablecer tu contraseña. Revisa tu correo.');
-      } else if (isRegistering) {
-        await registerWithEmail(email, password);
       } else {
         await loginWithEmail(email, password);
       }
     } catch (error: any) {
       console.error("Auth error:", error);
-      if (error.code === 'auth/invalid-credential' || error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+      const message = String(error.message || '');
+      if (
+        error.code === 'auth/invalid-credential' ||
+        error.code === 'auth/user-not-found' ||
+        error.code === 'auth/wrong-password' ||
+        error.code === 'invalid_credentials' ||
+        /invalid login credentials/i.test(message)
+      ) {
         setAuthError('Correo o contraseña incorrectos.');
-      } else if (error.code === 'auth/email-already-in-use') {
+      } else if (error.code === 'email_not_confirmed' || /email not confirmed/i.test(message)) {
+        setAuthError('El correo todavía no está confirmado en Supabase.');
+      } else if (error.code === 'auth/email-already-in-use' || /already registered/i.test(message)) {
         setAuthError('El correo ya está registrado. Por favor, inicia sesión.');
       } else if (error.code === 'auth/weak-password') {
         setAuthError('La contraseña debe tener al menos 6 caracteres.');
@@ -76,6 +82,8 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
+    const visibleAuthError = authError || accessError;
+
     return (
       <div className="flex h-screen w-full items-center justify-center bg-slate-50 p-4">
         <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8">
@@ -93,9 +101,9 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
             </div>
           )}
 
-          {authError && (
+          {visibleAuthError && (
             <div className="mb-6 p-3 bg-red-50 border border-red-200 text-red-600 text-sm rounded-lg text-center">
-              {authError}
+              {visibleAuthError}
             </div>
           )}
 
@@ -139,40 +147,23 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
               disabled={isSubmitting}
               className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5"
             >
-              {isSubmitting ? 'Procesando...' : isRecoveringPassword ? 'Enviar enlace' : (isRegistering ? 'Configurar contraseña' : 'Iniciar sesión')}
+              {isSubmitting ? 'Procesando...' : isRecoveringPassword ? 'Enviar enlace' : 'Iniciar sesión'}
             </Button>
           </form>
 
           <div className="mt-6 text-center text-sm text-slate-600">
-            {isRecoveringPassword ? '¿Recordaste tu contraseña?' : isRegistering ? '¿Ya tienes contraseña?' : '¿Primera vez iniciando sesión?'}
+            {isRecoveringPassword ? '¿Recordaste tu contraseña?' : '¿Olvidaste tu contraseña?'}
             <button 
               onClick={() => {
-                setIsRegistering(isRecoveringPassword ? false : !isRegistering);
-                setIsRecoveringPassword(false);
+                setIsRecoveringPassword(!isRecoveringPassword);
                 setAuthError('');
                 setAuthMessage('');
               }}
               className="ml-1 text-indigo-600 hover:text-indigo-800 font-medium"
             >
-              {isRecoveringPassword ? 'Inicia sesión' : isRegistering ? 'Inicia sesión' : 'Configura tu contraseña'}
+              {isRecoveringPassword ? 'Inicia sesión' : 'Enviar enlace'}
             </button>
           </div>
-
-          {!isRegistering && !isRecoveringPassword && (
-            <div className="mt-3 text-center text-sm">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsRecoveringPassword(true);
-                  setAuthError('');
-                  setAuthMessage('');
-                }}
-                className="text-slate-500 hover:text-indigo-700 font-medium"
-              >
-                ¿Olvidaste tu contraseña?
-              </button>
-            </div>
-          )}
         </div>
       </div>
     );
