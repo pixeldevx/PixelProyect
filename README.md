@@ -11,7 +11,8 @@ Aplicativo de gestión de proyectos, tareas, documentos, presupuesto, facturaci�
    `supabase/migrations/0002_seed_global_admin.sql` y
    `supabase/migrations/0003_manual_user_access.sql`,
    `supabase/migrations/0004_seed_functional_defaults.sql`,
-   `supabase/migrations/0005_document_collection_views.sql`
+   `supabase/migrations/0005_document_collection_views.sql`,
+   `supabase/migrations/0006_harden_app_document_privileges.sql`
 2. En Vercel, abre el proyecto y configura estas variables en `Settings > Environment Variables`:
    `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET`, `SUPABASE_SERVICE_ROLE_KEY` y `NEXT_PUBLIC_SITE_URL`.
 3. Habilita autenticación por correo y contraseña en Supabase Auth.
@@ -38,6 +39,7 @@ La `SUPABASE_SERVICE_ROLE_KEY` solo debe existir en Vercel o en un entorno servi
 La tabla de usuarios se alimenta desde Supabase Auth, muestra el estado de invitación/confirmación y permite eliminar usuarios desde el administrador global.
 Los cargos base y el registro de módulos funcionales se crean en Supabase con `0004_seed_functional_defaults.sql`.
 Las vistas de lectura para revisar cada módulo desde Supabase se crean con `0005_document_collection_views.sql`.
+Los privilegios de `app_documents` y de las vistas `app_*` se restringen a usuarios autenticados con `0006_harden_app_document_privileges.sql`.
 
 ## Administrador Inicial
 
