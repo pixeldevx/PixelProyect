@@ -555,7 +555,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
         {/* Right side: Gantt Chart */}
         <div className="flex-1 overflow-hidden bg-white">
-          <div className="h-full overflow-x-auto scrollbar-thin scrollbar-thumb-slate-200">
+          <div className="project-gantt-timeline-only h-full overflow-x-auto scrollbar-thin scrollbar-thumb-slate-200">
             <Gantt
               tasks={ganttTasks}
               viewMode={viewMode}

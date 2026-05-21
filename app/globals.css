@@ -91,3 +91,10 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer components {
+  .project-gantt-timeline-only ._3_ygE,
+  .project-gantt-timeline-only ._3ZbQT {
+    display: none !important;
+  }
+}
