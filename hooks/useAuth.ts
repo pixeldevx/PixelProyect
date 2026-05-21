@@ -1,11 +1,25 @@
 "use client"
 
-import { useState, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, signOut, signInWithEmailAndPassword, resetPasswordForEmail } from '@/lib/supabase/auth-shim';
 import { doc, setDoc, serverTimestamp } from '@/lib/supabase/document-store';
 import { auth, db } from '@/lib/backend';
 
-export function useAuth() {
+type AuthContextValue = {
+  user: User | null;
+  userRole: string | null;
+  userOrganizationId: string | null;
+  loading: boolean;
+  accessError: string;
+  login: () => Promise<void>;
+  loginWithEmail: (email: string, password: string) => Promise<void>;
+  requestPasswordReset: (email: string) => Promise<void>;
+  logout: () => Promise<void>;
+};
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+function useAuthState(): AuthContextValue {
   const [user, setUser] = useState<User | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [userOrganizationId, setUserOrganizationId] = useState<string | null>(null);
@@ -125,4 +139,20 @@ export function useAuth() {
   };
 
   return { user, userRole, userOrganizationId, loading, accessError, login, loginWithEmail, requestPasswordReset, logout };
+}
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const value = useAuthState();
+
+  return React.createElement(AuthContext.Provider, { value }, children);
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+
+  if (!context) {
+    throw new Error('useAuth debe usarse dentro de AuthProvider.');
+  }
+
+  return context;
 }
