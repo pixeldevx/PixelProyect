@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import Image from 'next/image';
@@ -36,6 +36,14 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [showLoadingRecovery, setShowLoadingRecovery] = useState(false);
+
+  useEffect(() => {
+    if (!loading) return;
+
+    const timeoutId = window.setTimeout(() => setShowLoadingRecovery(true), 8000);
+    return () => window.clearTimeout(timeoutId);
+  }, [loading]);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,7 +86,37 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   };
 
   if (loading) {
-    return <div className="flex h-screen w-full items-center justify-center">Cargando...</div>;
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-slate-50 px-4">
+        <div className="text-center space-y-4">
+          <div className="text-slate-900">Cargando...</div>
+          {showLoadingRecovery && (
+            <div className="space-y-3">
+              <p className="text-sm text-slate-500 max-w-sm">
+                La sesión está tardando más de lo normal.
+              </p>
+              <div className="flex justify-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => window.location.reload()}
+                  className="border-slate-200 text-slate-700 hover:bg-slate-50"
+                >
+                  Reintentar
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void logout()}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                >
+                  Cerrar sesión
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
 
   if (!user) {

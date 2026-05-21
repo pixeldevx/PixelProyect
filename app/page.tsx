@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
@@ -18,8 +18,9 @@ import {
 } from 'lucide-react';
 
 export default function LandingPage() {
-  const { user, loading } = useAuth();
+  const { user, loading, logout } = useAuth();
   const router = useRouter();
+  const [showRecoveryActions, setShowRecoveryActions] = useState(false);
 
   useEffect(() => {
     if (!loading && user) {
@@ -27,8 +28,44 @@ export default function LandingPage() {
     }
   }, [user, loading, router]);
 
+  useEffect(() => {
+    if (!loading) return;
+
+    const timeoutId = window.setTimeout(() => setShowRecoveryActions(true), 8000);
+    return () => window.clearTimeout(timeoutId);
+  }, [loading]);
+
   if (loading) {
-    return <div className="min-h-screen bg-slate-50 flex items-center justify-center">Cargando...</div>;
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
+        <div className="text-center space-y-4">
+          <div className="text-slate-900">Cargando...</div>
+          {showRecoveryActions && (
+            <div className="space-y-3">
+              <p className="text-sm text-slate-500 max-w-sm">
+                La sesión está tardando más de lo normal.
+              </p>
+              <div className="flex justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="px-3 py-2 text-sm border border-slate-200 rounded-md bg-white text-slate-700 hover:bg-slate-50"
+                >
+                  Reintentar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void logout()}
+                  className="px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700"
+                >
+                  Cerrar sesión
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
 
   return (

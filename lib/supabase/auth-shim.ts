@@ -1,6 +1,8 @@
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { supabase } from './client';
 
+const SESSION_LOAD_TIMEOUT_MS = 10000;
+
 export interface User {
   uid: string;
   id: string;
@@ -51,6 +53,34 @@ const mapUser = (user: SupabaseUser | null): User | null => {
 
 type AuthListener = (user: User | null) => void | Promise<void>;
 
+const withTimeout = async <T,>(
+  promise: PromiseLike<T>,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
+
+const runAuthListener = (callback: AuthListener, user: User | null) => {
+  void Promise.resolve()
+    .then(() => callback(user))
+    .catch((error) => {
+      console.error('Error running Supabase auth listener:', error);
+    });
+};
+
 class SupabaseAuthShim {
   currentUser: User | null = null;
 
@@ -59,24 +89,28 @@ class SupabaseAuthShim {
 
     const emitInitialSession = async () => {
       try {
-        const { data } = await supabase.auth.getSession();
+        const { data } = await withTimeout(
+          supabase.auth.getSession(),
+          SESSION_LOAD_TIMEOUT_MS,
+          'Supabase tardó demasiado cargando la sesión guardada.'
+        );
         if (!active) return;
         this.currentUser = mapUser(data.session?.user || null);
-        await callback(this.currentUser);
+        runAuthListener(callback, this.currentUser);
       } catch (error) {
         console.error('Error loading Supabase session:', error);
         if (!active) return;
         this.currentUser = null;
-        await callback(null);
+        runAuthListener(callback, null);
       }
     };
 
     void emitInitialSession();
 
-    const { data } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!active) return;
       this.currentUser = mapUser(session?.user || null);
-      await callback(this.currentUser);
+      runAuthListener(callback, this.currentUser);
     });
 
     return () => {
@@ -115,6 +149,16 @@ export const signOut = async (_auth?: SupabaseAuthShim) => {
   const { error } = await supabase.auth.signOut();
   if (error) throw error;
   auth.currentUser = null;
+};
+
+export const clearLocalAuthState = () => {
+  auth.currentUser = null;
+
+  if (typeof window === 'undefined') return;
+
+  Object.keys(window.localStorage)
+    .filter((key) => (key.startsWith('sb-') && key.includes('-auth-token')) || key === 'supabase.auth.token')
+    .forEach((key) => window.localStorage.removeItem(key));
 };
 
 export const updateProfile = async (
