@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Plus, Trash2, Edit2, AlertCircle, Shield, Users } from 'lucide-react';
-import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc, where } from '@/lib/supabase/document-store';
+import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc, where, or } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
@@ -33,7 +33,13 @@ export default function SettingsPage() {
 
     let qRoles = query(collection(db, 'roles'));
     if (userRole !== 'admin' && userOrganizationId) {
-      qRoles = query(collection(db, 'roles'), where('organizationId', '==', userOrganizationId));
+      qRoles = query(
+        collection(db, 'roles'),
+        or(
+          where('organizationId', '==', userOrganizationId),
+          where('isDefault', '==', true)
+        )
+      );
     }
 
     const unsubscribe = onSnapshot(qRoles, (querySnapshot) => {

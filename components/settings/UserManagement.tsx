@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Plus, RefreshCw, Shield, Trash2, User as UserIcon } from 'lucide-react';
-import { collection, query, onSnapshot, doc, updateDoc, setDoc, getDocs, where } from '@/lib/supabase/document-store';
+import { collection, query, onSnapshot, doc, updateDoc, setDoc, getDocs, where, or } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { uploadProfilePicture } from '@/lib/storage-utils';
@@ -117,7 +117,13 @@ export function UserManagement() {
 
     let qRoles = query(collection(db, 'roles'));
     if (currentUserRole !== 'admin' && userOrganizationId) {
-      qRoles = query(collection(db, 'roles'), where('organizationId', '==', userOrganizationId));
+      qRoles = query(
+        collection(db, 'roles'),
+        or(
+          where('organizationId', '==', userOrganizationId),
+          where('isDefault', '==', true)
+        )
+      );
     }
     const unsubscribeRoles = onSnapshot(qRoles, (querySnapshot) => {
       const rolesData: any[] = [];

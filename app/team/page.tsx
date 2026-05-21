@@ -1,19 +1,20 @@
 "use client"
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Plus, Trash2, Edit2, Mail, User as UserIcon, AlertCircle } from 'lucide-react';
-import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc } from '@/lib/supabase/document-store';
+import { Edit2, Mail, UserPlus } from 'lucide-react';
+import { collection, query, onSnapshot, doc, updateDoc, where, or } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import Image from 'next/image';
 
 export default function TeamPage() {
-  const { user } = useAuth();
+  const { user, userRole, userOrganizationId } = useAuth();
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,7 +29,16 @@ export default function TeamPage() {
     if (!user) return;
 
     // Fetch roles
-    const qRoles = query(collection(db, 'roles'));
+    let qRoles = query(collection(db, 'roles'));
+    if (userRole !== 'admin' && userOrganizationId) {
+      qRoles = query(
+        collection(db, 'roles'),
+        or(
+          where('organizationId', '==', userOrganizationId),
+          where('isDefault', '==', true)
+        )
+      );
+    }
     const unsubscribeRoles = onSnapshot(qRoles, (querySnapshot) => {
       const rolesData: any[] = [];
       querySnapshot.forEach((doc) => {
@@ -40,7 +50,10 @@ export default function TeamPage() {
     });
 
     // Fetch team members
-    const qTeam = query(collection(db, 'team_members'));
+    let qTeam = query(collection(db, 'team_members'));
+    if (userRole !== 'admin' && userOrganizationId) {
+      qTeam = query(collection(db, 'team_members'), where('organizationId', '==', userOrganizationId));
+    }
     const unsubscribeTeam = onSnapshot(qTeam, (querySnapshot) => {
       const teamData: any[] = [];
       querySnapshot.forEach((doc) => {
@@ -57,7 +70,7 @@ export default function TeamPage() {
       unsubscribeRoles();
       unsubscribeTeam();
     };
-  }, [user]);
+  }, [user, userRole, userOrganizationId]);
 
   const handleOpenModal = (member?: any) => {
     if (member) {
@@ -66,10 +79,7 @@ export default function TeamPage() {
       setMemberEmail(member.email);
       setMemberRoleId(member.roleId);
     } else {
-      setEditingMember(null);
-      setMemberName('');
-      setMemberEmail('');
-      setMemberRoleId('');
+      return;
     }
     setIsModalOpen(true);
   };
@@ -83,53 +93,19 @@ export default function TeamPage() {
 
     try {
       const normalizedEmail = memberEmail.toLowerCase();
-      if (editingMember) {
-        await updateDoc(doc(db, 'team_members', editingMember.id), {
-          name: memberName,
-          email: normalizedEmail,
-          roleId: memberRoleId,
-          roleName: selectedRole.name,
-        });
-        toast.success("Miembro del equipo actualizado exitosamente.");
-      } else {
-        await addDoc(collection(db, 'team_members'), {
-          name: memberName,
-          email: normalizedEmail,
-          roleId: memberRoleId,
-          roleName: selectedRole.name,
-          createdAt: serverTimestamp(),
-        });
-        toast.success("Miembro del equipo creado exitosamente.");
-      }
+      if (!editingMember) return;
+
+      await updateDoc(doc(db, 'team_members', editingMember.id), {
+        name: memberName,
+        email: normalizedEmail,
+        roleId: memberRoleId,
+        roleName: selectedRole.name,
+      });
+      toast.success("Miembro del equipo actualizado exitosamente.");
       setIsModalOpen(false);
     } catch (error) {
       console.error("Error saving team member:", error);
       toast.error("Error al guardar el miembro del equipo");
-    }
-  };
-
-  const [memberToDelete, setMemberToDelete] = useState<{id: string, name: string} | null>(null);
-  const [isDeletingMember, setIsDeletingMember] = useState(false);
-
-  const handleDeleteMember = (id: string) => {
-    const member = teamMembers.find(m => m.id === id);
-    if (member) {
-      setMemberToDelete({ id, name: member.name || member.email });
-    }
-  };
-
-  const executeDeleteMember = async () => {
-    if (!memberToDelete) return;
-    setIsDeletingMember(true);
-    try {
-      await deleteDoc(doc(db, 'team_members', memberToDelete.id));
-      toast.success("Miembro del equipo eliminado exitosamente.");
-      setMemberToDelete(null);
-    } catch (error) {
-      console.error("Error deleting team member:", error);
-      toast.error("Error al eliminar el miembro del equipo");
-    } finally {
-      setIsDeletingMember(false);
     }
   };
 
@@ -140,10 +116,14 @@ export default function TeamPage() {
           <h1 className="text-2xl font-bold text-slate-900">Equipo de Trabajo</h1>
           <p className="text-slate-500">Gestiona los miembros de tu equipo y sus cargos</p>
         </div>
-        <Button onClick={() => handleOpenModal()} className="bg-indigo-600 hover:bg-indigo-700 text-white">
-          <Plus className="w-4 h-4 mr-2" />
-          Añadir Miembro
-        </Button>
+        {userRole === 'admin' && (
+          <Link href="/settings">
+            <Button className="bg-indigo-600 hover:bg-indigo-700 text-white">
+              <UserPlus className="w-4 h-4 mr-2" />
+              Invitar Usuario
+            </Button>
+          </Link>
+        )}
       </div>
 
       <Card>
@@ -160,7 +140,7 @@ export default function TeamPage() {
             </div>
           ) : teamMembers.length === 0 ? (
             <div className="text-center py-8 text-slate-500">
-              No hay miembros en el equipo. Añade el primer usuario para empezar.
+              No hay miembros en el equipo. Invita usuarios desde Configuración.
             </div>
           ) : (
             <Table>
@@ -181,10 +161,10 @@ export default function TeamPage() {
                           {member.photoURL ? (
                             <Image src={member.photoURL} alt={member.name} fill className="object-cover" referrerPolicy="no-referrer" />
                           ) : (
-                            member.name.charAt(0).toUpperCase()
+                            (member.name || member.email || 'U').charAt(0).toUpperCase()
                           )}
                         </div>
-                        {member.name}
+                        {member.name || member.email || 'Usuario'}
                       </div>
                     </TableCell>
                     <TableCell className="text-slate-500">
@@ -195,7 +175,7 @@ export default function TeamPage() {
                     </TableCell>
                     <TableCell>
                       <span className="bg-slate-100 text-slate-700 px-2 py-1 rounded-md text-xs font-medium">
-                        {member.roleName}
+                        {member.roleName || 'Sin cargo'}
                       </span>
                     </TableCell>
                     <TableCell className="text-right">
@@ -206,13 +186,6 @@ export default function TeamPage() {
                           title="Editar"
                         >
                           <Edit2 size={16} />
-                        </button>
-                        <button 
-                          onClick={() => handleDeleteMember(member.id)}
-                          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                          title="Eliminar"
-                        >
-                          <Trash2 size={16} />
                         </button>
                       </div>
                     </TableCell>
@@ -229,7 +202,7 @@ export default function TeamPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
             <h3 className="text-lg font-semibold text-slate-900 mb-4">
-              {editingMember ? 'Editar Miembro' : 'Añadir Miembro'}
+              Editar Miembro
             </h3>
             
             <form onSubmit={handleSaveMember}>
@@ -305,42 +278,6 @@ export default function TeamPage() {
         </div>
       )}
 
-      {/* Delete Member Modal */}
-      {memberToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center gap-3 text-red-600 mb-4">
-              <div className="p-2 bg-red-100 rounded-full">
-                <AlertCircle className="w-6 h-6" />
-              </div>
-              <h3 className="text-lg font-semibold text-slate-900">Eliminar Miembro</h3>
-            </div>
-            
-            <p className="text-slate-600 mb-6">
-              ¿Estás seguro de que deseas eliminar a <strong className="text-slate-900">&quot;{memberToDelete.name}&quot;</strong> del equipo? 
-              Esta acción no se puede deshacer.
-            </p>
-            
-            <div className="flex justify-end gap-3">
-              <Button 
-                variant="outline" 
-                onClick={() => setMemberToDelete(null)}
-                disabled={isDeletingMember}
-                className="border-slate-200 text-slate-700 hover:bg-slate-50"
-              >
-                Cancelar
-              </Button>
-              <Button 
-                onClick={executeDeleteMember}
-                disabled={isDeletingMember}
-                className="bg-red-600 hover:bg-red-700 text-white"
-              >
-                {isDeletingMember ? 'Eliminando...' : 'Sí, eliminar miembro'}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </DashboardLayout>
   );
 }
