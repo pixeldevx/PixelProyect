@@ -15,3 +15,12 @@ Aplicativo de gestión de proyectos, tareas, documentos, presupuesto, facturaci�
 
 La app usa Supabase Auth, Supabase Storage y la tabla `app_documents` como almacén documental compatible con la estructura anterior del aplicativo.
 Las políticas RLS permiten acceso al administrador inicial y a correos registrados en `team_members`.
+
+## Administrador Inicial
+
+Para habilitar el acceso inicial de administración global:
+
+1. En Supabase Auth, crea o restablece contraseña para `gerencia.operaciones@realtix.com.co`.
+2. Ejecuta en SQL Editor:
+   `supabase/migrations/0002_seed_global_admin.sql`
+3. Inicia sesión en la app con ese correo y la contraseña configurada en Supabase Auth.
