@@ -32,6 +32,7 @@ La app no permite autoregistro público desde el login. Los usuarios se habilita
 
 Para este modo de operación, mantén deshabilitado el registro público de usuarios en Supabase.
 La `SUPABASE_SERVICE_ROLE_KEY` solo debe existir en Vercel o en un entorno servidor seguro; nunca debe exponerse como variable `NEXT_PUBLIC_*`.
+La tabla de usuarios se alimenta desde Supabase Auth, muestra el estado de invitación/confirmación y permite eliminar usuarios desde el administrador global.
 
 ## Administrador Inicial
 

@@ -1,12 +1,12 @@
 "use client"
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import Image from 'next/image';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
-import { Plus, Edit2, Shield, User as UserIcon, AlertCircle } from 'lucide-react';
-import { collection, query, onSnapshot, doc, updateDoc, getDocs, where } from '@/lib/supabase/document-store';
+import { Plus, RefreshCw, Shield, Trash2, User as UserIcon } from 'lucide-react';
+import { collection, query, onSnapshot, doc, updateDoc, setDoc, getDocs, where } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { uploadProfilePicture } from '@/lib/storage-utils';
@@ -14,7 +14,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/lib/supabase/client';
 
 export function UserManagement() {
-  const { userRole: currentUserRole, userOrganizationId } = useAuth();
+  const { user, userRole: currentUserRole, userOrganizationId } = useAuth();
   const [users, setUsers] = useState<any[]>([]);
   const [projectRoles, setProjectRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,6 +42,7 @@ export function UserManagement() {
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState('');
+  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
 
   const systemRoles = [
     { id: 'admin', name: 'Administrador Global' },
@@ -52,24 +53,67 @@ export function UserManagement() {
     { id: 'user', name: 'Usuario' }
   ];
 
+  const getAccessToken = useCallback(async () => {
+    const { data } = await supabase.auth.getSession();
+    const accessToken = data.session?.access_token;
+
+    if (!accessToken) {
+      throw new Error('Tu sesión expiró. Inicia sesión nuevamente.');
+    }
+
+    return accessToken;
+  }, []);
+
+  const loadAuthUsers = useCallback(async () => {
+    if (currentUserRole !== 'admin') return;
+
+    setLoading(true);
+    try {
+      const accessToken = await getAccessToken();
+      const response = await fetch('/api/admin/users', {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'No fue posible cargar los usuarios.');
+      }
+
+      setUsers(result.users || []);
+    } catch (error) {
+      console.error("Error fetching auth users:", error);
+      toast.error(error instanceof Error ? error.message : "Error al cargar usuarios");
+    } finally {
+      setLoading(false);
+    }
+  }, [currentUserRole, getAccessToken]);
+
   useEffect(() => {
     if (!currentUserRole) return;
-    
-    let qUsers = query(collection(db, 'users'));
-    if (currentUserRole !== 'admin' && userOrganizationId) {
-       qUsers = query(collection(db, 'users'), where('organizationId', '==', userOrganizationId));
-    }
-    const unsubscribeUsers = onSnapshot(qUsers, (querySnapshot) => {
-      const usersData: any[] = [];
-      querySnapshot.forEach((doc) => {
-        usersData.push({ id: doc.id, ...doc.data() });
+
+    let unsubscribeUsers: (() => void) | undefined;
+
+    if (currentUserRole === 'admin') {
+      void loadAuthUsers();
+    } else {
+      let qUsers = query(collection(db, 'users'));
+      if (userOrganizationId) {
+        qUsers = query(collection(db, 'users'), where('organizationId', '==', userOrganizationId));
+      }
+      unsubscribeUsers = onSnapshot(qUsers, (querySnapshot) => {
+        const usersData: any[] = [];
+        querySnapshot.forEach((doc) => {
+          usersData.push({ id: doc.id, ...doc.data() });
+        });
+        setUsers(usersData);
+        setLoading(false);
+      }, (error) => {
+        console.error("Error fetching users:", error);
+        setLoading(false);
       });
-      setUsers(usersData);
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching users:", error);
-      setLoading(false);
-    });
+    }
 
     let qRoles = query(collection(db, 'roles'));
     if (currentUserRole !== 'admin' && userOrganizationId) {
@@ -87,10 +131,10 @@ export function UserManagement() {
     });
 
     return () => {
-      unsubscribeUsers();
+      unsubscribeUsers?.();
       unsubscribeRoles();
     };
-  }, [currentUserRole, userOrganizationId]);
+  }, [currentUserRole, loadAuthUsers, userOrganizationId]);
 
   const handleOpenModal = (u?: any) => {
     if (u) {
@@ -125,12 +169,7 @@ export function UserManagement() {
   };
 
   const inviteUser = async (payload: Record<string, any>) => {
-    const { data } = await supabase.auth.getSession();
-    const accessToken = data.session?.access_token;
-
-    if (!accessToken) {
-      throw new Error('Tu sesión expiró. Inicia sesión nuevamente.');
-    }
+    const accessToken = await getAccessToken();
 
     const response = await fetch('/api/admin/users/invite', {
       method: 'POST',
@@ -149,6 +188,46 @@ export function UserManagement() {
     return result;
   };
 
+  const deleteUser = async (targetUser: any) => {
+    if (currentUserRole !== 'admin') return;
+    if (targetUser.id === user?.uid) {
+      toast.error('No puedes eliminar tu propio usuario desde esta pantalla.');
+      return;
+    }
+
+    const confirmed = window.confirm(`¿Eliminar a ${targetUser.email}? Esta acción borrará su acceso en Supabase Auth y su perfil de la app.`);
+    if (!confirmed) return;
+
+    setDeletingUserId(targetUser.id);
+    try {
+      const accessToken = await getAccessToken();
+      const response = await fetch('/api/admin/users', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          userId: targetUser.id,
+          email: targetUser.email,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'No fue posible eliminar el usuario.');
+      }
+
+      toast.success(result.message || 'Usuario eliminado.');
+      await loadAuthUsers();
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      toast.error(error instanceof Error ? error.message : "Error al eliminar usuario");
+    } finally {
+      setDeletingUserId(null);
+    }
+  };
+
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!userEmail.trim()) return;
@@ -164,13 +243,15 @@ export function UserManagement() {
           uploadedPhotoURL = await uploadProfilePicture(editingUser.id, photoFile);
         }
 
-        await updateDoc(doc(db, 'users', editingUser.id), {
+        await setDoc(doc(db, 'users', editingUser.id), {
+          uid: editingUser.id,
+          authUserId: editingUser.id,
           role: formSystemRole,
           email: normalizedEmail,
           displayName: userName || normalizedEmail.split('@')[0],
           ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL }),
           ...((currentUserRole === 'admin' && formSystemRole !== 'admin') ? { organizationId: selectedOrganizationId } : {})
-        });
+        }, { merge: true });
 
         // Also update team_members collection if the user exists there
         if (editingUser.email) {
@@ -187,6 +268,9 @@ export function UserManagement() {
         }
 
         toast.success("Usuario actualizado exitosamente.");
+        if (currentUserRole === 'admin') {
+          await loadAuthUsers();
+        }
       } else {
         if (currentUserRole !== 'admin') {
           throw new Error('Solo el administrador global puede invitar usuarios.');
@@ -213,6 +297,7 @@ export function UserManagement() {
         });
 
         toast.success(inviteResult.message || "Usuario creado e invitación enviada.");
+        await loadAuthUsers();
       }
       setIsModalOpen(false);
     } catch (error) {
@@ -236,6 +321,27 @@ export function UserManagement() {
     return systemRoles.find(r => r.id === roleId)?.name || 'Usuario';
   };
 
+  const formatDate = (value: any) => {
+    if (!value) return 'N/A';
+    const date = value?.toDate ? value.toDate() : new Date(value);
+    return Number.isNaN(date.getTime()) ? 'N/A' : date.toLocaleDateString();
+  };
+
+  const getAuthStatus = (u: any) => {
+    switch (u.authStatus) {
+      case 'confirmed':
+        return { label: 'Confirmado', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+      case 'invite_sent':
+        return { label: 'Invitación enviada', className: 'bg-amber-50 text-amber-700 border-amber-200' };
+      case 'recovery_sent':
+        return { label: 'Recuperación enviada', className: 'bg-sky-50 text-sky-700 border-sky-200' };
+      case 'confirmation_sent':
+        return { label: 'Confirmación enviada', className: 'bg-indigo-50 text-indigo-700 border-indigo-200' };
+      default:
+        return { label: 'Pendiente', className: 'bg-slate-50 text-slate-700 border-slate-200' };
+    }
+  };
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
@@ -246,10 +352,15 @@ export function UserManagement() {
           </CardDescription>
         </div>
         {currentUserRole === 'admin' && (
-          <Button onClick={() => handleOpenModal()} className="bg-indigo-600 hover:bg-indigo-700 text-white">
-            <Plus className="w-4 h-4 mr-2" />
-            Invitar Usuario
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={loadAuthUsers} disabled={loading} className="border-slate-200 text-slate-700 hover:bg-slate-50">
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            </Button>
+            <Button onClick={() => handleOpenModal()} className="bg-indigo-600 hover:bg-indigo-700 text-white">
+              <Plus className="w-4 h-4 mr-2" />
+              Invitar Usuario
+            </Button>
+          </div>
         )}
       </CardHeader>
       <CardContent>
@@ -268,6 +379,8 @@ export function UserManagement() {
                 <TableHead>Usuario</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Rol del Sistema</TableHead>
+                <TableHead>Estado</TableHead>
+                <TableHead>Correo enviado</TableHead>
                 <TableHead>Último Acceso</TableHead>
                 <TableHead className="text-right">Acciones</TableHead>
               </TableRow>
@@ -294,17 +407,37 @@ export function UserManagement() {
                       {getRoleName(u.role || 'user')}
                     </span>
                   </TableCell>
+                  <TableCell>
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${getAuthStatus(u).className}`}>
+                      {getAuthStatus(u).label}
+                    </span>
+                  </TableCell>
                   <TableCell className="text-slate-500 text-sm">
-                    {u.lastLoginAt ? new Date(u.lastLoginAt.toDate()).toLocaleDateString() : 'Nunca'}
+                    {formatDate(u.invitedAt || u.confirmationSentAt || u.recoverySentAt)}
+                  </TableCell>
+                  <TableCell className="text-slate-500 text-sm">
+                    {u.lastSignInAt || u.lastLoginAt ? formatDate(u.lastSignInAt || u.lastLoginAt) : 'Nunca'}
                   </TableCell>
                   <TableCell className="text-right">
-                    <button 
-                      onClick={() => handleOpenModal(u)}
-                      className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
-                      title="Editar Rol"
-                    >
-                      <Shield size={16} />
-                    </button>
+                    <div className="flex justify-end gap-1">
+                      <button 
+                        onClick={() => handleOpenModal(u)}
+                        className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                        title="Editar Rol"
+                      >
+                        <Shield size={16} />
+                      </button>
+                      {currentUserRole === 'admin' && (
+                        <button
+                          onClick={() => deleteUser(u)}
+                          disabled={deletingUserId === u.id || u.id === user?.uid}
+                          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={u.id === user?.uid ? 'No puedes eliminar tu propio usuario' : 'Eliminar usuario'}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
