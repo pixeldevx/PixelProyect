@@ -150,21 +150,20 @@ export function UserManagement() {
         if (editingUser.email) {
           const tmQuery = query(collection(db, 'team_members'), where('email', '==', editingUser.email));
           const tmSnapshot = await getDocs(tmQuery);
-          tmSnapshot.forEach(async (tmDoc) => {
+          for (const tmDoc of tmSnapshot.docs) {
             await updateDoc(doc(db, 'team_members', tmDoc.id), {
               email: normalizedEmail,
               name: userName || normalizedEmail.split('@')[0],
               ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL }),
               ...((currentUserRole === 'admin' && formSystemRole !== 'admin') ? { organizationId: selectedOrganizationId } : {})
             });
-          });
+          }
         }
 
         toast.success("Usuario actualizado exitosamente.");
       } else {
         const selectedProjectRole = projectRoles.find(r => r.id === projectRoleId);
         
-        // Let's create a new doc in users collection with a random ID
         const newUserRef = doc(collection(db, 'users'));
 
         if (photoFile) {
@@ -181,7 +180,6 @@ export function UserManagement() {
           ...(currentUserRole === 'admin' ? { organizationId: selectedOrganizationId } : userOrganizationId ? { organizationId: userOrganizationId } : {})
         });
         
-        // Also add to team_members so they can log in
         const newTeamMemberRef = doc(collection(db, 'team_members'));
         await setDoc(newTeamMemberRef, {
           email: normalizedEmail,
@@ -193,7 +191,7 @@ export function UserManagement() {
           ...(currentUserRole === 'admin' ? { organizationId: selectedOrganizationId } : userOrganizationId ? { organizationId: userOrganizationId } : {})
         });
         
-        toast.success("Usuario invitado exitosamente.");
+        toast.success("Usuario creado exitosamente.");
       }
       setIsModalOpen(false);
     } catch (error) {
@@ -228,7 +226,7 @@ export function UserManagement() {
         </div>
         <Button onClick={() => handleOpenModal()} className="bg-indigo-600 hover:bg-indigo-700 text-white">
           <Plus className="w-4 h-4 mr-2" />
-          Invitar Usuario
+          Crear Usuario
         </Button>
       </CardHeader>
       <CardContent>
@@ -264,7 +262,7 @@ export function UserManagement() {
                         )}
                       </div>
                       {u.displayName || 'Usuario'}
-                      {u.isPreRegistered && <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full ml-2">Invitado</span>}
+                      {u.isPreRegistered && <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full ml-2">Pendiente</span>}
                     </div>
                   </TableCell>
                   <TableCell className="text-slate-500">{u.email}</TableCell>
@@ -297,7 +295,7 @@ export function UserManagement() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
             <h3 className="text-lg font-semibold text-slate-900 mb-4">
-              {editingUser ? 'Editar Rol de Usuario' : 'Invitar Nuevo Usuario'}
+              {editingUser ? 'Editar Rol de Usuario' : 'Crear Nuevo Usuario'}
             </h3>
             
             <form onSubmit={handleSaveUser}>

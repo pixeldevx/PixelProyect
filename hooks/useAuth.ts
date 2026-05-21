@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from 'react';
-import { User, signOut, signInWithEmailAndPassword, createUserWithEmailAndPassword, resetPasswordForEmail } from '@/lib/supabase/auth-shim';
+import { User, signOut, signInWithEmailAndPassword, resetPasswordForEmail } from '@/lib/supabase/auth-shim';
 import { doc, setDoc, serverTimestamp } from '@/lib/supabase/document-store';
 import { auth, db } from '@/lib/backend';
 
@@ -10,6 +10,7 @@ export function useAuth() {
   const [userRole, setUserRole] = useState<string | null>(null);
   const [userOrganizationId, setUserOrganizationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [accessError, setAccessError] = useState('');
 
   useEffect(() => {
     console.log("Setting up onAuthStateChanged listener");
@@ -50,6 +51,7 @@ export function useAuth() {
             const querySnapshot = await getDocs(q);
             
             if (querySnapshot.empty) {
+              setAccessError('Tu usuario existe en Supabase Auth, pero todavía no tiene perfil activo en la app. Pídele al administrador que lo cree en Usuarios del Sistema.');
               await signOut(auth);
               setUser(null);
               setLoading(false);
@@ -74,8 +76,10 @@ export function useAuth() {
           setUser(currentUser);
           setUserRole(userRole);
           setUserOrganizationId(orgId);
+          setAccessError('');
         } catch (error) {
           console.error("Error verifying user or saving profile:", error);
+          setAccessError('No fue posible verificar tu perfil en Supabase. Revisa que tu usuario exista en Usuarios del Sistema.');
           await signOut(auth);
           setUser(null);
           setUserRole(null);
@@ -99,34 +103,10 @@ export function useAuth() {
 
   const loginWithEmail = async (email: string, password: string) => {
     try {
+      setAccessError('');
       await signInWithEmailAndPassword(auth, email, password);
     } catch (error) {
       console.error("Error signing in with email", error);
-      throw error;
-    }
-  };
-
-  const registerWithEmail = async (email: string, password: string) => {
-    try {
-      await createUserWithEmailAndPassword(auth, email, password);
-      
-      // Check if they are in team_members or admin
-      const userEmail = email.toLowerCase();
-      const isAdmin = userEmail === 'ing.zambranog@gmail.com';
-      
-      if (!isAdmin) {
-        const { collection, query, where, getDocs } = await import('@/lib/supabase/document-store');
-        const q = query(collection(db, 'team_members'), where('email', '==', userEmail));
-        const querySnapshot = await getDocs(q);
-        
-        if (querySnapshot.empty) {
-          // Supabase Auth user deletion requires a trusted server key.
-          await signOut(auth);
-          throw new Error('Tu correo no está registrado en el equipo. Contacta al administrador.');
-        }
-      }
-    } catch (error) {
-      console.error("Error registering with email", error);
       throw error;
     }
   };
@@ -144,5 +124,5 @@ export function useAuth() {
     await resetPasswordForEmail(auth, email, redirectTo);
   };
 
-  return { user, userRole, userOrganizationId, loading, login, loginWithEmail, registerWithEmail, requestPasswordReset, logout };
+  return { user, userRole, userOrganizationId, loading, accessError, login, loginWithEmail, requestPasswordReset, logout };
 }
