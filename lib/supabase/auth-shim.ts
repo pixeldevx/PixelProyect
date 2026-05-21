@@ -58,10 +58,17 @@ class SupabaseAuthShim {
     let active = true;
 
     const emitInitialSession = async () => {
-      const { data } = await supabase.auth.getUser();
-      if (!active) return;
-      this.currentUser = mapUser(data.user);
-      await callback(this.currentUser);
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (!active) return;
+        this.currentUser = mapUser(data.session?.user || null);
+        await callback(this.currentUser);
+      } catch (error) {
+        console.error('Error loading Supabase session:', error);
+        if (!active) return;
+        this.currentUser = null;
+        await callback(null);
+      }
     };
 
     void emitInitialSession();
