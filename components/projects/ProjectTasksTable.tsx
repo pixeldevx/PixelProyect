@@ -20,6 +20,16 @@ interface ProjectTasksTableProps {
   onCreateTask?: () => void;
 }
 
+const getTaskTitle = (task: any) => task?.title || task?.name || 'Sin título';
+
+const getTaskDate = (task: any, field: 'start' | 'end') => {
+  const dateValue = task?.[field] || task?.[`${field}Date`];
+  if (!dateValue) return new Date();
+  if (dateValue.toDate) return dateValue.toDate();
+  const parsed = new Date(dateValue);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+};
+
 export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   tasks,
   teamMembers,
@@ -209,10 +219,8 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   const renderTaskRow = (task: any, depth: number = 0, isLastChild: boolean = false) => {
     const assignee = teamMembers.find(m => m.id === task.assignedTo);
     
-    let endDate = new Date();
-    if (task.end) {
-      endDate = task.end.toDate ? task.end.toDate() : new Date(task.end);
-    }
+    const taskTitle = getTaskTitle(task);
+    const endDate = getTaskDate(task, 'end');
 
     const subtasks = tasks.filter(t => t.parentTaskId === task.id).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
     const hasSubtasks = subtasks.length > 0 || (task.type === 'workflow' && task.workflowSteps && task.workflowSteps.length > 0);
@@ -247,7 +255,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
                   {depth === 0 && <div className="w-1.5 h-1.5 rounded-full bg-slate-300"></div>}
                 </div>
               )}
-              <div className="font-medium text-slate-800">{task.title}</div>
+              <div className="font-medium text-slate-800">{taskTitle}</div>
             </div>
           </td>
           

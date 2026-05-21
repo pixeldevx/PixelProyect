@@ -29,6 +29,8 @@ const getDocTypeBadge = (type: string) => {
   }
 };
 
+const getTaskTitle = (task: any) => task?.title || task?.name || 'Sin título';
+
 const DocumentItem = ({ doc, onDeleteDocument }: { doc: any, onDeleteDocument: any }) => (
   <div className="flex items-center justify-between py-2 px-4 hover:bg-slate-50 border-b border-slate-100 last:border-0 group">
     <div className="flex items-center gap-3">
@@ -147,10 +149,11 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
 
   const renderTaskNode = (task: any) => {
     if (!hasDocumentsInSubtree(task.id) && !searchQuery.trim()) return null;
+    const taskTitle = getTaskTitle(task);
     
     // If there's a search query, we want to show tasks that match the query OR have matching documents
     const matchesSearch = searchQuery.trim() && (
-      task.title?.toLowerCase().includes(searchQuery.toLowerCase()) || 
+      taskTitle.toLowerCase().includes(searchQuery.toLowerCase()) || 
       task.id?.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
@@ -160,7 +163,7 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
     const docs = getTaskDocuments(task.id);
     
     return (
-      <FolderNode key={task.id} title={task.title} defaultOpen={!!searchQuery}>
+      <FolderNode key={task.id} title={taskTitle} defaultOpen={!!searchQuery}>
         {docs.length > 0 && (
           <div className="py-1">
             {docs.map(doc => (

@@ -14,6 +14,8 @@ interface StartWorkflowModalProps {
   teamMembers: any[];
 }
 
+const getTaskTitle = (task: any) => task?.title || task?.name || 'Sin título';
+
 export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   isOpen,
   onClose,
@@ -123,7 +125,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
           <div>
             <h2 className="text-xl font-bold text-slate-800">Iniciar Workflow</h2>
             <p className="text-sm text-slate-500 mt-1">
-              {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{task.title}
+              {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{getTaskTitle(task)}
             </p>
           </div>
           <button 

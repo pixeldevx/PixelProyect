@@ -11,6 +11,8 @@ interface TaskDetailsModalProps {
   projectId: string;
 }
 
+const getTaskTitle = (task: any) => task?.title || task?.name || "Sin título";
+
 export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   isOpen,
   onClose,
@@ -46,6 +48,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
 
       let currentTotalCycles = task.totalCycles || 1;
       const newTotalCycles = currentTotalCycles + additionalCycles;
+      const baseTaskTitle = getTaskTitle(task);
 
       const { id, ...taskWithoutId } = task;
 
@@ -62,7 +65,8 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         const cycle1Ref = doc(collection(db, "projects", projectId, "tasks"));
         const cycle1Data = {
           ...taskWithoutId,
-          title: task.title,
+          title: baseTaskTitle,
+          name: baseTaskTitle,
           isParentTask: false,
           parentTaskId: task.id,
           cycleNumber: 1,
@@ -86,7 +90,8 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
 
         const subTaskData = {
           ...taskWithoutId,
-          title: task.title.replace(/ \(Ciclo \d+\)$/, ""),
+          title: baseTaskTitle.replace(/ \(Ciclo \d+\)$/, ""),
+          name: baseTaskTitle.replace(/ \(Ciclo \d+\)$/, ""),
           isParentTask: false,
           parentTaskId: task.id,
           cycleNumber: cycleNumber,
@@ -292,7 +297,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
           <div>
             <h2 className="text-xl font-bold text-slate-800">
               {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ""}
-              {task.title}
+              {getTaskTitle(task)}
             </h2>
             <p className="text-sm text-slate-500 mt-1">
               Detalles y Documentación

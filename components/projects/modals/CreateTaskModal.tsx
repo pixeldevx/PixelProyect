@@ -17,6 +17,31 @@ interface CreateTaskModalProps {
   tasksLength: number;
 }
 
+type DraftSubtask = {
+  id: string;
+  title: string;
+  description: string;
+  assignedTo: string;
+  startDate: string;
+  endDate: string;
+  priority: string;
+  status: string;
+};
+
+const createDraftSubtask = (
+  defaults: Partial<DraftSubtask> = {},
+): DraftSubtask => ({
+  id: `subtask_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+  title: "",
+  description: "",
+  assignedTo: defaults.assignedTo || "",
+  startDate: defaults.startDate || "",
+  endDate: defaults.endDate || "",
+  priority: defaults.priority || "medium",
+  status: defaults.status || "todo",
+  ...defaults,
+});
+
 export function CreateTaskModal({
   isOpen,
   onClose,
@@ -61,6 +86,7 @@ export function CreateTaskModal({
   const [newTaskRateCardId, setNewTaskRateCardId] = useState("");
   const [newTaskUnitsToAdd, setNewTaskUnitsToAdd] = useState(1);
   const [newTaskPriority, setNewTaskPriority] = useState("medium");
+  const [draftSubtasks, setDraftSubtasks] = useState<DraftSubtask[]>([]);
 
   const [workflowTemplates, setWorkflowTemplates] = useState<any[]>([]);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
@@ -106,6 +132,7 @@ export function CreateTaskModal({
     setNewTaskIsRateCard(false);
     setNewTaskRateCardId("");
     setNewTaskUnitsToAdd(1);
+    setDraftSubtasks([]);
   };
 
   const handleClose = () => {
@@ -167,15 +194,26 @@ export function CreateTaskModal({
       return;
     }
 
+    if (draftSubtasks.some((subtask) => !subtask.title.trim())) {
+      toast.warning("Completa el nombre de cada subtarea o elimínala.");
+      return;
+    }
+
     setIsCreatingTask(true);
 
     try {
+      const taskTitle = newTaskTitle.trim();
+      const parentStartDate = new Date(newTaskStart + "T00:00:00");
+      const parentEndDate = new Date(newTaskEnd + "T00:00:00");
       const taskData: any = {
         projectId: projectId,
-        title: newTaskTitle,
+        title: taskTitle,
+        name: taskTitle,
         description: newTaskDesc,
-        startDate: new Date(newTaskStart + "T00:00:00"),
-        endDate: new Date(newTaskEnd + "T00:00:00"),
+        startDate: parentStartDate,
+        endDate: parentEndDate,
+        start: parentStartDate,
+        end: parentEndDate,
         assignedTo: newTaskAssignedTo,
         indicator: newTaskType === "quantitative" ? newTaskIndicator : null,
         indicatorValue:
@@ -202,6 +240,56 @@ export function CreateTaskModal({
 
       const batch = writeBatch(db);
       const taskRef = doc(collection(db, "projects", projectId, "tasks"));
+      const addManualSubtasksToBatch = (
+        parentTaskId: string,
+        displayOrderOffset: number,
+      ) => {
+        draftSubtasks.forEach((subtask, index) => {
+          const subtaskTitle = subtask.title.trim();
+          const startValue = subtask.startDate || newTaskStart;
+          const endValue = subtask.endDate || newTaskEnd;
+          const subtaskStartDate = new Date(startValue + "T00:00:00");
+          const subtaskEndDate = new Date(endValue + "T00:00:00");
+          const subtaskRef = doc(
+            collection(db, "projects", projectId, "tasks"),
+          );
+
+          batch.set(subtaskRef, {
+            projectId,
+            title: subtaskTitle,
+            name: subtaskTitle,
+            description: subtask.description.trim(),
+            startDate: subtaskStartDate,
+            endDate: subtaskEndDate,
+            start: subtaskStartDate,
+            end: subtaskEndDate,
+            assignedTo: subtask.assignedTo || newTaskAssignedTo,
+            indicator: null,
+            indicatorValue: null,
+            status: subtask.status,
+            progress: subtask.status === "completed" ? 100 : 0,
+            type: "state",
+            requiresDocument: false,
+            linkedDocumentId: null,
+            isRateCardTask: false,
+            rateCardId: null,
+            unitsToAdd: null,
+            syncExternal: false,
+            priority: subtask.priority,
+            currentValue: 0,
+            parentTaskId,
+            displayOrder: displayOrderOffset + index,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+            createdBy: user.uid,
+          });
+        });
+      };
+
+      if (draftSubtasks.length > 0) {
+        taskData.isParentTask = true;
+        taskData.totalSubtasks = draftSubtasks.length;
+      }
 
       // Handle Rate Card update for initial progress
       if (
@@ -262,7 +350,8 @@ export function CreateTaskModal({
             );
             const subTaskData = {
               ...taskData,
-              title: newTaskTitle,
+              title: taskTitle,
+              name: taskTitle,
               isParentTask: false,
               parentTaskId: parentDocRef.id,
               cycleNumber: i,
@@ -272,13 +361,16 @@ export function CreateTaskModal({
             };
             batch.set(subTaskRef, subTaskData);
           }
+          addManualSubtasksToBatch(parentDocRef.id, tasksLength + workflowCycles + 1);
           await batch.commit();
         } else {
           batch.set(taskRef, taskData);
+          addManualSubtasksToBatch(taskRef.id, tasksLength + 1);
           await batch.commit();
         }
       } else {
         batch.set(taskRef, taskData);
+        addManualSubtasksToBatch(taskRef.id, tasksLength + 1);
         await batch.commit();
       }
 
@@ -724,6 +816,165 @@ export function CreateTaskModal({
                 </div>
               </div>
             )}
+
+            <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-100">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Subtareas
+                  </label>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Crea entregables secundarios bajo esta tarea.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setDraftSubtasks([
+                      ...draftSubtasks,
+                      createDraftSubtask({
+                        assignedTo: newTaskAssignedTo,
+                        startDate: newTaskStart,
+                        endDate: newTaskEnd,
+                        priority: newTaskPriority,
+                      }),
+                    ])
+                  }
+                  className="h-8 text-xs font-bold border-slate-200 bg-white"
+                >
+                  <Plus size={14} className="mr-1" />
+                  Agregar
+                </Button>
+              </div>
+
+              {draftSubtasks.length === 0 ? (
+                <p className="text-xs text-slate-400 italic">
+                  Sin subtareas agregadas.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {draftSubtasks.map((subtask, index) => (
+                    <div
+                      key={subtask.id}
+                      className="rounded-xl border border-slate-200 bg-white p-3 space-y-3"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-[11px] font-bold text-indigo-600">
+                          {index + 1}
+                        </span>
+                        <input
+                          type="text"
+                          value={subtask.title}
+                          onChange={(e) => {
+                            const next = [...draftSubtasks];
+                            next[index] = { ...subtask, title: e.target.value };
+                            setDraftSubtasks(next);
+                          }}
+                          className="flex-1 h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                          placeholder="Nombre de la subtarea"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDraftSubtasks(
+                              draftSubtasks.filter((item) => item.id !== subtask.id),
+                            )
+                          }
+                          className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Eliminar subtarea"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+
+                      <textarea
+                        value={subtask.description}
+                        onChange={(e) => {
+                          const next = [...draftSubtasks];
+                          next[index] = {
+                            ...subtask,
+                            description: e.target.value,
+                          };
+                          setDraftSubtasks(next);
+                        }}
+                        className="w-full min-h-[64px] p-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs resize-none"
+                        placeholder="Descripción opcional"
+                      />
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <select
+                          value={subtask.assignedTo}
+                          onChange={(e) => {
+                            const next = [...draftSubtasks];
+                            next[index] = {
+                              ...subtask,
+                              assignedTo: e.target.value,
+                            };
+                            setDraftSubtasks(next);
+                          }}
+                          className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
+                        >
+                          <option value="">Mismo responsable</option>
+                          {project?.assignedTeamMembers?.map((memberId: string) => {
+                            const member = teamMembers.find((m) => m.id === memberId);
+                            if (!member) return null;
+                            return (
+                              <option key={member.id} value={member.id}>
+                                {member.name}
+                              </option>
+                            );
+                          })}
+                        </select>
+                        <select
+                          value={subtask.priority}
+                          onChange={(e) => {
+                            const next = [...draftSubtasks];
+                            next[index] = {
+                              ...subtask,
+                              priority: e.target.value,
+                            };
+                            setDraftSubtasks(next);
+                          }}
+                          className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
+                        >
+                          <option value="high">Alta</option>
+                          <option value="medium">Media</option>
+                          <option value="low">Baja</option>
+                        </select>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <input
+                          type="date"
+                          value={subtask.startDate}
+                          onChange={(e) => {
+                            const next = [...draftSubtasks];
+                            next[index] = {
+                              ...subtask,
+                              startDate: e.target.value,
+                            };
+                            setDraftSubtasks(next);
+                          }}
+                          className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
+                        />
+                        <input
+                          type="date"
+                          value={subtask.endDate}
+                          onChange={(e) => {
+                            const next = [...draftSubtasks];
+                            next[index] = { ...subtask, endDate: e.target.value };
+                            setDraftSubtasks(next);
+                          }}
+                          className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <div className="flex items-center gap-3 pt-4 border-t border-slate-100">
               <input

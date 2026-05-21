@@ -24,6 +24,26 @@ interface ProjectGanttProps {
   onCreateTask?: () => void;
 }
 
+const getTaskTitle = (task: any) => {
+  return task?.title || task?.name || 'Sin título';
+};
+
+const getTaskDate = (value: any) => {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const sortChildTasks = (childTasks: any[]) => {
+  return [...childTasks].sort((a, b) => {
+    const aOrder = a.cycleNumber ?? a.displayOrder ?? 0;
+    const bOrder = b.cycleNumber ?? b.displayOrder ?? 0;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return (a.createdAt?.toMillis?.() || 0) - (b.createdAt?.toMillis?.() || 0);
+  });
+};
+
 export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   tasks,
   teamMembers,
@@ -63,10 +83,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     
     parentsAndNormal.forEach(task => {
       result.push(task);
-      if (task.isParentTask && expandedParents[task.id]) {
-        const subTasks = sortedTasks.filter(t => t.parentTaskId === task.id);
-        // Sort subtasks by cycleNumber if available
-        subTasks.sort((a, b) => (a.cycleNumber || 0) - (b.cycleNumber || 0));
+      const subTasks = sortChildTasks(sortedTasks.filter(t => t.parentTaskId === task.id));
+      if (subTasks.length > 0 && expandedParents[task.id]) {
         
         subTasks.forEach(subTask => {
           result.push(subTask);
@@ -76,6 +94,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               result.push({
                 id: `${subTask.id}-step-${idx}`,
                 title: `Paso ${idx + 1}: ${step.label}`,
+                name: `Paso ${idx + 1}: ${step.label}`,
                 parentTaskId: subTask.id,
                 isWorkflowStep: true,
                 stepIndex: idx,
@@ -96,6 +115,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           result.push({
             id: `${task.id}-step-${idx}`,
             title: `Paso ${idx + 1}: ${step.label}`,
+            name: `Paso ${idx + 1}: ${step.label}`,
             parentTaskId: task.id,
             isWorkflowStep: true,
             stepIndex: idx,
@@ -118,23 +138,27 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const ganttTasks: Task[] = useMemo(() => {
     if (visibleTasks.length === 0) return [];
     
-    return visibleTasks.map((t, index) => ({
-      id: t.id,
-      name: t.title,
-      start: t.startDate?.toDate() || new Date(),
-      end: t.endDate?.toDate() || new Date(),
-      progress: t.progress || 0,
-      type: t.isParentTask ? 'project' : 'task',
-      project: t.parentTaskId || undefined,
-      displayOrder: index + 1,
-      styles: {
-        backgroundColor: t.status === 'completed' ? '#00c875' : t.status === 'in_progress' ? '#fdab3d' : '#c4c4c4',
-        backgroundSelectedColor: t.status === 'completed' ? '#00a35f' : t.status === 'in_progress' ? '#e69a35' : '#b0b0b0',
-        progressColor: '#ffffff44',
-        progressSelectedColor: '#ffffff66',
-      }
-    }));
-  }, [visibleTasks]);
+    return visibleTasks.map((t, index) => {
+      const hasChildren = sortedTasks.some(task => task.parentTaskId === t.id);
+
+      return {
+        id: t.id,
+        name: getTaskTitle(t),
+        start: getTaskDate(t.startDate) || new Date(),
+        end: getTaskDate(t.endDate) || new Date(),
+        progress: t.progress || 0,
+        type: t.isParentTask || hasChildren ? 'project' : 'task',
+        project: t.parentTaskId || undefined,
+        displayOrder: index + 1,
+        styles: {
+          backgroundColor: t.status === 'completed' ? '#00c875' : t.status === 'in_progress' ? '#fdab3d' : '#c4c4c4',
+          backgroundSelectedColor: t.status === 'completed' ? '#00a35f' : t.status === 'in_progress' ? '#e69a35' : '#b0b0b0',
+          progressColor: '#ffffff44',
+          progressSelectedColor: '#ffffff66',
+        }
+      };
+    });
+  }, [visibleTasks, sortedTasks]);
 
   const handleDragEnd = (result: DropResult) => {
     if (!result.destination) return;
@@ -266,10 +290,10 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
       <div className="flex border-b border-slate-200 bg-slate-50/30">
         {/* Left side: Task List (Monday Style) */}
-        <div className="w-[600px] shrink-0 border-r border-slate-200 flex flex-col">
+        <div className="w-[760px] shrink-0 border-r border-slate-200 flex flex-col">
           <div className="h-10 flex items-center px-4 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white">
             <div className="w-10"></div>
-            <div className="flex-1">Tarea</div>
+            <div className="flex-1 min-w-[160px]">Tarea</div>
             <div className="w-24 px-2 text-center">Persona</div>
             <div className="w-28 px-2 text-center">Estado</div>
             <div className="w-24 px-2 text-center">Prioridad</div>
@@ -287,10 +311,11 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 >
                   {visibleTasks.map((task, index) => {
                     const assignedMember = teamMembers.find(m => m.id === task.assignedTo);
-                    const startDate = task.startDate?.toDate();
-                    const endDate = task.endDate?.toDate();
+                    const taskTitle = getTaskTitle(task);
+                    const startDate = getTaskDate(task.startDate);
+                    const endDate = getTaskDate(task.endDate);
                     const isQuantitative = task.type === 'quantitative';
-                    const isParent = task.isParentTask;
+                    const isParent = task.isParentTask || sortedTasks.some(t => t.parentTaskId === task.id);
                     const isSubTask = !!task.parentTaskId;
                     const isExpanded = expandedParents[task.id];
                     
@@ -314,7 +339,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               <GripVertical size={14} />
                             </div>
                             
-                            <div className={`flex-1 min-w-0 px-2 flex items-center gap-2 ${task.isWorkflowStep ? 'pl-10' : isSubTask ? 'pl-6' : ''}`}>
+                            <div className={`flex-1 min-w-[160px] px-2 flex items-center gap-2 ${task.isWorkflowStep ? 'pl-10' : isSubTask ? 'pl-6' : ''}`}>
                               {(isParent || task.type === 'workflow') && !task.isWorkflowStep && (
                                 <button 
                                   onClick={() => toggleParent(task.id)}
@@ -324,7 +349,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 </button>
                               )}
                               <span className={`text-sm font-medium truncate ${task.status === 'completed' || task.status === 'listo' ? 'text-slate-400 line-through' : 'text-slate-700'}`}>
-                                {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{task.title}
+                                {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{taskTitle}
                               </span>
                               {task.isRateCardTask && (
                                 <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[8px] font-bold rounded uppercase tracking-tighter shrink-0 border border-indigo-100 shadow-sm">
@@ -534,7 +559,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             <Gantt
               tasks={ganttTasks}
               viewMode={viewMode}
-              listCellWidth="0"
+              listCellWidth=""
               columnWidth={viewMode === ViewMode.Day ? 65 : viewMode === ViewMode.Week ? 150 : 250}
               headerHeight={40}
               rowHeight={40}
@@ -559,4 +584,3 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     </div>
   );
 };
-

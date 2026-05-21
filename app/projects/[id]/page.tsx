@@ -30,6 +30,8 @@ import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 import Image from 'next/image';
 
+const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
+
 export default function ProjectDetailsPage() {
   const params = useParams();
   const router = useRouter();
@@ -459,7 +461,7 @@ export default function ProjectDetailsPage() {
   const handleDeleteTask = (taskId: string) => {
     const task = tasks.find(t => t.id === taskId);
     if (task) {
-      setTaskToDelete({ id: taskId, title: task.title });
+      setTaskToDelete({ id: taskId, title: getTaskTitle(task) });
     }
   };
 
@@ -562,6 +564,8 @@ export default function ProjectDetailsPage() {
       await updateDoc(doc(db, 'projects', projectId, 'tasks', taskId), {
         startDate: start,
         endDate: end,
+        start,
+        end,
         updatedAt: serverTimestamp()
       });
     } catch (error: any) {
@@ -896,7 +900,7 @@ export default function ProjectDetailsPage() {
                     toast.error('Error al actualizar el asignado');
                   }
                 }}
-                onDeleteTask={(taskId) => setTaskToDelete({ id: taskId, title: tasks.find(t => t.id === taskId)?.title || 'Tarea' })}
+                onDeleteTask={(taskId) => setTaskToDelete({ id: taskId, title: getTaskTitle(tasks.find(t => t.id === taskId)) })}
                 onOpenTaskDocs={(taskId, task) => {
                   setSelectedTaskForDocs(task);
                   setIsTaskDocsModalOpen(true);
