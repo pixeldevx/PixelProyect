@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Gantt, Task, ViewMode } from 'gantt-task-react';
 import "gantt-task-react/dist/index.css";
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
-import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus } from 'lucide-react';
+import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, Pencil, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -20,12 +20,21 @@ interface ProjectGanttProps {
   onSyncTask: (taskId: string, task: any) => void;
   onReorderTasks: (newTasks: any[]) => void;
   onUpdateTaskDates: (taskId: string, start: Date, end: Date, task: any) => void;
+  onUpdateTaskTitle?: (taskId: string, title: string, task: any) => void | Promise<void>;
   onOpenTaskDocs?: (taskId: string, task: any) => void;
   onCreateTask?: () => void;
 }
 
 const getTaskTitle = (task: any) => {
   return task?.title || task?.name || 'Sin título';
+};
+
+const getTaskDisplayTitle = (task: any) => {
+  const title = getTaskTitle(task);
+  if (!task?.externalWorkflowId || title === task.externalWorkflowId) {
+    return title;
+  }
+  return `[${task.externalWorkflowId}] ${title}`;
 };
 
 const getTaskDate = (value: any) => {
@@ -54,17 +63,43 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onSyncTask,
   onReorderTasks,
   onUpdateTaskDates,
+  onUpdateTaskTitle,
   onOpenTaskDocs,
   onCreateTask
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.Day);
   const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
+  const [isTimelineCollapsed, setIsTimelineCollapsed] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingTaskTitle, setEditingTaskTitle] = useState("");
 
   const toggleParent = (parentId: string) => {
     setExpandedParents(prev => ({
       ...prev,
       [parentId]: !prev[parentId]
     }));
+  };
+
+  const startEditingTitle = (task: any) => {
+    if (!onUpdateTaskTitle || task.isWorkflowStep) return;
+    setEditingTaskId(task.id);
+    setEditingTaskTitle(getTaskTitle(task));
+  };
+
+  const finishEditingTitle = async (task: any) => {
+    if (!editingTaskId) return;
+
+    const nextTitle = editingTaskTitle.trim();
+    const currentTitle = getTaskTitle(task);
+    setEditingTaskId(null);
+
+    if (!nextTitle || nextTitle === currentTitle || !onUpdateTaskTitle) {
+      setEditingTaskTitle("");
+      return;
+    }
+
+    await onUpdateTaskTitle(task.id, nextTitle, task);
+    setEditingTaskTitle("");
   };
 
   // Sort tasks by displayOrder or createdAt
@@ -262,26 +297,43 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               Nueva Tarea
             </Button>
           )}
-          <div className="flex bg-slate-100 p-1 rounded-md">
-            <button 
-              onClick={() => setViewMode(ViewMode.Day)}
-              className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Day ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
-            >
-              DÍA
-            </button>
-            <button 
-              onClick={() => setViewMode(ViewMode.Week)}
-              className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Week ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
-            >
-              SEMANA
-            </button>
-            <button 
-              onClick={() => setViewMode(ViewMode.Month)}
-              className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Month ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
-            >
-              MES
-            </button>
-          </div>
+          {!isTimelineCollapsed && (
+            <div className="flex bg-slate-100 p-1 rounded-md">
+              <button 
+                onClick={() => setViewMode(ViewMode.Day)}
+                className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Day ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                DÍA
+              </button>
+              <button 
+                onClick={() => setViewMode(ViewMode.Week)}
+                className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Week ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                SEMANA
+              </button>
+              <button 
+                onClick={() => setViewMode(ViewMode.Month)}
+                className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Month ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                MES
+              </button>
+            </div>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setIsTimelineCollapsed((current) => !current)}
+            className="h-8 px-3 text-[11px] font-bold border-slate-200 text-slate-600 hover:bg-slate-50"
+            title={isTimelineCollapsed ? "Mostrar cronograma" : "Ocultar cronograma"}
+          >
+            {isTimelineCollapsed ? (
+              <PanelRightOpen size={14} className="mr-1.5" />
+            ) : (
+              <PanelRightClose size={14} className="mr-1.5" />
+            )}
+            {isTimelineCollapsed ? "Mostrar Gantt" : "Solo tareas"}
+          </Button>
         </div>
         <div className="text-[11px] font-medium text-slate-400">
           {tasks.length} tareas en total
@@ -290,10 +342,10 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
       <div className="flex border-b border-slate-200 bg-slate-50/30">
         {/* Left side: Task List (Monday Style) */}
-        <div className="w-[760px] shrink-0 border-r border-slate-200 flex flex-col">
+        <div className={`${isTimelineCollapsed ? 'w-full border-r-0' : 'w-[760px] border-r'} shrink-0 border-slate-200 flex flex-col`}>
           <div className="h-10 flex items-center px-4 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white">
             <div className="w-10"></div>
-            <div className="flex-1 min-w-[160px]">Tarea</div>
+            <div className="flex-1 min-w-[220px]">Tarea</div>
             <div className="w-24 px-2 text-center">Persona</div>
             <div className="w-28 px-2 text-center">Estado</div>
             <div className="w-24 px-2 text-center">Prioridad</div>
@@ -312,15 +364,17 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                   {visibleTasks.map((task, index) => {
                     const assignedMember = teamMembers.find(m => m.id === task.assignedTo);
                     const taskTitle = getTaskTitle(task);
+                    const taskDisplayTitle = getTaskDisplayTitle(task);
                     const startDate = getTaskDate(task.startDate);
                     const endDate = getTaskDate(task.endDate);
                     const isQuantitative = task.type === 'quantitative';
                     const isParent = task.isParentTask || sortedTasks.some(t => t.parentTaskId === task.id);
                     const isSubTask = !!task.parentTaskId;
                     const isExpanded = expandedParents[task.id];
+                    const isEditingTitle = editingTaskId === task.id;
                     
                     return (
-                      <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={isSubTask}>
+                      <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={isSubTask || isEditingTitle}>
                         {(provided, snapshot) => (
                           <div
                             ref={provided.innerRef}
@@ -339,7 +393,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               <GripVertical size={14} />
                             </div>
                             
-                            <div className={`flex-1 min-w-[160px] px-2 flex items-center gap-2 ${task.isWorkflowStep ? 'pl-10' : isSubTask ? 'pl-6' : ''}`}>
+                            <div className={`flex-1 min-w-[220px] px-2 flex items-center gap-2 ${task.isWorkflowStep ? 'pl-10' : isSubTask ? 'pl-6' : ''}`}>
                               {(isParent || task.type === 'workflow') && !task.isWorkflowStep && (
                                 <button 
                                   onClick={() => toggleParent(task.id)}
@@ -348,9 +402,49 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   {isExpanded ? <ChevronLeft className="w-3 h-3 -rotate-90" /> : <ChevronRight className="w-3 h-3" />}
                                 </button>
                               )}
-                              <span className={`text-sm font-medium truncate ${task.status === 'completed' || task.status === 'listo' ? 'text-slate-400 line-through' : 'text-slate-700'}`}>
-                                {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{taskTitle}
-                              </span>
+                              {isEditingTitle ? (
+                                <input
+                                  autoFocus
+                                  value={editingTaskTitle}
+                                  onChange={(event) => setEditingTaskTitle(event.target.value)}
+                                  onBlur={() => void finishEditingTitle(task)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                      event.currentTarget.blur();
+                                    }
+                                    if (event.key === 'Escape') {
+                                      setEditingTaskId(null);
+                                      setEditingTaskTitle("");
+                                    }
+                                  }}
+                                  onClick={(event) => event.stopPropagation()}
+                                  className="h-7 min-w-0 flex-1 rounded-md border border-indigo-200 bg-white px-2 text-sm font-medium text-slate-800 outline-none ring-2 ring-indigo-500/10"
+                                />
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    onDoubleClick={() => startEditingTitle(task)}
+                                    className={`min-w-0 flex-1 truncate text-left text-sm font-medium ${task.status === 'completed' || task.status === 'listo' ? 'text-slate-400 line-through' : 'text-slate-700'}`}
+                                    title={taskTitle}
+                                  >
+                                    {taskDisplayTitle}
+                                  </button>
+                                  {onUpdateTaskTitle && !task.isWorkflowStep && (
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        startEditingTitle(task);
+                                      }}
+                                      className="shrink-0 rounded-md p-1 text-slate-300 opacity-0 transition-colors hover:bg-indigo-50 hover:text-indigo-600 group-hover:opacity-100"
+                                      title="Editar nombre"
+                                    >
+                                      <Pencil size={12} />
+                                    </button>
+                                  )}
+                                </>
+                              )}
                               {task.isRateCardTask && (
                                 <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[8px] font-bold rounded uppercase tracking-tighter shrink-0 border border-indigo-100 shadow-sm">
                                   RC
@@ -553,33 +647,34 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           </DragDropContext>
         </div>
 
-        {/* Right side: Gantt Chart */}
-        <div className="flex-1 overflow-hidden bg-white">
-          <div className="project-gantt-timeline-only h-full overflow-x-auto scrollbar-thin scrollbar-thumb-slate-200">
-            <Gantt
-              tasks={ganttTasks}
-              viewMode={viewMode}
-              listCellWidth=""
-              columnWidth={viewMode === ViewMode.Day ? 65 : viewMode === ViewMode.Week ? 150 : 250}
-              headerHeight={40}
-              rowHeight={40}
-              barCornerRadius={4}
-              barFill={70}
-              handleWidth={8}
-              fontSize="11px"
-              fontFamily="Inter, sans-serif"
-              todayColor="rgba(99, 102, 241, 0.03)"
-              onProgressChange={(task) => {
-                const originalTask = tasks.find(t => t.id === task.id);
-                onUpdateTaskProgress(task.id, task.progress, originalTask);
-              }}
-              onDateChange={(task) => {
-                const originalTask = tasks.find(t => t.id === task.id);
-                onUpdateTaskDates(task.id, task.start, task.end, originalTask);
-              }}
-            />
+        {!isTimelineCollapsed && (
+          <div className="flex-1 overflow-hidden bg-white">
+            <div className="project-gantt-timeline-only h-full overflow-x-auto scrollbar-thin scrollbar-thumb-slate-200">
+              <Gantt
+                tasks={ganttTasks}
+                viewMode={viewMode}
+                listCellWidth=""
+                columnWidth={viewMode === ViewMode.Day ? 65 : viewMode === ViewMode.Week ? 150 : 250}
+                headerHeight={40}
+                rowHeight={40}
+                barCornerRadius={4}
+                barFill={70}
+                handleWidth={8}
+                fontSize="11px"
+                fontFamily="Inter, sans-serif"
+                todayColor="rgba(99, 102, 241, 0.03)"
+                onProgressChange={(task) => {
+                  const originalTask = tasks.find(t => t.id === task.id);
+                  onUpdateTaskProgress(task.id, task.progress, originalTask);
+                }}
+                onDateChange={(task) => {
+                  const originalTask = tasks.find(t => t.id === task.id);
+                  onUpdateTaskDates(task.id, task.start, task.end, originalTask);
+                }}
+              />
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

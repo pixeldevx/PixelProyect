@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Upload, Save, FileText, MessageSquare, Hash } from 'lucide-react';
 import { doc, updateDoc, serverTimestamp, addDoc, collection } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
@@ -15,6 +15,13 @@ interface StartWorkflowModalProps {
 }
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Sin título';
+const getTaskDisplayTitle = (task: any) => {
+  const title = getTaskTitle(task);
+  if (!task?.externalWorkflowId || title === task.externalWorkflowId) {
+    return title;
+  }
+  return `[${task.externalWorkflowId}] ${title}`;
+};
 
 export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   isOpen,
@@ -30,10 +37,20 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   const [isStarting, setIsStarting] = useState(false);
   const [firstStepAssignee, setFirstStepAssignee] = useState<string>('');
 
+  useEffect(() => {
+    if (!isOpen || !task) return;
+    setWorkflowId(task.externalWorkflowId || '');
+    setObservation('');
+    setFile(null);
+    setFirstStepAssignee('');
+  }, [isOpen, task]);
+
   if (!isOpen || !task) return null;
 
   const handleStart = async () => {
-    if (!workflowId.trim()) {
+    const cleanWorkflowId = workflowId.trim();
+
+    if (!cleanWorkflowId) {
       toast.warning("Por favor ingrese un ID de Workflow.");
       return;
     }
@@ -75,7 +92,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         action: 'start',
         comment: observation || 'Workflow iniciado',
         timestamp: new Date(),
-        workflowId: workflowId
+        workflowId: cleanWorkflowId
       };
 
       // 3. Update task
@@ -92,9 +109,12 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
       }
 
       await updateDoc(doc(db, 'projects', projectId, 'tasks', task.id), {
+        title: cleanWorkflowId,
+        name: cleanWorkflowId,
+        originalTitle: task.originalTitle || getTaskTitle(task),
         status: 'in_progress',
         progress: 10,
-        externalWorkflowId: workflowId,
+        externalWorkflowId: cleanWorkflowId,
         initialObservation: observation,
         startDocumentId: documentId,
         currentStepIndex: 0,
@@ -125,7 +145,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
           <div>
             <h2 className="text-xl font-bold text-slate-800">Iniciar Workflow</h2>
             <p className="text-sm text-slate-500 mt-1">
-              {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{getTaskTitle(task)}
+              {getTaskDisplayTitle(task)}
             </p>
           </div>
           <button 

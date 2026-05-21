@@ -15,6 +15,13 @@ interface TaskDocumentsViewerProps {
 }
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Sin título';
+const getTaskDisplayTitle = (task: any) => {
+  const title = getTaskTitle(task);
+  if (!task?.externalWorkflowId || title === task.externalWorkflowId) {
+    return title;
+  }
+  return `[${task.externalWorkflowId}] ${title}`;
+};
 
 export const TaskDocumentsViewer: React.FC<TaskDocumentsViewerProps> = ({ isOpen, onClose, task, userId }) => {
   const [documents, setDocuments] = useState<any[]>([]);
@@ -90,7 +97,7 @@ export const TaskDocumentsViewer: React.FC<TaskDocumentsViewerProps> = ({ isOpen
           <div>
             <h2 className="text-xl font-bold text-slate-800">Documentos de la Tarea</h2>
             <p className="text-sm text-slate-500 mt-1">
-              {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{getTaskTitle(task)}
+              {getTaskDisplayTitle(task)}
             </p>
           </div>
           <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors">

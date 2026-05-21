@@ -12,6 +12,13 @@ interface TaskDetailsModalProps {
 }
 
 const getTaskTitle = (task: any) => task?.title || task?.name || "Sin título";
+const getTaskDisplayTitle = (task: any) => {
+  const title = getTaskTitle(task);
+  if (!task?.externalWorkflowId || title === task.externalWorkflowId) {
+    return title;
+  }
+  return `[${task.externalWorkflowId}] ${title}`;
+};
 
 export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   isOpen,
@@ -296,8 +303,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         <div className="flex items-center justify-between p-6 border-b border-slate-100">
           <div>
             <h2 className="text-xl font-bold text-slate-800">
-              {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ""}
-              {getTaskTitle(task)}
+              {getTaskDisplayTitle(task)}
             </h2>
             <p className="text-sm text-slate-500 mt-1">
               Detalles y Documentación

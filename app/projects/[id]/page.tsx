@@ -574,6 +574,34 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  const handleUpdateTaskTitle = async (taskId: string, title: string, task: any) => {
+    if (!task) return;
+    const cleanTitle = title.trim();
+    if (!cleanTitle) {
+      toast.warning('El nombre de la tarea no puede estar vacío.');
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'projects', projectId, 'tasks', taskId), {
+        title: cleanTitle,
+        name: cleanTitle,
+        updatedAt: serverTimestamp()
+      });
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === taskId
+            ? { ...currentTask, title: cleanTitle, name: cleanTitle }
+            : currentTask
+        )
+      );
+      toast.success('Nombre de la tarea actualizado');
+    } catch (error: any) {
+      console.error("Error updating task title:", error);
+      toast.error(`Error al actualizar el nombre: ${error.message}`);
+    }
+  };
+
   const getDocTypeBadge = (type: string) => {
     switch (type) {
       case 'contract': return <span className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded-md text-xs font-medium">Contrato</span>;
@@ -843,6 +871,7 @@ export default function ProjectDetailsPage() {
                 onSyncTask={handleSyncTaskValue}
                 onReorderTasks={handleReorderTasks}
                 onUpdateTaskDates={handleUpdateTaskDates}
+                onUpdateTaskTitle={handleUpdateTaskTitle}
                 onOpenTaskDocs={(taskId, task) => {
                   setSelectedTaskForDocs(task);
                   setIsTaskDocsModalOpen(true);
