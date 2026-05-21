@@ -35,3 +35,11 @@ La app incluye flujo de recuperación con Supabase Auth:
    `https://TU_DOMINIO/reset-password`
 4. En `Authentication > Emails/SMTP`, configura un proveedor SMTP propio para que Supabase pueda enviar correos a usuarios reales.
 5. En la pantalla de login, usa `¿Olvidaste tu contraseña?`.
+
+## Migración Desde Firestore
+
+Para migrar datos existentes desde Firestore a Supabase, incluyendo proyectos, perfiles y creación opcional de usuarios en Supabase Auth, usa:
+
+```txt
+docs/firestore-to-supabase-migration.md
+```

@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "migrate:firestore": "node scripts/migrate-firestore-to-supabase.mjs",
     "lint": "eslint .",
     "clean": "next clean"
   },
