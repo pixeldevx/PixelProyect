@@ -34,7 +34,7 @@ function ResetPasswordContent() {
 
       const { data } = await supabase.auth.getSession();
       if (!data.session) {
-        setError('Abre esta página desde el enlace de recuperación enviado a tu correo.');
+        setError('Abre esta página desde el enlace de invitación o recuperación enviado a tu correo.');
       }
       setLoadingSession(false);
     };
@@ -75,8 +75,8 @@ function ResetPasswordContent() {
           <div className="w-16 h-16 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-2xl font-bold mx-auto mb-6 shadow-md">
             PX
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 mb-2">Restablecer Contraseña</h1>
-          <p className="text-slate-500">Define una nueva contraseña para tu cuenta.</p>
+          <h1 className="text-2xl font-bold text-slate-900 mb-2">Configurar Contraseña</h1>
+          <p className="text-slate-500">Define la contraseña de tu cuenta.</p>
         </div>
 
         {loadingSession ? (
@@ -135,7 +135,7 @@ function ResetPasswordContent() {
                 disabled={isSubmitting}
                 className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5"
               >
-                {isSubmitting ? 'Actualizando...' : 'Actualizar contraseña'}
+                {isSubmitting ? 'Guardando...' : 'Guardar contraseña'}
               </Button>
             </form>
           </>

@@ -83,6 +83,7 @@ function useAuthState(): AuthContextValue {
             displayName: currentUser.displayName || currentUser.email?.split('@')[0],
             photoURL: currentUser.photoURL,
             lastLoginAt: serverTimestamp(),
+            isPreRegistered: false,
             role: userRole,
             ...(orgId ? { organizationId: orgId } : {})
           }, { merge: true });

@@ -6,14 +6,15 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Plus, Edit2, Shield, User as UserIcon, AlertCircle } from 'lucide-react';
-import { collection, query, onSnapshot, doc, updateDoc, setDoc, serverTimestamp, getDocs, where } from '@/lib/supabase/document-store';
+import { collection, query, onSnapshot, doc, updateDoc, getDocs, where } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { uploadProfilePicture } from '@/lib/storage-utils';
 import { useAuth } from '@/hooks/useAuth';
+import { supabase } from '@/lib/supabase/client';
 
 export function UserManagement() {
-  const { user, userRole: currentUserRole, userOrganizationId } = useAuth();
+  const { userRole: currentUserRole, userOrganizationId } = useAuth();
   const [users, setUsers] = useState<any[]>([]);
   const [projectRoles, setProjectRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -123,6 +124,31 @@ export function UserManagement() {
     }
   };
 
+  const inviteUser = async (payload: Record<string, any>) => {
+    const { data } = await supabase.auth.getSession();
+    const accessToken = data.session?.access_token;
+
+    if (!accessToken) {
+      throw new Error('Tu sesión expiró. Inicia sesión nuevamente.');
+    }
+
+    const response = await fetch('/api/admin/users/invite', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(result.error || 'No fue posible enviar la invitación.');
+    }
+
+    return result;
+  };
+
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!userEmail.trim()) return;
@@ -162,41 +188,36 @@ export function UserManagement() {
 
         toast.success("Usuario actualizado exitosamente.");
       } else {
-        const selectedProjectRole = projectRoles.find(r => r.id === projectRoleId);
-        
-        const newUserRef = doc(collection(db, 'users'));
-
-        if (photoFile) {
-          uploadedPhotoURL = await uploadProfilePicture(newUserRef.id, photoFile);
+        if (currentUserRole !== 'admin') {
+          throw new Error('Solo el administrador global puede invitar usuarios.');
         }
 
-        await setDoc(newUserRef, {
+        const selectedProjectRole = projectRoles.find(r => r.id === projectRoleId);
+
+        if (photoFile) {
+          const uploadId =
+            typeof crypto !== 'undefined' && 'randomUUID' in crypto
+              ? crypto.randomUUID()
+              : `invite_${Date.now()}`;
+          uploadedPhotoURL = await uploadProfilePicture(uploadId, photoFile);
+        }
+
+        const inviteResult = await inviteUser({
           email: normalizedEmail,
           displayName: userName || normalizedEmail.split('@')[0],
-          role: formSystemRole,
-          createdAt: serverTimestamp(),
-          isPreRegistered: true,
+          systemRole: formSystemRole,
+          projectRoleId: projectRoleId || 'system_created',
+          projectRoleName: selectedProjectRole?.name || 'Usuario del Sistema',
           ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL }),
-          ...(currentUserRole === 'admin' ? { organizationId: selectedOrganizationId } : userOrganizationId ? { organizationId: userOrganizationId } : {})
+          ...(formSystemRole !== 'admin' ? { organizationId: selectedOrganizationId } : {})
         });
-        
-        const newTeamMemberRef = doc(collection(db, 'team_members'));
-        await setDoc(newTeamMemberRef, {
-          email: normalizedEmail,
-          name: userName || normalizedEmail.split('@')[0],
-          roleId: projectRoleId || 'system_created',
-          roleName: selectedProjectRole?.name || 'Usuario del Sistema',
-          createdAt: serverTimestamp(),
-          ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL }),
-          ...(currentUserRole === 'admin' ? { organizationId: selectedOrganizationId } : userOrganizationId ? { organizationId: userOrganizationId } : {})
-        });
-        
-        toast.success("Usuario creado exitosamente.");
+
+        toast.success(inviteResult.message || "Usuario creado e invitación enviada.");
       }
       setIsModalOpen(false);
     } catch (error) {
       console.error("Error saving user:", error);
-      toast.error("Error al guardar el usuario");
+      toast.error(error instanceof Error ? error.message : "Error al guardar el usuario");
     } finally {
       setIsUploading(false);
     }
@@ -224,10 +245,12 @@ export function UserManagement() {
             Gestiona los niveles de acceso y roles del sistema para los usuarios.
           </CardDescription>
         </div>
-        <Button onClick={() => handleOpenModal()} className="bg-indigo-600 hover:bg-indigo-700 text-white">
-          <Plus className="w-4 h-4 mr-2" />
-          Crear Usuario
-        </Button>
+        {currentUserRole === 'admin' && (
+          <Button onClick={() => handleOpenModal()} className="bg-indigo-600 hover:bg-indigo-700 text-white">
+            <Plus className="w-4 h-4 mr-2" />
+            Invitar Usuario
+          </Button>
+        )}
       </CardHeader>
       <CardContent>
         {loading ? (
@@ -262,7 +285,7 @@ export function UserManagement() {
                         )}
                       </div>
                       {u.displayName || 'Usuario'}
-                      {u.isPreRegistered && <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full ml-2">Pendiente</span>}
+                      {u.isPreRegistered && <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full ml-2">Invitado</span>}
                     </div>
                   </TableCell>
                   <TableCell className="text-slate-500">{u.email}</TableCell>
@@ -295,7 +318,7 @@ export function UserManagement() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
             <h3 className="text-lg font-semibold text-slate-900 mb-4">
-              {editingUser ? 'Editar Rol de Usuario' : 'Crear Nuevo Usuario'}
+              {editingUser ? 'Editar Rol de Usuario' : 'Invitar Nuevo Usuario'}
             </h3>
             
             <form onSubmit={handleSaveUser}>
@@ -415,7 +438,7 @@ export function UserManagement() {
                   disabled={isUploading}
                   className="bg-indigo-600 hover:bg-indigo-700 text-white"
                 >
-                  {isUploading ? 'Guardando...' : 'Guardar'}
+                  {isUploading ? 'Guardando...' : editingUser ? 'Guardar' : 'Enviar Invitación'}
                 </Button>
               </div>
             </form>
