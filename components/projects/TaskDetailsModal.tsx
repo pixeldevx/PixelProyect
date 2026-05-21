@@ -1,16 +1,8 @@
-import React, { useState, useEffect } from "react";
-import { X, Save, CheckCircle2, Circle } from "lucide-react";
-import {
-  doc,
-  updateDoc,
-  serverTimestamp,
-  addDoc,
-  collection,
-  writeBatch,
-  increment,
-} from "firebase/firestore";
-import { db } from "@/lib/firebase";
-import { toast } from "sonner";
+import React, { useState, useEffect } from 'react';
+import { X, Save, CheckCircle2, Circle } from 'lucide-react';
+import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
+import { toast } from 'sonner';
 
 interface TaskDetailsModalProps {
   isOpen: boolean;

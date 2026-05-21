@@ -3,8 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users } from 'lucide-react';
-import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
@@ -159,7 +159,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     if (!rateCardToEdit || !name.trim() || !indicator.trim() || !rate) return;
     setLoading(true);
     try {
-      const { updateDoc } = await import('firebase/firestore');
+      const { updateDoc } = await import('@/lib/supabase/document-store');
       const updateData: any = {
         name: name.trim(),
         indicator: indicator.trim(),

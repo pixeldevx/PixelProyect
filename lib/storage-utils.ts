@@ -1,5 +1,5 @@
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
-import { storage } from './firebase';
+import { ref, uploadBytesResumable, getDownloadURL } from '@/lib/supabase/storage-shim';
+import { storage } from './backend';
 
 export const uploadProfilePicture = async (userId: string, file: File): Promise<string> => {
   const fileExtension = file.name.split('.').pop();

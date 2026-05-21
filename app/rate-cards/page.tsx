@@ -6,12 +6,12 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { CreditCard, Search, ExternalLink, Users, User, CheckCircle2, Clock, ListTodo, BarChart3, DollarSign } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { collection, query, onSnapshot, where, or, collectionGroup, getDocs } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { collection, query, onSnapshot, where, or, collectionGroup, getDocs } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import Link from 'next/link';
 import { Progress } from '@/components/ui/progress';
-import { handleFirestoreError, OperationType } from '@/lib/firebase-utils';
+import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts';
 import Image from 'next/image';
@@ -88,7 +88,7 @@ export default function RateCardsPage() {
 
     // Fetch tasks for the selected member across all projects
     // We use collectionGroup to fetch all tasks where assignedTo matches the selected member
-    // Note: This might require a composite index in Firestore
+    // Note: This might require a composite index in Supabase
     const qTasks = query(
       collectionGroup(db, 'tasks'),
       where('assignedTo', '==', selectedMemberId)
@@ -109,7 +109,7 @@ export default function RateCardsPage() {
       setMemberTasks(tasksData);
       setLoadingTasks(false);
     }, (error: any) => {
-      handleFirestoreError(error, OperationType.LIST, 'tasks');
+      handleDataError(error, OperationType.LIST, 'tasks');
       setLoadingTasks(false);
     });
 
@@ -140,7 +140,7 @@ export default function RateCardsPage() {
       });
       setAllRateCards(rcData);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'rateCards');
+      handleDataError(error, OperationType.LIST, 'rateCards');
     });
 
     // Fetch all tasks

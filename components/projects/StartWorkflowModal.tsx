@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { X, Upload, Save, FileText, MessageSquare, Hash } from 'lucide-react';
-import { doc, updateDoc, serverTimestamp, addDoc, collection } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '@/lib/firebase';
+import { doc, updateDoc, serverTimestamp, addDoc, collection } from '@/lib/supabase/document-store';
+import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
+import { db, storage } from '@/lib/backend';
 import { toast } from 'sonner';
 
 interface StartWorkflowModalProps {

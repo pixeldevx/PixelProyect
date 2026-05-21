@@ -30,13 +30,13 @@ export class ErrorBoundary extends Component<Props, State> {
   public render() {
     if (this.state.hasError) {
       let errorMessage = "Ha ocurrido un error inesperado.";
-      let isFirestoreError = false;
+      let isSupabaseError = false;
 
       try {
         if (this.state.error?.message) {
           const parsed = JSON.parse(this.state.error.message);
           if (parsed.error && parsed.operationType) {
-            isFirestoreError = true;
+            isSupabaseError = true;
             errorMessage = `Error de base de datos: ${parsed.error} (${parsed.operationType} en ${parsed.path})`;
           }
         }
@@ -61,9 +61,9 @@ export class ErrorBoundary extends Component<Props, State> {
             <RefreshCcw size={18} className="mr-2" /> Recargar aplicación
           </Button>
           
-          {isFirestoreError && (
+          {isSupabaseError && (
             <p className="mt-4 text-xs text-slate-400">
-              Si el problema persiste, contacta al administrador para revisar los permisos de Firestore.
+              Si el problema persiste, contacta al administrador para revisar los permisos de Supabase.
             </p>
           )}
         </div>

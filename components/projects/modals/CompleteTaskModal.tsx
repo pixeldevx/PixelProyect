@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { FileText, X, File, Upload, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { db, storage } from '@/lib/firebase';
-import { doc, collection, addDoc, writeBatch, serverTimestamp, increment } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db, storage } from '@/lib/backend';
+import { doc, collection, addDoc, writeBatch, serverTimestamp, increment } from '@/lib/supabase/document-store';
+import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { toast } from 'sonner';
 
 interface CompleteTaskModalProps {
@@ -32,7 +32,7 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
       await uploadBytes(storageRef, taskDocFile);
       const downloadURL = await getDownloadURL(storageRef);
 
-      // 2. Create document record in Firestore
+      // 2. Create document record in Supabase
       const docData = {
         projectId: projectId,
         taskId: taskId,

@@ -5,12 +5,12 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Plus, Edit2 } from 'lucide-react';
-import { collection, query, onSnapshot, doc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { collection, query, onSnapshot, doc, setDoc, updateDoc, serverTimestamp } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/useAuth';
 
-import { handleFirestoreError, OperationType } from '@/lib/firebase-utils';
+import { handleDataError, OperationType } from '@/lib/backend-utils';
 
 export function OrganizationManagement() {
   const { user, userRole } = useAuth();
@@ -41,7 +41,7 @@ export function OrganizationManagement() {
       }
     }, (error) => {
       if (active) {
-        handleFirestoreError(error, OperationType.LIST, 'organizations');
+        handleDataError(error, OperationType.LIST, 'organizations');
         setLoading(false);
       }
     });
@@ -87,7 +87,7 @@ export function OrganizationManagement() {
       setIsModalOpen(false);
     } catch (error) {
       toast.error("Error al guardar la organización");
-      handleFirestoreError(error, OperationType.WRITE, 'organizations');
+      handleDataError(error, OperationType.WRITE, 'organizations');
     }
   };
 

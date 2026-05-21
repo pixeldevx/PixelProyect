@@ -1,22 +1,10 @@
-import React, { useState } from "react";
-import { X, ListTodo, Plus, ClipboardList, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import {
-  doc,
-  collection,
-  addDoc,
-  writeBatch,
-  serverTimestamp,
-  increment,
-  query,
-  getDocs,
-} from "firebase/firestore";
-import { db } from "@/lib/firebase";
-import { toast } from "sonner";
-import {
-  WorkflowStepFormBuilderModal,
-  CustomForm,
-} from "@/components/projects/WorkflowStepFormBuilderModal";
+import React, { useState } from 'react';
+import { X, ListTodo, Plus, ClipboardList, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, query, getDocs } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
+import { toast } from 'sonner';
+import { WorkflowStepFormBuilderModal, CustomForm } from '@/components/projects/WorkflowStepFormBuilderModal';
 
 interface CreateTaskModalProps {
   isOpen: boolean;

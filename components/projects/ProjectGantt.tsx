@@ -114,7 +114,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     return result;
   }, [sortedTasks, expandedParents]);
 
-  // Map Firestore tasks to gantt-task-react tasks
+  // Map Supabase tasks to gantt-task-react tasks
   const ganttTasks: Task[] = useMemo(() => {
     if (visibleTasks.length === 0) return [];
     

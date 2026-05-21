@@ -6,8 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Plus, Edit2, Shield, User as UserIcon, AlertCircle } from 'lucide-react';
-import { collection, query, onSnapshot, doc, updateDoc, setDoc, serverTimestamp, getDocs, where } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { collection, query, onSnapshot, doc, updateDoc, setDoc, serverTimestamp, getDocs, where } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { uploadProfilePicture } from '@/lib/storage-utils';
 import { useAuth } from '@/hooks/useAuth';

@@ -4,11 +4,8 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { AlertCircle, Sparkles, TrendingDown, TrendingUp, Zap, BrainCircuit, Loader2 } from 'lucide-react';
+import { Sparkles, TrendingUp, Zap, BrainCircuit, Loader2 } from 'lucide-react';
 import { DashboardMetrics } from '@/hooks/useDashboardData';
-import { GoogleGenAI } from "@google/genai";
-
-const ai = new GoogleGenAI({ apiKey: process.env.NEXT_PUBLIC_GEMINI_API_KEY! });
 
 interface AIAnalysis {
   status: 'success' | 'warning' | 'error';
@@ -29,48 +26,75 @@ export function AIAssistantAlerts({ metrics }: { metrics: DashboardMetrics }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    async function getAIAnalysis() {
+    function getLocalAnalysis() {
       if (metrics.loading) return;
       
       setLoading(true);
-      try {
-        const prompt = `Analiza las siguientes métricas de un proyecto de ingeniería/catastro y genera un informe estructurado en JSON.
-        Métricas:
-        - Presupuesto Planeado: ${metrics.totalPlannedBudget}
-        - Costo Actual (Liquidación): ${metrics.totalActualCost}
-        - Producción Total (Unidades): ${metrics.totalProduction}
-        - Tasa de Aceptación (Calidad): ${metrics.acceptanceRate}%
-        - Tasa de Utilización (Presupuesto): ${metrics.utilizationRate}%
-        
-        El JSON debe tener esta estructura:
-        {
-          "status": "success" | "warning" | "error",
-          "statusLabel": "string (ej: Alerta Amarilla)",
-          "summary": "string (un párrafo analítico)",
-          "recommendations": ["string", "string", "string"],
-          "metrics": [
-            { "label": "string", "value": "string", "subValue": "string", "progress": number, "color": "string (hex)" }
-          ]
-        }
-        Genera 3 métricas clave para el dashboard de alertas (ej: Meta Hoy, Calidad, Impacto).
-        Responde SOLO el JSON.`;
 
-        const response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: [{ parts: [{ text: prompt }] }],
-          config: { responseMimeType: "application/json" }
-        });
+      const budgetRisk = metrics.utilizationRate > 100 ? 'error' : metrics.utilizationRate > 85 ? 'warning' : 'success';
+      const qualityRisk = metrics.acceptanceRate < 70 ? 'error' : metrics.acceptanceRate < 85 ? 'warning' : 'success';
+      const status: AIAnalysis['status'] = budgetRisk === 'error' || qualityRisk === 'error'
+        ? 'error'
+        : budgetRisk === 'warning' || qualityRisk === 'warning'
+          ? 'warning'
+          : 'success';
 
-        const data = JSON.parse(response.text || '{}');
-        setAnalysis(data);
-      } catch (error) {
-        console.error("Error generating AI analysis:", error);
-      } finally {
-        setLoading(false);
-      }
+      const totalActual = metrics.totalActualCost.toLocaleString('es-CO', {
+        style: 'currency',
+        currency: 'COP',
+        maximumFractionDigits: 0,
+      });
+
+      setAnalysis({
+        status,
+        statusLabel:
+          status === 'error' ? 'Alerta Roja' : status === 'warning' ? 'Alerta Amarilla' : 'Rendimiento Saludable',
+        summary:
+          `El proyecto registra ${metrics.totalProduction.toLocaleString('es-CO')} unidades producidas, ` +
+          `una aceptación del ${metrics.acceptanceRate}% y un costo ejecutado de ${totalActual}. ` +
+          (status === 'success'
+            ? 'Los indicadores principales se mantienen dentro de rangos esperados.'
+            : 'Conviene revisar desviaciones de costo, calidad o reproceso antes de seguir escalando producción.'),
+        recommendations: [
+          metrics.utilizationRate > 85
+            ? 'Revisar rate cards y líneas de presupuesto con mayor consumo.'
+            : 'Mantener seguimiento semanal de presupuesto ejecutado contra plan.',
+          metrics.acceptanceRate < 85
+            ? 'Identificar pasos de workflow con devoluciones frecuentes.'
+            : 'Documentar buenas prácticas de los equipos con mayor aceptación.',
+          metrics.teamPerformance.length > 0
+            ? 'Balancear carga según desempeño y reproceso por usuario.'
+            : 'Completar asignación de responsables para mejorar trazabilidad.',
+        ],
+        metrics: [
+          {
+            label: 'Utilización',
+            value: `${metrics.utilizationRate}%`,
+            subValue: 'presupuesto',
+            progress: Math.min(metrics.utilizationRate, 100),
+            color: '#4f46e5',
+          },
+          {
+            label: 'Calidad',
+            value: `${metrics.acceptanceRate}%`,
+            subValue: 'aceptación',
+            progress: Math.min(metrics.acceptanceRate, 100),
+            color: '#10b981',
+          },
+          {
+            label: 'Producción',
+            value: metrics.totalProduction.toLocaleString('es-CO'),
+            subValue: 'unidades',
+            progress: Math.min(metrics.totalProduction > 0 ? 75 : 0, 100),
+            color: '#f59e0b',
+          },
+        ],
+      });
+
+      setLoading(false);
     }
 
-    getAIAnalysis();
+    getLocalAnalysis();
   }, [metrics]);
 
   if (loading) {

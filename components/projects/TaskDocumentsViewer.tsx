@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot, addDoc, serverTimestamp, deleteDoc, doc } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-import { db, storage } from '@/lib/firebase';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp, deleteDoc, doc } from '@/lib/supabase/document-store';
+import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
+import { db, storage } from '@/lib/backend';
 import { X, Upload, FileText, Trash2, Loader2, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';

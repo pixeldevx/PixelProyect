@@ -1,8 +1,8 @@
 "use client"
 
 import React, { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, doc, updateDoc, addDoc, deleteDoc, serverTimestamp, orderBy, where, getDocs, writeBatch } from 'firebase/firestore';
-import { db, auth } from '@/lib/firebase';
+import { collection, query, onSnapshot, doc, updateDoc, addDoc, deleteDoc, serverTimestamp, orderBy, where, getDocs, writeBatch } from '@/lib/supabase/document-store';
+import { db, auth } from '@/lib/backend';
 import { ProjectGantt } from '@/components/projects/ProjectGantt';
 import { Button } from '@/components/ui/button';
 import { Plus, Calendar, Users, ListTodo, AlertCircle, X, Loader2, Search } from 'lucide-react';
@@ -18,7 +18,7 @@ enum OperationType {
   WRITE = 'write',
 }
 
-interface FirestoreErrorInfo {
+interface DataStoreErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
@@ -37,8 +37,8 @@ interface FirestoreErrorInfo {
   }
 }
 
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
+function handleDataError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: DataStoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
       userId: auth.currentUser?.uid,
@@ -56,7 +56,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.error('Supabase Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
 
@@ -113,7 +113,7 @@ export const GanttOverview: React.FC = () => {
       }
       setProjects(data);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'projects');
+      handleDataError(error, OperationType.LIST, 'projects');
     });
     return () => unsubscribe();
   }, [user, userRole, userOrganizationId]);
@@ -129,7 +129,7 @@ export const GanttOverview: React.FC = () => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setTeamMembers(data);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'team_members');
+      handleDataError(error, OperationType.LIST, 'team_members');
     });
     return () => unsubscribe();
   }, [user, userRole, userOrganizationId]);
@@ -151,7 +151,7 @@ export const GanttOverview: React.FC = () => {
         setProjectData({ id: docSnap.id, ...docSnap.data() });
       }
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `projects/${selectedProjectId}`);
+      handleDataError(error, OperationType.GET, `projects/${selectedProjectId}`);
     });
 
     // Tasks
@@ -161,7 +161,7 @@ export const GanttOverview: React.FC = () => {
       setTasks(data);
       setLoading(false);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, `projects/${selectedProjectId}/tasks`);
+      handleDataError(error, OperationType.LIST, `projects/${selectedProjectId}/tasks`);
     });
 
     // Rate Cards
@@ -170,7 +170,7 @@ export const GanttOverview: React.FC = () => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setRateCards(data);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, `projects/${selectedProjectId}/rateCards`);
+      handleDataError(error, OperationType.LIST, `projects/${selectedProjectId}/rateCards`);
     });
 
     return () => {

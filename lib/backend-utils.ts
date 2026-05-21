@@ -1,4 +1,4 @@
-import { auth } from './firebase';
+import { auth } from './backend';
 
 export enum OperationType {
   CREATE = 'create',
@@ -9,7 +9,7 @@ export enum OperationType {
   WRITE = 'write',
 }
 
-export interface FirestoreErrorInfo {
+export interface DataStoreErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
@@ -28,16 +28,16 @@ export interface FirestoreErrorInfo {
   }
 }
 
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+export function handleDataError(error: unknown, operationType: OperationType, path: string | null) {
   const errorMessage = error instanceof Error ? error.message : String(error);
   
-  // Ignore permission errors if the user is not logged in (likely a logout event)
+  // Ignore permission errors if the user is not logged in (likely a logout event).
   if (!auth.currentUser && errorMessage.includes('Missing or insufficient permissions')) {
-    console.warn(`Ignored Firestore permission error during logout for ${operationType} on ${path}`);
+    console.warn(`Ignored Supabase permission error during logout for ${operationType} on ${path}`);
     return;
   }
 
-  const errInfo: FirestoreErrorInfo = {
+  const errInfo: DataStoreErrorInfo = {
     error: errorMessage,
     authInfo: {
       userId: auth.currentUser?.uid,
@@ -55,6 +55,6 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.error('Supabase data error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }

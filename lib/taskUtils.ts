@@ -1,5 +1,5 @@
-import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from './firebase';
+import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp } from '@/lib/supabase/document-store';
+import { db } from './backend';
 
 export const updateParentTaskStatus = async (projectId: string, parentTaskId: string) => {
   try {

@@ -1,20 +1,17 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# RealProyect
 
-# Run and deploy your AI Studio app
+Aplicativo de gestión de proyectos, tareas, documentos, presupuesto, facturación y equipo.
 
-This contains everything you need to run your app locally.
+## Despliegue En Vercel
 
-View your app in AI Studio: https://ai.studio/apps/ab809582-c2a3-41ff-babe-5ce35a4f5466
+**Requisitos:** un proyecto en Vercel conectado al repositorio y un proyecto de Supabase.
 
-## Run Locally
+1. En Supabase, ejecuta la migración:
+   `supabase/migrations/0001_document_store.sql`
+2. En Vercel, abre el proyecto y configura estas variables en `Settings > Environment Variables`:
+   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` y `NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET`.
+3. Habilita autenticación por correo y contraseña en Supabase Auth.
+4. Haz redeploy en Vercel para que el build tome las nuevas variables.
 
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+La app usa Supabase Auth, Supabase Storage y la tabla `app_documents` como almacén documental compatible con la estructura anterior del aplicativo.
+Las políticas RLS permiten acceso al administrador inicial y a correos registrados en `team_members`.
