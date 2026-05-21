@@ -44,6 +44,23 @@ const getTaskDate = (value: any) => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+const getTaskPriority = (task: any) => {
+  return task?.priority || task?.originalTask?.priority || 'medium';
+};
+
+const getPriorityColor = (priority: string) => {
+  switch (priority) {
+    case 'high':
+      return 'bg-[#e2445c] text-white';
+    case 'medium':
+      return 'bg-[#5559df] text-white';
+    case 'low':
+      return 'bg-[#c4c4c4] text-white';
+    default:
+      return 'bg-[#5559df] text-white';
+  }
+};
+
 const sortChildTasks = (childTasks: any[]) => {
   return [...childTasks].sort((a, b) => {
     const aOrder = a.cycleNumber ?? a.displayOrder ?? 0;
@@ -134,6 +151,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 isWorkflowStep: true,
                 stepIndex: idx,
                 status: step.status || 'not_started',
+                priority: getTaskPriority(subTask),
                 assignedTo: step.assignedTo,
                 startDate: subTask.startDate,
                 endDate: subTask.endDate,
@@ -155,6 +173,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             isWorkflowStep: true,
             stepIndex: idx,
             status: step.status || 'not_started',
+            priority: getTaskPriority(task),
             assignedTo: step.assignedTo,
             startDate: task.startDate,
             endDate: task.endDate,
@@ -372,6 +391,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const isSubTask = !!task.parentTaskId;
                     const isExpanded = expandedParents[task.id];
                     const isEditingTitle = editingTaskId === task.id;
+                    const taskPriority = getTaskPriority(task);
                     
                     return (
                       <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={isSubTask || isEditingTitle}>
@@ -535,13 +555,9 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
                             <div className="w-24 h-full relative group/priority">
                               <select
-                                value={task.priority || 'medium'}
+                                value={taskPriority}
                                 onChange={(e) => onUpdateTaskStatus(task.id, task.status, { ...task, priority: e.target.value })}
-                                className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 cursor-pointer text-center focus:outline-none transition-all hover:brightness-105 ${
-                                  task.priority === 'high' ? 'bg-[#e2445c] text-white' : 
-                                  task.priority === 'medium' ? 'bg-[#5559df] text-white' : 
-                                  'bg-[#c4c4c4] text-white'
-                                }`}
+                                className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 cursor-pointer text-center focus:outline-none transition-all hover:brightness-105 ${getPriorityColor(taskPriority)}`}
                               >
                                 <option value="high" className="bg-white text-slate-700">ALTA</option>
                                 <option value="medium" className="bg-white text-slate-700">MEDIA</option>
