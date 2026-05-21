@@ -13,6 +13,52 @@ import { uploadProfilePicture } from '@/lib/storage-utils';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/lib/supabase/client';
 
+const API_TIMEOUT_MS = 30000;
+const PHOTO_UPLOAD_TIMEOUT_MS = 20000;
+
+const fetchWithTimeout = async (
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMessage: string
+) => {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error(timeoutMessage);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
+
+const withTimeout = async <T,>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> => {
+  let timeoutId: number | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+};
+
 export function UserManagement() {
   const { user, userRole: currentUserRole, userOrganizationId } = useAuth();
   const [users, setUsers] = useState<any[]>([]);
@@ -70,11 +116,11 @@ export function UserManagement() {
     setLoading(true);
     try {
       const accessToken = await getAccessToken();
-      const response = await fetch('/api/admin/users', {
+      const response = await fetchWithTimeout('/api/admin/users', {
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
-      });
+      }, 'La carga de usuarios tardó demasiado. Intenta refrescar nuevamente.');
       const result = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -177,14 +223,14 @@ export function UserManagement() {
   const inviteUser = async (payload: Record<string, any>) => {
     const accessToken = await getAccessToken();
 
-    const response = await fetch('/api/admin/users/invite', {
+    const response = await fetchWithTimeout('/api/admin/users/invite', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify(payload),
-    });
+    }, 'La invitación tardó demasiado. Revisa si el usuario fue creado y vuelve a intentar si no aparece.');
     const result = await response.json().catch(() => ({}));
 
     if (!response.ok) {
@@ -207,7 +253,7 @@ export function UserManagement() {
     setDeletingUserId(targetUser.id);
     try {
       const accessToken = await getAccessToken();
-      const response = await fetch('/api/admin/users', {
+      const response = await fetchWithTimeout('/api/admin/users', {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -217,7 +263,7 @@ export function UserManagement() {
           userId: targetUser.id,
           email: targetUser.email,
         }),
-      });
+      }, 'La eliminación tardó demasiado. Refresca la lista para confirmar el estado.');
       const result = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -246,7 +292,11 @@ export function UserManagement() {
 
       if (editingUser) {
         if (photoFile) {
-          uploadedPhotoURL = await uploadProfilePicture(editingUser.id, photoFile);
+          uploadedPhotoURL = await withTimeout(
+            uploadProfilePicture(editingUser.id, photoFile),
+            PHOTO_UPLOAD_TIMEOUT_MS,
+            'La foto tardó demasiado en subir. Intenta guardar sin foto o vuelve a subirla después.'
+          );
         }
 
         await setDoc(doc(db, 'users', editingUser.id), {
@@ -274,8 +324,9 @@ export function UserManagement() {
         }
 
         toast.success("Usuario actualizado exitosamente.");
+        setIsModalOpen(false);
         if (currentUserRole === 'admin') {
-          await loadAuthUsers();
+          void loadAuthUsers();
         }
       } else {
         if (currentUserRole !== 'admin') {
@@ -284,28 +335,53 @@ export function UserManagement() {
 
         const selectedProjectRole = projectRoles.find(r => r.id === projectRoleId);
 
-        if (photoFile) {
-          const uploadId =
-            typeof crypto !== 'undefined' && 'randomUUID' in crypto
-              ? crypto.randomUUID()
-              : `invite_${Date.now()}`;
-          uploadedPhotoURL = await uploadProfilePicture(uploadId, photoFile);
-        }
-
+        const selectedPhotoFile = photoFile;
         const inviteResult = await inviteUser({
           email: normalizedEmail,
           displayName: userName || normalizedEmail.split('@')[0],
           systemRole: formSystemRole,
           projectRoleId: projectRoleId || 'system_created',
           projectRoleName: selectedProjectRole?.name || 'Usuario del Sistema',
-          ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL }),
           ...(formSystemRole !== 'admin' ? { organizationId: selectedOrganizationId } : {})
         });
 
         toast.success(inviteResult.message || "Usuario creado e invitación enviada.");
-        await loadAuthUsers();
+        setIsModalOpen(false);
+        setIsUploading(false);
+
+        void (async () => {
+          if (selectedPhotoFile && inviteResult.userId) {
+            try {
+              const invitedPhotoURL = await withTimeout(
+                uploadProfilePicture(inviteResult.userId, selectedPhotoFile),
+                PHOTO_UPLOAD_TIMEOUT_MS,
+                'La invitación fue enviada, pero la foto tardó demasiado en subir.'
+              );
+
+              await setDoc(doc(db, 'users', inviteResult.userId), {
+                photoURL: invitedPhotoURL,
+                updatedAt: new Date().toISOString(),
+              }, { merge: true });
+
+              const tmQuery = query(collection(db, 'team_members'), where('email', '==', normalizedEmail));
+              const tmSnapshot = await getDocs(tmQuery);
+              for (const tmDoc of tmSnapshot.docs) {
+                await updateDoc(doc(db, 'team_members', tmDoc.id), {
+                  photoURL: invitedPhotoURL,
+                  updatedAt: new Date().toISOString(),
+                });
+              }
+            } catch (photoError) {
+              console.error("Error uploading invited user photo:", photoError);
+              toast.warning(photoError instanceof Error ? photoError.message : 'Usuario invitado, pero no se pudo subir la foto.');
+            }
+          }
+
+          await loadAuthUsers();
+        })();
+
+        return;
       }
-      setIsModalOpen(false);
     } catch (error) {
       console.error("Error saving user:", error);
       toast.error(error instanceof Error ? error.message : "Error al guardar el usuario");

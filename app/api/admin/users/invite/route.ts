@@ -4,6 +4,8 @@ import { createClient } from '@supabase/supabase-js';
 export const runtime = 'nodejs';
 
 const DOCUMENTS_TABLE = 'app_documents';
+const AUTH_OPERATION_TIMEOUT_MS = 25000;
+const DB_OPERATION_TIMEOUT_MS = 15000;
 const ADMIN_EMAILS = new Set([
   'gerencia.operaciones@realtix.com.co',
   'ing.zambranog@gmail.com',
@@ -30,6 +32,26 @@ const json = (body: Record<string, any>, status = 200) =>
 
 const normalizeEmail = (value: unknown) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+const withTimeout = async (
+  promise: PromiseLike<any>,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<any> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
 
 const displayNameFor = (displayName: unknown, email: string) => {
   if (typeof displayName === 'string' && displayName.trim()) {
@@ -79,11 +101,15 @@ const findDocumentsByEmail = async (
   collectionPath: string,
   email: string
 ) => {
-  const { data, error } = await supabase
-    .from(DOCUMENTS_TABLE)
-    .select('collection_path, doc_id, data')
-    .eq('collection_path', collectionPath)
-    .eq('data->>email', email);
+  const { data, error } = await withTimeout(
+    supabase
+      .from(DOCUMENTS_TABLE)
+      .select('collection_path, doc_id, data')
+      .eq('collection_path', collectionPath)
+      .eq('data->>email', email),
+    DB_OPERATION_TIMEOUT_MS,
+    'Supabase tardó demasiado consultando los perfiles de usuario.'
+  );
 
   if (error) throw error;
   return (data || []) as AppDocumentRow[];
@@ -94,12 +120,16 @@ const findRequesterProfile = async (
   userId: string,
   email: string
 ) => {
-  const { data: byId, error: byIdError } = await supabase
-    .from(DOCUMENTS_TABLE)
-    .select('collection_path, doc_id, data')
-    .eq('collection_path', 'users')
-    .eq('doc_id', userId)
-    .maybeSingle();
+  const { data: byId, error: byIdError } = await withTimeout(
+    supabase
+      .from(DOCUMENTS_TABLE)
+      .select('collection_path, doc_id, data')
+      .eq('collection_path', 'users')
+      .eq('doc_id', userId)
+      .maybeSingle(),
+    DB_OPERATION_TIMEOUT_MS,
+    'Supabase tardó demasiado validando el perfil administrador.'
+  );
 
   if (byIdError) throw byIdError;
   if (byId) return byId as AppDocumentRow;
@@ -116,7 +146,11 @@ const ensureGlobalAdmin = async (
     return { error: json({ error: 'Sesión no encontrada.' }, 401) };
   }
 
-  const { data, error } = await supabase.auth.getUser(token);
+  const { data, error } = await withTimeout(
+    supabase.auth.getUser(token),
+    AUTH_OPERATION_TIMEOUT_MS,
+    'Supabase Auth tardó demasiado validando la sesión.'
+  );
   if (error || !data.user?.email) {
     return { error: json({ error: 'Sesión inválida.' }, 401) };
   }
@@ -141,7 +175,11 @@ const findAuthUserByEmail = async (
   let page = 1;
 
   while (true) {
-    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage });
+    const { data, error } = await withTimeout(
+      supabase.auth.admin.listUsers({ page, perPage }),
+      AUTH_OPERATION_TIMEOUT_MS,
+      'Supabase Auth tardó demasiado buscando usuarios existentes.'
+    );
     if (error) throw error;
 
     const match = data.users.find((user: { email?: string | null }) => normalizeEmail(user.email) === email);
@@ -217,10 +255,14 @@ export async function POST(request: NextRequest) {
     let inviteMode: 'invite_sent' | 'recovery_sent' = 'invite_sent';
     let authUser = null;
 
-    const inviteResponse = await supabase.auth.admin.inviteUserByEmail(email, {
-      data: metadata,
-      redirectTo,
-    });
+    const inviteResponse = await withTimeout(
+      supabase.auth.admin.inviteUserByEmail(email, {
+        data: metadata,
+        redirectTo,
+      }),
+      AUTH_OPERATION_TIMEOUT_MS,
+      'Supabase Auth tardó demasiado enviando la invitación.'
+    );
 
     if (inviteResponse.error) {
       const alreadyExists = /already|registered|exists/i.test(inviteResponse.error.message);
@@ -233,17 +275,25 @@ export async function POST(request: NextRequest) {
         throw inviteResponse.error;
       }
 
-      const { error: updateError } = await supabase.auth.admin.updateUserById(authUser.id, {
-        user_metadata: {
-          ...(authUser.user_metadata || {}),
-          ...metadata,
-        },
-      });
+      const { error: updateError } = await withTimeout(
+        supabase.auth.admin.updateUserById(authUser.id, {
+          user_metadata: {
+            ...(authUser.user_metadata || {}),
+            ...metadata,
+          },
+        }),
+        AUTH_OPERATION_TIMEOUT_MS,
+        'Supabase Auth tardó demasiado actualizando el usuario existente.'
+      );
       if (updateError) throw updateError;
 
-      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo,
-      });
+      const { error: resetError } = await withTimeout(
+        supabase.auth.resetPasswordForEmail(email, {
+          redirectTo,
+        }),
+        AUTH_OPERATION_TIMEOUT_MS,
+        'Supabase Auth tardó demasiado enviando el enlace de contraseña.'
+      );
       if (resetError) throw resetError;
 
       inviteMode = 'recovery_sent';
@@ -288,24 +338,28 @@ export async function POST(request: NextRequest) {
       ...(organizationId ? { organizationId } : {}),
     };
 
-    const { error: upsertError } = await supabase.from(DOCUMENTS_TABLE).upsert(
-      [
-        {
-          collection_path: 'users',
-          doc_id: authUser.id,
-          data: userProfile,
-        },
-        {
-          collection_path: 'team_members',
-          doc_id: teamMemberDocId,
-          data: {
-            ...(existingTeamMembers[0]?.data || {}),
-            ...teamMemberProfile,
-            createdAt: existingTeamMembers[0]?.data?.createdAt || now,
+    const { error: upsertError } = await withTimeout(
+      supabase.from(DOCUMENTS_TABLE).upsert(
+        [
+          {
+            collection_path: 'users',
+            doc_id: authUser.id,
+            data: userProfile,
           },
-        },
-      ],
-      { onConflict: 'collection_path,doc_id' }
+          {
+            collection_path: 'team_members',
+            doc_id: teamMemberDocId,
+            data: {
+              ...(existingTeamMembers[0]?.data || {}),
+              ...teamMemberProfile,
+              createdAt: existingTeamMembers[0]?.data?.createdAt || now,
+            },
+          },
+        ],
+        { onConflict: 'collection_path,doc_id' }
+      ),
+      DB_OPERATION_TIMEOUT_MS,
+      'Supabase tardó demasiado guardando el perfil del usuario invitado.'
     );
 
     if (upsertError) throw upsertError;
