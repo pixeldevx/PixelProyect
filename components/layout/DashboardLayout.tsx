@@ -37,13 +37,17 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [showLoadingRecovery, setShowLoadingRecovery] = useState(false);
+  const isInitialAuthLoading = loading && !user;
 
   useEffect(() => {
-    if (!loading) return;
+    if (!isInitialAuthLoading) {
+      setShowLoadingRecovery(false);
+      return;
+    }
 
     const timeoutId = window.setTimeout(() => setShowLoadingRecovery(true), 8000);
     return () => window.clearTimeout(timeoutId);
-  }, [loading]);
+  }, [isInitialAuthLoading]);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -85,7 +89,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
     }
   };
 
-  if (loading) {
+  if (isInitialAuthLoading) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-slate-50 px-4">
         <div className="text-center space-y-4">
@@ -323,6 +327,12 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           </div>
           
           <div className="flex items-center gap-4">
+            {loading && (
+              <span className="text-xs font-medium text-slate-400">
+                Verificando sesión...
+              </span>
+            )}
+
             <Button variant="ghost" size="icon" className="relative text-slate-500">
               <Bell size={20} />
               <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
