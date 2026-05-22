@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useState, useEffect } from 'react';
-import { Trash2, FileText, ListTodo, Plus, Calendar, AlertCircle, ChevronDown, ChevronRight, MoreHorizontal, CornerDownRight } from 'lucide-react';
+import { Trash2, FileText, ListTodo, Plus, Calendar, AlertCircle, ChevronDown, ChevronRight, MoreHorizontal, CornerDownRight, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -16,6 +16,8 @@ interface ProjectTasksTableProps {
   onUpdateTaskPriority?: (taskId: string, priority: string, task: any) => void;
   onUpdateTaskAssignee?: (taskId: string, assigneeId: string, task: any) => void;
   onDeleteTask: (taskId: string) => void;
+  canEditTaskStructure?: boolean;
+  onEditTaskStructure?: (task: any) => void;
   onOpenTaskDocs?: (taskId: string, task: any) => void;
   onCreateTask?: () => void;
 }
@@ -38,6 +40,8 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   onUpdateTaskPriority,
   onUpdateTaskAssignee,
   onDeleteTask,
+  canEditTaskStructure,
+  onEditTaskStructure,
   onOpenTaskDocs,
   onCreateTask
 }) => {
@@ -350,8 +354,17 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
             )}
           </td>
 
-          <td className="px-2 py-2 text-center border-l border-slate-200 w-16">
+          <td className="px-2 py-2 text-center border-l border-slate-200 w-24">
             <div className="flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              {canEditTaskStructure && onEditTaskStructure && (
+                <button
+                  onClick={() => onEditTaskStructure(task)}
+                  className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                  title="Editar estructura"
+                >
+                  <Settings size={16} />
+                </button>
+              )}
               {onOpenTaskDocs && (
                 <button
                   onClick={() => onOpenTaskDocs(task.id, task)}
@@ -406,7 +419,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
               <th className="px-4 py-3 font-normal text-center">Cronograma</th>
               <th className="px-4 py-3 font-normal text-center">Vence</th>
               <th className="px-4 py-3 font-normal text-center">Prioridad</th>
-              <th className="px-2 py-3 font-normal text-center"></th>
+              <th className="px-2 py-3 font-normal text-center w-24"></th>
             </tr>
           </thead>
           <tbody>

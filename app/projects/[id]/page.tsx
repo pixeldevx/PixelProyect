@@ -21,6 +21,7 @@ import { ProjectDocumentsTree } from '@/components/projects/ProjectDocumentsTree
 import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
 import { StartWorkflowModal } from '@/components/projects/StartWorkflowModal';
 import { CreateTaskModal } from '@/components/projects/modals/CreateTaskModal';
+import { EditTaskStructureModal } from '@/components/projects/modals/EditTaskStructureModal';
 import { UploadDocumentModal } from '@/components/projects/modals/UploadDocumentModal';
 import { AssignMemberModal } from '@/components/projects/modals/AssignMemberModal';
 import { RemoveMemberModal } from '@/components/projects/modals/RemoveMemberModal';
@@ -32,12 +33,44 @@ import Image from 'next/image';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 
+const stripWorkflowStepRuntime = (step: any = {}) => {
+  const nextStep = { ...step };
+  [
+    'status',
+    'completed',
+    'completedAt',
+    'completedBy',
+    'startedAt',
+    'startedBy',
+    'formData',
+    'returnedAt',
+    'returnedBy',
+    'stoppedAt',
+    'stoppedBy',
+    'resumedAt',
+    'resumedBy',
+  ].forEach((key) => {
+    delete nextStep[key];
+  });
+  return nextStep;
+};
+
+const taskReceivesWorkflowStructure = (task: any) =>
+  task?.type === 'workflow' || Array.isArray(task?.workflowSteps);
+
+const mergeWorkflowStepStructure = (currentStep: any = {}, structuralStep: any = {}, index: number) => ({
+  ...currentStep,
+  ...stripWorkflowStepRuntime(structuralStep),
+  label: structuralStep.label || currentStep.label || `Paso ${index + 1}`,
+  status: currentStep.status || 'not_started',
+});
+
 export default function ProjectDetailsPage() {
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
   const projectId = params.id as string;
-  const { user, userRole } = useAuth();
+  const { user, userRole, userOrganizationId } = useAuth();
   
   const [project, setProject] = useState<any>(null);
   const [documents, setDocuments] = useState<any[]>([]);
@@ -69,6 +102,7 @@ export default function ProjectDetailsPage() {
   const [selectedTaskForDocs, setSelectedTaskForDocs] = useState<any>(null);
   const [isStartWorkflowModalOpen, setIsStartWorkflowModalOpen] = useState(false);
   const [selectedTaskForStartWorkflow, setSelectedTaskForStartWorkflow] = useState<any>(null);
+  const [taskForStructureEdit, setTaskForStructureEdit] = useState<any>(null);
 
 
   useEffect(() => {
@@ -195,6 +229,26 @@ export default function ProjectDetailsPage() {
   };
 
   const canManageProject = userRole === 'admin' || userRole === 'coordinador' || project?.ownerId === user?.uid;
+  const canEditTaskStructure =
+    userRole === 'admin' ||
+    (userRole === 'org_admin' && (!project?.organizationId || project.organizationId === userOrganizationId));
+
+  const collectDependentTaskIds = (taskId: string) => {
+    const taskIds = new Set<string>([taskId]);
+    let foundNewDependent = true;
+
+    while (foundNewDependent) {
+      foundNewDependent = false;
+      tasks.forEach((currentTask) => {
+        if (currentTask.parentTaskId && taskIds.has(currentTask.parentTaskId) && !taskIds.has(currentTask.id)) {
+          taskIds.add(currentTask.id);
+          foundNewDependent = true;
+        }
+      });
+    }
+
+    return taskIds;
+  };
 
   const handleUpdateTaskProgress = async (taskId: string, newProgress: number, task: any) => {
     if (!task) return;
@@ -602,6 +656,95 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  const handleUpdateTaskStructure = async (
+    task: any,
+    updates: { title: string; workflowSteps?: any[] }
+  ) => {
+    if (!task) return;
+
+    if (!canEditTaskStructure) {
+      toast.error('No tienes permisos para editar la estructura de tareas.');
+      return;
+    }
+
+    const cleanTitle = updates.title.trim();
+    if (!cleanTitle) {
+      toast.warning('El nombre de la tarea no puede estar vacío.');
+      return;
+    }
+
+    const shouldUpdateWorkflow = Array.isArray(updates.workflowSteps);
+    const structuralSteps = shouldUpdateWorkflow
+      ? updates.workflowSteps!.map(stripWorkflowStepRuntime)
+      : [];
+    const dependentTaskIds = collectDependentTaskIds(task.id);
+
+    try {
+      const batch = writeBatch(db);
+
+      dependentTaskIds.forEach((taskId) => {
+        const currentTask = tasks.find((candidate) => candidate.id === taskId);
+        if (!currentTask) return;
+
+        const updateData: any = {
+          title: cleanTitle,
+          name: cleanTitle,
+          updatedAt: serverTimestamp(),
+        };
+
+        if (shouldUpdateWorkflow && taskReceivesWorkflowStructure(currentTask)) {
+          const updatedSteps = structuralSteps.map((step, index) =>
+            mergeWorkflowStepStructure(currentTask.workflowSteps?.[index], step, index)
+          );
+          updateData.workflowSteps = updatedSteps;
+          updateData.currentStepIndex =
+            updatedSteps.length > 0
+              ? Math.min(currentTask.currentStepIndex || 0, updatedSteps.length - 1)
+              : 0;
+        }
+
+        batch.update(doc(db, 'projects', projectId, 'tasks', taskId), updateData);
+      });
+
+      await batch.commit();
+
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) => {
+          if (!dependentTaskIds.has(currentTask.id)) return currentTask;
+
+          const updatedTask: any = {
+            ...currentTask,
+            title: cleanTitle,
+            name: cleanTitle,
+          };
+
+          if (shouldUpdateWorkflow && taskReceivesWorkflowStructure(currentTask)) {
+            const updatedSteps = structuralSteps.map((step, index) =>
+              mergeWorkflowStepStructure(currentTask.workflowSteps?.[index], step, index)
+            );
+            updatedTask.workflowSteps = updatedSteps;
+            updatedTask.currentStepIndex =
+              updatedSteps.length > 0
+                ? Math.min(currentTask.currentStepIndex || 0, updatedSteps.length - 1)
+                : 0;
+          }
+
+          return updatedTask;
+        })
+      );
+
+      toast.success(
+        dependentTaskIds.size === 1
+          ? 'Estructura de tarea actualizada.'
+          : `Estructura replicada en ${dependentTaskIds.size} tareas dependientes.`
+      );
+    } catch (error: any) {
+      console.error("Error updating task structure:", error);
+      toast.error(`Error al actualizar la estructura: ${error.message}`);
+      throw error;
+    }
+  };
+
   const getDocTypeBadge = (type: string) => {
     switch (type) {
       case 'contract': return <span className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded-md text-xs font-medium">Contrato</span>;
@@ -872,6 +1015,8 @@ export default function ProjectDetailsPage() {
                 onReorderTasks={handleReorderTasks}
                 onUpdateTaskDates={handleUpdateTaskDates}
                 onUpdateTaskTitle={handleUpdateTaskTitle}
+                canEditTaskStructure={canEditTaskStructure}
+                onEditTaskStructure={setTaskForStructureEdit}
                 onOpenTaskDocs={(taskId, task) => {
                   setSelectedTaskForDocs(task);
                   setIsTaskDocsModalOpen(true);
@@ -930,6 +1075,8 @@ export default function ProjectDetailsPage() {
                   }
                 }}
                 onDeleteTask={(taskId) => setTaskToDelete({ id: taskId, title: getTaskTitle(tasks.find(t => t.id === taskId)) })}
+                canEditTaskStructure={canEditTaskStructure}
+                onEditTaskStructure={setTaskForStructureEdit}
                 onOpenTaskDocs={(taskId, task) => {
                   setSelectedTaskForDocs(task);
                   setIsTaskDocsModalOpen(true);
@@ -1175,6 +1322,16 @@ export default function ProjectDetailsPage() {
         teamMembers={teamMembers}
         rateCards={rateCards}
         tasksLength={tasks.length}
+      />
+      <EditTaskStructureModal
+        isOpen={!!taskForStructureEdit}
+        onClose={() => setTaskForStructureEdit(null)}
+        task={taskForStructureEdit}
+        teamMembers={teamMembers}
+        onSave={async (updates) => {
+          if (!taskForStructureEdit) return;
+          await handleUpdateTaskStructure(taskForStructureEdit, updates);
+        }}
       />
       <UploadDocumentModal
         isOpen={isUploadModalOpen}

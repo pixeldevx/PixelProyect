@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Gantt, Task, ViewMode } from 'gantt-task-react';
 import "gantt-task-react/dist/index.css";
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
-import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, Pencil, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, Pencil, PanelRightClose, PanelRightOpen, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -21,6 +21,8 @@ interface ProjectGanttProps {
   onReorderTasks: (newTasks: any[]) => void;
   onUpdateTaskDates: (taskId: string, start: Date, end: Date, task: any) => void;
   onUpdateTaskTitle?: (taskId: string, title: string, task: any) => void | Promise<void>;
+  canEditTaskStructure?: boolean;
+  onEditTaskStructure?: (task: any) => void;
   onOpenTaskDocs?: (taskId: string, task: any) => void;
   onCreateTask?: () => void;
 }
@@ -81,6 +83,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onReorderTasks,
   onUpdateTaskDates,
   onUpdateTaskTitle,
+  canEditTaskStructure,
+  onEditTaskStructure,
   onOpenTaskDocs,
   onCreateTask
 }) => {
@@ -632,6 +636,15 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   title="Sincronizar"
                                 >
                                   <RefreshCw size={12} />
+                                </button>
+                              )}
+                              {canEditTaskStructure && onEditTaskStructure && !task.isWorkflowStep && (
+                                <button
+                                  onClick={() => onEditTaskStructure(task)}
+                                  className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                                  title="Editar estructura"
+                                >
+                                  <Settings size={12} />
                                 </button>
                               )}
                               {onOpenTaskDocs && (
