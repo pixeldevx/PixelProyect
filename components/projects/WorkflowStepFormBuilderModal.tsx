@@ -71,6 +71,12 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
       return;
     }
 
+    const hasSelectWithoutOptions = fields.some(f => f.type === 'select' && (!f.options || f.options.length === 0));
+    if (hasSelectWithoutOptions) {
+      toast.warning('Los campos de selección múltiple deben tener al menos una opción.');
+      return;
+    }
+
     onSave({ title, fields });
     onClose();
   };
@@ -164,6 +170,9 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                             placeholder="Opciones separadas por coma (ej: Opción A, Opción B)"
                             className="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
                           />
+                          <p className="mt-1 text-[10px] text-slate-400">
+                            Estas opciones se mostrarán como casillas para permitir seleccionar varias.
+                          </p>
                         </div>
                       )}
 

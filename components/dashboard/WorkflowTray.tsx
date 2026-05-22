@@ -13,6 +13,32 @@ import { toast } from 'sonner';
 
 import { useAuth } from '@/hooks/useAuth';
 
+const hasRequiredFormValue = (value: any) => {
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return true;
+  return value !== undefined && value !== null && String(value).trim().length > 0;
+};
+
+const getMultiSelectValue = (value: any): string[] => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string' && value.trim()) return [value];
+  return [];
+};
+
+const toggleMultiSelectValue = (value: any, option: string) => {
+  const current = getMultiSelectValue(value);
+  return current.includes(option)
+    ? current.filter((item) => item !== option)
+    : [...current, option];
+};
+
+const formatFormValue = (value: any) => {
+  if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : 'Sin selección';
+  if (typeof value === 'boolean') return value ? 'Sí' : 'No';
+  return value || 'Sin respuesta';
+};
+
 export default function WorkflowTray() {
   const { user } = useAuth();
   const [workflows, setWorkflows] = useState<any[]>([]);
@@ -146,7 +172,7 @@ export default function WorkflowTray() {
 
     // Validate form data if approving and form exists
     if (action === 'approve' && currentStep?.form?.fields) {
-      const missingRequired = currentStep.form.fields.some((f: any) => f.required && !formData[f.id]);
+      const missingRequired = currentStep.form.fields.some((f: any) => f.required && !hasRequiredFormValue(formData[f.id]));
       if (missingRequired) {
         toast.warning("Por favor complete todos los campos obligatorios del formulario.");
         return;
@@ -685,17 +711,36 @@ export default function WorkflowTray() {
                       )}
                       
                       {field.type === 'select' && (
-                        <select
-                          value={formData[field.id] || ''}
-                          onChange={(e) => setFormData({...formData, [field.id]: e.target.value})}
-                          className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                          required={field.required}
-                        >
-                          <option value="">Seleccione una opción...</option>
-                          {field.options?.map((opt: string, idx: number) => (
-                            <option key={idx} value={opt}>{opt}</option>
-                          ))}
-                        </select>
+                        <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+                          {field.options?.length ? (
+                            field.options.map((opt: string, idx: number) => {
+                              const selectedValues = getMultiSelectValue(formData[field.id]);
+                              return (
+                                <label key={idx} className="flex items-center gap-2 text-sm text-slate-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedValues.includes(opt)}
+                                    onChange={() =>
+                                      setFormData({
+                                        ...formData,
+                                        [field.id]: toggleMultiSelectValue(formData[field.id], opt),
+                                      })
+                                    }
+                                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                                  />
+                                  {opt}
+                                </label>
+                              );
+                            })
+                          ) : (
+                            <p className="text-xs text-amber-600">
+                              Este campo no tiene opciones configuradas.
+                            </p>
+                          )}
+                          <p className="text-[10px] text-slate-400">
+                            Puedes seleccionar una o varias opciones.
+                          </p>
+                        </div>
                       )}
                       
                       {field.type === 'checkbox' && (
@@ -894,8 +939,8 @@ export default function WorkflowTray() {
                               return (
                                 <div key={fieldId} className="flex justify-between items-start border-b border-indigo-100/50 pb-1 last:border-0">
                                   <span className="text-xs font-medium text-slate-600">{field?.label || fieldId}:</span>
-                                  <span className="text-xs font-bold text-slate-800">
-                                    {typeof value === 'boolean' ? (value ? 'Sí' : 'No') : value}
+                                  <span className="text-xs font-bold text-slate-800 text-right">
+                                    {formatFormValue(value)}
                                   </span>
                                 </div>
                               );
