@@ -1327,6 +1327,7 @@ export default function ProjectDetailsPage() {
         isOpen={!!taskForStructureEdit}
         onClose={() => setTaskForStructureEdit(null)}
         task={taskForStructureEdit}
+        user={user}
         teamMembers={teamMembers}
         onSave={async (updates) => {
           if (!taskForStructureEdit) return;
