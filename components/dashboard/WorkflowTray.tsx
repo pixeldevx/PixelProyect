@@ -711,34 +711,54 @@ export default function WorkflowTray() {
                       )}
                       
                       {field.type === 'select' && (
-                        <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+                        <div className="rounded-lg border border-slate-200 bg-white p-3">
                           {field.options?.length ? (
-                            field.options.map((opt: string, idx: number) => {
-                              const selectedValues = getMultiSelectValue(formData[field.id]);
-                              return (
-                                <label key={idx} className="flex items-center gap-2 text-sm text-slate-700">
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedValues.includes(opt)}
-                                    onChange={() =>
-                                      setFormData({
-                                        ...formData,
-                                        [field.id]: toggleMultiSelectValue(formData[field.id], opt),
-                                      })
-                                    }
-                                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4"
-                                  />
-                                  {opt}
-                                </label>
-                              );
-                            })
+                            field.selectionMode === 'single' ? (
+                              <select
+                                value={Array.isArray(formData[field.id]) ? (formData[field.id][0] || '') : (formData[field.id] || '')}
+                                onChange={(e) => setFormData({...formData, [field.id]: e.target.value})}
+                                className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                required={field.required}
+                              >
+                                <option value="">Selecciona una opción</option>
+                                {field.options.map((opt: string, idx: number) => (
+                                  <option key={idx} value={opt}>
+                                    {opt}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <div className="space-y-2">
+                                {field.options.map((opt: string, idx: number) => {
+                                  const selectedValues = getMultiSelectValue(formData[field.id]);
+                                  return (
+                                    <label key={idx} className="flex items-center gap-2 text-sm text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedValues.includes(opt)}
+                                        onChange={() =>
+                                          setFormData({
+                                            ...formData,
+                                            [field.id]: toggleMultiSelectValue(formData[field.id], opt),
+                                          })
+                                        }
+                                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                                      />
+                                      {opt}
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            )
                           ) : (
                             <p className="text-xs text-amber-600">
                               Este campo no tiene opciones configuradas.
                             </p>
                           )}
                           <p className="text-[10px] text-slate-400">
-                            Puedes seleccionar una o varias opciones.
+                            {field.selectionMode === 'single'
+                              ? 'Selecciona una sola opción.'
+                              : 'Puedes seleccionar una o varias opciones.'}
                           </p>
                         </div>
                       )}

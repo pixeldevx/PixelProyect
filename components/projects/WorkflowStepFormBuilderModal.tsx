@@ -8,7 +8,8 @@ export interface FormField {
   label: string;
   type: 'text' | 'number' | 'date' | 'select' | 'checkbox';
   required: boolean;
-  options?: string[]; // For select type
+  options?: string[];
+  selectionMode?: 'single' | 'multiple';
 }
 
 export interface CustomForm {
@@ -58,6 +59,27 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
     setFields(fields.filter((_, i) => i !== index));
   };
 
+  const addOption = (fieldIndex: number) => {
+    const field = fields[fieldIndex];
+    updateField(fieldIndex, {
+      options: [...(field.options || []), `Opción ${(field.options?.length || 0) + 1}`],
+    });
+  };
+
+  const updateOption = (fieldIndex: number, optionIndex: number, value: string) => {
+    const field = fields[fieldIndex];
+    const options = [...(field.options || [])];
+    options[optionIndex] = value;
+    updateField(fieldIndex, { options });
+  };
+
+  const removeOption = (fieldIndex: number, optionIndex: number) => {
+    const field = fields[fieldIndex];
+    updateField(fieldIndex, {
+      options: (field.options || []).filter((_, index) => index !== optionIndex),
+    });
+  };
+
   const handleSave = () => {
     if (fields.length === 0) {
       onSave(undefined);
@@ -65,19 +87,48 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
       return;
     }
 
-    const hasEmptyLabels = fields.some(f => !f.label.trim());
+    const cleanedFields: FormField[] = fields.map((field) => {
+      const cleanLabel = field.label.trim();
+      if (field.type !== 'select') {
+        return {
+          ...field,
+          label: cleanLabel,
+          options: undefined,
+          selectionMode: undefined,
+        };
+      }
+
+      return {
+        ...field,
+        label: cleanLabel,
+        selectionMode: field.selectionMode || 'multiple',
+        options: (field.options || []).map((option) => option.trim()).filter(Boolean),
+      };
+    });
+
+    const hasEmptyLabels = cleanedFields.some(f => !f.label.trim());
     if (hasEmptyLabels) {
       toast.warning('Todos los campos deben tener un nombre (label).');
       return;
     }
 
-    const hasSelectWithoutOptions = fields.some(f => f.type === 'select' && (!f.options || f.options.length === 0));
+    const hasSelectWithoutOptions = cleanedFields.some(f => f.type === 'select' && (!f.options || f.options.length === 0));
     if (hasSelectWithoutOptions) {
-      toast.warning('Los campos de selección múltiple deben tener al menos una opción.');
+      toast.warning('Los campos de selección deben tener al menos una opción.');
       return;
     }
 
-    onSave({ title, fields });
+    const hasDuplicateOptions = cleanedFields.some((field) => {
+      if (field.type !== 'select') return false;
+      const normalizedOptions = (field.options || []).map((option) => option.toLowerCase());
+      return new Set(normalizedOptions).size !== normalizedOptions.length;
+    });
+    if (hasDuplicateOptions) {
+      toast.warning('Las opciones de selección no pueden estar repetidas.');
+      return;
+    }
+
+    onSave({ title, fields: cleanedFields });
     onClose();
   };
 
@@ -149,30 +200,81 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                         <div className="w-40">
                           <select
                             value={field.type}
-                            onChange={(e) => updateField(index, { type: e.target.value as any })}
+                            onChange={(e) => {
+                              const type = e.target.value as FormField['type'];
+                              updateField(index, {
+                                type,
+                                ...(type === 'select'
+                                  ? {
+                                      selectionMode: field.selectionMode || 'multiple',
+                                      options: field.options?.length ? field.options : ['Opción 1'],
+                                    }
+                                  : {}),
+                              });
+                            }}
                             className="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
                           >
                             <option value="text">Texto corto</option>
                             <option value="number">Número</option>
                             <option value="date">Fecha</option>
-                            <option value="select">Selección múltiple</option>
+                            <option value="select">Selección</option>
                             <option value="checkbox">Casilla de verificación</option>
                           </select>
                         </div>
                       </div>
 
                       {field.type === 'select' && (
-                        <div>
-                          <input
-                            type="text"
-                            value={field.options?.join(', ') || ''}
-                            onChange={(e) => updateField(index, { options: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
-                            placeholder="Opciones separadas por coma (ej: Opción A, Opción B)"
-                            className="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                          />
-                          <p className="mt-1 text-[10px] text-slate-400">
-                            Estas opciones se mostrarán como casillas para permitir seleccionar varias.
-                          </p>
+                        <div className="space-y-3 rounded-lg border border-slate-100 bg-slate-50 p-3">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <span className="text-xs font-medium text-slate-600">
+                              Opciones de respuesta
+                            </span>
+                            <select
+                              value={field.selectionMode || 'multiple'}
+                              onChange={(e) =>
+                                updateField(index, {
+                                  selectionMode: e.target.value as FormField['selectionMode'],
+                                })
+                              }
+                              className="h-8 px-2 text-xs border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white"
+                            >
+                              <option value="single">Selección única</option>
+                              <option value="multiple">Selección múltiple</option>
+                            </select>
+                          </div>
+
+                          <div className="space-y-2">
+                            {(field.options || []).map((option, optionIndex) => (
+                              <div key={`${field.id}-option-${optionIndex}`} className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={option}
+                                  onChange={(e) => updateOption(index, optionIndex, e.target.value)}
+                                  placeholder={`Opción ${optionIndex + 1}`}
+                                  className="flex-1 px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeOption(index, optionIndex)}
+                                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                  title="Eliminar opción"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+
+                          <Button
+                            type="button"
+                            onClick={() => addOption(index)}
+                            size="sm"
+                            variant="outline"
+                            className="h-8 text-xs"
+                          >
+                            <Plus size={14} className="mr-1" />
+                            Agregar opción
+                          </Button>
                         </div>
                       )}
 
