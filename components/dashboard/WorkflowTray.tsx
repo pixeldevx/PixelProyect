@@ -1,9 +1,10 @@
 'use client'
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { collection, query, where, onSnapshot, doc, updateDoc, arrayUnion, Timestamp, writeBatch, increment } from '@/lib/supabase/document-store';
 import { db, auth } from '@/lib/backend';
-import { CheckCircle2, XCircle, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, AlertCircle, X, ClipboardList, Play, Pause } from 'lucide-react';
+import { CheckCircle2, XCircle, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, AlertCircle, X, ClipboardList, Play, Pause, ListTodo, FolderOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -38,6 +39,56 @@ const formatFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : 'Sin selección';
   if (typeof value === 'boolean') return value ? 'Sí' : 'No';
   return value || 'Sin respuesta';
+};
+
+const isWorkflowItem = (task: any) =>
+  task?.trayItemType === 'workflow' || (task?.type === 'workflow' && Array.isArray(task?.workflowSteps));
+
+const isAssignedToCurrentUser = (task: any, assignedIds: string[]) => {
+  if (task?.assignedTo && assignedIds.includes(task.assignedTo)) return true;
+  if (Array.isArray(task?.assignedUsers) && task.assignedUsers.some((id: string) => assignedIds.includes(id))) return true;
+  if (Array.isArray(task?.assignedTeamMembers) && task.assignedTeamMembers.some((id: string) => assignedIds.includes(id))) return true;
+  return false;
+};
+
+const isOpenTask = (task: any) => {
+  const status = task?.status || 'todo';
+  return status !== 'completed' && status !== 'listo';
+};
+
+const getTaskStatusLabel = (status: string) => {
+  switch (status) {
+    case 'in_progress':
+      return 'Trabajando';
+    case 'stuck':
+      return 'Estancada';
+    case 'pending':
+    case 'todo':
+      return 'Pendiente';
+    default:
+      return status || 'Pendiente';
+  }
+};
+
+const getTaskStatusClass = (status: string) => {
+  switch (status) {
+    case 'in_progress':
+      return 'bg-amber-50 text-amber-700';
+    case 'stuck':
+      return 'bg-red-50 text-red-700';
+    case 'pending':
+    case 'todo':
+      return 'bg-slate-100 text-slate-700';
+    default:
+      return 'bg-slate-100 text-slate-700';
+  }
+};
+
+const getTaskDate = (value: any) => {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
 export default function WorkflowTray() {
@@ -116,7 +167,6 @@ export default function WorkflowTray() {
             const projectsById = new Map(projectDocs.map((project) => [project.id, project]));
             const projectIds = projectDocs.map(project => project.id);
             
-            const allPending: any[] = [];
             let projectsProcessed = 0;
 
             // Clean up previous task listeners if projects change
@@ -132,22 +182,30 @@ export default function WorkflowTray() {
               const project = projectsById.get(projectId);
               const tasksQ = query(
                 collection(db, 'projects', projectId, 'tasks'),
-                where('type', '==', 'workflow'),
                 where('status', '!=', 'completed')
               );
 
               const unsubTask = onSnapshot(tasksQ, (taskSnapshot) => {
-                const projectWorkflows = taskSnapshot.docs
-                  .map(doc => ({
-                    ...doc.data(),
-                    id: doc.id,
-                    projectId,
-                    projectName: project?.name || 'Proyecto',
-                    organizationId: project?.organizationId || null,
-                    organizationIds: project ? [project.organizationId].filter(Boolean) : [],
-                    organizationName: project ? organizationNameFor(project, organizations) : 'Sin organización',
-                  }))
+                const projectItems = taskSnapshot.docs
+                  .map(doc => {
+                    const taskData = doc.data();
+                    const taskIsWorkflow = taskData.type === 'workflow' && Array.isArray(taskData.workflowSteps);
+                    return {
+                      ...taskData,
+                      id: doc.id,
+                      projectId,
+                      trayItemType: taskIsWorkflow ? 'workflow' : 'assigned_task',
+                      projectName: project?.name || 'Proyecto',
+                      organizationId: project?.organizationId || null,
+                      organizationIds: project ? [project.organizationId].filter(Boolean) : [],
+                      organizationName: project ? organizationNameFor(project, organizations) : 'Sin organización',
+                    };
+                  })
                   .filter((task: any) => {
+                    if (!isWorkflowItem(task)) {
+                      return isOpenTask(task) && isAssignedToCurrentUser(task, allMemberIds);
+                    }
+
                     const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
                     const isAssigned = currentStep?.assignedTo && allMemberIds.includes(currentStep.assignedTo);
                     const isPending = currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido';
@@ -159,7 +217,7 @@ export default function WorkflowTray() {
                 // Update the list
                 setWorkflows(prev => {
                   const otherProjects = prev.filter(p => p.projectId !== projectId);
-                  return [...otherProjects, ...projectWorkflows];
+                  return [...otherProjects, ...projectItems];
                 });
                 
                 projectsProcessed++;
@@ -394,26 +452,32 @@ export default function WorkflowTray() {
 
   const filteredWorkflows = workflows.filter(task => {
     const searchLower = searchTerm.toLowerCase();
+    const taskIsWorkflow = isWorkflowItem(task);
     const externalId = (task.externalWorkflowId || '').toLowerCase();
     const taskId = (task.id || '').toLowerCase();
     const title = (task.title || '').toLowerCase();
     const organizationName = (task.organizationName || '').toLowerCase();
     const projectName = (task.projectName || '').toLowerCase();
-    const currentStepStatus = (task.workflowSteps?.[task.currentStepIndex]?.status || '').toLowerCase();
+    const currentStepStatus = taskIsWorkflow
+      ? (task.workflowSteps?.[task.currentStepIndex]?.status || '').toLowerCase()
+      : (task.status || 'todo').toLowerCase();
     
     // Filter by tab
-    const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
+    const currentStep = taskIsWorkflow ? task.workflowSteps?.[task.currentStepIndex || 0] : null;
     
     // We need to re-evaluate isPending for the current user
     // Let's use a more robust check
     const assignedIds = memberIds.length > 0 ? memberIds : [user?.uid, memberId].filter(Boolean);
-    const isPendingForMe = currentStep?.assignedTo && assignedIds.includes(currentStep.assignedTo) &&
-                           (currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido');
+    const isPendingForMe = taskIsWorkflow
+      ? currentStep?.assignedTo && assignedIds.includes(currentStep.assignedTo) &&
+        (currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido')
+      : isOpenTask(task) && isAssignedToCurrentUser(task, assignedIds as string[]);
     const hasInteracted = task.workflowHistory?.some((h: any) => h.userId === user?.uid);
 
     if (activeTab === 'pending') {
       if (!isPendingForMe) return false;
     } else {
+      if (!taskIsWorkflow) return false;
       // Reviewed: I have interacted AND it's not currently pending for me
       if (!hasInteracted || isPendingForMe) return false;
     }
@@ -430,7 +494,7 @@ export default function WorkflowTray() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <h2 className="text-2xl font-bold text-slate-900">Bandeja de Workflows</h2>
+          <h2 className="text-2xl font-bold text-slate-900">Bandeja de Trabajo</h2>
           <div className="flex bg-slate-100 p-1 rounded-lg">
             <button
               onClick={() => setActiveTab('pending')}
@@ -457,7 +521,7 @@ export default function WorkflowTray() {
         <div className="w-full sm:w-72">
           <input
             type="text"
-            placeholder="Buscar por ID, título o estado..."
+            placeholder="Buscar por ID, título, proyecto o estado..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
@@ -472,15 +536,101 @@ export default function WorkflowTray() {
             {searchTerm ? 'No se encontraron resultados' : '¡Todo al día!'}
           </h3>
           <p className="text-slate-500">
-            {searchTerm ? 'Intenta con otros términos de búsqueda.' : 'No tienes workflows pendientes de aprobación.'}
+            {searchTerm ? 'Intenta con otros términos de búsqueda.' : 'No tienes workflows ni tareas pendientes asignadas.'}
           </p>
         </div>
       ) : (
         <div className="grid gap-4">
           {filteredWorkflows.map((task) => {
+            const taskIsWorkflow = isWorkflowItem(task);
+            if (!taskIsWorkflow) {
+              const endDate = getTaskDate(task.endDate || task.end);
+              const progress = Number(task.progress || 0);
+              const status = task.status || 'todo';
+
+              return (
+                <div key={`${task.projectId}-${task.id}`} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden hover:shadow-md transition-shadow">
+                  <div className="p-5">
+                    <div className="flex items-start justify-between gap-4 mb-4">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                          <span className="px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider bg-sky-50 text-sky-700">
+                            {task.parentTaskId ? 'Subtarea' : 'Tarea'}
+                          </span>
+                          <span className="px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider bg-emerald-50 text-emerald-700">
+                            {task.organizationName || 'Sin organización'}
+                          </span>
+                          <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${getTaskStatusClass(status)}`}>
+                            {getTaskStatusLabel(status)}
+                          </span>
+                        </div>
+                        <h3 className="text-lg font-bold text-slate-900 truncate">
+                          {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{task.title || task.name || 'Tarea sin nombre'}
+                        </h3>
+                        <p className="text-sm text-slate-500 mt-1">
+                          {task.projectName ? `${task.projectName} · ` : ''}{task.description || 'Sin descripción'}
+                        </p>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <div className="flex items-center gap-1 text-xs text-slate-400 mb-1">
+                          <Clock size={12} />
+                          <span>{endDate ? `Vence ${format(endDate, 'd MMM', { locale: es })}` : 'Sin fecha fin'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg bg-slate-50 p-4 mb-4">
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                          <ListTodo size={16} className="text-indigo-500" />
+                          Pendiente de gestión
+                        </div>
+                        <span className="text-xs font-bold text-slate-500">{progress}%</span>
+                      </div>
+                      <div className="h-2 w-full rounded-full bg-white overflow-hidden border border-slate-100">
+                        <div
+                          className={`h-full transition-all duration-500 ${status === 'stuck' ? 'bg-red-500' : status === 'in_progress' ? 'bg-amber-500' : 'bg-indigo-500'}`}
+                          style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+                        />
+                      </div>
+                      {task.type === 'quantitative' && (
+                        <p className="mt-2 text-xs text-slate-500">
+                          Avance: {task.currentValue || 0}/{task.indicatorValue || 0} {task.indicator || ''}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs text-slate-400">
+                        {task.priority === 'high' ? 'Prioridad alta' : task.priority === 'low' ? 'Prioridad baja' : 'Prioridad media'}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDocsModalTask(task)}
+                          className="text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
+                        >
+                          Ver Documentos
+                        </Button>
+                        <Link
+                          href={`/projects/${task.projectId}?tab=tasks`}
+                          className="inline-flex h-9 items-center rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          <FolderOpen className="w-4 h-4 mr-2" />
+                          Abrir proyecto
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
             const isReturned = task.workflowSteps[task.currentStepIndex]?.status === 'devuelto' || task.workflowSteps[task.currentStepIndex]?.status === 'returned';
             return (
-            <div key={task.id} className={`bg-white rounded-xl border shadow-sm overflow-hidden hover:shadow-md transition-shadow ${isReturned ? 'border-red-300' : 'border-slate-200'}`}>
+            <div key={`${task.projectId}-${task.id}`} className={`bg-white rounded-xl border shadow-sm overflow-hidden hover:shadow-md transition-shadow ${isReturned ? 'border-red-300' : 'border-slate-200'}`}>
               <div className="p-5">
                 <div className="flex items-start justify-between mb-4">
                   <div>
