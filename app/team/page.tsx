@@ -7,14 +7,15 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Edit2, Mail, UserPlus } from 'lucide-react';
-import { collection, query, onSnapshot, doc, updateDoc, where, or } from '@/lib/supabase/document-store';
+import { collection, query, onSnapshot, doc, updateDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import Image from 'next/image';
+import { belongsToAnyOrganization } from '@/lib/organizations';
 
 export default function TeamPage() {
-  const { user, userRole, userOrganizationId } = useAuth();
+  const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,25 +25,28 @@ export default function TeamPage() {
   const [memberName, setMemberName] = useState('');
   const [memberEmail, setMemberEmail] = useState('');
   const [memberRoleId, setMemberRoleId] = useState('');
+  const managedOrganizationIds = React.useMemo(
+    () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
+    [userOrganizationId, userOrganizationIds]
+  );
 
   useEffect(() => {
     if (!user) return;
 
     // Fetch roles
     let qRoles = query(collection(db, 'roles'));
-    if (userRole !== 'admin' && userOrganizationId) {
-      qRoles = query(
-        collection(db, 'roles'),
-        or(
-          where('organizationId', '==', userOrganizationId),
-          where('isDefault', '==', true)
-        )
-      );
-    }
     const unsubscribeRoles = onSnapshot(qRoles, (querySnapshot) => {
       const rolesData: any[] = [];
       querySnapshot.forEach((doc) => {
-        rolesData.push({ id: doc.id, ...doc.data() });
+        const data = { id: doc.id, ...doc.data() };
+        if (
+          userRole === 'admin' ||
+          data.isDefault ||
+          managedOrganizationIds.length === 0 ||
+          belongsToAnyOrganization(data, managedOrganizationIds)
+        ) {
+          rolesData.push(data);
+        }
       });
       setRoles(rolesData);
     }, (error) => {
@@ -51,13 +55,17 @@ export default function TeamPage() {
 
     // Fetch team members
     let qTeam = query(collection(db, 'team_members'));
-    if (userRole !== 'admin' && userOrganizationId) {
-      qTeam = query(collection(db, 'team_members'), where('organizationId', '==', userOrganizationId));
-    }
     const unsubscribeTeam = onSnapshot(qTeam, (querySnapshot) => {
       const teamData: any[] = [];
       querySnapshot.forEach((doc) => {
-        teamData.push({ id: doc.id, ...doc.data() });
+        const data = { id: doc.id, ...doc.data() };
+        if (
+          userRole === 'admin' ||
+          managedOrganizationIds.length === 0 ||
+          belongsToAnyOrganization(data, managedOrganizationIds)
+        ) {
+          teamData.push(data);
+        }
       });
       setTeamMembers(teamData);
       setLoading(false);
@@ -70,7 +78,7 @@ export default function TeamPage() {
       unsubscribeRoles();
       unsubscribeTeam();
     };
-  }, [user, userRole, userOrganizationId]);
+  }, [user, userRole, managedOrganizationIds]);
 
   const handleOpenModal = (member?: any) => {
     if (member) {

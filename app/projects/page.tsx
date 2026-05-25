@@ -11,9 +11,10 @@ import { useAuth } from '@/hooks/useAuth';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import Image from 'next/image';
+import { belongsToAnyOrganization } from '@/lib/organizations';
 
 export default function ProjectsPage() {
-  const { user, userRole, userOrganizationId } = useAuth();
+  const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [organizations, setOrganizations] = useState<any[]>([]);
@@ -29,15 +30,24 @@ export default function ProjectsPage() {
   const [editSelectedMembers, setEditSelectedMembers] = useState<string[]>([]);
   const [editSelectedOrgId, setEditSelectedOrgId] = useState<string>('');
   const [isSavingTeam, setIsSavingTeam] = useState(false);
+  const managedOrganizationIds = React.useMemo(
+    () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
+    [userOrganizationId, userOrganizationIds]
+  );
+  const visibleOrganizations = React.useMemo(
+    () =>
+      userRole === 'admin'
+        ? organizations
+        : organizations.filter((organization) => managedOrganizationIds.includes(organization.id)),
+    [managedOrganizationIds, organizations, userRole]
+  );
 
   useEffect(() => {
     if (!user) return;
 
     let q;
-    if (userRole === 'admin') {
+    if (userRole === 'admin' || userRole === 'org_admin') {
       q = query(collection(db, 'projects'));
-    } else if (userRole === 'org_admin' && userOrganizationId) {
-      q = query(collection(db, 'projects'), where('organizationId', '==', userOrganizationId));
     } else {
       const conditions = [
         where('ownerId', '==', user.uid),
@@ -61,10 +71,13 @@ export default function ProjectsPage() {
     });
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const projectsData = snapshot.docs.map(doc => ({
+      let projectsData = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
+      if (userRole === 'org_admin') {
+        projectsData = projectsData.filter((project) => belongsToAnyOrganization(project, managedOrganizationIds));
+      }
       // Sort by createdAt descending
       projectsData.sort((a: any, b: any) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
       setProjects(projectsData);
@@ -77,14 +90,14 @@ export default function ProjectsPage() {
 
     // Fetch team members for assignment
     let qTeam = query(collection(db, 'team_members'));
-    if (userRole !== 'admin' && userOrganizationId) {
-       qTeam = query(collection(db, 'team_members'), where('organizationId', '==', userOrganizationId));
-    }
     const unsubscribeTeam = onSnapshot(qTeam, (snapshot) => {
-      const teamData = snapshot.docs.map(doc => ({
+      let teamData = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
+      if (userRole !== 'admin') {
+        teamData = teamData.filter((member) => belongsToAnyOrganization(member, managedOrganizationIds));
+      }
       setTeamMembers(teamData);
     }, (error) => {
       console.error("Error fetching team members:", error);
@@ -95,7 +108,13 @@ export default function ProjectsPage() {
       unsubscribeOrgs();
       unsubscribeTeam();
     };
-  }, [user, userRole, userOrganizationId]);
+  }, [user, userRole, managedOrganizationIds]);
+
+  useEffect(() => {
+    if (!isCreating) return;
+    if (selectedProjectOrgId || visibleOrganizations.length === 0) return;
+    setSelectedProjectOrgId(visibleOrganizations[0].id);
+  }, [isCreating, selectedProjectOrgId, visibleOrganizations]);
 
   const toggleMemberSelection = (memberId: string) => {
     setSelectedMembers(prev => 
@@ -134,6 +153,13 @@ export default function ProjectsPage() {
 
       if (userRole === 'admin') {
          updateData.organizationId = editSelectedOrgId;
+      } else if (userRole === 'org_admin' && visibleOrganizations.length > 1) {
+        if (!editSelectedOrgId || !managedOrganizationIds.includes(editSelectedOrgId)) {
+          toast.warning("Selecciona una organización válida para el proyecto.");
+          setIsSavingTeam(false);
+          return;
+        }
+        updateData.organizationId = editSelectedOrgId;
       }
 
       await updateDoc(doc(db, 'projects', editingTeamProjectId), updateData);
@@ -152,6 +178,16 @@ export default function ProjectsPage() {
     if (!user || !newProjectName.trim()) return;
 
     try {
+      const projectOrganizationId =
+        userRole === 'admin' || userRole === 'org_admin'
+          ? selectedProjectOrgId || visibleOrganizations[0]?.id || ''
+          : userOrganizationId || '';
+
+      if (!projectOrganizationId) {
+        toast.warning("Selecciona una organización para el proyecto.");
+        return;
+      }
+
       const assignedEmails = selectedMembers
         .map(id => teamMembers.find(m => m.id === id)?.email)
         .filter(email => !!email);
@@ -166,7 +202,7 @@ export default function ProjectsPage() {
         assignedUsers: [],
         assignedTeamMembers: selectedMembers,
         assignedEmails: assignedEmails,
-        organizationId: (!userOrganizationId || userRole === 'admin') ? selectedProjectOrgId : userOrganizationId
+        organizationId: projectOrganizationId
       });
       setIsCreating(false);
       setNewProjectName('');
@@ -201,7 +237,7 @@ export default function ProjectsPage() {
   };
 
   const canDeleteProject = (project: any) => {
-    return userRole === 'admin' || (userRole === 'org_admin' && project.organizationId === userOrganizationId) || project.ownerId === user?.uid;
+    return userRole === 'admin' || (userRole === 'org_admin' && belongsToAnyOrganization(project, managedOrganizationIds)) || project.ownerId === user?.uid;
   };
 
   const handleDeleteProject = async (projectId: string) => {
@@ -259,7 +295,7 @@ export default function ProjectsPage() {
                 </div>
               </div>
 
-              {(!userOrganizationId || userRole === 'admin') && (
+              {(userRole === 'admin' || userRole === 'org_admin') && (
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-slate-700">Organización *</label>
                   <select 
@@ -269,7 +305,7 @@ export default function ProjectsPage() {
                     required
                   >
                     <option value="">Selecciona una organización</option>
-                    {organizations.map(org => (
+                    {visibleOrganizations.map(org => (
                       <option key={org.id} value={org.id}>{org.name}</option>
                     ))}
                   </select>
@@ -420,7 +456,7 @@ export default function ProjectsPage() {
               </button>
             </div>
             
-            {userRole === 'admin' && (
+            {(userRole === 'admin' || (userRole === 'org_admin' && visibleOrganizations.length > 1)) && (
               <div className="space-y-2 mb-4">
                 <label className="text-sm font-medium text-slate-700">Organización *</label>
                 <select 
@@ -430,7 +466,7 @@ export default function ProjectsPage() {
                   required
                 >
                   <option value="">Selecciona una organización</option>
-                  {organizations.map(org => (
+                  {visibleOrganizations.map(org => (
                     <option key={org.id} value={org.id}>{org.name}</option>
                   ))}
                 </select>

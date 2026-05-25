@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, clearLocalAuthState, signOut, signInWithEmailAndPassword, resetPasswordForEmail } from '@/lib/supabase/auth-shim';
 import { doc, setDoc, serverTimestamp } from '@/lib/supabase/document-store';
 import { auth, db } from '@/lib/backend';
+import { getOrganizationIds, getPrimaryOrganizationId } from '@/lib/organizations';
 
 const PROFILE_VERIFICATION_TIMEOUT_MS = 15000;
 const SIGN_OUT_TIMEOUT_MS = 6000;
@@ -12,6 +13,7 @@ type AuthContextValue = {
   user: User | null;
   userRole: string | null;
   userOrganizationId: string | null;
+  userOrganizationIds: string[];
   loading: boolean;
   accessError: string;
   login: () => Promise<void>;
@@ -46,6 +48,7 @@ function useAuthState(): AuthContextValue {
   const [user, setUser] = useState<User | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [userOrganizationId, setUserOrganizationId] = useState<string | null>(null);
+  const [userOrganizationIds, setUserOrganizationIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [accessError, setAccessError] = useState('');
 
@@ -59,7 +62,7 @@ function useAuthState(): AuthContextValue {
       const isBootstrapAdmin = Boolean(userEmail && bootstrapAdmins.has(userEmail));
       
       let verifiedRole = isBootstrapAdmin ? 'admin' : 'user';
-      let orgId: string | null = null;
+      let orgIds: string[] = [];
 
       const { collection, query, where, getDocs, deleteDoc } = await import('@/lib/supabase/document-store');
 
@@ -71,7 +74,7 @@ function useAuthState(): AuthContextValue {
           const data = docSnap.data();
 
           if (data.role) verifiedRole = data.role;
-          if (data.organizationId) orgId = data.organizationId;
+          orgIds = getOrganizationIds(data);
 
           if (docSnap.id !== currentUser.uid) {
             deleteDoc(docSnap.ref).catch((error) => {
@@ -81,7 +84,7 @@ function useAuthState(): AuthContextValue {
         }
       }
 
-      if (!isBootstrapAdmin && !orgId && verifiedRole !== 'admin') {
+      if (!isBootstrapAdmin && orgIds.length === 0 && verifiedRole !== 'admin') {
         const q = query(collection(db, 'team_members'), where('email', '==', userEmail));
         const querySnapshot = await getDocs(q);
         
@@ -89,8 +92,14 @@ function useAuthState(): AuthContextValue {
           throw new Error('Tu usuario existe en Supabase Auth, pero todavía no tiene perfil activo en la app. Pídele al administrador que lo cree en Usuarios del Sistema.');
         }
 
-        orgId = querySnapshot.docs[0].data().organizationId || null;
+        querySnapshot.docs.forEach((docSnap) => {
+          getOrganizationIds(docSnap.data()).forEach((id) => {
+            if (!orgIds.includes(id)) orgIds.push(id);
+          });
+        });
       }
+
+      const orgId = getPrimaryOrganizationId({ organizationIds: orgIds });
 
       const userRef = doc(db, 'users', currentUser.uid);
       await setDoc(userRef, {
@@ -101,10 +110,11 @@ function useAuthState(): AuthContextValue {
         lastLoginAt: serverTimestamp(),
         isPreRegistered: false,
         role: verifiedRole,
-        ...(orgId ? { organizationId: orgId } : {})
+        organizationId: verifiedRole === 'admin' ? null : orgId,
+        organizationIds: verifiedRole === 'admin' ? [] : orgIds,
       }, { merge: true });
 
-      return { verifiedRole, orgId };
+      return { verifiedRole, orgId, orgIds };
     };
 
     const clearSessionAndShowLogin = async (message: string) => {
@@ -124,13 +134,14 @@ function useAuthState(): AuthContextValue {
       setUser(null);
       setUserRole(null);
       setUserOrganizationId(null);
+      setUserOrganizationIds([]);
     };
 
     const unsubscribe = auth.onAuthStateChanged(async (currentUser) => {
       setLoading(true);
       if (currentUser) {
         try {
-          const { verifiedRole, orgId } = await withTimeout(
+          const { verifiedRole, orgId, orgIds } = await withTimeout(
             verifyUserProfile(currentUser),
             PROFILE_VERIFICATION_TIMEOUT_MS,
             'La verificación de tu sesión tardó demasiado. Cerramos la sesión local para evitar que la app quede cargando; vuelve a iniciar sesión.'
@@ -139,6 +150,7 @@ function useAuthState(): AuthContextValue {
           setUser(currentUser);
           setUserRole(verifiedRole);
           setUserOrganizationId(orgId);
+          setUserOrganizationIds(orgIds);
           setAccessError('');
         } catch (error) {
           console.error("Error verifying user or saving profile:", error);
@@ -152,6 +164,7 @@ function useAuthState(): AuthContextValue {
         setUser(null);
         setUserRole(null);
         setUserOrganizationId(null);
+        setUserOrganizationIds([]);
       }
       
       setLoading(false);
@@ -188,6 +201,7 @@ function useAuthState(): AuthContextValue {
       setUser(null);
       setUserRole(null);
       setUserOrganizationId(null);
+      setUserOrganizationIds([]);
       setLoading(false);
     }
   };
@@ -197,7 +211,7 @@ function useAuthState(): AuthContextValue {
     await resetPasswordForEmail(auth, email, redirectTo);
   };
 
-  return { user, userRole, userOrganizationId, loading, accessError, login, loginWithEmail, requestPasswordReset, logout };
+  return { user, userRole, userOrganizationId, userOrganizationIds, loading, accessError, login, loginWithEmail, requestPasswordReset, logout };
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {

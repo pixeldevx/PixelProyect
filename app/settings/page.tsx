@@ -6,16 +6,17 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Plus, Trash2, Edit2, AlertCircle, Shield, Users } from 'lucide-react';
-import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc, where, or } from '@/lib/supabase/document-store';
+import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { UserManagement } from '@/components/settings/UserManagement';
 import { OrganizationManagement } from '@/components/settings/OrganizationManagement';
 import { Building } from 'lucide-react';
+import { belongsToAnyOrganization } from '@/lib/organizations';
 
 export default function SettingsPage() {
-  const { user, userRole, userOrganizationId } = useAuth();
+  const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   const [activeTab, setActiveTab] = useState<'roles' | 'users' | 'organizations'>('roles');
   const [roles, setRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,25 +28,28 @@ export default function SettingsPage() {
 
   const [roleToDelete, setRoleToDelete] = useState<{id: string, name: string} | null>(null);
   const [isDeletingRole, setIsDeletingRole] = useState(false);
+  const managedOrganizationIds = React.useMemo(
+    () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
+    [userOrganizationId, userOrganizationIds]
+  );
 
   useEffect(() => {
     if (!user || (!userRole)) return;
 
     let qRoles = query(collection(db, 'roles'));
-    if (userRole !== 'admin' && userOrganizationId) {
-      qRoles = query(
-        collection(db, 'roles'),
-        or(
-          where('organizationId', '==', userOrganizationId),
-          where('isDefault', '==', true)
-        )
-      );
-    }
 
     const unsubscribe = onSnapshot(qRoles, (querySnapshot) => {
       const rolesData: any[] = [];
       querySnapshot.forEach((doc) => {
-        rolesData.push({ id: doc.id, ...doc.data() });
+        const data = { id: doc.id, ...doc.data() };
+        if (
+          userRole === 'admin' ||
+          data.isDefault ||
+          managedOrganizationIds.length === 0 ||
+          belongsToAnyOrganization(data, managedOrganizationIds)
+        ) {
+          rolesData.push(data);
+        }
       });
       setRoles(rolesData);
       setLoading(false);
@@ -55,7 +59,7 @@ export default function SettingsPage() {
     });
 
     return () => unsubscribe();
-  }, [user, userRole, userOrganizationId]);
+  }, [user, userRole, managedOrganizationIds]);
 
   if (userRole !== 'admin' && userRole !== 'org_admin') {
     return (

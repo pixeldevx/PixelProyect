@@ -6,12 +6,13 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Plus, RefreshCw, Shield, Trash2, User as UserIcon } from 'lucide-react';
-import { collection, query, onSnapshot, doc, updateDoc, setDoc, getDocs, where, or } from '@/lib/supabase/document-store';
+import { collection, query, onSnapshot, doc, updateDoc, setDoc, getDocs, where } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { uploadProfilePicture } from '@/lib/storage-utils';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/lib/supabase/client';
+import { belongsToAnyOrganization, getOrganizationIds, getPrimaryOrganizationId, organizationNameFor } from '@/lib/organizations';
 
 const API_TIMEOUT_MS = 30000;
 const PHOTO_UPLOAD_TIMEOUT_MS = 20000;
@@ -59,25 +60,35 @@ const withTimeout = async <T,>(
   }
 };
 
+const toggleId = (current: string[], id: string) =>
+  current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
+
 export function UserManagement() {
-  const { user, userRole: currentUserRole, userOrganizationId } = useAuth();
+  const { user, userRole: currentUserRole, userOrganizationId, userOrganizationIds } = useAuth();
   const [users, setUsers] = useState<any[]>([]);
   const [projectRoles, setProjectRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [orgs, setOrgs] = useState<any[]>([]);
+  const managedOrganizationIds = React.useMemo(
+    () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
+    [userOrganizationId, userOrganizationIds]
+  );
 
   useEffect(() => {
-    if (currentUserRole === 'admin') {
+    if (currentUserRole === 'admin' || currentUserRole === 'org_admin') {
       const q = query(collection(db, 'organizations'));
-      onSnapshot(q, (snapshot) => {
-        const o: any[] = [];
+      return onSnapshot(q, (snapshot) => {
+        let o: any[] = [];
         snapshot.forEach(doc => o.push({ id: doc.id, ...doc.data()}));
+        if (currentUserRole === 'org_admin') {
+          o = o.filter((organization) => managedOrganizationIds.includes(organization.id));
+        }
         setOrgs(o);
       });
     }
-  }, [currentUserRole]);
+  }, [currentUserRole, managedOrganizationIds]);
   const [editingUser, setEditingUser] = useState<any>(null);
   
   const [userEmail, setUserEmail] = useState('');
@@ -87,7 +98,7 @@ export function UserManagement() {
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [selectedOrganizationId, setSelectedOrganizationId] = useState('');
+  const [selectedOrganizationIds, setSelectedOrganizationIds] = useState<string[]>([]);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
 
   const systemRoles = [
@@ -145,13 +156,13 @@ export function UserManagement() {
       void loadAuthUsers();
     } else {
       let qUsers = query(collection(db, 'users'));
-      if (userOrganizationId) {
-        qUsers = query(collection(db, 'users'), where('organizationId', '==', userOrganizationId));
-      }
       unsubscribeUsers = onSnapshot(qUsers, (querySnapshot) => {
         const usersData: any[] = [];
         querySnapshot.forEach((doc) => {
-          usersData.push({ id: doc.id, ...doc.data() });
+          const data = { id: doc.id, ...doc.data() };
+          if (managedOrganizationIds.length === 0 || belongsToAnyOrganization(data, managedOrganizationIds)) {
+            usersData.push(data);
+          }
         });
         setUsers(usersData);
         setLoading(false);
@@ -162,19 +173,18 @@ export function UserManagement() {
     }
 
     let qRoles = query(collection(db, 'roles'));
-    if (currentUserRole !== 'admin' && userOrganizationId) {
-      qRoles = query(
-        collection(db, 'roles'),
-        or(
-          where('organizationId', '==', userOrganizationId),
-          where('isDefault', '==', true)
-        )
-      );
-    }
     const unsubscribeRoles = onSnapshot(qRoles, (querySnapshot) => {
       const rolesData: any[] = [];
       querySnapshot.forEach((doc) => {
-        rolesData.push({ id: doc.id, ...doc.data() });
+        const data = { id: doc.id, ...doc.data() };
+        if (
+          currentUserRole === 'admin' ||
+          data.isDefault ||
+          managedOrganizationIds.length === 0 ||
+          belongsToAnyOrganization(data, managedOrganizationIds)
+        ) {
+          rolesData.push(data);
+        }
       });
       setProjectRoles(rolesData);
       if (rolesData.length > 0) {
@@ -186,7 +196,7 @@ export function UserManagement() {
       unsubscribeUsers?.();
       unsubscribeRoles();
     };
-  }, [currentUserRole, loadAuthUsers, userOrganizationId]);
+  }, [currentUserRole, loadAuthUsers, managedOrganizationIds]);
 
   const handleOpenModal = (u?: any) => {
     if (u) {
@@ -195,14 +205,15 @@ export function UserManagement() {
       setFormSystemRole(u.role || 'user');
       setUserName(u.displayName || '');
       setPhotoPreview(u.photoURL || null);
-      setSelectedOrganizationId(u.organizationId || '');
+      const orgIds = getOrganizationIds(u);
+      setSelectedOrganizationIds(orgIds);
       setPhotoFile(null);
     } else {
       setEditingUser(null);
       setUserEmail('');
       setFormSystemRole('user');
       setUserName('');
-      setSelectedOrganizationId('');
+      setSelectedOrganizationIds(currentUserRole === 'org_admin' ? managedOrganizationIds : []);
       setPhotoPreview(null);
       setPhotoFile(null);
       if (projectRoles.length > 0) {
@@ -287,6 +298,16 @@ export function UserManagement() {
     setIsUploading(true);
     try {
       const normalizedEmail = userEmail.toLowerCase();
+      const cleanOrganizationIds = formSystemRole === 'admin'
+        ? []
+        : Array.from(new Set(selectedOrganizationIds.filter(Boolean)));
+      const primaryOrganizationId = getPrimaryOrganizationId({ organizationIds: cleanOrganizationIds });
+
+      if (formSystemRole !== 'admin' && cleanOrganizationIds.length === 0) {
+        toast.warning('Selecciona al menos una organización.');
+        setIsUploading(false);
+        return;
+      }
       
       let uploadedPhotoURL = editingUser?.photoURL || null;
 
@@ -306,7 +327,12 @@ export function UserManagement() {
           email: normalizedEmail,
           displayName: userName || normalizedEmail.split('@')[0],
           ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL }),
-          ...((currentUserRole === 'admin' && formSystemRole !== 'admin') ? { organizationId: selectedOrganizationId } : {})
+          ...(currentUserRole === 'admin'
+            ? {
+                organizationId: primaryOrganizationId,
+                organizationIds: cleanOrganizationIds,
+              }
+            : {})
         }, { merge: true });
 
         // Also update team_members collection if the user exists there
@@ -318,7 +344,12 @@ export function UserManagement() {
               email: normalizedEmail,
               name: userName || normalizedEmail.split('@')[0],
               ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL }),
-              ...((currentUserRole === 'admin' && formSystemRole !== 'admin') ? { organizationId: selectedOrganizationId } : {})
+              ...(currentUserRole === 'admin'
+                ? {
+                    organizationId: primaryOrganizationId,
+                    organizationIds: cleanOrganizationIds,
+                  }
+                : {})
             });
           }
         }
@@ -342,7 +373,8 @@ export function UserManagement() {
           systemRole: formSystemRole,
           projectRoleId: projectRoleId || 'system_created',
           projectRoleName: selectedProjectRole?.name || 'Usuario del Sistema',
-          ...(formSystemRole !== 'admin' ? { organizationId: selectedOrganizationId } : {})
+          organizationId: primaryOrganizationId,
+          organizationIds: cleanOrganizationIds,
         });
 
         toast.success(inviteResult.message || "Usuario creado e invitación enviada.");
@@ -461,6 +493,7 @@ export function UserManagement() {
                 <TableHead>Usuario</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Rol del Sistema</TableHead>
+                <TableHead>Organizaciones</TableHead>
                 <TableHead>Estado</TableHead>
                 <TableHead>Correo enviado</TableHead>
                 <TableHead>Último Acceso</TableHead>
@@ -488,6 +521,9 @@ export function UserManagement() {
                     <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${getRoleBadgeColor(u.role || 'user')}`}>
                       {getRoleName(u.role || 'user')}
                     </span>
+                  </TableCell>
+                  <TableCell className="max-w-[220px] text-xs text-slate-500">
+                    {u.role === 'admin' ? 'Todas' : organizationNameFor(u, orgs)}
                   </TableCell>
                   <TableCell>
                     <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${getAuthStatus(u).className}`}>
@@ -601,19 +637,32 @@ export function UserManagement() {
                 {currentUserRole === 'admin' && formSystemRole !== 'admin' && (
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">
-                      Organización *
+                      {formSystemRole === 'org_admin' ? 'Organizaciones que administra *' : 'Organizaciones vinculadas *'}
                     </label>
-                    <select
-                      required
-                      value={selectedOrganizationId}
-                      onChange={(e) => setSelectedOrganizationId(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-                    >
-                      <option value="">Selecciona una organización</option>
+                    <div className="max-h-36 overflow-y-auto rounded-md border border-slate-200 bg-white p-2 space-y-1">
                       {orgs.map(org => (
-                        <option key={org.id} value={org.id}>{org.name}</option>
+                        <label key={org.id} className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-slate-50 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedOrganizationIds.includes(org.id)}
+                            onChange={() => {
+                              const nextIds = toggleId(selectedOrganizationIds, org.id);
+                              setSelectedOrganizationIds(nextIds);
+                            }}
+                            className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                          />
+                          {org.name}
+                        </label>
                       ))}
-                    </select>
+                      {orgs.length === 0 && (
+                        <p className="px-2 py-1.5 text-xs text-slate-500">
+                          No hay organizaciones disponibles.
+                        </p>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Puedes seleccionar una o varias organizaciones.
+                    </p>
                   </div>
                 )}
 

@@ -31,6 +31,7 @@ import { ProjectOrgChart } from '@/components/projects/ProjectOrgChart';
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 import Image from 'next/image';
+import { belongsToAnyOrganization } from '@/lib/organizations';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 
@@ -71,7 +72,7 @@ export default function ProjectDetailsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const projectId = params.id as string;
-  const { user, userRole, userOrganizationId } = useAuth();
+  const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   
   const [project, setProject] = useState<any>(null);
   const [documents, setDocuments] = useState<any[]>([]);
@@ -105,6 +106,7 @@ export default function ProjectDetailsPage() {
   const [selectedTaskForStartWorkflow, setSelectedTaskForStartWorkflow] = useState<any>(null);
   const [taskForStructureEdit, setTaskForStructureEdit] = useState<any>(null);
   const [selectedTaskForIncrement, setSelectedTaskForIncrement] = useState<any>(null);
+  const managedOrganizationIds = userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : [];
 
 
   useEffect(() => {
@@ -233,7 +235,7 @@ export default function ProjectDetailsPage() {
   const canManageProject = userRole === 'admin' || userRole === 'coordinador' || project?.ownerId === user?.uid;
   const canEditTaskStructure =
     userRole === 'admin' ||
-    (userRole === 'org_admin' && (!project?.organizationId || project.organizationId === userOrganizationId));
+    (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
 
   const collectDependentTaskIds = (taskId: string) => {
     const taskIds = new Set<string>([taskId]);

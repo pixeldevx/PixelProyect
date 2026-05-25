@@ -12,6 +12,7 @@ import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 
 import { useAuth } from '@/hooks/useAuth';
+import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
 
 const hasRequiredFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -40,12 +41,18 @@ const formatFormValue = (value: any) => {
 };
 
 export default function WorkflowTray() {
-  const { user } = useAuth();
+  const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   const [workflows, setWorkflows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'pending' | 'reviewed'>('pending');
   const [memberId, setMemberId] = useState<string | null>(null);
+  const [memberIds, setMemberIds] = useState<string[]>([]);
+  const [organizations, setOrganizations] = useState<any[]>([]);
+  const managedOrganizationIds = React.useMemo(
+    () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
+    [userOrganizationId, userOrganizationIds]
+  );
   
   const [actionModal, setActionModal] = useState<{ isOpen: boolean, task: any, type: 'approve' | 'return' | 'stop' | 'resume' }>({ isOpen: false, task: null, type: 'approve' });
   const [overrideUnits, setOverrideUnits] = useState<number | ''>('');
@@ -56,6 +63,14 @@ export default function WorkflowTray() {
   const [docsModalTask, setDocsModalTask] = useState<any>(null);
   const [historyModalTask, setHistoryModalTask] = useState<any>(null);
   const [searchTerm, setSearchTerm] = useState('');
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(query(collection(db, 'organizations')), (snapshot) => {
+      setOrganizations(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     let unsubscribeProjects: (() => void) | null = null;
@@ -76,10 +91,15 @@ export default function WorkflowTray() {
           const querySnapshot = await getDocs(qTeam);
           
           let mId = user.uid; // Fallback to uid (e.g., for admin)
+          const allMemberIds = [user.uid];
           if (!querySnapshot.empty) {
             mId = querySnapshot.docs[0].id;
+            querySnapshot.docs.forEach((docSnap) => {
+              allMemberIds.push(docSnap.id);
+            });
           }
           setMemberId(mId || null);
+          setMemberIds(Array.from(new Set(allMemberIds.filter(Boolean))));
 
           // Now fetch projects and tasks
           const q = query(
@@ -87,7 +107,14 @@ export default function WorkflowTray() {
           );
 
           unsubscribeProjects = onSnapshot(q, (snapshot) => {
-            const projectIds = snapshot.docs.map(doc => doc.id);
+            const projectDocs = snapshot.docs
+              .map(doc => ({ id: doc.id, ...doc.data() }))
+              .filter((project) => {
+                if (userRole !== 'org_admin') return true;
+                return managedOrganizationIds.length === 0 || belongsToAnyOrganization(project, managedOrganizationIds);
+              });
+            const projectsById = new Map(projectDocs.map((project) => [project.id, project]));
+            const projectIds = projectDocs.map(project => project.id);
             
             const allPending: any[] = [];
             let projectsProcessed = 0;
@@ -102,6 +129,7 @@ export default function WorkflowTray() {
             }
 
             projectIds.forEach(projectId => {
+              const project = projectsById.get(projectId);
               const tasksQ = query(
                 collection(db, 'projects', projectId, 'tasks'),
                 where('type', '==', 'workflow'),
@@ -110,10 +138,18 @@ export default function WorkflowTray() {
 
               const unsubTask = onSnapshot(tasksQ, (taskSnapshot) => {
                 const projectWorkflows = taskSnapshot.docs
-                  .map(doc => ({ ...doc.data(), id: doc.id, projectId }))
+                  .map(doc => ({
+                    ...doc.data(),
+                    id: doc.id,
+                    projectId,
+                    projectName: project?.name || 'Proyecto',
+                    organizationId: project?.organizationId || null,
+                    organizationIds: project ? [project.organizationId].filter(Boolean) : [],
+                    organizationName: project ? organizationNameFor(project, organizations) : 'Sin organización',
+                  }))
                   .filter((task: any) => {
                     const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
-                    const isAssigned = currentStep?.assignedTo === mId || currentStep?.assignedTo === user.uid;
+                    const isAssigned = currentStep?.assignedTo && allMemberIds.includes(currentStep.assignedTo);
                     const isPending = currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido';
                     const hasInteracted = task.workflowHistory?.some((h: any) => h.userId === user.uid);
                     
@@ -155,7 +191,7 @@ export default function WorkflowTray() {
       if (unsubscribeProjects) unsubscribeProjects();
       taskUnsubscribes.forEach(unsub => unsub());
     };
-  }, []);
+  }, [userRole, managedOrganizationIds, organizations]);
 
   const confirmAction = async () => {
     if (!user || !actionModal.task) return;
@@ -361,6 +397,8 @@ export default function WorkflowTray() {
     const externalId = (task.externalWorkflowId || '').toLowerCase();
     const taskId = (task.id || '').toLowerCase();
     const title = (task.title || '').toLowerCase();
+    const organizationName = (task.organizationName || '').toLowerCase();
+    const projectName = (task.projectName || '').toLowerCase();
     const currentStepStatus = (task.workflowSteps?.[task.currentStepIndex]?.status || '').toLowerCase();
     
     // Filter by tab
@@ -368,7 +406,8 @@ export default function WorkflowTray() {
     
     // We need to re-evaluate isPending for the current user
     // Let's use a more robust check
-    const isPendingForMe = (currentStep?.assignedTo === user?.uid || currentStep?.assignedTo === memberId) && 
+    const assignedIds = memberIds.length > 0 ? memberIds : [user?.uid, memberId].filter(Boolean);
+    const isPendingForMe = currentStep?.assignedTo && assignedIds.includes(currentStep.assignedTo) &&
                            (currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido');
     const hasInteracted = task.workflowHistory?.some((h: any) => h.userId === user?.uid);
 
@@ -382,6 +421,8 @@ export default function WorkflowTray() {
     return externalId.includes(searchLower) || 
            taskId.includes(searchLower) || 
            title.includes(searchLower) ||
+           organizationName.includes(searchLower) ||
+           projectName.includes(searchLower) ||
            currentStepStatus.includes(searchLower);
   });
 
@@ -447,6 +488,9 @@ export default function WorkflowTray() {
                       <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${isReturned || task.workflowSteps[task.currentStepIndex]?.status === 'detenido' ? 'bg-red-50 text-red-600' : 'bg-indigo-50 text-indigo-600'}`}>
                         Workflow {isReturned && '- Devuelto'} {task.workflowSteps[task.currentStepIndex]?.status === 'detenido' && '- Detenido'}
                       </span>
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider bg-emerald-50 text-emerald-700">
+                        {task.organizationName || 'Sin organización'}
+                      </span>
                       <span className="text-xs text-slate-400">
                         Paso {task.currentStepIndex + 1} de {task.workflowSteps.length}
                       </span>
@@ -454,7 +498,9 @@ export default function WorkflowTray() {
                     <h3 className="text-lg font-bold text-slate-900">
                       {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{task.title}
                     </h3>
-                    <p className="text-sm text-slate-500 mt-1">{task.description}</p>
+                    <p className="text-sm text-slate-500 mt-1">
+                      {task.projectName ? `${task.projectName} · ` : ''}{task.description}
+                    </p>
                   </div>
                   <div className="text-right">
                     <div className="flex items-center gap-1 text-xs text-slate-400 mb-1">

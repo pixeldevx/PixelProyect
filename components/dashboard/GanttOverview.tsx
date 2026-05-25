@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Plus, Calendar, Users, ListTodo, AlertCircle, X, Loader2, Search, ClipboardList } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
+import { belongsToAnyOrganization } from '@/lib/organizations';
 
 enum OperationType {
   CREATE = 'create',
@@ -63,7 +64,7 @@ function handleDataError(error: unknown, operationType: OperationType, path: str
 }
 
 export const GanttOverview: React.FC = () => {
-  const { user, userRole, userOrganizationId } = useAuth();
+  const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>('');
   const [tasks, setTasks] = useState<any[]>([]);
@@ -96,22 +97,27 @@ export const GanttOverview: React.FC = () => {
   const [selectedTaskForIncrement, setSelectedTaskForIncrement] = useState<any>(null);
 
   const [searchTerm, setSearchTerm] = useState('');
+  const managedOrganizationIds = React.useMemo(
+    () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
+    [userOrganizationId, userOrganizationIds]
+  );
 
   // Fetch all projects
   useEffect(() => {
     if (!user || !userRole) return;
     
     let q;
-    if (userRole === 'admin') {
+    if (userRole === 'admin' || userRole === 'org_admin') {
       q = query(collection(db, 'projects'), orderBy('createdAt', 'desc'));
-    } else if (userRole === 'org_admin' && userOrganizationId) {
-      q = query(collection(db, 'projects'), where('organizationId', '==', userOrganizationId));
     } else {
       q = query(collection(db, 'projects'), where('assignedTeamMembers', 'array-contains', user.uid));
     }
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      let data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      if (userRole === 'org_admin') {
+        data = data.filter((project) => belongsToAnyOrganization(project, managedOrganizationIds));
+      }
       // Sort in memory if 'where' was used (Firebase limitation)
       if (userRole !== 'admin') {
         data.sort((a: any, b: any) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
@@ -121,23 +127,23 @@ export const GanttOverview: React.FC = () => {
       handleDataError(error, OperationType.LIST, 'projects');
     });
     return () => unsubscribe();
-  }, [user, userRole, userOrganizationId]);
+  }, [user, userRole, managedOrganizationIds]);
 
   // Fetch team members
   useEffect(() => {
     if (!user) return;
     let q = query(collection(db, 'team_members'));
-    if (userRole !== 'admin' && userOrganizationId) {
-      q = query(collection(db, 'team_members'), where('organizationId', '==', userOrganizationId));
-    }
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      let data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      if (userRole !== 'admin') {
+        data = data.filter((member) => belongsToAnyOrganization(member, managedOrganizationIds));
+      }
       setTeamMembers(data);
     }, (error) => {
       handleDataError(error, OperationType.LIST, 'team_members');
     });
     return () => unsubscribe();
-  }, [user, userRole, userOrganizationId]);
+  }, [user, userRole, managedOrganizationIds]);
 
   // Fetch tasks and project details when a project is selected
   useEffect(() => {

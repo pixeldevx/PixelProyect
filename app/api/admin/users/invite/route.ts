@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { getPrimaryOrganizationId } from '@/lib/organizations';
 
 export const runtime = 'nodejs';
 
@@ -58,6 +59,22 @@ const displayNameFor = (displayName: unknown, email: string) => {
     return displayName.trim();
   }
   return email.split('@')[0];
+};
+
+const normalizeOrganizationIds = (payload: any) => {
+  const ids = new Set<string>();
+
+  if (Array.isArray(payload.organizationIds)) {
+    payload.organizationIds.forEach((id: unknown) => {
+      if (typeof id === 'string' && id.trim()) ids.add(id.trim());
+    });
+  }
+
+  if (typeof payload.organizationId === 'string' && payload.organizationId.trim()) {
+    ids.add(payload.organizationId.trim());
+  }
+
+  return Array.from(ids);
 };
 
 const getBearerToken = (request: NextRequest) => {
@@ -219,10 +236,8 @@ export async function POST(request: NextRequest) {
     const email = normalizeEmail(payload.email);
     const displayName = displayNameFor(payload.displayName, email);
     const systemRole = SYSTEM_ROLES.has(payload.systemRole) ? payload.systemRole : 'user';
-    const organizationId =
-      typeof payload.organizationId === 'string' && payload.organizationId.trim()
-        ? payload.organizationId.trim()
-        : null;
+    const organizationIds = normalizeOrganizationIds(payload);
+    const organizationId = getPrimaryOrganizationId({ organizationIds });
     const projectRoleId =
       typeof payload.projectRoleId === 'string' && payload.projectRoleId.trim()
         ? payload.projectRoleId.trim()
@@ -240,15 +255,16 @@ export async function POST(request: NextRequest) {
       return json({ error: 'Correo electrónico inválido.' }, 400);
     }
 
-    if (systemRole !== 'admin' && !organizationId) {
-      return json({ error: 'La organización es obligatoria para usuarios no administradores globales.' }, 400);
+    if (systemRole !== 'admin' && organizationIds.length === 0) {
+      return json({ error: 'Selecciona al menos una organización para usuarios no administradores globales.' }, 400);
     }
 
     const redirectTo = getRedirectTo(request);
     const metadata = {
       displayName,
       role: systemRole,
-      ...(organizationId ? { organizationId } : {}),
+      organizationId: systemRole === 'admin' ? null : organizationId,
+      organizationIds: systemRole === 'admin' ? [] : organizationIds,
       invitedBy: authResult.email,
     };
 
@@ -321,7 +337,8 @@ export async function POST(request: NextRequest) {
       invitedBy: authResult.email,
       updatedAt: now,
       ...(photoURL ? { photoURL } : {}),
-      ...(organizationId ? { organizationId } : {}),
+      organizationId: systemRole === 'admin' ? null : organizationId,
+      organizationIds: systemRole === 'admin' ? [] : organizationIds,
     };
 
     const teamMemberProfile = {
@@ -335,7 +352,8 @@ export async function POST(request: NextRequest) {
       invitedBy: authResult.email,
       updatedAt: now,
       ...(photoURL ? { photoURL } : {}),
-      ...(organizationId ? { organizationId } : {}),
+      organizationId: systemRole === 'admin' ? null : organizationId,
+      organizationIds: systemRole === 'admin' ? [] : organizationIds,
     };
 
     const { error: upsertError } = await withTimeout(

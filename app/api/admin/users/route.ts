@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { getOrganizationIds, getPrimaryOrganizationId } from '@/lib/organizations';
 
 export const runtime = 'nodejs';
 
@@ -170,6 +171,10 @@ const compactUser = (
   const metadata = user.user_metadata || {};
   const profileData = profile?.data || {};
   const teamData = teamMember?.data || {};
+  const organizationIds = getOrganizationIds({
+    organizationIds: profileData.organizationIds || teamData.organizationIds || metadata.organizationIds,
+    organizationId: profileData.organizationId || teamData.organizationId || metadata.organizationId,
+  });
 
   return {
     id: user.id,
@@ -184,7 +189,8 @@ const compactUser = (
       email.split('@')[0],
     photoURL: profileData.photoURL || teamData.photoURL || metadata.photoURL || metadata.avatar_url || null,
     role: profileData.role || metadata.role || 'user',
-    organizationId: profileData.organizationId || teamData.organizationId || metadata.organizationId || null,
+    organizationId: getPrimaryOrganizationId({ organizationIds }),
+    organizationIds,
     isPreRegistered: Boolean(profileData.isPreRegistered) && !(user.email_confirmed_at || user.confirmed_at),
     inviteStatus: profileData.inviteStatus || null,
     authStatus: authStatusFor(user, profile),
