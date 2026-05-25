@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useState } from "react";
-import { ClipboardList, Loader2, Plus, Settings, Trash2, X } from "lucide-react";
+import { ClipboardList, CornerDownRight, Loader2, Plus, Settings, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { addDoc, collection, serverTimestamp } from "@/lib/supabase/document-store";
@@ -21,12 +21,24 @@ type WorkflowStepDraft = {
   assignsNextStep?: boolean | null;
 };
 
+type SubtaskDraft = {
+  title: string;
+  description: string;
+  assignedTo: string;
+  priority: string;
+  status: string;
+  startDate: string;
+  endDate: string;
+};
+
 interface EditTaskStructureModalProps {
   isOpen: boolean;
   onClose: () => void;
   task: any | null;
   user: any;
   teamMembers: any[];
+  subtasks?: any[];
+  onCreateSubtask?: (parentTask: any, subtask: SubtaskDraft) => Promise<void> | void;
   onSave: (updates: {
     title: string;
     workflowSteps?: WorkflowStepDraft[];
@@ -34,6 +46,35 @@ interface EditTaskStructureModalProps {
 }
 
 const getTaskTitle = (task: any) => task?.title || task?.name || "";
+
+const getTaskDate = (value: any) => {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const toDateInputValue = (value: any) => {
+  const date = getTaskDate(value);
+  if (!date) return "";
+  return date.toISOString().slice(0, 10);
+};
+
+const getStatusLabel = (status: string) => {
+  switch (status) {
+    case "completed":
+      return "Listo";
+    case "in_progress":
+      return "En curso";
+    case "stuck":
+      return "Estancado";
+    case "todo":
+    case "pending":
+      return "Pendiente";
+    default:
+      return status || "Pendiente";
+  }
+};
 
 const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
   steps.map((step) => ({
@@ -52,11 +93,23 @@ export function EditTaskStructureModal({
   task,
   user,
   teamMembers,
+  subtasks = [],
+  onCreateSubtask,
   onSave,
 }: EditTaskStructureModalProps) {
   const [title, setTitle] = useState("");
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStepDraft[]>([]);
+  const [subtaskDraft, setSubtaskDraft] = useState<SubtaskDraft>({
+    title: "",
+    description: "",
+    assignedTo: "",
+    priority: "medium",
+    status: "todo",
+    startDate: "",
+    endDate: "",
+  });
   const [isSaving, setIsSaving] = useState(false);
+  const [isCreatingSubtask, setIsCreatingSubtask] = useState(false);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const [templateName, setTemplateName] = useState("");
   const [showTemplateModal, setShowTemplateModal] = useState(false);
@@ -64,12 +117,23 @@ export function EditTaskStructureModal({
   const [currentStepIndexForForm, setCurrentStepIndexForForm] = useState<number | null>(null);
 
   const canEditWorkflow = task?.type === "workflow" || (task?.workflowSteps?.length || 0) > 0;
+  const canManageSubtasks = Boolean(task?.type === "state" && !task?.parentTaskId && onCreateSubtask);
 
   useEffect(() => {
     if (!isOpen || !task) return;
     setTitle(getTaskTitle(task));
     setWorkflowSteps(toDraftSteps(task.workflowSteps || []));
+    setSubtaskDraft({
+      title: "",
+      description: "",
+      assignedTo: task.assignedTo || "",
+      priority: task.priority || "medium",
+      status: "todo",
+      startDate: toDateInputValue(task.startDate),
+      endDate: toDateInputValue(task.endDate),
+    });
     setIsSaving(false);
+    setIsCreatingSubtask(false);
     setIsSavingTemplate(false);
     setTemplateName("");
     setShowTemplateModal(false);
@@ -101,6 +165,51 @@ export function EditTaskStructureModal({
 
   const removeStep = (index: number) => {
     setWorkflowSteps((currentSteps) => currentSteps.filter((_, stepIndex) => stepIndex !== index));
+  };
+
+  const updateSubtaskDraft = (updates: Partial<SubtaskDraft>) => {
+    setSubtaskDraft((currentDraft) => ({ ...currentDraft, ...updates }));
+  };
+
+  const resetSubtaskDraft = () => {
+    setSubtaskDraft({
+      title: "",
+      description: "",
+      assignedTo: task.assignedTo || "",
+      priority: task.priority || "medium",
+      status: "todo",
+      startDate: toDateInputValue(task.startDate),
+      endDate: toDateInputValue(task.endDate),
+    });
+  };
+
+  const handleCreateSubtask = async () => {
+    if (!canManageSubtasks || !onCreateSubtask) return;
+
+    if (!subtaskDraft.title.trim()) {
+      toast.warning("Ingresa el nombre de la subtarea.");
+      return;
+    }
+
+    if (!subtaskDraft.startDate || !subtaskDraft.endDate) {
+      toast.warning("Define fecha de inicio y fin para la subtarea.");
+      return;
+    }
+
+    setIsCreatingSubtask(true);
+    try {
+      await onCreateSubtask(task, {
+        ...subtaskDraft,
+        title: subtaskDraft.title.trim(),
+        description: subtaskDraft.description.trim(),
+      });
+      resetSubtaskDraft();
+    } catch (error: any) {
+      console.error("Error creating subtask:", error);
+      toast.error(error?.message || "No se pudo crear la subtarea.");
+    } finally {
+      setIsCreatingSubtask(false);
+    }
   };
 
   const getCleanWorkflowSteps = () =>
@@ -186,10 +295,14 @@ export function EditTaskStructureModal({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <Settings size={20} className="text-indigo-600" />
-              <h2 className="text-xl font-bold text-slate-800">Editar tarea y dependientes</h2>
+              <h2 className="text-xl font-bold text-slate-800">
+                {canEditWorkflow ? "Editar tarea y dependientes" : "Editar tarea"}
+              </h2>
             </div>
             <p className="text-sm text-slate-500 mt-1">
-              Los cambios se aplicaran a esta tarea y a todas sus subtareas dependientes.
+              {canEditWorkflow
+                ? "Los cambios se aplicaran a esta tarea y a todas sus subtareas dependientes."
+                : "Ajusta la tarea por estado y administra sus subtareas."}
             </p>
           </div>
           <button
@@ -338,9 +451,154 @@ export function EditTaskStructureModal({
                 ))}
               </div>
             </div>
+          ) : canManageSubtasks ? (
+            <div className="space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-800">Subtareas</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Crea y revisa entregables secundarios bajo esta tarea por estado.
+                  </p>
+                </div>
+                <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-600 border border-indigo-100">
+                  {subtasks.length} subtareas
+                </span>
+              </div>
+
+              {subtasks.length > 0 ? (
+                <div className="space-y-2">
+                  {subtasks.map((subtask) => {
+                    const assignee = teamMembers.find((member) => member.id === subtask.assignedTo);
+                    return (
+                      <div
+                        key={subtask.id}
+                        className="flex items-center gap-3 rounded-xl border border-indigo-100 bg-indigo-50/30 px-3 py-2"
+                      >
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-indigo-500 border border-indigo-100">
+                          <CornerDownRight size={14} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-slate-700">
+                            {getTaskTitle(subtask)}
+                          </p>
+                          <p className="text-[11px] text-slate-500">
+                            {assignee?.name || "Sin responsable"} · {getStatusLabel(subtask.status)}
+                          </p>
+                        </div>
+                        <span className="rounded bg-white px-2 py-1 text-[10px] font-bold uppercase text-indigo-500 border border-indigo-100">
+                          Subtarea
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                  Esta tarea todavía no tiene subtareas.
+                </div>
+              )}
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-semibold text-slate-800">Nueva subtarea</h4>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Se guardará como tarea por estado dependiente de esta tarea.
+                    </p>
+                  </div>
+                </div>
+
+                <input
+                  type="text"
+                  value={subtaskDraft.title}
+                  onChange={(event) => updateSubtaskDraft({ title: event.target.value })}
+                  className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                  placeholder="Nombre de la subtarea"
+                />
+
+                <textarea
+                  value={subtaskDraft.description}
+                  onChange={(event) => updateSubtaskDraft({ description: event.target.value })}
+                  className="w-full min-h-[68px] p-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs resize-none"
+                  placeholder="Descripción opcional"
+                />
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <select
+                    value={subtaskDraft.assignedTo}
+                    onChange={(event) => updateSubtaskDraft({ assignedTo: event.target.value })}
+                    className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
+                  >
+                    <option value="">Sin responsable</option>
+                    {teamMembers.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name || member.email}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={subtaskDraft.priority}
+                    onChange={(event) => updateSubtaskDraft({ priority: event.target.value })}
+                    className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
+                  >
+                    <option value="high">Prioridad alta</option>
+                    <option value="medium">Prioridad media</option>
+                    <option value="low">Prioridad baja</option>
+                  </select>
+
+                  <select
+                    value={subtaskDraft.status}
+                    onChange={(event) => updateSubtaskDraft({ status: event.target.value })}
+                    className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
+                  >
+                    <option value="todo">Pendiente</option>
+                    <option value="in_progress">En curso</option>
+                    <option value="stuck">Estancado</option>
+                    <option value="completed">Listo</option>
+                  </select>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="date"
+                      value={subtaskDraft.startDate}
+                      onChange={(event) => updateSubtaskDraft({ startDate: event.target.value })}
+                      className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
+                    />
+                    <input
+                      type="date"
+                      value={subtaskDraft.endDate}
+                      onChange={(event) => updateSubtaskDraft({ endDate: event.target.value })}
+                      className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    onClick={handleCreateSubtask}
+                    disabled={isCreatingSubtask}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                  >
+                    {isCreatingSubtask ? (
+                      <>
+                        <Loader2 size={16} className="mr-2 animate-spin" />
+                        Creando...
+                      </>
+                    ) : (
+                      <>
+                        <Plus size={16} className="mr-2" />
+                        Crear subtarea
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </div>
           ) : (
             <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-              Esta tarea no tiene pasos de workflow; se actualizara el nombre en sus dependientes.
+              Esta tarea no tiene pasos de workflow.
             </div>
           )}
         </div>

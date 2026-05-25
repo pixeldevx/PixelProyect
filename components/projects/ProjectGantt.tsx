@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Gantt, Task, ViewMode } from 'gantt-task-react';
 import "gantt-task-react/dist/index.css";
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
-import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, Pencil, PanelRightClose, PanelRightOpen, Settings } from 'lucide-react';
+import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, Pencil, PanelRightClose, PanelRightOpen, Settings, CornerDownRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -23,6 +23,7 @@ interface ProjectGanttProps {
   onUpdateTaskTitle?: (taskId: string, title: string, task: any) => void | Promise<void>;
   canEditTaskStructure?: boolean;
   onEditTaskStructure?: (task: any) => void;
+  onAddSubtask?: (task: any) => void;
   onOpenTaskDocs?: (taskId: string, task: any) => void;
   onCreateTask?: () => void;
 }
@@ -85,6 +86,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onUpdateTaskTitle,
   canEditTaskStructure,
   onEditTaskStructure,
+  onAddSubtask,
   onOpenTaskDocs,
   onCreateTask
 }) => {
@@ -396,6 +398,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const isExpanded = expandedParents[task.id];
                     const isEditingTitle = editingTaskId === task.id;
                     const taskPriority = getTaskPriority(task);
+                    const canAddSubtask = Boolean(onAddSubtask && task.type === 'state' && !task.parentTaskId && !task.isWorkflowStep);
                     
                     return (
                       <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={isSubTask || isEditingTitle}>
@@ -403,7 +406,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                           <div
                             ref={provided.innerRef}
                             {...provided.draggableProps}
-                            className={`flex items-center h-10 border-b border-slate-100 hover:bg-slate-50 transition-colors group relative ${snapshot.isDragging ? 'bg-white shadow-xl z-50 ring-1 ring-indigo-500/20' : ''} ${isSubTask ? 'bg-slate-50/50' : ''}`}
+                            className={`flex items-center h-10 border-b transition-colors group relative ${snapshot.isDragging ? 'bg-white shadow-xl z-50 ring-1 ring-indigo-500/20' : ''} ${isSubTask ? 'bg-indigo-50/30 border-indigo-100 hover:bg-indigo-50/60' : 'border-slate-100 hover:bg-slate-50'}`}
                           >
                             {/* Monday-style colored left bar */}
                             <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${
@@ -413,13 +416,21 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               'bg-slate-300'
                             }`} />
 
+                            {isSubTask && (
+                              <>
+                                <div className="absolute left-5 top-0 bottom-0 w-px bg-indigo-100" />
+                                <div className="absolute left-5 top-1/2 h-px w-6 bg-indigo-200" />
+                              </>
+                            )}
+
                             <div {...provided.dragHandleProps} className={`w-10 flex justify-center text-slate-300 group-hover:text-slate-400 ${isSubTask ? 'invisible' : 'cursor-grab active:cursor-grabbing'}`}>
                               <GripVertical size={14} />
                             </div>
-                            
+
                             <div className={`flex-1 min-w-[220px] px-2 flex items-center gap-2 ${task.isWorkflowStep ? 'pl-10' : isSubTask ? 'pl-6' : ''}`}>
+                              {isSubTask && <CornerDownRight size={14} className="shrink-0 text-indigo-300" />}
                               {(isParent || task.type === 'workflow') && !task.isWorkflowStep && (
-                                <button 
+                                <button
                                   onClick={() => toggleParent(task.id)}
                                   className="w-4 h-4 flex items-center justify-center rounded bg-slate-200 text-slate-600 hover:bg-slate-300"
                                 >
@@ -449,7 +460,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   <button
                                     type="button"
                                     onDoubleClick={() => startEditingTitle(task)}
-                                    className={`min-w-0 flex-1 truncate text-left text-sm font-medium ${task.status === 'completed' || task.status === 'listo' ? 'text-slate-400 line-through' : 'text-slate-700'}`}
+                                    className={`min-w-0 flex-1 truncate text-left text-sm font-medium ${task.status === 'completed' || task.status === 'listo' ? 'text-slate-400 line-through' : isSubTask ? 'text-slate-600' : 'text-slate-700'}`}
                                     title={taskTitle}
                                   >
                                     {taskDisplayTitle}
@@ -468,6 +479,11 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                     </button>
                                   )}
                                 </>
+                              )}
+                              {isSubTask && (
+                                <span className="shrink-0 rounded bg-indigo-50 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tight text-indigo-500 border border-indigo-100">
+                                  Subtarea
+                                </span>
                               )}
                               {task.isRateCardTask && (
                                 <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[8px] font-bold rounded uppercase tracking-tighter shrink-0 border border-indigo-100 shadow-sm">
@@ -636,6 +652,15 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   title="Sincronizar"
                                 >
                                   <RefreshCw size={12} />
+	                                </button>
+	                              )}
+                              {canAddSubtask && (
+                                <button
+                                  onClick={() => onAddSubtask?.(task)}
+                                  className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                                  title="Agregar subtarea"
+                                >
+                                  <Plus size={12} />
                                 </button>
                               )}
                               {canEditTaskStructure && onEditTaskStructure && !task.isWorkflowStep && (

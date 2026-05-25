@@ -18,6 +18,7 @@ interface ProjectTasksTableProps {
   onDeleteTask: (taskId: string) => void;
   canEditTaskStructure?: boolean;
   onEditTaskStructure?: (task: any) => void;
+  onAddSubtask?: (task: any) => void;
   onOpenTaskDocs?: (taskId: string, task: any) => void;
   onCreateTask?: () => void;
 }
@@ -42,6 +43,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   onDeleteTask,
   canEditTaskStructure,
   onEditTaskStructure,
+  onAddSubtask,
   onOpenTaskDocs,
   onCreateTask
 }) => {
@@ -229,6 +231,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
     const subtasks = tasks.filter(t => t.parentTaskId === task.id).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
     const hasSubtasks = subtasks.length > 0 || (task.type === 'workflow' && task.workflowSteps && task.workflowSteps.length > 0);
     const isExpanded = expandedTasks[task.id] !== false;
+    const canAddSubtask = Boolean(onAddSubtask && task.type === 'state' && !task.parentTaskId);
 
     return (
       <React.Fragment key={task.id}>
@@ -237,7 +240,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -10 }}
           transition={{ duration: 0.2 }}
-          className={`border-b border-slate-200 hover:bg-slate-50 transition-colors group ${depth > 0 ? 'bg-slate-50/30' : 'bg-white'}`}
+          className={`border-b transition-colors group ${depth > 0 ? 'bg-indigo-50/30 border-indigo-100 hover:bg-indigo-50/60' : 'bg-white border-slate-200 hover:bg-slate-50'}`}
         >
           <td className={`px-4 py-2 ${depth === 0 ? `border-l-8 ${getStatusBorderColor(task.status || 'todo')}` : 'border-l-8 border-transparent'} relative`}>
             <div className="flex items-center gap-2" style={{ paddingLeft: `${depth * 1.5}rem` }}>
@@ -259,7 +262,12 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
                   {depth === 0 && <div className="w-1.5 h-1.5 rounded-full bg-slate-300"></div>}
                 </div>
               )}
-              <div className="font-medium text-slate-800">{taskTitle}</div>
+              <div className={`font-medium ${depth > 0 ? 'text-slate-600' : 'text-slate-800'}`}>{taskTitle}</div>
+              {depth > 0 && (
+                <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-tight text-indigo-500 border border-indigo-100">
+                  Subtarea
+                </span>
+              )}
             </div>
           </td>
           
@@ -356,6 +364,15 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
 
           <td className="px-2 py-2 text-center border-l border-slate-200 w-24">
             <div className="flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              {canAddSubtask && (
+                <button
+                  onClick={() => onAddSubtask?.(task)}
+                  className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                  title="Agregar subtarea"
+                >
+                  <Plus size={16} />
+                </button>
+              )}
               {canEditTaskStructure && onEditTaskStructure && (
                 <button
                   onClick={() => onEditTaskStructure(task)}

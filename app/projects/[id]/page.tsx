@@ -656,6 +656,88 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  const handleCreateSubtask = async (
+    parentTask: any,
+    subtask: {
+      title: string;
+      description: string;
+      assignedTo: string;
+      priority: string;
+      status: string;
+      startDate: string;
+      endDate: string;
+    }
+  ) => {
+    if (!user || !parentTask) return;
+
+    const cleanTitle = subtask.title.trim();
+    if (!cleanTitle) {
+      toast.warning('Ingresa el nombre de la subtarea.');
+      return;
+    }
+
+    const subtaskStartDate = new Date(`${subtask.startDate}T00:00:00`);
+    const subtaskEndDate = new Date(`${subtask.endDate}T00:00:00`);
+    if (Number.isNaN(subtaskStartDate.getTime()) || Number.isNaN(subtaskEndDate.getTime())) {
+      toast.warning('Define fechas válidas para la subtarea.');
+      return;
+    }
+
+    const currentSubtasks = tasks.filter((candidate) => candidate.parentTaskId === parentTask.id);
+    const batch = writeBatch(db);
+    const subtaskRef = doc(collection(db, 'projects', projectId, 'tasks'));
+    const progress = subtask.status === 'completed' ? 100 : subtask.status === 'in_progress' ? 10 : 0;
+
+    try {
+      batch.set(subtaskRef, {
+        projectId,
+        title: cleanTitle,
+        name: cleanTitle,
+        description: subtask.description.trim(),
+        startDate: subtaskStartDate,
+        endDate: subtaskEndDate,
+        start: subtaskStartDate,
+        end: subtaskEndDate,
+        assignedTo: subtask.assignedTo || parentTask.assignedTo || '',
+        indicator: null,
+        indicatorValue: null,
+        status: subtask.status || 'todo',
+        progress,
+        type: 'state',
+        requiresDocument: false,
+        linkedDocumentId: null,
+        isRateCardTask: false,
+        rateCardId: null,
+        unitsToAdd: null,
+        syncExternal: false,
+        priority: subtask.priority || parentTask.priority || 'medium',
+        currentValue: 0,
+        parentTaskId: parentTask.id,
+        displayOrder: tasks.length + currentSubtasks.length + 1,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: user.uid,
+      });
+
+      batch.update(doc(db, 'projects', projectId, 'tasks', parentTask.id), {
+        isParentTask: true,
+        totalSubtasks: currentSubtasks.length + 1,
+        updatedAt: serverTimestamp(),
+      });
+
+      await batch.commit();
+
+      const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+      await updateParentTaskStatus(projectId, parentTask.id);
+
+      toast.success('Subtarea creada correctamente.');
+    } catch (error: any) {
+      console.error("Error creating subtask:", error);
+      toast.error(`Error al crear la subtarea: ${error.message}`);
+      throw error;
+    }
+  };
+
   const handleUpdateTaskStructure = async (
     task: any,
     updates: { title: string; workflowSteps?: any[] }
@@ -677,7 +759,7 @@ export default function ProjectDetailsPage() {
     const structuralSteps = shouldUpdateWorkflow
       ? updates.workflowSteps!.map(stripWorkflowStepRuntime)
       : [];
-    const dependentTaskIds = collectDependentTaskIds(task.id);
+    const dependentTaskIds = shouldUpdateWorkflow ? collectDependentTaskIds(task.id) : new Set<string>([task.id]);
 
     try {
       const batch = writeBatch(db);
@@ -1017,6 +1099,7 @@ export default function ProjectDetailsPage() {
                 onUpdateTaskTitle={handleUpdateTaskTitle}
                 canEditTaskStructure={canEditTaskStructure}
                 onEditTaskStructure={setTaskForStructureEdit}
+                onAddSubtask={setTaskForStructureEdit}
                 onOpenTaskDocs={(taskId, task) => {
                   setSelectedTaskForDocs(task);
                   setIsTaskDocsModalOpen(true);
@@ -1077,6 +1160,7 @@ export default function ProjectDetailsPage() {
                 onDeleteTask={(taskId) => setTaskToDelete({ id: taskId, title: getTaskTitle(tasks.find(t => t.id === taskId)) })}
                 canEditTaskStructure={canEditTaskStructure}
                 onEditTaskStructure={setTaskForStructureEdit}
+                onAddSubtask={setTaskForStructureEdit}
                 onOpenTaskDocs={(taskId, task) => {
                   setSelectedTaskForDocs(task);
                   setIsTaskDocsModalOpen(true);
@@ -1329,6 +1413,8 @@ export default function ProjectDetailsPage() {
         task={taskForStructureEdit}
         user={user}
         teamMembers={teamMembers}
+        subtasks={taskForStructureEdit ? tasks.filter((task) => task.parentTaskId === taskForStructureEdit.id) : []}
+        onCreateSubtask={handleCreateSubtask}
         onSave={async (updates) => {
           if (!taskForStructureEdit) return;
           await handleUpdateTaskStructure(taskForStructureEdit, updates);
