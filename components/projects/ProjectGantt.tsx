@@ -21,6 +21,7 @@ interface ProjectGanttProps {
   onReorderTasks: (newTasks: any[]) => void;
   onUpdateTaskDates: (taskId: string, start: Date, end: Date, task: any) => void;
   onUpdateTaskTitle?: (taskId: string, title: string, task: any) => void | Promise<void>;
+  onOpenIncrementTask?: (task: any) => void;
   canEditTaskStructure?: boolean;
   onEditTaskStructure?: (task: any) => void;
   onAddSubtask?: (task: any) => void;
@@ -84,6 +85,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onReorderTasks,
   onUpdateTaskDates,
   onUpdateTaskTitle,
+  onOpenIncrementTask,
   canEditTaskStructure,
   onEditTaskStructure,
   onAddSubtask,
@@ -636,13 +638,17 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               {isQuantitative && task.type !== 'workflow' && (
                                 <button 
                                   onClick={() => {
+                                    if (onOpenIncrementTask) {
+                                      onOpenIncrementTask(task);
+                                      return;
+                                    }
                                     const val = prompt('Ingresar nuevo valor actual:', task.currentValue || 0);
                                     if (val !== null) onUpdateTaskValue(task.id, Number(val), task);
                                   }}
                                   className="p-1.5 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                                  title="Actualizar Valor"
+                                  title="Registrar incremento"
                                 >
-                                  <RefreshCw size={12} />
+                                  <Plus size={12} />
                                 </button>
                               )}
                               {task.syncExternal && (

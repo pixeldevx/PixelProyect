@@ -87,6 +87,11 @@ export function CreateTaskModal({
   const [newTaskUnitsToAdd, setNewTaskUnitsToAdd] = useState(1);
   const [newTaskPriority, setNewTaskPriority] = useState("medium");
   const [draftSubtasks, setDraftSubtasks] = useState<DraftSubtask[]>([]);
+  const [incrementForm, setIncrementForm] = useState<CustomForm | undefined>(
+    undefined,
+  );
+  const [isIncrementFormBuilderOpen, setIsIncrementFormBuilderOpen] =
+    useState(false);
 
   const [workflowTemplates, setWorkflowTemplates] = useState<any[]>([]);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
@@ -133,6 +138,8 @@ export function CreateTaskModal({
     setNewTaskRateCardId("");
     setNewTaskUnitsToAdd(1);
     setDraftSubtasks([]);
+    setIncrementForm(undefined);
+    setIsIncrementFormBuilderOpen(false);
   };
 
   const handleClose = () => {
@@ -199,6 +206,11 @@ export function CreateTaskModal({
       return;
     }
 
+    if (newTaskType === "quantitative" && Number(newTaskIndicatorValue) <= 0) {
+      toast.warning("Define una meta mayor a cero para la tarea cuantitativa.");
+      return;
+    }
+
     setIsCreatingTask(true);
 
     try {
@@ -232,6 +244,9 @@ export function CreateTaskModal({
           : false,
         priority: newTaskPriority,
         currentValue: 0,
+        incrementForm:
+          newTaskType === "quantitative" ? incrementForm || null : null,
+        incrementHistory: newTaskType === "quantitative" ? [] : null,
         displayOrder: tasksLength,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -788,31 +803,61 @@ export function CreateTaskModal({
             )}
 
             {newTaskType === "quantitative" && (
-              <div className="grid grid-cols-2 gap-4 p-4 bg-slate-50 rounded-xl border border-slate-100">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                    Indicador
-                  </label>
-                  <input
-                    type="text"
-                    value={newTaskIndicator}
-                    onChange={(e) => setNewTaskIndicator(e.target.value)}
-                    className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                    placeholder="Ej. Horas"
-                  />
+              <div className="space-y-4 p-4 bg-slate-50 rounded-xl border border-slate-100">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                      Indicador
+                    </label>
+                    <input
+                      type="text"
+                      value={newTaskIndicator}
+                      onChange={(e) => setNewTaskIndicator(e.target.value)}
+                      className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                      placeholder="Ej. Horas"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                      Meta
+                    </label>
+                    <input
+                      type="number"
+                      value={newTaskIndicatorValue}
+                      onChange={(e) =>
+                        setNewTaskIndicatorValue(Number(e.target.value))
+                      }
+                      className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                    Meta
-                  </label>
-                  <input
-                    type="number"
-                    value={newTaskIndicatorValue}
-                    onChange={(e) =>
-                      setNewTaskIndicatorValue(Number(e.target.value))
-                    }
-                    className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                  />
+
+                <div className="rounded-xl border border-dashed border-indigo-200 bg-white p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                        Formulario de incremento
+                      </label>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Define los datos que se pedirán cada vez que se sume al contador.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIsIncrementFormBuilderOpen(true)}
+                      className="h-9 text-xs font-bold border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+                    >
+                      <ClipboardList size={14} className="mr-1" />
+                      {incrementForm ? "Editar formulario" : "Configurar"}
+                    </Button>
+                  </div>
+                  <p className="mt-3 text-xs text-slate-500">
+                    {incrementForm?.fields?.length
+                      ? `${incrementForm.fields.length} campo(s) configurado(s).`
+                      : "Sin formulario personalizado: al incrementar solo se pedirá cantidad y comentario."}
+                  </p>
                 </div>
               </div>
             )}
@@ -1082,6 +1127,16 @@ export function CreateTaskModal({
             newSteps[currentStepIndexForForm].form = form;
             setWorkflowSteps(newSteps);
           }}
+        />
+      )}
+
+      {isIncrementFormBuilderOpen && (
+        <WorkflowStepFormBuilderModal
+          isOpen={isIncrementFormBuilderOpen}
+          onClose={() => setIsIncrementFormBuilderOpen(false)}
+          stepName={newTaskTitle || "Incremento de contador"}
+          initialForm={incrementForm}
+          onSave={(form) => setIncrementForm(form)}
         />
       )}
 

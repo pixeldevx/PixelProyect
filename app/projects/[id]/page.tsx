@@ -22,6 +22,7 @@ import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
 import { StartWorkflowModal } from '@/components/projects/StartWorkflowModal';
 import { CreateTaskModal } from '@/components/projects/modals/CreateTaskModal';
 import { EditTaskStructureModal } from '@/components/projects/modals/EditTaskStructureModal';
+import { IncrementTaskValueModal } from '@/components/projects/modals/IncrementTaskValueModal';
 import { UploadDocumentModal } from '@/components/projects/modals/UploadDocumentModal';
 import { AssignMemberModal } from '@/components/projects/modals/AssignMemberModal';
 import { RemoveMemberModal } from '@/components/projects/modals/RemoveMemberModal';
@@ -103,6 +104,7 @@ export default function ProjectDetailsPage() {
   const [isStartWorkflowModalOpen, setIsStartWorkflowModalOpen] = useState(false);
   const [selectedTaskForStartWorkflow, setSelectedTaskForStartWorkflow] = useState<any>(null);
   const [taskForStructureEdit, setTaskForStructureEdit] = useState<any>(null);
+  const [selectedTaskForIncrement, setSelectedTaskForIncrement] = useState<any>(null);
 
 
   useEffect(() => {
@@ -341,16 +343,14 @@ export default function ProjectDetailsPage() {
   const handleUpdateTaskValue = async (taskId: string, newValue: number, task: any) => {
     if (!task || !task.indicatorValue) return;
     try {
-      const progress = Math.min(100, Math.round((newValue / task.indicatorValue) * 100));
-      
-      if (progress === 100 && task.requiresDocument && !task.linkedDocumentId) {
-        setCompletingTaskId(taskId);
-        return;
-      }
+      const targetValue = Number(task.indicatorValue);
+      const safeValue = Math.min(Math.max(Number(newValue) || 0, 0), targetValue);
+      const progress = Math.min(100, Math.round((safeValue / targetValue) * 100));
+      const requiresCompletionDocument = progress === 100 && task.requiresDocument && !task.linkedDocumentId;
 
       let status = 'in_progress';
       if (progress === 0) status = 'todo';
-      if (progress === 100) status = 'completed';
+      if (progress === 100) status = requiresCompletionDocument ? 'in_progress' : 'completed';
 
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
@@ -374,16 +374,119 @@ export default function ProjectDetailsPage() {
       }
 
       batch.update(taskRef, {
-        currentValue: newValue,
+        currentValue: safeValue,
         progress: progress,
         status: status,
         updatedAt: serverTimestamp()
       });
 
       await batch.commit();
+
+      if (requiresCompletionDocument) {
+        setCompletingTaskId(taskId);
+        toast.info('La tarea llegó a la meta. Adjunta el documento requerido para completarla.');
+      }
     } catch (error: any) {
       console.error("Error updating task value:", error);
       toast.error(`Error al actualizar el valor de la tarea: ${error.message}`);
+    }
+  };
+
+  const handleIncrementTaskValue = async (
+    task: any,
+    amount: number,
+    formData: Record<string, any>,
+    comment: string
+  ) => {
+    if (!task || !task.indicatorValue) {
+      toast.warning('Esta tarea no tiene una meta válida configurada.');
+      return;
+    }
+
+    const incrementAmount = Number(amount);
+    const targetValue = Number(task.indicatorValue);
+    const currentValue = Number(task.currentValue || 0);
+
+    if (!incrementAmount || incrementAmount <= 0) {
+      toast.warning('Ingresa un incremento mayor a cero.');
+      return;
+    }
+
+    if (!targetValue || targetValue <= 0) {
+      toast.warning('Esta tarea no tiene una meta válida configurada.');
+      return;
+    }
+
+    const nextValue = Math.min(targetValue, currentValue + incrementAmount);
+    const appliedAmount = nextValue - currentValue;
+
+    if (appliedAmount <= 0) {
+      toast.info('La tarea ya alcanzó la meta.');
+      return;
+    }
+
+    try {
+      const progress = Math.min(100, Math.round((nextValue / targetValue) * 100));
+      const requiresCompletionDocument = progress === 100 && task.requiresDocument && !task.linkedDocumentId;
+      let status = 'in_progress';
+      if (progress === 0) status = 'todo';
+      if (progress === 100) status = requiresCompletionDocument ? 'in_progress' : 'completed';
+
+      const batch = writeBatch(db);
+      const taskRef = doc(db, 'projects', projectId, 'tasks', task.id);
+
+      if (task.type !== 'workflow' && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
+        const oldProgress = task.progress || 0;
+        const deltaProgress = progress - oldProgress;
+        const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
+
+        if (unitsDelta !== 0) {
+          const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
+          const updateData: any = {
+            currentValue: increment(unitsDelta)
+          };
+          if (task.assignedTo) {
+            updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
+          }
+          batch.update(rcRef, updateData);
+        }
+      }
+
+      batch.update(taskRef, {
+        currentValue: nextValue,
+        progress,
+        status,
+        updatedAt: serverTimestamp(),
+        incrementHistory: arrayUnion({
+          id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          amount: appliedAmount,
+          requestedAmount: incrementAmount,
+          previousValue: currentValue,
+          nextValue,
+          indicator: task.indicator || '',
+          formData: Object.keys(formData || {}).length > 0 ? formData : null,
+          comment: comment.trim() || null,
+          createdAt: new Date().toISOString(),
+          createdBy: user?.uid || 'unknown',
+        }),
+      });
+
+      await batch.commit();
+
+      if (task.parentTaskId) {
+        const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+        await updateParentTaskStatus(projectId, task.parentTaskId);
+      }
+
+      if (requiresCompletionDocument) {
+        setCompletingTaskId(task.id);
+        toast.info('La tarea llegó a la meta. Adjunta el documento requerido para completarla.');
+      } else {
+        toast.success(`Incremento registrado: ${nextValue}/${targetValue} ${task.indicator || ''}`.trim());
+      }
+    } catch (error: any) {
+      console.error("Error incrementing task value:", error);
+      throw error;
     }
   };
 
@@ -1097,6 +1200,7 @@ export default function ProjectDetailsPage() {
                 onReorderTasks={handleReorderTasks}
                 onUpdateTaskDates={handleUpdateTaskDates}
                 onUpdateTaskTitle={handleUpdateTaskTitle}
+                onOpenIncrementTask={setSelectedTaskForIncrement}
                 canEditTaskStructure={canEditTaskStructure}
                 onEditTaskStructure={setTaskForStructureEdit}
                 onAddSubtask={setTaskForStructureEdit}
@@ -1394,6 +1498,13 @@ export default function ProjectDetailsPage() {
         taskId={completingTaskId}
         task={tasks.find(t => t.id === completingTaskId) || null}
         user={user}
+      />
+
+      <IncrementTaskValueModal
+        isOpen={!!selectedTaskForIncrement}
+        onClose={() => setSelectedTaskForIncrement(null)}
+        task={selectedTaskForIncrement}
+        onSubmit={handleIncrementTaskValue}
       />
 
       {/* Create Task Modal */}

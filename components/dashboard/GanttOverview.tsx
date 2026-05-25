@@ -1,11 +1,13 @@
 "use client"
 
 import React, { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, doc, updateDoc, addDoc, deleteDoc, serverTimestamp, orderBy, where, getDocs, writeBatch } from '@/lib/supabase/document-store';
+import { collection, query, onSnapshot, doc, updateDoc, addDoc, deleteDoc, serverTimestamp, orderBy, where, getDocs, writeBatch, arrayUnion, increment } from '@/lib/supabase/document-store';
 import { db, auth } from '@/lib/backend';
 import { ProjectGantt } from '@/components/projects/ProjectGantt';
+import { IncrementTaskValueModal } from '@/components/projects/modals/IncrementTaskValueModal';
+import { WorkflowStepFormBuilderModal, CustomForm } from '@/components/projects/WorkflowStepFormBuilderModal';
 import { Button } from '@/components/ui/button';
-import { Plus, Calendar, Users, ListTodo, AlertCircle, X, Loader2, Search } from 'lucide-react';
+import { Plus, Calendar, Users, ListTodo, AlertCircle, X, Loader2, Search, ClipboardList } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 
@@ -81,6 +83,8 @@ export const GanttOverview: React.FC = () => {
   const [workflowSteps, setWorkflowSteps] = useState<{assignedTo: string, label: string, assignsNextStep?: boolean}[]>([]);
   const [newTaskIndicator, setNewTaskIndicator] = useState('');
   const [newTaskIndicatorValue, setNewTaskIndicatorValue] = useState(0);
+  const [incrementForm, setIncrementForm] = useState<CustomForm | undefined>(undefined);
+  const [isIncrementFormBuilderOpen, setIsIncrementFormBuilderOpen] = useState(false);
   const [newTaskStatus, setNewTaskStatus] = useState('todo');
   const [newTaskPriority, setNewTaskPriority] = useState('medium');
   const [newTaskRequiresDoc, setNewTaskRequiresDoc] = useState(false);
@@ -89,6 +93,7 @@ export const GanttOverview: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<{id: string, title: string} | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [selectedTaskForIncrement, setSelectedTaskForIncrement] = useState<any>(null);
 
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -202,19 +207,123 @@ export const GanttOverview: React.FC = () => {
 
   const handleUpdateTaskValue = async (taskId: string, value: number, task: any) => {
     try {
-      const progress = task.indicatorValue > 0 ? Math.min(100, Math.round((value / task.indicatorValue) * 100)) : 0;
+      const targetValue = Number(task.indicatorValue || 0);
+      if (targetValue <= 0) {
+        toast.warning('Esta tarea no tiene una meta válida configurada.');
+        return;
+      }
+
+      const safeValue = Math.min(Math.max(Number(value) || 0, 0), targetValue);
+      const progress = Math.min(100, Math.round((safeValue / targetValue) * 100));
+      const requiresCompletionDocument = progress === 100 && task.requiresDocument && !task.linkedDocumentId;
       let status = 'in_progress';
       if (progress === 0) status = 'todo';
-      if (progress === 100) status = 'completed';
+      if (progress === 100) status = requiresCompletionDocument ? 'in_progress' : 'completed';
 
       await updateDoc(doc(db, 'projects', selectedProjectId, 'tasks', taskId), {
-        currentValue: value,
+        currentValue: safeValue,
         progress,
         status,
         updatedAt: serverTimestamp()
       });
+
+      if (requiresCompletionDocument) {
+        toast.info('La tarea llegó a la meta. Adjunta el documento requerido desde el detalle del proyecto.');
+      }
     } catch (error) {
       console.error("Error updating task value:", error);
+    }
+  };
+
+  const handleIncrementTaskValue = async (
+    task: any,
+    amount: number,
+    formData: Record<string, any>,
+    comment: string
+  ) => {
+    const incrementAmount = Number(amount);
+    const targetValue = Number(task?.indicatorValue || 0);
+    const currentValue = Number(task?.currentValue || 0);
+
+    if (!incrementAmount || incrementAmount <= 0) {
+      toast.warning('Ingresa un incremento mayor a cero.');
+      return;
+    }
+
+    if (!targetValue || targetValue <= 0) {
+      toast.warning('Esta tarea no tiene una meta válida configurada.');
+      return;
+    }
+
+    const nextValue = Math.min(targetValue, currentValue + incrementAmount);
+    const appliedAmount = nextValue - currentValue;
+
+    if (appliedAmount <= 0) {
+      toast.info('La tarea ya alcanzó la meta.');
+      return;
+    }
+
+    try {
+      const progress = Math.min(100, Math.round((nextValue / targetValue) * 100));
+      const requiresCompletionDocument = progress === 100 && task.requiresDocument && !task.linkedDocumentId;
+      let status = 'in_progress';
+      if (progress === 0) status = 'todo';
+      if (progress === 100) status = requiresCompletionDocument ? 'in_progress' : 'completed';
+
+      const batch = writeBatch(db);
+      const taskRef = doc(db, 'projects', selectedProjectId, 'tasks', task.id);
+
+      if (task.type !== 'workflow' && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
+        const oldProgress = task.progress || 0;
+        const deltaProgress = progress - oldProgress;
+        const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
+
+        if (unitsDelta !== 0) {
+          const rcRef = doc(db, 'projects', selectedProjectId, 'rateCards', task.rateCardId);
+          const updateData: any = {
+            currentValue: increment(unitsDelta)
+          };
+          if (task.assignedTo) {
+            updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
+          }
+          batch.update(rcRef, updateData);
+        }
+      }
+
+      batch.update(taskRef, {
+        currentValue: nextValue,
+        progress,
+        status,
+        updatedAt: serverTimestamp(),
+        incrementHistory: arrayUnion({
+          id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          amount: appliedAmount,
+          requestedAmount: incrementAmount,
+          previousValue: currentValue,
+          nextValue,
+          indicator: task.indicator || '',
+          formData: Object.keys(formData || {}).length > 0 ? formData : null,
+          comment: comment.trim() || null,
+          createdAt: new Date().toISOString(),
+          createdBy: user?.uid || 'unknown',
+        }),
+      });
+
+      await batch.commit();
+
+      if (task.parentTaskId) {
+        const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+        await updateParentTaskStatus(selectedProjectId, task.parentTaskId);
+      }
+
+      if (requiresCompletionDocument) {
+        toast.info('La tarea llegó a la meta. Adjunta el documento requerido desde el detalle del proyecto.');
+      } else {
+        toast.success(`Incremento registrado: ${nextValue}/${targetValue} ${task.indicator || ''}`.trim());
+      }
+    } catch (error) {
+      console.error("Error incrementing task value:", error);
+      throw error;
     }
   };
 
@@ -319,6 +428,11 @@ export const GanttOverview: React.FC = () => {
       return;
     }
 
+    if (newTaskType === 'quantitative' && Number(newTaskIndicatorValue) <= 0) {
+      toast.warning("Define una meta mayor a cero para la tarea cuantitativa.");
+      return;
+    }
+
     setIsCreating(true);
     try {
       const taskData: any = {
@@ -340,6 +454,8 @@ export const GanttOverview: React.FC = () => {
         rateCardId: newTaskIsRateCard ? newTaskRateCardId : null,
         syncExternal: newTaskIsRateCard ? (rateCards.find(rc => rc.id === newTaskRateCardId)?.syncExternal || false) : false,
         currentValue: 0,
+        incrementForm: newTaskType === 'quantitative' ? incrementForm || null : null,
+        incrementHistory: newTaskType === 'quantitative' ? [] : null,
         displayOrder: tasks.length,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -367,6 +483,8 @@ export const GanttOverview: React.FC = () => {
       setNewTaskAssignedTo('');
       setNewTaskIndicator('');
       setNewTaskIndicatorValue(0);
+      setIncrementForm(undefined);
+      setIsIncrementFormBuilderOpen(false);
       setNewTaskStatus('todo');
       setNewTaskPriority('medium');
       setNewTaskType('quantitative');
@@ -447,6 +565,7 @@ export const GanttOverview: React.FC = () => {
             onSyncTask={() => {}} // Not used in this view for now
             onReorderTasks={handleReorderTasks}
             onUpdateTaskDates={handleUpdateTaskDates}
+            onOpenIncrementTask={setSelectedTaskForIncrement}
             onCreateTask={() => setIsModalOpen(true)}
           />
         </div>
@@ -454,7 +573,7 @@ export const GanttOverview: React.FC = () => {
 
       {/* Task Creation Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between p-6 border-b border-slate-100 sticky top-0 bg-white z-10">
               <div className="flex items-center gap-3">
@@ -467,7 +586,11 @@ export const GanttOverview: React.FC = () => {
                 </div>
               </div>
               <button 
-                onClick={() => setIsModalOpen(false)}
+                onClick={() => {
+                  setIsModalOpen(false);
+                  setIncrementForm(undefined);
+                  setIsIncrementFormBuilderOpen(false);
+                }}
                 className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
               >
                 <X size={20} />
@@ -676,25 +799,55 @@ export const GanttOverview: React.FC = () => {
                 )}
 
                 {newTaskType === 'quantitative' && (
-                  <div className="grid grid-cols-2 gap-4 p-4 bg-slate-50 rounded-xl border border-slate-100">
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Indicador</label>
-                      <input 
-                        type="text" 
-                        value={newTaskIndicator}
-                        onChange={(e) => setNewTaskIndicator(e.target.value)}
-                        className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                        placeholder="Ej. Horas"
-                      />
+                  <div className="space-y-4 p-4 bg-slate-50 rounded-xl border border-slate-100">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Indicador</label>
+                        <input
+                          type="text"
+                          value={newTaskIndicator}
+                          onChange={(e) => setNewTaskIndicator(e.target.value)}
+                          className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                          placeholder="Ej. Horas"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Meta</label>
+                        <input
+                          type="number"
+                          value={newTaskIndicatorValue}
+                          onChange={(e) => setNewTaskIndicatorValue(Number(e.target.value))}
+                          className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                        />
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Meta</label>
-                      <input 
-                        type="number" 
-                        value={newTaskIndicatorValue}
-                        onChange={(e) => setNewTaskIndicatorValue(Number(e.target.value))}
-                        className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                      />
+
+                    <div className="rounded-xl border border-dashed border-indigo-200 bg-white p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                            Formulario de incremento
+                          </label>
+                          <p className="mt-1 text-xs text-slate-500">
+                            Define los datos que se pedirán cada vez que se sume al contador.
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setIsIncrementFormBuilderOpen(true)}
+                          className="h-9 text-xs font-bold border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+                        >
+                          <ClipboardList size={14} className="mr-1" />
+                          {incrementForm ? "Editar formulario" : "Configurar"}
+                        </Button>
+                      </div>
+                      <p className="mt-3 text-xs text-slate-500">
+                        {incrementForm?.fields?.length
+                          ? `${incrementForm.fields.length} campo(s) configurado(s).`
+                          : "Sin formulario personalizado: al incrementar solo se pedirá cantidad y comentario."}
+                      </p>
                     </div>
                   </div>
                 )}
@@ -740,6 +893,8 @@ export const GanttOverview: React.FC = () => {
                   onClick={() => {
                     setIsModalOpen(false);
                     setWorkflowSteps([]);
+                    setIncrementForm(undefined);
+                    setIsIncrementFormBuilderOpen(false);
                   }}
                   className="flex-1 h-12 rounded-xl border-slate-200 text-slate-600 hover:bg-slate-50"
                 >
@@ -756,6 +911,15 @@ export const GanttOverview: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+      {isIncrementFormBuilderOpen && (
+        <WorkflowStepFormBuilderModal
+          isOpen={isIncrementFormBuilderOpen}
+          onClose={() => setIsIncrementFormBuilderOpen(false)}
+          stepName={newTaskTitle || "Incremento de contador"}
+          initialForm={incrementForm}
+          onSave={(form) => setIncrementForm(form)}
+        />
       )}
       {/* Delete Task Modal */}
       {taskToDelete && (
@@ -793,6 +957,12 @@ export const GanttOverview: React.FC = () => {
           </div>
         </div>
       )}
+      <IncrementTaskValueModal
+        isOpen={!!selectedTaskForIncrement}
+        onClose={() => setSelectedTaskForIncrement(null)}
+        task={selectedTaskForIncrement}
+        onSubmit={handleIncrementTaskValue}
+      />
     </div>
   );
 };

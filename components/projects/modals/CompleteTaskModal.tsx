@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { FileText, X, File, Upload, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { db, storage } from '@/lib/backend';
-import { doc, collection, addDoc, writeBatch, serverTimestamp, increment } from '@/lib/supabase/document-store';
+import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, getDoc } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { toast } from 'sonner';
 
@@ -49,33 +49,37 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
       // 3. Update task status and link document with Rate Card update
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
+      const latestTaskSnap = await getDoc(taskRef);
+      const taskForCompletion = latestTaskSnap.exists()
+        ? { id: latestTaskSnap.id, ...latestTaskSnap.data() }
+        : task;
 
-      if (task && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
-        if (task.type !== 'workflow') {
-          const oldProgress = task.progress || 0;
+      if (taskForCompletion && taskForCompletion.isRateCardTask && taskForCompletion.rateCardId && taskForCompletion.unitsToAdd) {
+        if (taskForCompletion.type !== 'workflow') {
+          const oldProgress = taskForCompletion.progress || 0;
           const deltaProgress = 100 - oldProgress;
-          const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
+          const unitsDelta = (deltaProgress / 100) * taskForCompletion.unitsToAdd;
           
           if (unitsDelta !== 0) {
-            const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
+            const rcRef = doc(db, 'projects', projectId, 'rateCards', taskForCompletion.rateCardId);
             const updateData: any = {
               currentValue: increment(unitsDelta)
             };
-            if (task.assignedTo) {
-              updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
+            if (taskForCompletion.assignedTo) {
+              updateData[`userStats.${taskForCompletion.assignedTo}`] = increment(unitsDelta);
             }
             batch.update(rcRef, updateData);
           }
         } else {
           // Workflow: only if completing the whole task
-          if (task.status !== 'completed') {
-            const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
-            const units = task.unitsToAdd || 1;
+          if (taskForCompletion.status !== 'completed') {
+            const rcRef = doc(db, 'projects', projectId, 'rateCards', taskForCompletion.rateCardId);
+            const units = taskForCompletion.unitsToAdd || 1;
             const updateData: any = {
               currentValue: increment(units)
             };
-            if (task.assignedTo) {
-              updateData[`userStats.${task.assignedTo}`] = increment(units);
+            if (taskForCompletion.assignedTo) {
+              updateData[`userStats.${taskForCompletion.assignedTo}`] = increment(units);
             }
             batch.update(rcRef, updateData);
           }
