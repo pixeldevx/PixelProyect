@@ -1631,6 +1631,7 @@ export default function ProjectDetailsPage() {
       <EditTaskStructureModal
         isOpen={!!taskForStructureEdit}
         onClose={() => setTaskForStructureEdit(null)}
+        projectId={projectId}
         task={taskForStructureEdit}
         user={user}
         teamMembers={teamMembers}

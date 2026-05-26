@@ -34,6 +34,7 @@ type SubtaskDraft = {
 interface EditTaskStructureModalProps {
   isOpen: boolean;
   onClose: () => void;
+  projectId: string;
   task: any | null;
   user: any;
   teamMembers: any[];
@@ -91,6 +92,7 @@ const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
 export function EditTaskStructureModal({
   isOpen,
   onClose,
+  projectId,
   task,
   user,
   teamMembers,
@@ -258,6 +260,7 @@ export function EditTaskStructureModal({
     try {
       await addDoc(collection(db, "workflow_templates"), {
         name: templateName.trim(),
+        projectId,
         steps: getCleanWorkflowSteps(),
         createdAt: serverTimestamp(),
         createdBy: user?.uid || "unknown",
@@ -727,7 +730,7 @@ export function EditTaskStructureModal({
                 />
               </div>
               <p className="text-xs text-slate-500">
-                Se guardarán los pasos y formularios configurados actualmente en esta edición.
+                Se guardarán los pasos y formularios configurados actualmente solo para este proyecto.
               </p>
             </div>
             <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, ListTodo, Plus, ClipboardList, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, query, getDocs } from '@/lib/supabase/document-store';
+import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, query, where, getDocs } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { WorkflowStepFormBuilderModal, CustomForm } from '@/components/projects/WorkflowStepFormBuilderModal';
@@ -102,7 +102,10 @@ export function CreateTaskModal({
     if (isOpen) {
       const fetchTemplates = async () => {
         try {
-          const q = query(collection(db, "workflow_templates"));
+          const q = query(
+            collection(db, "workflow_templates"),
+            where("projectId", "==", projectId),
+          );
           const snap = await getDocs(q);
           const templates = snap.docs.map((doc) => ({
             id: doc.id,
@@ -115,7 +118,7 @@ export function CreateTaskModal({
       };
       fetchTemplates();
     }
-  }, [isOpen]);
+  }, [isOpen, projectId]);
 
   if (!isOpen) return null;
 
@@ -156,6 +159,7 @@ export function CreateTaskModal({
     try {
       const newTemplate = {
         name: templateName,
+        projectId,
         steps: workflowSteps,
         createdAt: serverTimestamp(),
         createdBy: user?.uid || "unknown",
@@ -588,7 +592,7 @@ export function CreateTaskModal({
                         defaultValue=""
                       >
                         <option value="" disabled>
-                          Cargar Plantilla...
+                          Plantillas del proyecto...
                         </option>
                         {workflowTemplates.map((t) => (
                           <option key={t.id} value={t.id}>
@@ -1168,6 +1172,9 @@ export function CreateTaskModal({
                   placeholder="Ej. Flujo de Aprobación Estándar"
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                 />
+                <p className="mt-2 text-xs text-slate-500">
+                  Esta plantilla quedará disponible solo dentro de este proyecto.
+                </p>
               </div>
             </div>
             <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
