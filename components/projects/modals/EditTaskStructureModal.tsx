@@ -38,6 +38,7 @@ interface EditTaskStructureModalProps {
   user: any;
   teamMembers: any[];
   subtasks?: any[];
+  canEditTaskStructure?: boolean;
   onCreateSubtask?: (parentTask: any, subtask: SubtaskDraft) => Promise<void> | void;
   onSave: (updates: {
     title: string;
@@ -94,6 +95,7 @@ export function EditTaskStructureModal({
   user,
   teamMembers,
   subtasks = [],
+  canEditTaskStructure = true,
   onCreateSubtask,
   onSave,
 }: EditTaskStructureModalProps) {
@@ -116,7 +118,7 @@ export function EditTaskStructureModal({
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
   const [currentStepIndexForForm, setCurrentStepIndexForForm] = useState<number | null>(null);
 
-  const canEditWorkflow = task?.type === "workflow" || (task?.workflowSteps?.length || 0) > 0;
+  const canEditWorkflow = Boolean(canEditTaskStructure && (task?.type === "workflow" || (task?.workflowSteps?.length || 0) > 0));
   const canManageSubtasks = Boolean(task?.type === "state" && !task?.parentTaskId && onCreateSubtask);
 
   useEffect(() => {
@@ -261,6 +263,11 @@ export function EditTaskStructureModal({
   };
 
   const handleSave = async () => {
+    if (!canEditTaskStructure) {
+      toast.error("No tienes permisos para editar la estructura de esta tarea.");
+      return;
+    }
+
     const cleanTitle = title.trim();
     if (!cleanTitle) {
       toast.warning("El nombre de la tarea no puede estar vacio.");
@@ -296,13 +303,19 @@ export function EditTaskStructureModal({
             <div className="flex items-center gap-2">
               <Settings size={20} className="text-indigo-600" />
               <h2 className="text-xl font-bold text-slate-800">
-                {canEditWorkflow ? "Editar tarea y dependientes" : "Editar tarea"}
+                {canEditWorkflow
+                  ? "Editar tarea y dependientes"
+                  : canEditTaskStructure
+                    ? "Editar tarea"
+                    : "Administrar subtareas"}
               </h2>
             </div>
             <p className="text-sm text-slate-500 mt-1">
               {canEditWorkflow
                 ? "Los cambios se aplicaran a esta tarea y a todas sus subtareas dependientes."
-                : "Ajusta la tarea por estado y administra sus subtareas."}
+                : canEditTaskStructure
+                  ? "Ajusta la tarea por estado y administra sus subtareas."
+                  : "Crea y revisa subtareas sin cambiar la estructura principal."}
             </p>
           </div>
           <button
@@ -315,18 +328,25 @@ export function EditTaskStructureModal({
         </div>
 
         <div className="p-6 overflow-y-auto flex-1 space-y-6">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Nombre de la tarea
-            </label>
-            <input
-              type="text"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              placeholder="Nombre visible de la tarea"
-            />
-          </div>
+          {canEditTaskStructure ? (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Nombre de la tarea
+              </label>
+              <input
+                type="text"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                placeholder="Nombre visible de la tarea"
+              />
+            </div>
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Tarea</p>
+              <p className="mt-1 text-sm font-semibold text-slate-800">{getTaskTitle(task)}</p>
+            </div>
+          )}
 
           {canEditWorkflow ? (
             <div>
@@ -605,22 +625,24 @@ export function EditTaskStructureModal({
 
         <div className="p-6 border-t border-slate-100 flex justify-end gap-3 bg-slate-50 rounded-b-2xl">
           <Button variant="outline" onClick={onClose} disabled={isSaving}>
-            Cancelar
+            {canEditTaskStructure ? "Cancelar" : "Cerrar"}
           </Button>
-          <Button
-            onClick={handleSave}
-            disabled={isSaving}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white min-w-[150px]"
-          >
-            {isSaving ? (
-              <>
-                <Loader2 size={16} className="mr-2 animate-spin" />
-                Guardando...
-              </>
-            ) : (
-              "Guardar cambios"
-            )}
-          </Button>
+          {canEditTaskStructure && (
+            <Button
+              onClick={handleSave}
+              disabled={isSaving}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white min-w-[150px]"
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 size={16} className="mr-2 animate-spin" />
+                  Guardando...
+                </>
+              ) : (
+                "Guardar cambios"
+              )}
+            </Button>
+          )}
         </div>
       </div>
 

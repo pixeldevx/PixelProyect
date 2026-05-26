@@ -11,12 +11,16 @@ import Image from 'next/image';
 interface ProjectTasksTableProps {
   tasks: any[];
   teamMembers: any[];
-  onUpdateTaskProgress: (taskId: string, progress: number, task: any) => void;
-  onUpdateTaskStatus: (taskId: string, status: string, task: any) => void;
+  onUpdateTaskProgress?: (taskId: string, progress: number, task: any) => void;
+  onUpdateTaskStatus?: (taskId: string, status: string, task: any) => void;
   onUpdateTaskPriority?: (taskId: string, priority: string, task: any) => void;
   onUpdateTaskAssignee?: (taskId: string, assigneeId: string, task: any) => void;
-  onDeleteTask: (taskId: string) => void;
+  onDeleteTask?: (taskId: string) => void;
+  canEditTaskDetails?: boolean;
+  canEditTaskStatus?: boolean;
+  canAddSubtasks?: boolean;
   canEditTaskStructure?: boolean;
+  canDeleteTasks?: boolean;
   onEditTaskStructure?: (task: any) => void;
   onAddSubtask?: (task: any) => void;
   onOpenTaskDocs?: (taskId: string, task: any) => void;
@@ -36,18 +40,25 @@ const getTaskDate = (task: any, field: 'start' | 'end') => {
 export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   tasks,
   teamMembers,
-  onUpdateTaskProgress,
   onUpdateTaskStatus,
   onUpdateTaskPriority,
   onUpdateTaskAssignee,
   onDeleteTask,
+  canEditTaskDetails,
+  canEditTaskStatus,
+  canAddSubtasks,
   canEditTaskStructure,
+  canDeleteTasks,
   onEditTaskStructure,
   onAddSubtask,
   onOpenTaskDocs,
   onCreateTask
 }) => {
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
+  const canModifyTaskDetails = Boolean(canEditTaskDetails);
+  const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
+  const canCreateSubtasks = Boolean(canAddSubtasks && onAddSubtask);
+  const canRemoveTasks = Boolean(canDeleteTasks && onDeleteTask);
 
   const toggleExpand = (taskId: string) => {
     setExpandedTasks(prev => ({
@@ -231,7 +242,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
     const subtasks = tasks.filter(t => t.parentTaskId === task.id).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
     const hasSubtasks = subtasks.length > 0 || (task.type === 'workflow' && task.workflowSteps && task.workflowSteps.length > 0);
     const isExpanded = expandedTasks[task.id] !== false;
-    const canAddSubtask = Boolean(onAddSubtask && task.type === 'state' && !task.parentTaskId);
+    const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId);
 
     return (
       <React.Fragment key={task.id}>
@@ -287,7 +298,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
                 </div>
               )}
             </div>
-            {onUpdateTaskAssignee && (
+            {canModifyTaskDetails && onUpdateTaskAssignee && (
               <select 
                 value={task.assignedTo || ''}
                 onChange={(e) => onUpdateTaskAssignee(task.id, e.target.value, task)}
@@ -307,8 +318,9 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
             </div>
             <select
               value={task.status || 'todo'}
-              onChange={(e) => onUpdateTaskStatus(task.id, e.target.value, task)}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+              onChange={(e) => onUpdateTaskStatus?.(task.id, e.target.value, task)}
+              disabled={!canChangeTaskStatus}
+              className={`absolute inset-0 w-full h-full opacity-0 ${canChangeTaskStatus ? 'cursor-pointer' : 'cursor-default'}`}
             >
               <option value="todo">Pendiente</option>
               <option value="in_progress">En curso</option>
@@ -349,7 +361,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
                 );
               })}
             </div>
-            {onUpdateTaskPriority && (
+            {canModifyTaskDetails && onUpdateTaskPriority && (
               <select
                 value={task.priority || 'medium'}
                 onChange={(e) => onUpdateTaskPriority(task.id, e.target.value, task)}
@@ -391,13 +403,15 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
                   <FileText size={16} />
                 </button>
               )}
-              <button
-                onClick={() => onDeleteTask(task.id)}
-                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
-                title="Eliminar"
-              >
-                <Trash2 size={16} />
-              </button>
+              {canRemoveTasks && (
+                <button
+                  onClick={() => onDeleteTask?.(task.id)}
+                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                  title="Eliminar"
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
             </div>
           </td>
         </motion.tr>

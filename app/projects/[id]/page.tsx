@@ -11,6 +11,7 @@ import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, s
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
+import { useRolePermissions } from '@/hooks/useRolePermissions';
 import Link from 'next/link';
 import { ProjectRateCards } from '@/components/projects/ProjectRateCards';
 import { ProjectBudget } from '@/components/projects/ProjectBudget';
@@ -74,13 +75,14 @@ export default function ProjectDetailsPage() {
   const searchParams = useSearchParams();
   const projectId = params.id as string;
   const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
-  
+  const { permissions: rolePermissions } = useRolePermissions(userRole);
+
   const [project, setProject] = useState<any>(null);
   const [documents, setDocuments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [documentSearchQuery, setDocumentSearchQuery] = useState('');
-  
+
   const [documentToDelete, setDocumentToDelete] = useState<{id: string, storagePath: string, name: string} | null>(null);
   const [taskToDelete, setTaskToDelete] = useState<{id: string, title: string} | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -203,7 +205,7 @@ export default function ProjectDetailsPage() {
 
   const executeDeleteDocument = async () => {
     if (!documentToDelete) return;
-    
+
     setIsDeleting(true);
     try {
       // Delete from Storage
@@ -211,10 +213,10 @@ export default function ProjectDetailsPage() {
         const fileRef = ref(storage, documentToDelete.storagePath);
         await deleteObject(fileRef);
       }
-      
+
       // Delete from Supabase
       await deleteDoc(doc(db, 'projects', projectId, 'documents', documentToDelete.id));
-      
+
       setDocumentToDelete(null);
     } catch (error: any) {
       console.error("Error deleting document:", error);
@@ -234,10 +236,17 @@ export default function ProjectDetailsPage() {
   };
 
   const canManageProject = userRole === 'admin' || userRole === 'coordinador' || project?.ownerId === user?.uid;
+  const canCreateTasks = rolePermissions.taskCreate;
+  const canEditTaskStatus = rolePermissions.taskEditStatus;
+  const canEditTaskDetails = rolePermissions.taskEditDetails;
+  const canAddSubtasks = rolePermissions.taskAddSubtasks;
+  const canDeleteTasks = rolePermissions.taskDelete;
   const canEditTaskStructure =
+    rolePermissions.taskEditStructure &&
+    (userRole !== 'org_admin' || !project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds));
+  const canManageDriveRepositories =
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
-  const canManageDriveRepositories = canEditTaskStructure;
 
   const collectDependentTaskIds = (taskId: string) => {
     const taskIds = new Set<string>([taskId]);
@@ -258,6 +267,10 @@ export default function ProjectDetailsPage() {
 
   const handleUpdateTaskProgress = async (taskId: string, newProgress: number, task: any) => {
     if (!task) return;
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para editar los detalles de tareas.');
+      return;
+    }
     try {
       if (newProgress === 100 && task.requiresDocument && !task.linkedDocumentId) {
         setCompletingTaskId(taskId);
@@ -270,7 +283,7 @@ export default function ProjectDetailsPage() {
 
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
-      
+
       // Handle Rate Card update
       if (task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
         if (task.type !== 'workflow') {
@@ -278,7 +291,7 @@ export default function ProjectDetailsPage() {
           const oldProgress = task.progress || 0;
           const deltaProgress = newProgress - oldProgress;
           const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
-          
+
           if (unitsDelta !== 0) {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
             const updateData: any = {
@@ -293,7 +306,7 @@ export default function ProjectDetailsPage() {
           // For workflow, only if completing/reverting the whole task
           const wasCompleted = task.status === 'completed';
           const isCompleted = status === 'completed';
-          
+
           if (wasCompleted !== isCompleted) {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
             const units = task.unitsToAdd || 1;
@@ -310,7 +323,7 @@ export default function ProjectDetailsPage() {
               const updatedSteps = task.workflowSteps.map((step: any) => {
                 const stepWasApproved = step.status === 'listo';
                 const stepIsApproved = isCompleted;
-                
+
                 if (stepWasApproved !== stepIsApproved && step.rateCardId) {
                   const stepRcRef = doc(db, 'projects', projectId, 'rateCards', step.rateCardId);
                   const stepUnits = step.unitsToAdd || 1;
@@ -324,7 +337,7 @@ export default function ProjectDetailsPage() {
                 }
                 return { ...step, status: stepIsApproved ? 'listo' : 'not_started' };
               });
-              
+
               batch.update(taskRef, { workflowSteps: updatedSteps });
             }
           }
@@ -346,6 +359,10 @@ export default function ProjectDetailsPage() {
 
   const handleUpdateTaskValue = async (taskId: string, newValue: number, task: any) => {
     if (!task || !task.indicatorValue) return;
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para editar los detalles de tareas.');
+      return;
+    }
     try {
       const targetValue = Number(task.indicatorValue);
       const safeValue = Math.min(Math.max(Number(newValue) || 0, 0), targetValue);
@@ -364,7 +381,7 @@ export default function ProjectDetailsPage() {
         const oldProgress = task.progress || 0;
         const deltaProgress = progress - oldProgress;
         const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
-        
+
         if (unitsDelta !== 0) {
           const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
           const updateData: any = {
@@ -402,6 +419,11 @@ export default function ProjectDetailsPage() {
     formData: Record<string, any>,
     comment: string
   ) => {
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para registrar incrementos en tareas.');
+      return;
+    }
+
     if (!task || !task.indicatorValue) {
       toast.warning('Esta tarea no tiene una meta válida configurada.');
       return;
@@ -496,13 +518,17 @@ export default function ProjectDetailsPage() {
 
   const handleSyncTaskValue = async (taskId: string, task: any) => {
     if (!task || !task.syncExternal) return;
-    
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para sincronizar tareas.');
+      return;
+    }
+
     try {
       // Simulate external DB sync
       // In a real scenario, this would be a fetch to an API
       const simulatedValue = (task.currentValue || 0) + Math.floor(Math.random() * 5) + 1;
       const finalValue = Math.min(simulatedValue, task.indicatorValue);
-      
+
       await handleUpdateTaskValue(taskId, finalValue, task);
       toast.success(`Sincronizado con éxito. Nuevo valor: ${finalValue} ${task.indicator}`);
     } catch (error: any) {
@@ -513,6 +539,10 @@ export default function ProjectDetailsPage() {
 
   const handleUpdateTaskStatus = async (taskId: string, newStatus: string, task: any) => {
     if (!task) return;
+    if (!canEditTaskStatus) {
+      toast.error('No tienes permisos para cambiar el estado de tareas.');
+      return;
+    }
     try {
       if (task.isParentTask) {
         toast.info("El estado de esta tarea madre se actualiza automáticamente según sus subtareas.");
@@ -546,7 +576,7 @@ export default function ProjectDetailsPage() {
           const oldProgress = task.progress || 0;
           const deltaProgress = progress - oldProgress;
           const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
-          
+
           if (unitsDelta !== 0) {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
             const updateData: any = {
@@ -561,7 +591,7 @@ export default function ProjectDetailsPage() {
           // For workflow, only if completing the whole task
           const wasCompleted = task.status === 'completed';
           const isCompleted = newStatus === 'completed';
-          
+
           if (wasCompleted !== isCompleted) {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
             const units = task.unitsToAdd || 1;
@@ -578,7 +608,7 @@ export default function ProjectDetailsPage() {
               const updatedSteps = task.workflowSteps.map((step: any) => {
                 const stepWasApproved = step.status === 'listo';
                 const stepIsApproved = isCompleted;
-                
+
                 if (stepWasApproved !== stepIsApproved && step.rateCardId) {
                   const stepRcRef = doc(db, 'projects', projectId, 'rateCards', step.rateCardId);
                   const stepUnits = step.unitsToAdd || 1;
@@ -592,7 +622,7 @@ export default function ProjectDetailsPage() {
                 }
                 return { ...step, status: stepIsApproved ? 'listo' : 'not_started' };
               });
-              
+
               batch.update(taskRef, { workflowSteps: updatedSteps });
             }
           }
@@ -620,6 +650,11 @@ export default function ProjectDetailsPage() {
 
 
   const handleDeleteTask = (taskId: string) => {
+    if (!canDeleteTasks) {
+      toast.error('No tienes permisos para eliminar tareas.');
+      return;
+    }
+
     const task = tasks.find(t => t.id === taskId);
     if (task) {
       setTaskToDelete({ id: taskId, title: getTaskTitle(task) });
@@ -650,7 +685,7 @@ export default function ProjectDetailsPage() {
             batch.update(rcRef, updateData);
           }
         }
-        
+
         // Revert step-level rate cards
         if (t.type === 'workflow' && t.workflowSteps) {
           t.workflowSteps.forEach((step: any) => {
@@ -701,10 +736,15 @@ export default function ProjectDetailsPage() {
   };
 
   const handleReorderTasks = async (newTasks: any[]) => {
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para reordenar tareas.');
+      return;
+    }
+
     try {
       // Update local state first for immediate feedback
       setTasks(newTasks);
-      
+
       // Update Supabase for each task that changed its order
       const promises = newTasks.map((task) => {
         return updateDoc(doc(db, 'projects', projectId, 'tasks', task.id), {
@@ -712,7 +752,7 @@ export default function ProjectDetailsPage() {
           updatedAt: serverTimestamp()
         });
       });
-      
+
       await Promise.all(promises);
     } catch (error: any) {
       console.error("Error reordering tasks:", error);
@@ -721,6 +761,10 @@ export default function ProjectDetailsPage() {
 
   const handleUpdateTaskDates = async (taskId: string, start: Date, end: Date, task: any) => {
     if (!task) return;
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para editar fechas de tareas.');
+      return;
+    }
     try {
       await updateDoc(doc(db, 'projects', projectId, 'tasks', taskId), {
         startDate: start,
@@ -737,6 +781,10 @@ export default function ProjectDetailsPage() {
 
   const handleUpdateTaskTitle = async (taskId: string, title: string, task: any) => {
     if (!task) return;
+    if (!canEditTaskDetails && !canEditTaskStructure) {
+      toast.error('No tienes permisos para editar el nombre de tareas.');
+      return;
+    }
     const cleanTitle = title.trim();
     if (!cleanTitle) {
       toast.warning('El nombre de la tarea no puede estar vacío.');
@@ -763,6 +811,40 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  const handleUpdateTaskPriority = async (taskId: string, priority: string, task: any) => {
+    if (!task) return;
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para editar la prioridad de tareas.');
+      return;
+    }
+
+    try {
+      const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
+      await updateDoc(taskRef, { priority, updatedAt: serverTimestamp() });
+      toast.success('Prioridad actualizada');
+    } catch (error) {
+      console.error('Error updating task priority:', error);
+      toast.error('Error al actualizar la prioridad');
+    }
+  };
+
+  const handleUpdateTaskAssignee = async (taskId: string, assignedTo: string, task: any) => {
+    if (!task) return;
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para editar el responsable de tareas.');
+      return;
+    }
+
+    try {
+      const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
+      await updateDoc(taskRef, { assignedTo, updatedAt: serverTimestamp() });
+      toast.success('Asignado actualizado');
+    } catch (error) {
+      console.error('Error updating task assignee:', error);
+      toast.error('Error al actualizar el asignado');
+    }
+  };
+
   const handleCreateSubtask = async (
     parentTask: any,
     subtask: {
@@ -776,6 +858,10 @@ export default function ProjectDetailsPage() {
     }
   ) => {
     if (!user || !parentTask) return;
+    if (!canAddSubtasks) {
+      toast.error('No tienes permisos para crear subtareas.');
+      return;
+    }
 
     const cleanTitle = subtask.title.trim();
     if (!cleanTitle) {
@@ -963,10 +1049,10 @@ export default function ProjectDetailsPage() {
       const now = new Date().getTime();
       return { min: now, max: now, totalDays: 1 };
     }
-    
+
     let minT = Infinity;
     let maxT = -Infinity;
-    
+
     tasks.forEach(t => {
       if (t.startDate) {
         const start = t.startDate.toDate().getTime();
@@ -977,19 +1063,19 @@ export default function ProjectDetailsPage() {
         if (end > maxT) maxT = end;
       }
     });
-    
+
     if (minT === Infinity || maxT === -Infinity) {
       const now = new Date().getTime();
       return { min: now, max: now, totalDays: 1 };
     }
-    
+
     // Add some padding (3 days before and after)
     const padding = 3 * 24 * 60 * 60 * 1000;
     minT -= padding;
     maxT += padding;
-    
+
     const totalDays = Math.max(1, (maxT - minT) / (1000 * 60 * 60 * 24));
-    
+
     return { min: minT, max: maxT, totalDays };
   };
 
@@ -1007,8 +1093,8 @@ export default function ProjectDetailsPage() {
             <p className="text-slate-500 mt-1 max-w-3xl">{project.description || 'Sin descripción'}</p>
           </div>
           <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-            project.status === 'active' ? 'bg-amber-100 text-amber-800' : 
-            project.status === 'completed' ? 'bg-emerald-100 text-emerald-800' : 
+            project.status === 'active' ? 'bg-amber-100 text-amber-800' :
+            project.status === 'completed' ? 'bg-emerald-100 text-emerald-800' :
             'bg-slate-100 text-slate-800'
           }`}>
             {project.status === 'active' ? 'Activo' : project.status === 'completed' ? 'Completado' : 'En Pausa'}
@@ -1153,7 +1239,7 @@ export default function ProjectDetailsPage() {
                 className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
               />
             </div>
-            <Button 
+            <Button
               onClick={() => setIsUploadModalOpen(true)}
               className="bg-indigo-600 hover:bg-indigo-700 text-white w-full sm:w-auto"
             >
@@ -1173,10 +1259,10 @@ export default function ProjectDetailsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="p-4">
-              <ProjectDocumentsTree 
-                documents={documents} 
-                tasks={tasks} 
-                onDeleteDocument={confirmDeleteDocument} 
+              <ProjectDocumentsTree
+                documents={documents}
+                tasks={tasks}
+                onDeleteDocument={confirmDeleteDocument}
                 searchQuery={documentSearchQuery}
               />
             </CardContent>
@@ -1204,38 +1290,45 @@ export default function ProjectDetailsPage() {
               </h2>
               <p className="text-sm text-slate-500 mt-1">Seguimiento y progreso de las tareas del proyecto.</p>
             </div>
-            <Button 
-              onClick={() => setIsCreateTaskModalOpen(true)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white"
-            >
-              <Plus size={16} className="mr-2" />
-              Nueva Tarea
-            </Button>
+            {canCreateTasks && (
+              <Button
+                onClick={() => setIsCreateTaskModalOpen(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                <Plus size={16} className="mr-2" />
+                Nueva Tarea
+              </Button>
+            )}
           </div>
 
           {/* Tasks List / Gantt */}
           <Card className="border-slate-200 shadow-sm">
             <CardContent className="p-0">
-              <ProjectGantt 
+              <ProjectGantt
                 tasks={tasks}
                 teamMembers={teamMembers}
-                onUpdateTaskProgress={handleUpdateTaskProgress}
-                onUpdateTaskValue={handleUpdateTaskValue}
-                onUpdateTaskStatus={handleUpdateTaskStatus}
-                onDeleteTask={handleDeleteTask}
-                onSyncTask={handleSyncTaskValue}
-                onReorderTasks={handleReorderTasks}
-                onUpdateTaskDates={handleUpdateTaskDates}
-                onUpdateTaskTitle={handleUpdateTaskTitle}
-                onOpenIncrementTask={setSelectedTaskForIncrement}
+                onUpdateTaskProgress={canEditTaskDetails ? handleUpdateTaskProgress : undefined}
+                onUpdateTaskValue={canEditTaskDetails ? handleUpdateTaskValue : undefined}
+                onUpdateTaskStatus={canEditTaskStatus ? handleUpdateTaskStatus : undefined}
+                onUpdateTaskPriority={canEditTaskDetails ? handleUpdateTaskPriority : undefined}
+                onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
+                onSyncTask={canEditTaskDetails ? handleSyncTaskValue : undefined}
+                onReorderTasks={canEditTaskDetails ? handleReorderTasks : undefined}
+                onUpdateTaskDates={canEditTaskDetails ? handleUpdateTaskDates : undefined}
+                onUpdateTaskTitle={canEditTaskDetails ? handleUpdateTaskTitle : undefined}
+                onOpenIncrementTask={canEditTaskDetails ? setSelectedTaskForIncrement : undefined}
+                canEditTaskDetails={canEditTaskDetails}
+                canEditTaskStatus={canEditTaskStatus}
+                canAddSubtasks={canAddSubtasks}
                 canEditTaskStructure={canEditTaskStructure}
+                canDeleteTasks={canDeleteTasks}
                 onEditTaskStructure={setTaskForStructureEdit}
-                onAddSubtask={setTaskForStructureEdit}
+                onAddSubtask={canAddSubtasks ? setTaskForStructureEdit : undefined}
                 onOpenTaskDocs={(taskId, task) => {
                   setSelectedTaskForDocs(task);
                   setIsTaskDocsModalOpen(true);
                 }}
-                onCreateTask={() => setIsCreateTaskModalOpen(true)}
+                onCreateTask={canCreateTasks ? () => setIsCreateTaskModalOpen(true) : undefined}
               />
             </CardContent>
           </Card>
@@ -1252,13 +1345,15 @@ export default function ProjectDetailsPage() {
               </h2>
               <p className="text-sm text-slate-500 mt-1">Gestión detallada de tareas del proyecto.</p>
             </div>
-            <Button 
-              onClick={() => setIsCreateTaskModalOpen(true)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white"
-            >
-              <Plus size={16} className="mr-2" />
-              Nueva Tarea
-            </Button>
+            {canCreateTasks && (
+              <Button
+                onClick={() => setIsCreateTaskModalOpen(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                <Plus size={16} className="mr-2" />
+                Nueva Tarea
+              </Button>
+            )}
           </div>
 
           <Card className="border-slate-200 shadow-sm">
@@ -1266,37 +1361,23 @@ export default function ProjectDetailsPage() {
               <ProjectTasksTable
                 tasks={tasks}
                 teamMembers={teamMembers}
-                onUpdateTaskProgress={handleUpdateTaskProgress}
-                onUpdateTaskStatus={handleUpdateTaskStatus}
-                onUpdateTaskPriority={async (taskId, priority, task) => {
-                  try {
-                    const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
-                    await updateDoc(taskRef, { priority, updatedAt: serverTimestamp() });
-                    toast.success('Prioridad actualizada');
-                  } catch (error) {
-                    console.error('Error updating task priority:', error);
-                    toast.error('Error al actualizar la prioridad');
-                  }
-                }}
-                onUpdateTaskAssignee={async (taskId, assignedTo, task) => {
-                  try {
-                    const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
-                    await updateDoc(taskRef, { assignedTo, updatedAt: serverTimestamp() });
-                    toast.success('Asignado actualizado');
-                  } catch (error) {
-                    console.error('Error updating task assignee:', error);
-                    toast.error('Error al actualizar el asignado');
-                  }
-                }}
-                onDeleteTask={(taskId) => setTaskToDelete({ id: taskId, title: getTaskTitle(tasks.find(t => t.id === taskId)) })}
+                onUpdateTaskProgress={canEditTaskDetails ? handleUpdateTaskProgress : undefined}
+                onUpdateTaskStatus={canEditTaskStatus ? handleUpdateTaskStatus : undefined}
+                onUpdateTaskPriority={canEditTaskDetails ? handleUpdateTaskPriority : undefined}
+                onUpdateTaskAssignee={canEditTaskDetails ? handleUpdateTaskAssignee : undefined}
+                onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
+                canEditTaskDetails={canEditTaskDetails}
+                canEditTaskStatus={canEditTaskStatus}
+                canAddSubtasks={canAddSubtasks}
                 canEditTaskStructure={canEditTaskStructure}
+                canDeleteTasks={canDeleteTasks}
                 onEditTaskStructure={setTaskForStructureEdit}
-                onAddSubtask={setTaskForStructureEdit}
+                onAddSubtask={canAddSubtasks ? setTaskForStructureEdit : undefined}
                 onOpenTaskDocs={(taskId, task) => {
                   setSelectedTaskForDocs(task);
                   setIsTaskDocsModalOpen(true);
                 }}
-                onCreateTask={() => setIsCreateTaskModalOpen(true)}
+                onCreateTask={canCreateTasks ? () => setIsCreateTaskModalOpen(true) : undefined}
               />
             </CardContent>
           </Card>
@@ -1341,8 +1422,8 @@ export default function ProjectDetailsPage() {
 
       {activeTab === 'billing' && (
         <div className="mt-6">
-          <ProjectBilling 
-            projectId={projectId} 
+          <ProjectBilling
+            projectId={projectId}
             rateCards={rateCards}
             tasks={tasks}
           />
@@ -1393,7 +1474,7 @@ export default function ProjectDetailsPage() {
                 {project.assignedTeamMembers.map((memberId: string) => {
                   const member = teamMembers.find(m => m.id === memberId);
                   if (!member) return null;
-                  
+
                   return (
                     <div key={memberId} className="flex items-center justify-between p-3 border border-slate-200 rounded-lg bg-white">
                       <div className="flex items-center gap-3">
@@ -1410,7 +1491,7 @@ export default function ProjectDetailsPage() {
                         </div>
                       </div>
                       {canManageProject && (
-                        <button 
+                        <button
                           onClick={() => handleRemoveMember(memberId)}
                           className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
                           title="Remover"
@@ -1437,22 +1518,22 @@ export default function ProjectDetailsPage() {
               </div>
               <h3 className="text-lg font-semibold text-slate-900">Eliminar Documento</h3>
             </div>
-            
+
             <p className="text-slate-600 mb-6">
-              ¿Estás seguro de que deseas eliminar el documento <strong className="text-slate-900">&quot;{documentToDelete.name}&quot;</strong>? 
+              ¿Estás seguro de que deseas eliminar el documento <strong className="text-slate-900">&quot;{documentToDelete.name}&quot;</strong>?
               Esta acción no se puede deshacer y el archivo será borrado permanentemente.
             </p>
-            
+
             <div className="flex justify-end gap-3">
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 onClick={() => setDocumentToDelete(null)}
                 disabled={isDeleting}
                 className="border-slate-200 text-slate-700 hover:bg-slate-50"
               >
                 Cancelar
               </Button>
-              <Button 
+              <Button
                 onClick={executeDeleteDocument}
                 disabled={isDeleting}
                 className="bg-red-600 hover:bg-red-700 text-white"
@@ -1474,22 +1555,22 @@ export default function ProjectDetailsPage() {
               </div>
               <h3 className="text-lg font-semibold text-slate-900">Eliminar Tarea</h3>
             </div>
-            
+
             <p className="text-slate-600 mb-6">
-              ¿Estás seguro de que deseas eliminar la tarea <strong className="text-slate-900">&quot;{taskToDelete.title}&quot;</strong>? 
+              ¿Estás seguro de que deseas eliminar la tarea <strong className="text-slate-900">&quot;{taskToDelete.title}&quot;</strong>?
               Esta acción no se puede deshacer.
             </p>
-            
+
             <div className="flex justify-end gap-3">
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 onClick={() => setTaskToDelete(null)}
                 disabled={isDeleting}
                 className="border-slate-200 text-slate-700 hover:bg-slate-50"
               >
                 Cancelar
               </Button>
-              <Button 
+              <Button
                 onClick={executeDeleteTask}
                 disabled={isDeleting}
                 className="bg-red-600 hover:bg-red-700 text-white"
@@ -1535,16 +1616,18 @@ export default function ProjectDetailsPage() {
       />
 
       {/* Create Task Modal */}
-      <CreateTaskModal
-        isOpen={isCreateTaskModalOpen}
-        onClose={() => setIsCreateTaskModalOpen(false)}
-        projectId={projectId}
-        project={project}
-        user={user}
-        teamMembers={teamMembers}
-        rateCards={rateCards}
-        tasksLength={tasks.length}
-      />
+      {canCreateTasks && (
+        <CreateTaskModal
+          isOpen={isCreateTaskModalOpen}
+          onClose={() => setIsCreateTaskModalOpen(false)}
+          projectId={projectId}
+          project={project}
+          user={user}
+          teamMembers={teamMembers}
+          rateCards={rateCards}
+          tasksLength={tasks.length}
+        />
+      )}
       <EditTaskStructureModal
         isOpen={!!taskForStructureEdit}
         onClose={() => setTaskForStructureEdit(null)}
@@ -1552,7 +1635,8 @@ export default function ProjectDetailsPage() {
         user={user}
         teamMembers={teamMembers}
         subtasks={taskForStructureEdit ? tasks.filter((task) => task.parentTaskId === taskForStructureEdit.id) : []}
-        onCreateSubtask={handleCreateSubtask}
+        canEditTaskStructure={canEditTaskStructure}
+        onCreateSubtask={canAddSubtasks ? handleCreateSubtask : undefined}
         onSave={async (updates) => {
           if (!taskForStructureEdit) return;
           await handleUpdateTaskStructure(taskForStructureEdit, updates);

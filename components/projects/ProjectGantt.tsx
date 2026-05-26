@@ -13,16 +13,21 @@ import { es } from 'date-fns/locale';
 interface ProjectGanttProps {
   tasks: any[];
   teamMembers: any[];
-  onUpdateTaskProgress: (taskId: string, progress: number, task: any) => void;
-  onUpdateTaskValue: (taskId: string, value: number, task: any) => void;
-  onUpdateTaskStatus: (taskId: string, status: string, task: any) => void;
-  onDeleteTask: (taskId: string) => void;
-  onSyncTask: (taskId: string, task: any) => void;
-  onReorderTasks: (newTasks: any[]) => void;
-  onUpdateTaskDates: (taskId: string, start: Date, end: Date, task: any) => void;
+  onUpdateTaskProgress?: (taskId: string, progress: number, task: any) => void;
+  onUpdateTaskValue?: (taskId: string, value: number, task: any) => void;
+  onUpdateTaskStatus?: (taskId: string, status: string, task: any) => void;
+  onUpdateTaskPriority?: (taskId: string, priority: string, task: any) => void;
+  onDeleteTask?: (taskId: string) => void;
+  onSyncTask?: (taskId: string, task: any) => void;
+  onReorderTasks?: (newTasks: any[]) => void;
+  onUpdateTaskDates?: (taskId: string, start: Date, end: Date, task: any) => void;
   onUpdateTaskTitle?: (taskId: string, title: string, task: any) => void | Promise<void>;
   onOpenIncrementTask?: (task: any) => void;
+  canEditTaskDetails?: boolean;
+  canEditTaskStatus?: boolean;
+  canAddSubtasks?: boolean;
   canEditTaskStructure?: boolean;
+  canDeleteTasks?: boolean;
   onEditTaskStructure?: (task: any) => void;
   onAddSubtask?: (task: any) => void;
   onOpenTaskDocs?: (taskId: string, task: any) => void;
@@ -80,13 +85,18 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onUpdateTaskProgress,
   onUpdateTaskValue,
   onUpdateTaskStatus,
+  onUpdateTaskPriority,
   onDeleteTask,
   onSyncTask,
   onReorderTasks,
   onUpdateTaskDates,
   onUpdateTaskTitle,
   onOpenIncrementTask,
+  canEditTaskDetails,
+  canEditTaskStatus,
+  canAddSubtasks,
   canEditTaskStructure,
+  canDeleteTasks,
   onEditTaskStructure,
   onAddSubtask,
   onOpenTaskDocs,
@@ -97,6 +107,10 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [isTimelineCollapsed, setIsTimelineCollapsed] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTaskTitle, setEditingTaskTitle] = useState("");
+  const canModifyTaskDetails = Boolean(canEditTaskDetails);
+  const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
+  const canCreateSubtasks = Boolean(canAddSubtasks && onAddSubtask);
+  const canRemoveTasks = Boolean(canDeleteTasks && onDeleteTask);
 
   const toggleParent = (parentId: string) => {
     setExpandedParents(prev => ({
@@ -106,7 +120,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   };
 
   const startEditingTitle = (task: any) => {
-    if (!onUpdateTaskTitle || task.isWorkflowStep) return;
+    if (!canModifyTaskDetails || !onUpdateTaskTitle || task.isWorkflowStep) return;
     setEditingTaskId(task.id);
     setEditingTaskTitle(getTaskTitle(task));
   };
@@ -140,12 +154,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const visibleTasks = useMemo(() => {
     const parentsAndNormal = sortedTasks.filter(t => !t.parentTaskId);
     const result: any[] = [];
-    
+
     parentsAndNormal.forEach(task => {
       result.push(task);
       const subTasks = sortChildTasks(sortedTasks.filter(t => t.parentTaskId === task.id));
       if (subTasks.length > 0 && expandedParents[task.id]) {
-        
+
         subTasks.forEach(subTask => {
           result.push(subTask);
           // Generate visual sub-tasks for workflow steps
@@ -192,14 +206,14 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         });
       }
     });
-    
+
     return result;
   }, [sortedTasks, expandedParents]);
 
   // Map Supabase tasks to gantt-task-react tasks
   const ganttTasks: Task[] = useMemo(() => {
     if (visibleTasks.length === 0) return [];
-    
+
     return visibleTasks.map((t, index) => {
       const hasChildren = sortedTasks.some(task => task.parentTaskId === t.id);
 
@@ -223,17 +237,18 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   }, [visibleTasks, sortedTasks]);
 
   const handleDragEnd = (result: DropResult) => {
+    if (!canModifyTaskDetails || !onReorderTasks) return;
     if (!result.destination) return;
-    
+
     // We only allow dragging of top-level tasks (parents and normal)
     const parentsAndNormal = sortedTasks.filter(t => !t.parentTaskId);
     const draggedTask = visibleTasks[result.source.index];
-    
+
     if (!draggedTask || draggedTask.parentTaskId) return;
-    
+
     const sourceIndex = parentsAndNormal.findIndex(t => t.id === draggedTask.id);
     const destinationTask = visibleTasks[result.destination.index];
-    
+
     let destIndex = parentsAndNormal.length;
     if (destinationTask) {
       destIndex = parentsAndNormal.findIndex(t => t.id === destinationTask.id);
@@ -242,16 +257,16 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         destIndex = parentsAndNormal.findIndex(t => t.id === destinationTask.parentTaskId) + 1;
       }
     }
-    
+
     const [reorderedItem] = parentsAndNormal.splice(sourceIndex, 1);
     parentsAndNormal.splice(destIndex, 0, reorderedItem);
-    
+
     // Create a map of updated display orders
     const orderMap = new Map<string, number>();
     parentsAndNormal.forEach((item, index) => {
       orderMap.set(item.id, index);
     });
-    
+
     // Update displayOrder for all items, keeping subtasks intact
     const updatedItems = tasks.map(item => {
       if (orderMap.has(item.id)) {
@@ -259,22 +274,22 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       }
       return item;
     });
-    
+
     onReorderTasks(updatedItems);
   };
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'completed': 
+      case 'completed':
       case 'listo': return 'bg-[#00c875] text-white';
-      case 'in_progress': 
+      case 'in_progress':
       case 'en_curso': return 'bg-[#fdab3d] text-white';
-      case 'stuck': 
+      case 'stuck':
       case 'detenido': return 'bg-[#e2445c] text-white';
       case 'devuelto': return 'bg-[#ff7575] text-white';
       case 'reproceso': return 'bg-[#f59e0b] text-white';
       case 'todo':
-      case 'pending': 
+      case 'pending':
       case 'not_started': return 'bg-[#c4c4c4] text-white';
       default: return 'bg-[#c4c4c4] text-white';
     }
@@ -326,19 +341,19 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           )}
           {!isTimelineCollapsed && (
             <div className="flex bg-slate-100 p-1 rounded-md">
-              <button 
+              <button
                 onClick={() => setViewMode(ViewMode.Day)}
                 className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Day ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
               >
                 DÍA
               </button>
-              <button 
+              <button
                 onClick={() => setViewMode(ViewMode.Week)}
                 className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Week ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
               >
                 SEMANA
               </button>
-              <button 
+              <button
                 onClick={() => setViewMode(ViewMode.Month)}
                 className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Month ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
               >
@@ -379,12 +394,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             <div className="w-32 px-2 text-center">Cronograma</div>
             <div className="w-28 px-2 text-center">Progreso / Valor</div>
           </div>
-          
+
           <DragDropContext onDragEnd={handleDragEnd}>
             <Droppable droppableId="tasks">
               {(provided) => (
-                <div 
-                  {...provided.droppableProps} 
+                <div
+                  {...provided.droppableProps}
                   ref={provided.innerRef}
                   className="flex-1 overflow-y-auto max-h-[600px] scrollbar-thin scrollbar-thumb-slate-200"
                 >
@@ -400,10 +415,10 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const isExpanded = expandedParents[task.id];
                     const isEditingTitle = editingTaskId === task.id;
                     const taskPriority = getTaskPriority(task);
-                    const canAddSubtask = Boolean(onAddSubtask && task.type === 'state' && !task.parentTaskId && !task.isWorkflowStep);
-                    
+                    const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId && !task.isWorkflowStep);
+
                     return (
-                      <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={isSubTask || isEditingTitle}>
+                      <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={!canModifyTaskDetails || isSubTask || isEditingTitle}>
                         {(provided, snapshot) => (
                           <div
                             ref={provided.innerRef}
@@ -412,8 +427,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                           >
                             {/* Monday-style colored left bar */}
                             <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${
-                              task.status === 'completed' ? 'bg-[#00c875]' : 
-                              task.status === 'in_progress' ? 'bg-[#fdab3d]' : 
+                              task.status === 'completed' ? 'bg-[#00c875]' :
+                              task.status === 'in_progress' ? 'bg-[#fdab3d]' :
                               task.status === 'stuck' ? 'bg-[#e2445c]' :
                               'bg-slate-300'
                             }`} />
@@ -467,7 +482,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   >
                                     {taskDisplayTitle}
                                   </button>
-                                  {onUpdateTaskTitle && !task.isWorkflowStep && (
+                                  {canModifyTaskDetails && onUpdateTaskTitle && !task.isWorkflowStep && (
                                     <button
                                       type="button"
                                       onClick={(event) => {
@@ -516,12 +531,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 <div className="flex items-center gap-1.5">
                                   <div className="w-7 h-7 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center overflow-hidden shadow-sm" title={assignedMember.name}>
                                     {assignedMember.photoURL ? (
-                                      <Image 
-                                        src={assignedMember.photoURL} 
-                                        alt={assignedMember.name} 
+                                      <Image
+                                        src={assignedMember.photoURL}
+                                        alt={assignedMember.name}
                                         width={28}
                                         height={28}
-                                        className="w-full h-full object-cover" 
+                                        className="w-full h-full object-cover"
                                         referrerPolicy="no-referrer"
                                       />
                                     ) : (
@@ -547,9 +562,10 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                     const parentTask = task.originalTask;
                                     const updatedSteps = [...parentTask.workflowSteps];
                                     updatedSteps[task.stepIndex].status = newStatus;
-                                    onUpdateTaskStatus(parentTask.id, parentTask.status, { ...parentTask, workflowSteps: updatedSteps });
+                                    onUpdateTaskStatus?.(parentTask.id, parentTask.status, { ...parentTask, workflowSteps: updatedSteps });
                                   }}
-                                  className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 cursor-pointer text-center focus:outline-none transition-all hover:brightness-105 ${getStatusColor(task.status)}`}
+                                  disabled={!canChangeTaskStatus}
+                                  className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 text-center focus:outline-none transition-all hover:brightness-105 ${canChangeTaskStatus ? 'cursor-pointer' : 'cursor-default'} ${getStatusColor(task.status)}`}
                                 >
                                   <option value="not_started" className="bg-white text-slate-700" disabled>NO INICIADO</option>
                                   <option value="en_curso" className="bg-white text-slate-700" disabled>EN CURSO</option>
@@ -563,8 +579,9 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               ) : (
                                 <select
                                   value={task.status}
-                                  onChange={(e) => onUpdateTaskStatus(task.id, e.target.value, task)}
-                                  className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 cursor-pointer text-center focus:outline-none transition-all hover:brightness-105 ${getStatusColor(task.status)}`}
+                                  onChange={(e) => onUpdateTaskStatus?.(task.id, e.target.value, task)}
+                                  disabled={!canChangeTaskStatus}
+                                  className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 text-center focus:outline-none transition-all hover:brightness-105 ${canChangeTaskStatus ? 'cursor-pointer' : 'cursor-default'} ${getStatusColor(task.status)}`}
                                 >
                                   <option value="todo" className="bg-white text-slate-700">PENDIENTE</option>
                                   <option value="in_progress" className="bg-white text-slate-700">TRABAJANDO</option>
@@ -576,27 +593,33 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             </div>
 
                             <div className="w-24 h-full relative group/priority">
-                              <select
-                                value={taskPriority}
-                                onChange={(e) => onUpdateTaskStatus(task.id, task.status, { ...task, priority: e.target.value })}
-                                className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 cursor-pointer text-center focus:outline-none transition-all hover:brightness-105 ${getPriorityColor(taskPriority)}`}
-                              >
-                                <option value="high" className="bg-white text-slate-700">ALTA</option>
-                                <option value="medium" className="bg-white text-slate-700">MEDIA</option>
-                                <option value="low" className="bg-white text-slate-700">BAJA</option>
-                              </select>
+                              {canModifyTaskDetails && onUpdateTaskPriority ? (
+                                <select
+                                  value={taskPriority}
+                                  onChange={(e) => onUpdateTaskPriority(task.id, e.target.value, task)}
+                                  className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 cursor-pointer text-center focus:outline-none transition-all hover:brightness-105 ${getPriorityColor(taskPriority)}`}
+                                >
+                                  <option value="high" className="bg-white text-slate-700">ALTA</option>
+                                  <option value="medium" className="bg-white text-slate-700">MEDIA</option>
+                                  <option value="low" className="bg-white text-slate-700">BAJA</option>
+                                </select>
+                              ) : (
+                                <div className={`flex h-full w-full items-center justify-center text-[10px] font-bold tracking-tight ${getPriorityColor(taskPriority)}`}>
+                                  {taskPriority === 'high' ? 'ALTA' : taskPriority === 'low' ? 'BAJA' : 'MEDIA'}
+                                </div>
+                              )}
                               <div className="absolute inset-0 pointer-events-none opacity-0 group-hover/priority:opacity-100 bg-black/5 transition-opacity" />
                             </div>
 
                             <div className="w-32 px-2">
                               <div className={`rounded-md h-7 flex items-center justify-center relative overflow-hidden group/timeline cursor-pointer border ${
-                                task.status === 'completed' ? 'bg-[#00c875]/10 border-[#00c875]/20' : 
-                                task.status === 'in_progress' ? 'bg-[#fdab3d]/10 border-[#fdab3d]/20' : 
+                                task.status === 'completed' ? 'bg-[#00c875]/10 border-[#00c875]/20' :
+                                task.status === 'in_progress' ? 'bg-[#fdab3d]/10 border-[#fdab3d]/20' :
                                 'bg-slate-50 border-slate-200'
                               }`}>
                                 <div className={`text-[9px] font-bold z-10 flex items-center gap-1 ${
-                                  task.status === 'completed' ? 'text-[#00c875]' : 
-                                  task.status === 'in_progress' ? 'text-[#fdab3d]' : 
+                                  task.status === 'completed' ? 'text-[#00c875]' :
+                                  task.status === 'in_progress' ? 'text-[#fdab3d]' :
                                   'text-slate-500'
                                 }`}>
                                   <Calendar size={10} />
@@ -623,27 +646,27 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 )}
                               </div>
                               <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden shadow-inner">
-                                <div 
+                                <div
                                   className={`h-full transition-all duration-700 ease-out ${
-                                    task.status === 'completed' ? 'bg-[#00c875]' : 
+                                    task.status === 'completed' ? 'bg-[#00c875]' :
                                     task.status === 'stuck' ? 'bg-[#e2445c]' :
                                     'bg-indigo-500'
-                                  }`} 
+                                  }`}
                                   style={{ width: `${task.progress || 0}%` }}
                                 />
                               </div>
                             </div>
 
                             <div className="absolute right-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-                              {isQuantitative && task.type !== 'workflow' && (
-                                <button 
+                              {canModifyTaskDetails && isQuantitative && task.type !== 'workflow' && (
+                                <button
                                   onClick={() => {
                                     if (onOpenIncrementTask) {
                                       onOpenIncrementTask(task);
                                       return;
                                     }
                                     const val = prompt('Ingresar nuevo valor actual:', task.currentValue || 0);
-                                    if (val !== null) onUpdateTaskValue(task.id, Number(val), task);
+                                    if (val !== null) onUpdateTaskValue?.(task.id, Number(val), task);
                                   }}
                                   className="p-1.5 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
                                   title="Registrar incremento"
@@ -651,8 +674,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   <Plus size={12} />
                                 </button>
                               )}
-                              {task.syncExternal && (
-                                <button 
+                              {canModifyTaskDetails && task.syncExternal && onSyncTask && (
+                                <button
                                   onClick={() => onSyncTask(task.id, task)}
                                   className="p-1.5 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
                                   title="Sincronizar"
@@ -679,7 +702,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 </button>
                               )}
                               {onOpenTaskDocs && (
-                                <button 
+                                <button
                                   onClick={() => onOpenTaskDocs(task.id, task)}
                                   className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
                                   title="Documentación / Detalles"
@@ -687,13 +710,15 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   <FileText size={12} />
                                 </button>
                               )}
-                              <button 
-                                onClick={() => onDeleteTask(task.id)}
-                                className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-                                title="Eliminar"
-                              >
-                                <Trash2 size={12} />
-                              </button>
+                              {canRemoveTasks && (
+                                <button
+                                  onClick={() => onDeleteTask?.(task.id)}
+                                  className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                                  title="Eliminar"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              )}
                             </div>
                           </div>
                         )}
@@ -723,14 +748,14 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 fontSize="11px"
                 fontFamily="Inter, sans-serif"
                 todayColor="rgba(99, 102, 241, 0.03)"
-                onProgressChange={(task) => {
+                onProgressChange={canModifyTaskDetails && onUpdateTaskProgress ? (task) => {
                   const originalTask = tasks.find(t => t.id === task.id);
                   onUpdateTaskProgress(task.id, task.progress, originalTask);
-                }}
-                onDateChange={(task) => {
+                } : undefined}
+                onDateChange={canModifyTaskDetails && onUpdateTaskDates ? (task) => {
                   const originalTask = tasks.find(t => t.id === task.id);
                   onUpdateTaskDates(task.id, task.start, task.end, originalTask);
-                }}
+                } : undefined}
               />
             </div>
           </div>

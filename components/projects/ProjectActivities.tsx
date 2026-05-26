@@ -6,8 +6,19 @@ import { ListTodo, Plus, Trash2, CheckCircle, Clock, AlertCircle } from 'lucide-
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
+import { RolePermissionSet } from '@/lib/permissions';
 
-export function ProjectActivities({ projectId, project, currentUser }: { projectId: string, project: any, currentUser: any }) {
+export function ProjectActivities({
+  projectId,
+  project,
+  currentUser,
+  permissions,
+}: {
+  projectId: string;
+  project: any;
+  currentUser: any;
+  permissions?: RolePermissionSet;
+}) {
   const [activities, setActivities] = useState<any[]>([]);
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [title, setTitle] = useState('');
@@ -16,6 +27,9 @@ export function ProjectActivities({ projectId, project, currentUser }: { project
   const [loading, setLoading] = useState(false);
   const [activityToDelete, setActivityToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const canCreateActivities = permissions?.activityCreate !== false;
+  const canEditActivityStatus = permissions?.activityEditStatus !== false;
+  const canDeleteActivities = permissions?.activityDelete !== false;
 
   useEffect(() => {
     const q = query(collection(db, 'projects', projectId, 'activities'));
@@ -44,6 +58,10 @@ export function ProjectActivities({ projectId, project, currentUser }: { project
 
   const handleCreateActivity = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canCreateActivities) {
+      toast.error('No tienes permisos para crear actividades.');
+      return;
+    }
     if (!title.trim() || !assignedTo) return;
     setLoading(true);
     try {
@@ -56,7 +74,7 @@ export function ProjectActivities({ projectId, project, currentUser }: { project
         updatedAt: serverTimestamp(),
         createdBy: currentUser.uid
       };
-      
+
       if (description.trim()) {
         activityData.description = description.trim();
       }
@@ -73,6 +91,10 @@ export function ProjectActivities({ projectId, project, currentUser }: { project
   };
 
   const handleDeleteActivity = (id: string) => {
+    if (!canDeleteActivities) {
+      toast.error('No tienes permisos para eliminar actividades.');
+      return;
+    }
     setActivityToDelete(id);
   };
 
@@ -90,6 +112,11 @@ export function ProjectActivities({ projectId, project, currentUser }: { project
   };
 
   const handleStatusChange = async (id: string, newStatus: string) => {
+    if (!canEditActivityStatus) {
+      toast.error('No tienes permisos para cambiar el estado de actividades.');
+      return;
+    }
+
     try {
       await updateDoc(doc(db, 'projects', projectId, 'activities', id), {
         status: newStatus,
@@ -109,60 +136,62 @@ export function ProjectActivities({ projectId, project, currentUser }: { project
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-      <Card className="lg:col-span-1 border-slate-200 shadow-sm h-fit">
-        <CardHeader className="pb-4 border-b border-slate-100 bg-slate-50/50">
-          <CardTitle className="text-lg font-semibold text-slate-900 flex items-center gap-2">
-            <Plus size={18} className="text-indigo-500" />
-            Nueva Actividad
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-6">
-          <form onSubmit={handleCreateActivity} className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-700">Título</label>
-              <input 
-                type="text" 
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full h-10 px-3 rounded-md border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-700">Descripción</label>
-              <textarea 
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                className="w-full p-3 rounded-md border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                rows={3}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-700">Asignar a</label>
-              <select 
-                value={assignedTo}
-                onChange={(e) => setAssignedTo(e.target.value)}
-                className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                required
+      {canCreateActivities && (
+        <Card className="lg:col-span-1 border-slate-200 shadow-sm h-fit">
+          <CardHeader className="pb-4 border-b border-slate-100 bg-slate-50/50">
+            <CardTitle className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+              <Plus size={18} className="text-indigo-500" />
+              Nueva Actividad
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-6">
+            <form onSubmit={handleCreateActivity} className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Título</label>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="w-full h-10 px-3 rounded-md border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Descripción</label>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  className="w-full p-3 rounded-md border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                  rows={3}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Asignar a</label>
+                <select
+                  value={assignedTo}
+                  onChange={(e) => setAssignedTo(e.target.value)}
+                  className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                  required
+                >
+                  <option value="">-- Seleccione un usuario --</option>
+                  {projectUsers.map(u => (
+                    <option key={u.id} value={u.id}>{u.displayName || u.email}</option>
+                  ))}
+                </select>
+              </div>
+              <Button
+                type="submit"
+                disabled={!title || !assignedTo || loading}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300"
               >
-                <option value="">-- Seleccione un usuario --</option>
-                {projectUsers.map(u => (
-                  <option key={u.id} value={u.id}>{u.displayName || u.email}</option>
-                ))}
-              </select>
-            </div>
-            <Button 
-              type="submit" 
-              disabled={!title || !assignedTo || loading} 
-              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300"
-            >
-              {loading ? 'Creando...' : 'Crear Actividad'}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+                {loading ? 'Creando...' : 'Crear Actividad'}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      )}
 
-      <Card className="lg:col-span-2 border-slate-200 shadow-sm">
+      <Card className={`${canCreateActivities ? 'lg:col-span-2' : 'lg:col-span-3'} border-slate-200 shadow-sm`}>
         <CardHeader className="pb-4 border-b border-slate-100 bg-slate-50/50">
           <CardTitle className="text-lg font-semibold text-slate-900 flex items-center gap-2">
             <ListTodo size={18} className="text-indigo-500" />
@@ -191,7 +220,8 @@ export function ProjectActivities({ projectId, project, currentUser }: { project
                     <select
                       value={act.status}
                       onChange={(e) => handleStatusChange(act.id, e.target.value)}
-                      className={`text-xs font-medium px-2 py-1 rounded-md border-0 cursor-pointer focus:ring-2 focus:ring-indigo-500/20 ${
+                      disabled={!canEditActivityStatus}
+                      className={`text-xs font-medium px-2 py-1 rounded-md border-0 focus:ring-2 focus:ring-indigo-500/20 ${canEditActivityStatus ? 'cursor-pointer' : 'cursor-default'} ${
                         act.status === 'completed' ? 'bg-emerald-50 text-emerald-700' :
                         act.status === 'in-progress' ? 'bg-amber-50 text-amber-700' :
                         'bg-slate-100 text-slate-700'
@@ -203,13 +233,15 @@ export function ProjectActivities({ projectId, project, currentUser }: { project
                     </select>
                   </TableCell>
                   <TableCell className="text-right">
-                    <button 
-                      onClick={() => handleDeleteActivity(act.id)}
-                      className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                      title="Eliminar"
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    {canDeleteActivities && (
+                      <button
+                        onClick={() => handleDeleteActivity(act.id)}
+                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                        title="Eliminar"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -235,21 +267,21 @@ export function ProjectActivities({ projectId, project, currentUser }: { project
               </div>
               <h3 className="text-lg font-semibold text-slate-900">Eliminar Actividad</h3>
             </div>
-            
+
             <p className="text-slate-600 mb-6">
               ¿Estás seguro de que deseas eliminar esta actividad? Esta acción no se puede deshacer.
             </p>
-            
+
             <div className="flex justify-end gap-3">
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 onClick={() => setActivityToDelete(null)}
                 disabled={isDeleting}
                 className="border-slate-200 text-slate-700 hover:bg-slate-50"
               >
                 Cancelar
               </Button>
-              <Button 
+              <Button
                 onClick={executeDeleteActivity}
                 disabled={isDeleting}
                 className="bg-red-600 hover:bg-red-700 text-white"
