@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Save, CheckCircle2, Circle } from 'lucide-react';
+import { X, Save, CheckCircle2, Circle, RotateCcw } from 'lucide-react';
 import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
@@ -9,6 +9,7 @@ interface TaskDetailsModalProps {
   onClose: () => void;
   task: any;
   projectId: string;
+  onResetWorkflowTask?: (task: any) => void | Promise<void>;
 }
 
 const getTaskTitle = (task: any) => task?.title || task?.name || "Sin título";
@@ -25,6 +26,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   onClose,
   task,
   projectId,
+  onResetWorkflowTask,
 }) => {
   const [documentation, setDocumentation] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -45,6 +47,13 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   }, [task]);
 
   if (!isOpen || !task) return null;
+
+  const canResetWorkflow = Boolean(
+    onResetWorkflowTask &&
+    task.type === "workflow" &&
+    !task.isParentTask &&
+    (task.status !== "todo" || (task.progress || 0) > 0 || task.externalWorkflowId)
+  );
 
   const handleAddCycles = async () => {
     if (additionalCycles <= 0) return;
@@ -361,6 +370,31 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {canResetWorkflow && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-amber-900">
+                    Reiniciar flujo
+                  </h3>
+                  <p className="mt-1 text-xs text-amber-700">
+                    Devuelve esta tarea a pendiente y limpia el radicado, avance y pasos iniciados.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void onResetWorkflowTask?.(task);
+                  }}
+                  className="inline-flex h-9 items-center justify-center rounded-lg bg-amber-600 px-3 text-sm font-medium text-white transition-colors hover:bg-amber-700"
+                >
+                  <RotateCcw size={15} className="mr-2" />
+                  Reiniciar
+                </button>
               </div>
             </div>
           )}

@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Gantt, Task, ViewMode } from 'gantt-task-react';
 import "gantt-task-react/dist/index.css";
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
-import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, Pencil, PanelRightClose, PanelRightOpen, Settings, CornerDownRight } from 'lucide-react';
+import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -31,6 +31,8 @@ interface ProjectGanttProps {
   onEditTaskStructure?: (task: any) => void;
   onAddSubtask?: (task: any) => void;
   onOpenTaskDocs?: (taskId: string, task: any) => void;
+  onOpenTaskComments?: (task: any) => void;
+  onResetWorkflowTask?: (task: any) => void | Promise<void>;
   onCreateTask?: () => void;
 }
 
@@ -55,6 +57,10 @@ const getTaskDate = (value: any) => {
 
 const getTaskPriority = (task: any) => {
   return task?.priority || task?.originalTask?.priority || 'medium';
+};
+
+const getTaskCommentCount = (task: any) => {
+  return Number(task?.commentCount || task?.originalTask?.commentCount || 0);
 };
 
 const getPriorityColor = (priority: string) => {
@@ -100,6 +106,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onEditTaskStructure,
   onAddSubtask,
   onOpenTaskDocs,
+  onOpenTaskComments,
+  onResetWorkflowTask,
   onCreateTask
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.Day);
@@ -107,6 +115,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [isTimelineCollapsed, setIsTimelineCollapsed] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTaskTitle, setEditingTaskTitle] = useState("");
+  const [openActionMenuTaskId, setOpenActionMenuTaskId] = useState<string | null>(null);
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
   const canCreateSubtasks = Boolean(canAddSubtasks && onAddSubtask);
@@ -415,7 +424,28 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const isExpanded = expandedParents[task.id];
                     const isEditingTitle = editingTaskId === task.id;
                     const taskPriority = getTaskPriority(task);
+                    const commentCount = getTaskCommentCount(task);
                     const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId && !task.isWorkflowStep);
+                    const canResetWorkflow = Boolean(
+                      canModifyTaskDetails &&
+                      onResetWorkflowTask &&
+                      task.type === 'workflow' &&
+                      !task.isParentTask &&
+                      (task.status !== 'todo' || (task.progress || 0) > 0 || task.externalWorkflowId)
+                    );
+                    const hasActionItems = Boolean(
+                      !task.isWorkflowStep &&
+                      (
+                        (canModifyTaskDetails && onUpdateTaskTitle) ||
+                        onOpenTaskDocs ||
+                        (canEditTaskStructure && onEditTaskStructure) ||
+                        canAddSubtask ||
+                        (canModifyTaskDetails && isQuantitative) ||
+                        (canModifyTaskDetails && task.syncExternal && onSyncTask) ||
+                        canResetWorkflow ||
+                        canRemoveTasks
+                      )
+                    );
 
                     return (
                       <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={!canModifyTaskDetails || isSubTask || isEditingTitle}>
@@ -482,17 +512,22 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   >
                                     {taskDisplayTitle}
                                   </button>
-                                  {canModifyTaskDetails && onUpdateTaskTitle && !task.isWorkflowStep && (
+                                  {onOpenTaskComments && !task.isWorkflowStep && (
                                     <button
                                       type="button"
                                       onClick={(event) => {
                                         event.stopPropagation();
-                                        startEditingTitle(task);
+                                        onOpenTaskComments(task);
                                       }}
-                                      className="shrink-0 rounded-md p-1 text-slate-300 opacity-0 transition-colors hover:bg-indigo-50 hover:text-indigo-600 group-hover:opacity-100"
-                                      title="Editar nombre"
+                                      className="relative shrink-0 rounded-md p-1 text-slate-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600"
+                                      title="Comentarios"
                                     >
-                                      <Pencil size={12} />
+                                      <MessageSquare size={14} />
+                                      {commentCount > 0 && (
+                                        <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-indigo-600 px-1 text-center text-[9px] font-bold leading-4 text-white">
+                                          {commentCount > 99 ? '99+' : commentCount}
+                                        </span>
+                                      )}
                                     </button>
                                   )}
                                 </>
@@ -657,69 +692,136 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               </div>
                             </div>
 
-                            <div className="absolute right-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-                              {canModifyTaskDetails && isQuantitative && task.type !== 'workflow' && (
+                            {hasActionItems && (
+                              <div className="absolute right-2 flex items-center">
                                 <button
-                                  onClick={() => {
-                                    if (onOpenIncrementTask) {
-                                      onOpenIncrementTask(task);
-                                      return;
-                                    }
-                                    const val = prompt('Ingresar nuevo valor actual:', task.currentValue || 0);
-                                    if (val !== null) onUpdateTaskValue?.(task.id, Number(val), task);
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setOpenActionMenuTaskId((currentId) => currentId === task.id ? null : task.id);
                                   }}
-                                  className="p-1.5 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                                  title="Registrar incremento"
+                                  className="rounded-md bg-white/90 p-1.5 text-slate-400 opacity-0 shadow-sm ring-1 ring-slate-200 transition-colors hover:bg-indigo-50 hover:text-indigo-600 group-hover:opacity-100"
+                                  title="Acciones de tarea"
+                                  aria-label={`Acciones de ${taskTitle}`}
                                 >
-                                  <Plus size={12} />
+                                  <MoreHorizontal size={15} />
                                 </button>
-                              )}
-                              {canModifyTaskDetails && task.syncExternal && onSyncTask && (
-                                <button
-                                  onClick={() => onSyncTask(task.id, task)}
-                                  className="p-1.5 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                                  title="Sincronizar"
-                                >
-                                  <RefreshCw size={12} />
-	                                </button>
-	                              )}
-                              {canAddSubtask && (
-                                <button
-                                  onClick={() => onAddSubtask?.(task)}
-                                  className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                                  title="Agregar subtarea"
-                                >
-                                  <Plus size={12} />
-                                </button>
-                              )}
-                              {canEditTaskStructure && onEditTaskStructure && !task.isWorkflowStep && (
-                                <button
-                                  onClick={() => onEditTaskStructure(task)}
-                                  className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                                  title="Editar estructura"
-                                >
-                                  <Settings size={12} />
-                                </button>
-                              )}
-                              {onOpenTaskDocs && (
-                                <button
-                                  onClick={() => onOpenTaskDocs(task.id, task)}
-                                  className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                                  title="Documentación / Detalles"
-                                >
-                                  <FileText size={12} />
-                                </button>
-                              )}
-                              {canRemoveTasks && (
-                                <button
-                                  onClick={() => onDeleteTask?.(task.id)}
-                                  className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-                                  title="Eliminar"
-                                >
-                                  <Trash2 size={12} />
-                                </button>
-                              )}
-                            </div>
+
+                                {openActionMenuTaskId === task.id && (
+                                  <div className="absolute right-0 top-8 z-40 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl">
+                                    {canModifyTaskDetails && onUpdateTaskTitle && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          startEditingTitle(task);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                      >
+                                        <Settings size={14} />
+                                        Editar nombre
+                                      </button>
+                                    )}
+                                    {onOpenTaskDocs && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          onOpenTaskDocs(task.id, task);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                      >
+                                        <FileText size={14} />
+                                        Detalles e iteraciones
+                                      </button>
+                                    )}
+                                    {canEditTaskStructure && onEditTaskStructure && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          onEditTaskStructure(task);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                      >
+                                        <Settings size={14} />
+                                        Estructura y subtareas
+                                      </button>
+                                    )}
+                                    {canAddSubtask && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          onAddSubtask?.(task);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                      >
+                                        <Plus size={14} />
+                                        Agregar subtarea
+                                      </button>
+                                    )}
+                                    {canModifyTaskDetails && isQuantitative && task.type !== 'workflow' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          if (onOpenIncrementTask) {
+                                            onOpenIncrementTask(task);
+                                            return;
+                                          }
+                                          const val = prompt('Ingresar nuevo valor actual:', task.currentValue || 0);
+                                          if (val !== null) onUpdateTaskValue?.(task.id, Number(val), task);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                      >
+                                        <Plus size={14} />
+                                        Registrar incremento
+                                      </button>
+                                    )}
+                                    {canModifyTaskDetails && task.syncExternal && onSyncTask && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          onSyncTask(task.id, task);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                      >
+                                        <RefreshCw size={14} />
+                                        Sincronizar
+                                      </button>
+                                    )}
+                                    {canResetWorkflow && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          void onResetWorkflowTask?.(task);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-amber-700 hover:bg-amber-50"
+                                      >
+                                        <RotateCcw size={14} />
+                                        Reiniciar flujo
+                                      </button>
+                                    )}
+                                    {canRemoveTasks && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          onDeleteTask?.(task.id);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50"
+                                      >
+                                        <Trash2 size={14} />
+                                        Eliminar
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </Draggable>

@@ -21,6 +21,7 @@ import { ProjectTasksTable } from '@/components/projects/ProjectTasksTable';
 import { ProjectDocumentsTree } from '@/components/projects/ProjectDocumentsTree';
 import { ProjectDriveRepositories } from '@/components/projects/ProjectDriveRepositories';
 import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
+import { TaskCommentsModal } from '@/components/projects/TaskCommentsModal';
 import { StartWorkflowModal } from '@/components/projects/StartWorkflowModal';
 import { CreateTaskModal } from '@/components/projects/modals/CreateTaskModal';
 import { EditTaskStructureModal } from '@/components/projects/modals/EditTaskStructureModal';
@@ -69,6 +70,12 @@ const mergeWorkflowStepStructure = (currentStep: any = {}, structuralStep: any =
   status: currentStep.status || 'not_started',
 });
 
+const resetWorkflowStepRuntime = (step: any = {}) => ({
+  ...stripWorkflowStepRuntime(step),
+  status: 'not_started',
+  completed: false,
+});
+
 export default function ProjectDetailsPage() {
   const params = useParams();
   const router = useRouter();
@@ -109,6 +116,7 @@ export default function ProjectDetailsPage() {
   const [selectedTaskForStartWorkflow, setSelectedTaskForStartWorkflow] = useState<any>(null);
   const [taskForStructureEdit, setTaskForStructureEdit] = useState<any>(null);
   const [selectedTaskForIncrement, setSelectedTaskForIncrement] = useState<any>(null);
+  const [selectedTaskForComments, setSelectedTaskForComments] = useState<any>(null);
   const managedOrganizationIds = userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : [];
 
 
@@ -1020,6 +1028,87 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  const handleResetWorkflowTask = async (task: any) => {
+    if (!task || task.type !== 'workflow') return;
+
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para reiniciar workflows.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `¿Reiniciar el flujo "${getTaskTitle(task)}"? La tarea volverá a Pendiente y se limpiará el avance actual.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const batch = writeBatch(db);
+      const taskRef = doc(db, 'projects', projectId, 'tasks', task.id);
+
+      (task.workflowSteps || []).forEach((step: any) => {
+        if (step.status === 'listo' && step.rateCardId) {
+          const stepRcRef = doc(db, 'projects', projectId, 'rateCards', step.rateCardId);
+          const stepUnits = Number(step.unitsToAdd || 1);
+          const updateData: any = {
+            currentValue: increment(-stepUnits),
+          };
+          if (step.assignedTo) {
+            updateData[`userStats.${step.assignedTo}`] = increment(-stepUnits);
+          }
+          batch.update(stepRcRef, updateData);
+        }
+      });
+
+      if (task.status === 'completed' && task.isRateCardTask && task.rateCardId) {
+        const taskRcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
+        const taskUnits = Number(task.unitsToAdd || 1);
+        const updateData: any = {
+          currentValue: increment(-taskUnits),
+        };
+        if (task.assignedTo) {
+          updateData[`userStats.${task.assignedTo}`] = increment(-taskUnits);
+        }
+        batch.update(taskRcRef, updateData);
+      }
+
+      const resetTitle = task.originalTitle || getTaskTitle(task);
+      const resetHistoryEntry = {
+        action: 'reset',
+        comment: 'Workflow reiniciado',
+        userId: user?.uid || null,
+        timestamp: new Date().toISOString(),
+      };
+
+      batch.update(taskRef, {
+        title: resetTitle,
+        name: resetTitle,
+        status: 'todo',
+        progress: 0,
+        currentStepIndex: 0,
+        workflowSteps: (task.workflowSteps || []).map(resetWorkflowStepRuntime),
+        workflowHistory: [resetHistoryEntry, ...(task.workflowHistory || [])],
+        externalWorkflowId: null,
+        initialObservation: null,
+        startDocumentId: null,
+        linkedDocumentId: null,
+        updatedAt: serverTimestamp(),
+      });
+
+      await batch.commit();
+
+      if (task.parentTaskId) {
+        const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+        await updateParentTaskStatus(projectId, task.parentTaskId);
+      }
+
+      toast.success('Workflow reiniciado correctamente.');
+    } catch (error: any) {
+      console.error('Error resetting workflow task:', error);
+      toast.error(error?.message || 'No se pudo reiniciar el workflow.');
+      throw error;
+    }
+  };
+
   const getDocTypeBadge = (type: string) => {
     switch (type) {
       case 'contract': return <span className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded-md text-xs font-medium">Contrato</span>;
@@ -1328,6 +1417,8 @@ export default function ProjectDetailsPage() {
                   setSelectedTaskForDocs(task);
                   setIsTaskDocsModalOpen(true);
                 }}
+                onOpenTaskComments={setSelectedTaskForComments}
+                onResetWorkflowTask={canEditTaskDetails ? handleResetWorkflowTask : undefined}
                 onCreateTask={canCreateTasks ? () => setIsCreateTaskModalOpen(true) : undefined}
               />
             </CardContent>
@@ -1393,6 +1484,16 @@ export default function ProjectDetailsPage() {
         }}
         task={selectedTaskForDocs}
         projectId={projectId}
+        onResetWorkflowTask={canEditTaskDetails ? handleResetWorkflowTask : undefined}
+      />
+
+      <TaskCommentsModal
+        isOpen={!!selectedTaskForComments}
+        onClose={() => setSelectedTaskForComments(null)}
+        projectId={projectId}
+        task={selectedTaskForComments}
+        currentUser={user}
+        teamMembers={teamMembers}
       />
 
       {/* Start Workflow Modal */}
