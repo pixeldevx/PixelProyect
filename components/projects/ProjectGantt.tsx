@@ -338,7 +338,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   }
 
   return (
-    <div className="flex flex-col h-full bg-white rounded-lg overflow-hidden border border-slate-200 shadow-sm">
+    <div translate="no" className="flex flex-col h-full bg-white rounded-lg overflow-hidden border border-slate-200 shadow-sm">
       {/* Toolbar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200 bg-white">
         <div className="flex items-center gap-2">
@@ -348,28 +348,31 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               Nueva Tarea
             </Button>
           )}
-          {!isTimelineCollapsed && (
-            <div className="flex bg-slate-100 p-1 rounded-md">
-              <button
-                onClick={() => setViewMode(ViewMode.Day)}
-                className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Day ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
-              >
-                DÍA
-              </button>
-              <button
-                onClick={() => setViewMode(ViewMode.Week)}
-                className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Week ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
-              >
-                SEMANA
-              </button>
-              <button
-                onClick={() => setViewMode(ViewMode.Month)}
-                className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Month ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
-              >
-                MES
-              </button>
-            </div>
-          )}
+          <div
+            aria-hidden={isTimelineCollapsed}
+            className={`flex overflow-hidden rounded-md bg-slate-100 transition-all ${
+              isTimelineCollapsed ? 'w-0 p-0 opacity-0 pointer-events-none' : 'p-1 opacity-100'
+            }`}
+          >
+            <button
+              onClick={() => setViewMode(ViewMode.Day)}
+              className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Day ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              DÍA
+            </button>
+            <button
+              onClick={() => setViewMode(ViewMode.Week)}
+              className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Week ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              SEMANA
+            </button>
+            <button
+              onClick={() => setViewMode(ViewMode.Month)}
+              className={`px-3 py-1 text-[11px] font-bold rounded transition-all ${viewMode === ViewMode.Month ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              MES
+            </button>
+          </div>
           <Button
             type="button"
             variant="outline"
@@ -834,34 +837,39 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           </DragDropContext>
         </div>
 
-        {!isTimelineCollapsed && (
-          <div className="flex-1 overflow-hidden bg-white">
-            <div className="project-gantt-timeline-only h-full overflow-x-auto scrollbar-thin scrollbar-thumb-slate-200">
-              <Gantt
-                tasks={ganttTasks}
-                viewMode={viewMode}
-                listCellWidth=""
-                columnWidth={viewMode === ViewMode.Day ? 65 : viewMode === ViewMode.Week ? 150 : 250}
-                headerHeight={40}
-                rowHeight={40}
-                barCornerRadius={4}
-                barFill={70}
-                handleWidth={8}
-                fontSize="11px"
-                fontFamily="Inter, sans-serif"
-                todayColor="rgba(99, 102, 241, 0.03)"
-                onProgressChange={canModifyTaskDetails && onUpdateTaskProgress ? (task) => {
-                  const originalTask = tasks.find(t => t.id === task.id);
-                  onUpdateTaskProgress(task.id, task.progress, originalTask);
-                } : undefined}
-                onDateChange={canModifyTaskDetails && onUpdateTaskDates ? (task) => {
-                  const originalTask = tasks.find(t => t.id === task.id);
-                  onUpdateTaskDates(task.id, task.start, task.end, originalTask);
-                } : undefined}
-              />
-            </div>
+        <div
+          aria-hidden={isTimelineCollapsed}
+          className={`overflow-hidden bg-white transition-[flex-basis,width,opacity] ${
+            isTimelineCollapsed
+              ? 'w-0 min-w-0 basis-0 grow-0 shrink opacity-0 pointer-events-none'
+              : 'flex-1 opacity-100'
+          }`}
+        >
+          <div className="project-gantt-timeline-only h-full overflow-x-auto scrollbar-thin scrollbar-thumb-slate-200">
+            <Gantt
+              tasks={ganttTasks}
+              viewMode={viewMode}
+              listCellWidth=""
+              columnWidth={viewMode === ViewMode.Day ? 65 : viewMode === ViewMode.Week ? 150 : 250}
+              headerHeight={40}
+              rowHeight={40}
+              barCornerRadius={4}
+              barFill={70}
+              handleWidth={8}
+              fontSize="11px"
+              fontFamily="Inter, sans-serif"
+              todayColor="rgba(99, 102, 241, 0.03)"
+              onProgressChange={canModifyTaskDetails && onUpdateTaskProgress ? (task) => {
+                const originalTask = tasks.find(t => t.id === task.id);
+                onUpdateTaskProgress(task.id, task.progress, originalTask);
+              } : undefined}
+              onDateChange={canModifyTaskDetails && onUpdateTaskDates ? (task) => {
+                const originalTask = tasks.find(t => t.id === task.id);
+                onUpdateTaskDates(task.id, task.start, task.end, originalTask);
+              } : undefined}
+            />
           </div>
-        )}
+        </div>
       </div>
     </div>
   );
