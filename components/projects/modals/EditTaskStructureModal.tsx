@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useState } from "react";
-import { ClipboardList, CornerDownRight, Loader2, Plus, Settings, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ClipboardList, CornerDownRight, Loader2, Plus, Settings, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { addDoc, collection, serverTimestamp } from "@/lib/supabase/document-store";
@@ -167,6 +167,18 @@ export function EditTaskStructureModal({
 
   const removeStep = (index: number) => {
     setWorkflowSteps((currentSteps) => currentSteps.filter((_, stepIndex) => stepIndex !== index));
+  };
+
+  const moveStep = (index: number, direction: -1 | 1) => {
+    setWorkflowSteps((currentSteps) => {
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= currentSteps.length) return currentSteps;
+
+      const nextSteps = [...currentSteps];
+      const [movedStep] = nextSteps.splice(index, 1);
+      nextSteps.splice(targetIndex, 0, movedStep);
+      return nextSteps;
+    });
   };
 
   const updateSubtaskDraft = (updates: Partial<SubtaskDraft>) => {
@@ -392,6 +404,28 @@ export function EditTaskStructureModal({
                     <div className="flex items-center gap-3">
                       <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
                         {index + 1}
+                      </div>
+                      <div className="flex shrink-0 flex-col gap-1">
+                        <button
+                          type="button"
+                          onClick={() => moveStep(index, -1)}
+                          disabled={index === 0}
+                          className="flex h-4 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-400 transition-colors hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
+                          title="Mover paso arriba"
+                          aria-label={`Mover paso ${index + 1} arriba`}
+                        >
+                          <ArrowUp size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveStep(index, 1)}
+                          disabled={index === workflowSteps.length - 1}
+                          className="flex h-4 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-400 transition-colors hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
+                          title="Mover paso abajo"
+                          aria-label={`Mover paso ${index + 1} abajo`}
+                        >
+                          <ArrowDown size={12} />
+                        </button>
                       </div>
                       <input
                         type="text"
