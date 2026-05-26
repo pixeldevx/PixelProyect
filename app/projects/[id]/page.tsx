@@ -6,7 +6,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, ListTodo, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign } from 'lucide-react';
+import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, ListTodo, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2 } from 'lucide-react';
 import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
@@ -18,6 +18,7 @@ import ProjectBilling from '@/components/projects/ProjectBilling';
 import { ProjectGantt } from '@/components/projects/ProjectGantt';
 import { ProjectTasksTable } from '@/components/projects/ProjectTasksTable';
 import { ProjectDocumentsTree } from '@/components/projects/ProjectDocumentsTree';
+import { ProjectDriveRepositories } from '@/components/projects/ProjectDriveRepositories';
 import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
 import { StartWorkflowModal } from '@/components/projects/StartWorkflowModal';
 import { CreateTaskModal } from '@/components/projects/modals/CreateTaskModal';
@@ -87,11 +88,11 @@ export default function ProjectDetailsPage() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'documents' | 'tasks' | 'tasksList' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('documents');
+  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'tasks' | 'tasksList' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('documents');
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');
-    if (tabParam && ['documents', 'tasks', 'tasksList', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
+    if (tabParam && ['documents', 'drive', 'tasks', 'tasksList', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
       setActiveTab(tabParam as any);
     }
   }, [searchParams]);
@@ -236,6 +237,7 @@ export default function ProjectDetailsPage() {
   const canEditTaskStructure =
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
+  const canManageDriveRepositories = canEditTaskStructure;
 
   const collectDependentTaskIds = (taskId: string) => {
     const taskIds = new Set<string>([taskId]);
@@ -1045,6 +1047,19 @@ export default function ProjectDetailsPage() {
             </div>
           </button>
           <button
+            onClick={() => setActiveTab('drive')}
+            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'drive'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Link2 size={16} />
+              Drive
+            </div>
+          </button>
+          <button
             onClick={() => setActiveTab('tasks')}
             className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
               activeTab === 'tasks'
@@ -1167,6 +1182,16 @@ export default function ProjectDetailsPage() {
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {activeTab === 'drive' && (
+        <ProjectDriveRepositories
+          projectId={projectId}
+          project={project}
+          teamMembers={teamMembers}
+          currentUser={user}
+          canManage={canManageDriveRepositories}
+        />
       )}
 
       {activeTab === 'tasks' && (
