@@ -15,8 +15,10 @@ interface ProjectTasksTableProps {
   onUpdateTaskStatus?: (taskId: string, status: string, task: any) => void;
   onUpdateTaskPriority?: (taskId: string, priority: string, task: any) => void;
   onUpdateTaskAssignee?: (taskId: string, assigneeId: string, task: any) => void;
+  onUpdateTaskDates?: (taskId: string, start: Date, end: Date, task: any) => void;
   onDeleteTask?: (taskId: string) => void;
   canEditTaskDetails?: boolean;
+  canEditTaskDates?: boolean;
   canEditTaskStatus?: boolean;
   canAddSubtasks?: boolean;
   canEditTaskStructure?: boolean;
@@ -37,14 +39,23 @@ const getTaskDate = (task: any, field: 'start' | 'end') => {
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 };
 
+const toDateInputValue = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   tasks,
   teamMembers,
   onUpdateTaskStatus,
   onUpdateTaskPriority,
   onUpdateTaskAssignee,
+  onUpdateTaskDates,
   onDeleteTask,
   canEditTaskDetails,
+  canEditTaskDates,
   canEditTaskStatus,
   canAddSubtasks,
   canEditTaskStructure,
@@ -56,6 +67,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
 }) => {
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
+  const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
   const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
   const canCreateSubtasks = Boolean(canAddSubtasks && onAddSubtask);
   const canRemoveTasks = Boolean(canDeleteTasks && onDeleteTask);
@@ -237,12 +249,35 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
     const assignee = teamMembers.find(m => m.id === task.assignedTo);
     
     const taskTitle = getTaskTitle(task);
+    const startDate = getTaskDate(task, 'start');
     const endDate = getTaskDate(task, 'end');
 
     const subtasks = tasks.filter(t => t.parentTaskId === task.id).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
     const hasSubtasks = subtasks.length > 0 || (task.type === 'workflow' && task.workflowSteps && task.workflowSteps.length > 0);
     const isExpanded = expandedTasks[task.id] !== false;
     const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId);
+    const handleDateChange = (field: 'start' | 'end', value: string) => {
+      if (!value || !canModifyTaskDates) return;
+      const selectedDate = new Date(`${value}T00:00:00`);
+      if (Number.isNaN(selectedDate.getTime())) return;
+
+      let nextStart = startDate;
+      let nextEnd = endDate;
+
+      if (field === 'start') {
+        nextStart = selectedDate;
+        if (selectedDate > nextEnd) {
+          nextEnd = selectedDate;
+        }
+      } else {
+        nextEnd = selectedDate;
+        if (selectedDate < nextStart) {
+          nextStart = selectedDate;
+        }
+      }
+
+      onUpdateTaskDates?.(task.id, nextStart, nextEnd, task);
+    };
 
     return (
       <React.Fragment key={task.id}>
@@ -343,8 +378,30 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
             </div>
           </td>
 
-          <td className="px-4 py-2 text-center border-l border-slate-200 w-28 text-sm text-slate-700">
-            {format(endDate, 'MMM. d', { locale: es })}
+          <td className="px-3 py-2 text-center border-l border-slate-200 w-48 text-sm text-slate-700">
+            {canModifyTaskDates ? (
+              <div className="grid grid-cols-2 gap-1">
+                <input
+                  type="date"
+                  value={toDateInputValue(startDate)}
+                  onChange={(event) => handleDateChange('start', event.target.value)}
+                  className="h-8 min-w-0 rounded-md border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/10"
+                  title="Fecha de inicio"
+                />
+                <input
+                  type="date"
+                  value={toDateInputValue(endDate)}
+                  onChange={(event) => handleDateChange('end', event.target.value)}
+                  className="h-8 min-w-0 rounded-md border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/10"
+                  title="Fecha de fin"
+                />
+              </div>
+            ) : (
+              <div className="inline-flex items-center justify-center gap-1.5 rounded-md bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600">
+                <Calendar size={12} />
+                {format(startDate, 'd MMM', { locale: es })} - {format(endDate, 'd MMM', { locale: es })}
+              </div>
+            )}
           </td>
 
           <td className="px-4 py-2 text-center border-l border-slate-200 w-32 relative">
@@ -447,8 +504,8 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
               <th className="px-4 py-3 font-normal">Tarea</th>
               <th className="px-2 py-3 font-normal text-center">Resp.</th>
               <th className="px-0 py-3 font-normal text-center">Estado</th>
-              <th className="px-4 py-3 font-normal text-center">Cronograma</th>
-              <th className="px-4 py-3 font-normal text-center">Vence</th>
+              <th className="px-4 py-3 font-normal text-center">Progreso</th>
+              <th className="px-4 py-3 font-normal text-center">Fechas</th>
               <th className="px-4 py-3 font-normal text-center">Prioridad</th>
               <th className="px-2 py-3 font-normal text-center w-24"></th>
             </tr>

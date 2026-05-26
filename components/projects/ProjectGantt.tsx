@@ -24,6 +24,7 @@ interface ProjectGanttProps {
   onUpdateTaskTitle?: (taskId: string, title: string, task: any) => void | Promise<void>;
   onOpenIncrementTask?: (task: any) => void;
   canEditTaskDetails?: boolean;
+  canEditTaskDates?: boolean;
   canEditTaskStatus?: boolean;
   canAddSubtasks?: boolean;
   canEditTaskStructure?: boolean;
@@ -99,6 +100,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onUpdateTaskTitle,
   onOpenIncrementTask,
   canEditTaskDetails,
+  canEditTaskDates,
   canEditTaskStatus,
   canAddSubtasks,
   canEditTaskStructure,
@@ -117,6 +119,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [editingTaskTitle, setEditingTaskTitle] = useState("");
   const [openActionMenuTaskId, setOpenActionMenuTaskId] = useState<string | null>(null);
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
+  const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
   const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
   const canCreateSubtasks = Boolean(canAddSubtasks && onAddSubtask);
   const canRemoveTasks = Boolean(canDeleteTasks && onDeleteTask);
@@ -650,11 +653,16 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             </div>
 
                             <div className="w-32 px-2">
-                              <div className={`rounded-md h-7 flex items-center justify-center relative overflow-hidden group/timeline cursor-pointer border ${
+                              <div
+                                className={`rounded-md h-7 flex items-center justify-center relative overflow-hidden group/timeline border ${
+                                  canModifyTaskDates ? 'cursor-grab' : 'cursor-default'
+                                } ${
                                 task.status === 'completed' ? 'bg-[#00c875]/10 border-[#00c875]/20' :
                                 task.status === 'in_progress' ? 'bg-[#fdab3d]/10 border-[#fdab3d]/20' :
                                 'bg-slate-50 border-slate-200'
-                              }`}>
+                              }`}
+                                title={canModifyTaskDates ? 'Arrastra la barra del cronograma para editar fechas' : 'Sin permiso para editar fechas'}
+                              >
                                 <div className={`text-[9px] font-bold z-10 flex items-center gap-1 ${
                                   task.status === 'completed' ? 'text-[#00c875]' :
                                   task.status === 'in_progress' ? 'text-[#fdab3d]' :
@@ -863,9 +871,9 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 const originalTask = tasks.find(t => t.id === task.id);
                 onUpdateTaskProgress(task.id, task.progress, originalTask);
               } : undefined}
-              onDateChange={canModifyTaskDetails && onUpdateTaskDates ? (task) => {
+              onDateChange={canModifyTaskDates ? (task) => {
                 const originalTask = tasks.find(t => t.id === task.id);
-                onUpdateTaskDates(task.id, task.start, task.end, originalTask);
+                onUpdateTaskDates?.(task.id, task.start, task.end, originalTask);
               } : undefined}
             />
           </div>

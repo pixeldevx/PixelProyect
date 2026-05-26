@@ -247,6 +247,7 @@ export default function ProjectDetailsPage() {
   const canCreateTasks = rolePermissions.taskCreate;
   const canEditTaskStatus = rolePermissions.taskEditStatus;
   const canEditTaskDetails = rolePermissions.taskEditDetails;
+  const canEditTaskDates = rolePermissions.taskEditDates;
   const canAddSubtasks = rolePermissions.taskAddSubtasks;
   const canDeleteTasks = rolePermissions.taskDelete;
   const canEditTaskStructure =
@@ -769,7 +770,7 @@ export default function ProjectDetailsPage() {
 
   const handleUpdateTaskDates = async (taskId: string, start: Date, end: Date, task: any) => {
     if (!task) return;
-    if (!canEditTaskDetails) {
+    if (!canEditTaskDates) {
       toast.error('No tienes permisos para editar fechas de tareas.');
       return;
     }
@@ -1403,10 +1404,11 @@ export default function ProjectDetailsPage() {
                 onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
                 onSyncTask={canEditTaskDetails ? handleSyncTaskValue : undefined}
                 onReorderTasks={canEditTaskDetails ? handleReorderTasks : undefined}
-                onUpdateTaskDates={canEditTaskDetails ? handleUpdateTaskDates : undefined}
+                onUpdateTaskDates={canEditTaskDates ? handleUpdateTaskDates : undefined}
                 onUpdateTaskTitle={canEditTaskDetails ? handleUpdateTaskTitle : undefined}
                 onOpenIncrementTask={canEditTaskDetails ? setSelectedTaskForIncrement : undefined}
                 canEditTaskDetails={canEditTaskDetails}
+                canEditTaskDates={canEditTaskDates}
                 canEditTaskStatus={canEditTaskStatus}
                 canAddSubtasks={canAddSubtasks}
                 canEditTaskStructure={canEditTaskStructure}
@@ -1456,8 +1458,10 @@ export default function ProjectDetailsPage() {
                 onUpdateTaskStatus={canEditTaskStatus ? handleUpdateTaskStatus : undefined}
                 onUpdateTaskPriority={canEditTaskDetails ? handleUpdateTaskPriority : undefined}
                 onUpdateTaskAssignee={canEditTaskDetails ? handleUpdateTaskAssignee : undefined}
+                onUpdateTaskDates={canEditTaskDates ? handleUpdateTaskDates : undefined}
                 onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
                 canEditTaskDetails={canEditTaskDetails}
+                canEditTaskDates={canEditTaskDates}
                 canEditTaskStatus={canEditTaskStatus}
                 canAddSubtasks={canAddSubtasks}
                 canEditTaskStructure={canEditTaskStructure}

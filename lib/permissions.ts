@@ -2,6 +2,7 @@ export type PermissionKey =
   | 'taskCreate'
   | 'taskEditStatus'
   | 'taskEditDetails'
+  | 'taskEditDates'
   | 'taskAddSubtasks'
   | 'taskEditStructure'
   | 'taskDelete'
@@ -31,6 +32,7 @@ export const PERMISSION_GROUPS: Array<{
       { key: 'taskCreate', label: 'Crear tareas' },
       { key: 'taskEditStatus', label: 'Cambiar estado' },
       { key: 'taskEditDetails', label: 'Editar detalles' },
+      { key: 'taskEditDates', label: 'Editar fechas' },
       { key: 'taskAddSubtasks', label: 'Crear subtareas' },
       { key: 'taskEditStructure', label: 'Editar workflow' },
       { key: 'taskDelete', label: 'Eliminar tareas' },
@@ -50,6 +52,7 @@ const allPermissions = (value: boolean): RolePermissionSet => ({
   taskCreate: value,
   taskEditStatus: value,
   taskEditDetails: value,
+  taskEditDates: value,
   taskAddSubtasks: value,
   taskEditStructure: value,
   taskDelete: value,
