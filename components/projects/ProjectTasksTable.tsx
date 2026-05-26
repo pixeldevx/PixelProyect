@@ -1,12 +1,13 @@
 "use client"
 
-import React, { useState, useEffect } from 'react';
-import { Trash2, FileText, ListTodo, Plus, Calendar, AlertCircle, ChevronDown, ChevronRight, MoreHorizontal, CornerDownRight, Settings } from 'lucide-react';
+import React, { useState } from 'react';
+import { Trash2, FileText, ListTodo, Plus, Calendar, ChevronDown, ChevronRight, CornerDownRight, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'motion/react';
 import Image from 'next/image';
+import { TaskDateEditorModal } from './TaskDateEditorModal';
 
 interface ProjectTasksTableProps {
   tasks: any[];
@@ -39,13 +40,6 @@ const getTaskDate = (task: any, field: 'start' | 'end') => {
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 };
 
-const toDateInputValue = (date: Date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
 export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   tasks,
   teamMembers,
@@ -66,6 +60,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   onCreateTask
 }) => {
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
+  const [taskForDateEdit, setTaskForDateEdit] = useState<any>(null);
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
   const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
@@ -256,28 +251,6 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
     const hasSubtasks = subtasks.length > 0 || (task.type === 'workflow' && task.workflowSteps && task.workflowSteps.length > 0);
     const isExpanded = expandedTasks[task.id] !== false;
     const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId);
-    const handleDateChange = (field: 'start' | 'end', value: string) => {
-      if (!value || !canModifyTaskDates) return;
-      const selectedDate = new Date(`${value}T00:00:00`);
-      if (Number.isNaN(selectedDate.getTime())) return;
-
-      let nextStart = startDate;
-      let nextEnd = endDate;
-
-      if (field === 'start') {
-        nextStart = selectedDate;
-        if (selectedDate > nextEnd) {
-          nextEnd = selectedDate;
-        }
-      } else {
-        nextEnd = selectedDate;
-        if (selectedDate < nextStart) {
-          nextStart = selectedDate;
-        }
-      }
-
-      onUpdateTaskDates?.(task.id, nextStart, nextEnd, task);
-    };
 
     return (
       <React.Fragment key={task.id}>
@@ -380,22 +353,17 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
 
           <td className="px-3 py-2 text-center border-l border-slate-200 w-48 text-sm text-slate-700">
             {canModifyTaskDates ? (
-              <div className="grid grid-cols-2 gap-1">
-                <input
-                  type="date"
-                  value={toDateInputValue(startDate)}
-                  onChange={(event) => handleDateChange('start', event.target.value)}
-                  className="h-8 min-w-0 rounded-md border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/10"
-                  title="Fecha de inicio"
-                />
-                <input
-                  type="date"
-                  value={toDateInputValue(endDate)}
-                  onChange={(event) => handleDateChange('end', event.target.value)}
-                  className="h-8 min-w-0 rounded-md border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/10"
-                  title="Fecha de fin"
-                />
-              </div>
+              <button
+                type="button"
+                onClick={() => setTaskForDateEdit(task)}
+                className="inline-flex max-w-full items-center justify-center gap-1.5 rounded-md border border-indigo-100 bg-indigo-50 px-2 py-1 text-xs font-semibold text-indigo-700 transition-colors hover:border-indigo-200 hover:bg-indigo-100"
+                title="Editar fechas"
+              >
+                <Calendar size={12} />
+                <span className="truncate">
+                  {format(startDate, 'd MMM', { locale: es })} - {format(endDate, 'd MMM', { locale: es })}
+                </span>
+              </button>
             ) : (
               <div className="inline-flex items-center justify-center gap-1.5 rounded-md bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600">
                 <Calendar size={12} />
@@ -517,6 +485,12 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
           </tbody>
         </table>
       </div>
+      <TaskDateEditorModal
+        isOpen={!!taskForDateEdit}
+        task={taskForDateEdit}
+        onClose={() => setTaskForDateEdit(null)}
+        onSave={(taskId, start, end, task) => onUpdateTaskDates?.(taskId, start, end, task)}
+      />
     </div>
   );
 };

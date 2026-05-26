@@ -9,6 +9,7 @@ import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, C
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { TaskDateEditorModal } from './TaskDateEditorModal';
 
 interface ProjectGanttProps {
   tasks: any[];
@@ -118,6 +119,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTaskTitle, setEditingTaskTitle] = useState("");
   const [openActionMenuTaskId, setOpenActionMenuTaskId] = useState<string | null>(null);
+  const [taskForDateEdit, setTaskForDateEdit] = useState<any>(null);
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
   const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
@@ -431,6 +433,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const isEditingTitle = editingTaskId === task.id;
                     const taskPriority = getTaskPriority(task);
                     const commentCount = getTaskCommentCount(task);
+                    const canEditThisTaskDates = Boolean(canModifyTaskDates && !task.isWorkflowStep);
                     const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId && !task.isWorkflowStep);
                     const canResetWorkflow = Boolean(
                       canModifyTaskDetails &&
@@ -653,15 +656,22 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             </div>
 
                             <div className="w-32 px-2">
-                              <div
-                                className={`rounded-md h-7 flex items-center justify-center relative overflow-hidden group/timeline border ${
-                                  canModifyTaskDates ? 'cursor-grab' : 'cursor-default'
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  if (!canEditThisTaskDates) return;
+                                  event.stopPropagation();
+                                  setTaskForDateEdit(task);
+                                }}
+                                disabled={!canEditThisTaskDates}
+                                className={`rounded-md h-7 w-full flex items-center justify-center relative overflow-hidden group/timeline border ${
+                                  canEditThisTaskDates ? 'cursor-pointer hover:ring-2 hover:ring-indigo-500/10' : 'cursor-default'
                                 } ${
                                 task.status === 'completed' ? 'bg-[#00c875]/10 border-[#00c875]/20' :
                                 task.status === 'in_progress' ? 'bg-[#fdab3d]/10 border-[#fdab3d]/20' :
                                 'bg-slate-50 border-slate-200'
                               }`}
-                                title={canModifyTaskDates ? 'Arrastra la barra del cronograma para editar fechas' : 'Sin permiso para editar fechas'}
+                                title={canEditThisTaskDates ? 'Editar fechas' : 'Sin permiso para editar fechas'}
                               >
                                 <div className={`text-[9px] font-bold z-10 flex items-center gap-1 ${
                                   task.status === 'completed' ? 'text-[#00c875]' :
@@ -674,7 +684,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   ) : '-'}
                                 </div>
                                 <div className="absolute inset-0 bg-black/5 opacity-0 group-hover/timeline:opacity-100 transition-opacity" />
-                              </div>
+                              </button>
                             </div>
 
                             <div className="w-28 px-3 flex flex-col justify-center gap-1">
@@ -879,6 +889,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           </div>
         </div>
       </div>
+      <TaskDateEditorModal
+        isOpen={!!taskForDateEdit}
+        task={taskForDateEdit}
+        onClose={() => setTaskForDateEdit(null)}
+        onSave={(taskId, start, end, task) => onUpdateTaskDates?.(taskId, start, end, task)}
+      />
     </div>
   );
 };
