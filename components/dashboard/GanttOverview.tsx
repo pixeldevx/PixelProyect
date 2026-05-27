@@ -11,6 +11,7 @@ import { Plus, Calendar, Users, ListTodo, AlertCircle, X, Loader2, Search, Clipb
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { belongsToAnyOrganization } from '@/lib/organizations';
+import { getProgressForTaskStatus } from '@/lib/taskProgress';
 
 enum OperationType {
   CREATE = 'create',
@@ -345,9 +346,7 @@ export const GanttOverview: React.FC = () => {
         ? 'completed_late'
         : status;
 
-      let progress = task.progress || 0;
-      if (finalStatus === 'completed' || finalStatus === 'completed_late') progress = 100;
-      else if (finalStatus === 'in_progress') progress = Math.max(progress, 10);
+      const progress = getProgressForTaskStatus(finalStatus, task.progress);
 
       await updateDoc(doc(db, 'projects', selectedProjectId, 'tasks', taskId), {
         status: finalStatus,

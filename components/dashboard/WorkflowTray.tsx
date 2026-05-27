@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { collection, query, where, onSnapshot, doc, arrayUnion, Timestamp, writeBatch, increment } from '@/lib/supabase/document-store';
+import { collection, query, where, onSnapshot, doc, arrayUnion, Timestamp, writeBatch, increment, getDoc, getDocs } from '@/lib/supabase/document-store';
 import { db, auth } from '@/lib/backend';
 import { CheckCircle2, XCircle, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, AlertCircle, X, ClipboardList, Play, Pause, ListTodo, FolderOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,7 @@ import { TaskDocumentsViewer } from '@/components/projects/TaskDocumentsViewer';
 import { TaskCommentsModal } from '@/components/projects/TaskCommentsModal';
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
+import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
 
 import { useAuth } from '@/hooks/useAuth';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
@@ -116,6 +117,51 @@ const normalizeCompletionStatus = (nextStatus: string, task: any) => {
   return isAfterTaskDeadline(task) ? 'completed_late' : 'completed';
 };
 
+const isDynamicRateCardEnabled = (source: any) =>
+  Boolean(source?.dynamicRateCard || source?.rateCardMode === 'dynamic' || source?.dynamicRateCardConfig);
+
+const getDynamicRateCardUnits = (source: any) =>
+  Number(source?.dynamicRateCardConfig?.defaultUnits || source?.unitsToAdd || 1);
+
+const getDateKeys = (date = new Date()) => {
+  const year = date.getFullYear();
+  const dateKey = date.toISOString().slice(0, 10);
+  const monthKey = `${year}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  const startOfYear = new Date(year, 0, 1);
+  const dayOfYear = Math.floor((date.getTime() - startOfYear.getTime()) / 86400000) + 1;
+  const weekKey = `${year}-W${String(Math.ceil(dayOfYear / 7)).padStart(2, '0')}`;
+
+  return { dateKey, weekKey, monthKey };
+};
+
+const getWorkflowDynamicRateCardSource = (task: any, action: string) => {
+  const currentIndex = task?.currentStepIndex || 0;
+  const currentStep = task?.workflowSteps?.[currentIndex];
+
+  if ((action === 'approve' || action === 'return') && isDynamicRateCardEnabled(currentStep)) {
+    return {
+      source: 'workflow_step',
+      sourceConfig: currentStep,
+      stepIndex: currentIndex,
+    };
+  }
+
+  if (
+    action === 'approve' &&
+    Array.isArray(task?.workflowSteps) &&
+    currentIndex === task.workflowSteps.length - 1 &&
+    isDynamicRateCardEnabled(task)
+  ) {
+    return {
+      source: 'workflow_task',
+      sourceConfig: task,
+      stepIndex: currentIndex,
+    };
+  }
+
+  return null;
+};
+
 const getDueState = (task: any) => {
   const status = task?.status || 'todo';
   if (status === 'completed' || status === 'completed_late' || status === 'listo') return 'closed';
@@ -187,6 +233,16 @@ export default function WorkflowTray() {
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [nextStepAssignee, setNextStepAssignee] = useState<string>('');
   const [projectTeamMembers, setProjectTeamMembers] = useState<any[]>([]);
+  const [projectRateCards, setProjectRateCards] = useState<any[]>([]);
+  const [dynamicRateCardAssignee, setDynamicRateCardAssignee] = useState('');
+  const [dynamicRateCardId, setDynamicRateCardId] = useState('');
+  const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState<number | ''>(1);
+  const [dynamicRateCardModal, setDynamicRateCardModal] = useState<{
+    isOpen: boolean;
+    task: any;
+    nextStatus: string;
+  }>({ isOpen: false, task: null, nextStatus: 'completed' });
+  const [dynamicRateCardComment, setDynamicRateCardComment] = useState('');
   const [docsModalTask, setDocsModalTask] = useState<any>(null);
   const [historyModalTask, setHistoryModalTask] = useState<any>(null);
   const [commentsModalTask, setCommentsModalTask] = useState<any>(null);
@@ -330,6 +386,96 @@ export default function WorkflowTray() {
     };
   }, [userRole, managedOrganizationIds, organizations]);
 
+  const loadProjectRateCardContext = async (projectId: string) => {
+    try {
+      const projectSnap = await getDoc(doc(db, 'projects', projectId));
+      const projectData = projectSnap.exists() ? projectSnap.data() : {};
+      const assignedMemberIds = projectData?.assignedTeamMembers || [];
+
+      if (assignedMemberIds.length > 0) {
+        const teamQ = query(collection(db, 'team_members'), where('__name__', 'in', assignedMemberIds));
+        const teamSnap = await getDocs(teamQ);
+        setProjectTeamMembers(teamSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() })));
+      } else {
+        setProjectTeamMembers([]);
+      }
+
+      const rateCardsSnap = await getDocs(query(collection(db, 'projects', projectId, 'rateCards')));
+      setProjectRateCards(
+        rateCardsSnap.docs
+          .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+          .sort((left: any, right: any) => String(left.name || '').localeCompare(String(right.name || ''))),
+      );
+    } catch (error) {
+      console.error('Error loading rate card context:', error);
+      toast.error('No se pudieron cargar las personas o rate cards del proyecto.');
+    }
+  };
+
+  const resetDynamicRateCardFields = (source: any = null, defaultAssignee = '') => {
+    setDynamicRateCardAssignee(defaultAssignee);
+    setDynamicRateCardId('');
+    setDynamicRateCardUnits(getDynamicRateCardUnits(source));
+    setDynamicRateCardComment('');
+  };
+
+  const addDynamicRateCardChargeToBatch = (
+    batch: ReturnType<typeof writeBatch>,
+    params: {
+      projectId: string;
+      task: any;
+      rateCardId: string;
+      assigneeId: string;
+      units: number;
+      source: string;
+      stepIndex?: number | null;
+      comment?: string | null;
+      isRework?: boolean;
+      reversal?: boolean;
+    },
+  ) => {
+    const amount = Number(params.units);
+    if (!params.rateCardId || !params.assigneeId || !amount) return null;
+
+    const rcRef = doc(db, 'projects', params.projectId, 'rateCards', params.rateCardId);
+    const statsField = params.isRework ? 'userReworkStats' : 'userStats';
+    batch.update(rcRef, {
+      [params.isRework ? 'reworkValue' : 'currentValue']: increment(amount),
+      [`${statsField}.${params.assigneeId}`]: increment(amount),
+    });
+
+    const entryRef = doc(collection(db, 'projects', params.projectId, 'rateCardEntries'));
+    const now = new Date();
+    batch.set(entryRef, {
+      projectId: params.projectId,
+      taskId: params.task.id,
+      taskTitle: params.task.title || params.task.name || 'Tarea',
+      rateCardId: params.rateCardId,
+      assignedTo: params.assigneeId,
+      units: amount,
+      source: params.source,
+      stepIndex: params.stepIndex ?? null,
+      comment: params.comment || null,
+      isRework: Boolean(params.isRework),
+      reversal: Boolean(params.reversal),
+      ...getDateKeys(now),
+      createdAt: Timestamp.now(),
+      createdBy: user?.uid || null,
+      createdByEmail: user?.email || null,
+    });
+
+    return {
+      entryId: entryRef.id,
+      rateCardId: params.rateCardId,
+      assignedTo: params.assigneeId,
+      units: amount,
+      source: params.source,
+      stepIndex: params.stepIndex ?? null,
+      reversal: Boolean(params.reversal),
+      createdAt: now.toISOString(),
+    };
+  };
+
   const confirmAction = async () => {
     if (!user || !actionModal.task) return;
     
@@ -342,12 +488,20 @@ export default function WorkflowTray() {
     const action = actionModal.type;
     const currentIndex = task.currentStepIndex || 0;
     const currentStep = task.workflowSteps[currentIndex];
+    const workflowDynamicRateCardSource = getWorkflowDynamicRateCardSource(task, action);
 
     // Validate form data if approving and form exists
     if (action === 'approve' && currentStep?.form?.fields) {
       const missingRequired = currentStep.form.fields.some((f: any) => f.required && !hasRequiredFormValue(formData[f.id]));
       if (missingRequired) {
         toast.warning("Por favor complete todos los campos obligatorios del formulario.");
+        return;
+      }
+    }
+
+    if (workflowDynamicRateCardSource) {
+      if (!dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0) {
+        toast.warning("Completa la persona, el perfil y las unidades del Rate Card dinámico.");
         return;
       }
     }
@@ -386,6 +540,22 @@ export default function WorkflowTray() {
           }
         }
         batch.update(rcRef, updateData);
+      }
+
+      let dynamicRateCardCharge: any = null;
+      if (workflowDynamicRateCardSource) {
+        const taskWasCompletedBefore = task.workflowHistory?.some((h: any) => h.stepIndex === task.workflowSteps.length - 1 && h.action === 'approve');
+        dynamicRateCardCharge = addDynamicRateCardChargeToBatch(batch, {
+          projectId: task.projectId,
+          task,
+          rateCardId: dynamicRateCardId,
+          assigneeId: dynamicRateCardAssignee,
+          units: Number(dynamicRateCardUnits),
+          source: workflowDynamicRateCardSource.source,
+          stepIndex: workflowDynamicRateCardSource.stepIndex,
+          comment: actionComment,
+          isRework: workflowDynamicRateCardSource.source === 'workflow_step' ? hasBeenActedUpon : taskWasCompletedBefore,
+        });
       }
 
       if (action === 'approve') {
@@ -465,6 +635,7 @@ export default function WorkflowTray() {
           comment: actionComment,
           formData: action === 'approve' ? formData : null,
           nextStepAssignee: action === 'approve' && currentStep.assignsNextStep ? nextStepAssignee : null,
+          dynamicRateCard: dynamicRateCardCharge,
           timestamp: Timestamp.now()
         })
       });
@@ -479,6 +650,7 @@ export default function WorkflowTray() {
       setActionModal({ isOpen: false, task: null, type: 'approve' });
       setActionComment('');
       setFormData({});
+      resetDynamicRateCardFields();
     } catch (error) {
       console.error('Error updating workflow:', error);
     } finally {
@@ -494,45 +666,33 @@ export default function WorkflowTray() {
     
     const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
     setOverrideUnits(currentStep?.unitsToAdd || 1);
+    const dynamicSource = getWorkflowDynamicRateCardSource(task, type);
+    resetDynamicRateCardFields(dynamicSource?.sourceConfig, currentStep?.assignedTo || task.assignedTo || memberId || user?.uid || '');
 
-    if (type === 'approve' && currentStep?.assignsNextStep) {
-      try {
-        const { getDoc } = await import('@/lib/supabase/document-store');
-        const projectRef = doc(db, 'projects', task.projectId);
-        const projectSnap = await getDoc(projectRef);
-        
-        if (projectSnap.exists()) {
-          const projectData = projectSnap.data();
-          const assignedMemberIds = projectData.assignedTeamMembers || [];
-          
-          if (assignedMemberIds.length > 0) {
-            const { getDocs } = await import('@/lib/supabase/document-store');
-            const teamQ = query(collection(db, 'team_members'), where('__name__', 'in', assignedMemberIds));
-            const teamSnap = await getDocs(teamQ);
-            const members = teamSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setProjectTeamMembers(members);
-          } else {
-            setProjectTeamMembers([]);
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching team members:', error);
-      }
+    if ((type === 'approve' && currentStep?.assignsNextStep) || dynamicSource) {
+      await loadProjectRateCardContext(task.projectId);
     }
   };
 
-  const updateAssignedTaskStatus = async (task: any, nextStatus: string) => {
+  const updateAssignedTaskStatus = async (task: any, nextStatus: string, dynamicCharge?: {
+    assigneeId: string;
+    rateCardId: string;
+    units: number;
+    comment?: string | null;
+  }) => {
     if (!user || !task?.id || isWorkflowItem(task)) return;
 
     const finalStatus = normalizeCompletionStatus(nextStatus, task);
-    let progress = task.progress || 0;
+    const progress = getProgressForTaskStatus(finalStatus, task.progress);
+    const taskHasDynamicRateCard = isDynamicRateCardEnabled(task);
+    const wasCompleted = isCompletedTaskStatus(task.status);
+    const isCompleted = isCompletedTaskStatus(finalStatus);
 
-    if (finalStatus === 'completed' || finalStatus === 'completed_late') {
-      progress = 100;
-    } else if (finalStatus === 'in_progress') {
-      progress = Math.max(progress, 10);
-    } else if (finalStatus === 'todo' || finalStatus === 'pending') {
-      progress = 0;
+    if (taskHasDynamicRateCard && isCompleted && !wasCompleted && !dynamicCharge) {
+      setDynamicRateCardModal({ isOpen: true, task, nextStatus });
+      resetDynamicRateCardFields(task, task.assignedTo || memberId || user?.uid || '');
+      await loadProjectRateCardContext(task.projectId);
+      return;
     }
 
     setProcessingId(task.id);
@@ -540,6 +700,7 @@ export default function WorkflowTray() {
     try {
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', task.projectId, 'tasks', task.id);
+      let dynamicRateCardCharge: any = null;
 
       if (task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
         const oldProgress = task.progress || 0;
@@ -558,7 +719,33 @@ export default function WorkflowTray() {
         }
       }
 
-      batch.update(taskRef, {
+      if (taskHasDynamicRateCard && isCompleted && !wasCompleted && dynamicCharge) {
+        dynamicRateCardCharge = addDynamicRateCardChargeToBatch(batch, {
+          projectId: task.projectId,
+          task,
+          rateCardId: dynamicCharge.rateCardId,
+          assigneeId: dynamicCharge.assigneeId,
+          units: dynamicCharge.units,
+          source: 'assigned_task',
+          comment: dynamicCharge.comment || null,
+        });
+      }
+
+      if (taskHasDynamicRateCard && wasCompleted && !isCompleted && task.dynamicRateCardLastCharge) {
+        const lastCharge = task.dynamicRateCardLastCharge;
+        dynamicRateCardCharge = addDynamicRateCardChargeToBatch(batch, {
+          projectId: task.projectId,
+          task,
+          rateCardId: lastCharge.rateCardId,
+          assigneeId: lastCharge.assignedTo,
+          units: -Math.abs(Number(lastCharge.units || 0)),
+          source: 'assigned_task_reversal',
+          comment: 'Reverso automático por cambio de estado desde finalizada.',
+          reversal: true,
+        });
+      }
+
+      const taskUpdate: any = {
         status: finalStatus,
         progress,
         updatedAt: Timestamp.now(),
@@ -568,8 +755,17 @@ export default function WorkflowTray() {
           changedByEmail: user.email || null,
           timestamp: Timestamp.now(),
           source: 'inbox',
+          dynamicRateCard: dynamicRateCardCharge,
         }),
-      });
+      };
+
+      if (dynamicRateCardCharge && !dynamicRateCardCharge.reversal && dynamicCharge) {
+        taskUpdate.dynamicRateCardLastCharge = dynamicRateCardCharge;
+      } else if (taskHasDynamicRateCard && wasCompleted && !isCompleted) {
+        taskUpdate.dynamicRateCardLastCharge = null;
+      }
+
+      batch.update(taskRef, taskUpdate);
 
       await batch.commit();
 
@@ -585,6 +781,26 @@ export default function WorkflowTray() {
     } finally {
       setProcessingId(null);
     }
+  };
+
+  const confirmAssignedTaskDynamicRateCard = async () => {
+    const task = dynamicRateCardModal.task;
+    if (!task) return;
+
+    if (!dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0) {
+      toast.warning("Completa la persona, el perfil y las unidades del Rate Card dinámico.");
+      return;
+    }
+
+    await updateAssignedTaskStatus(task, dynamicRateCardModal.nextStatus, {
+      assigneeId: dynamicRateCardAssignee,
+      rateCardId: dynamicRateCardId,
+      units: Number(dynamicRateCardUnits),
+      comment: dynamicRateCardComment.trim() || null,
+    });
+
+    setDynamicRateCardModal({ isOpen: false, task: null, nextStatus: 'completed' });
+    resetDynamicRateCardFields();
   };
 
   if (loading) {
@@ -1267,6 +1483,65 @@ export default function WorkflowTray() {
                 </div>
               )}
 
+              {getWorkflowDynamicRateCardSource(actionModal.task, actionModal.type) && (
+                <div className="mb-4 rounded-xl border border-emerald-100 bg-emerald-50 p-4">
+                  <p className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-700">
+                    Rate Card dinámico
+                  </p>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600">
+                        Persona <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        value={dynamicRateCardAssignee}
+                        onChange={(e) => setDynamicRateCardAssignee(e.target.value)}
+                        className="w-full rounded-lg border border-emerald-100 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      >
+                        <option value="">Seleccionar...</option>
+                        {dynamicRateCardAssignee && !projectTeamMembers.some((member) => member.id === dynamicRateCardAssignee) && (
+                          <option value={dynamicRateCardAssignee}>Responsable actual</option>
+                        )}
+                        {projectTeamMembers.map((member) => (
+                          <option key={member.id} value={member.id}>{member.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600">
+                        Perfil <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        value={dynamicRateCardId}
+                        onChange={(e) => setDynamicRateCardId(e.target.value)}
+                        className="w-full rounded-lg border border-emerald-100 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      >
+                        <option value="">Seleccionar...</option>
+                        {projectRateCards.map((rateCard) => (
+                          <option key={rateCard.id} value={rateCard.id}>{rateCard.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-600">
+                        Unidades <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        min="0.1"
+                        step="0.1"
+                        value={dynamicRateCardUnits}
+                        onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                        className="w-full rounded-lg border border-emerald-100 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      />
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[10px] text-emerald-700">
+                    Este cargo quedará registrado por persona, día, semana y mes.
+                  </p>
+                </div>
+              )}
+
               {actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && 
                actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && (
                 <div className="mb-4">
@@ -1309,7 +1584,7 @@ export default function WorkflowTray() {
               </Button>
               <Button
                 onClick={confirmAction}
-                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || (actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && overrideUnits === '')}
+                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || (actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && overrideUnits === '') || (Boolean(getWorkflowDynamicRateCardSource(actionModal.task, actionModal.type)) && (!dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))}
                 className={
                   actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 
                   actionModal.type === 'return' ? 'bg-red-600 hover:bg-red-700 text-white' :
@@ -1331,6 +1606,115 @@ export default function WorkflowTray() {
                 {actionModal.type === 'approve' ? 'Confirmar y Remitir' : 
                  actionModal.type === 'return' ? 'Confirmar Devolución' :
                  actionModal.type === 'stop' ? 'Confirmar Detención' : 'Confirmar Reanudación'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {dynamicRateCardModal.isOpen && dynamicRateCardModal.task && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-slate-800">Asignar Rate Card</h2>
+                <p className="text-sm text-slate-500 mt-1">
+                  {dynamicRateCardModal.task.title || dynamicRateCardModal.task.name || 'Tarea'}
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  setDynamicRateCardModal({ isOpen: false, task: null, nextStatus: 'completed' });
+                  resetDynamicRateCardFields();
+                }}
+              >
+                <X className="w-5 h-5 text-slate-400" />
+              </Button>
+            </div>
+
+            <div className="p-6 space-y-4 bg-slate-50">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
+                    Persona que aporta <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={dynamicRateCardAssignee}
+                    onChange={(e) => setDynamicRateCardAssignee(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="">Seleccionar...</option>
+                    {dynamicRateCardAssignee && !projectTeamMembers.some((member) => member.id === dynamicRateCardAssignee) && (
+                      <option value={dynamicRateCardAssignee}>Responsable actual</option>
+                    )}
+                    {projectTeamMembers.map((member) => (
+                      <option key={member.id} value={member.id}>{member.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
+                    Perfil de Rate Card <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={dynamicRateCardId}
+                    onChange={(e) => setDynamicRateCardId(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="">Seleccionar...</option>
+                    {projectRateCards.map((rateCard) => (
+                      <option key={rateCard.id} value={rateCard.id}>{rateCard.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Unidades <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  value={dynamicRateCardUnits}
+                  onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Comentario
+                </label>
+                <textarea
+                  value={dynamicRateCardComment}
+                  onChange={(e) => setDynamicRateCardComment(e.target.value)}
+                  className="h-20 w-full resize-none rounded-lg border border-slate-200 bg-white p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  placeholder="Detalle opcional del aporte..."
+                />
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-slate-100 flex items-center justify-end gap-3">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDynamicRateCardModal({ isOpen: false, task: null, nextStatus: 'completed' });
+                  resetDynamicRateCardFields();
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={confirmAssignedTaskDynamicRateCard}
+                disabled={processingId === dynamicRateCardModal.task.id || !dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0}
+                className="bg-emerald-600 text-white hover:bg-emerald-700"
+              >
+                {processingId === dynamicRateCardModal.task.id && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                Guardar y finalizar
               </Button>
             </div>
           </div>

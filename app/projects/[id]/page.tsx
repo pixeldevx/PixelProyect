@@ -34,6 +34,7 @@ import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 import Image from 'next/image';
 import { belongsToAnyOrganization } from '@/lib/organizations';
+import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 
@@ -89,6 +90,23 @@ const normalizeCompletedTaskStatus = (status: string, task: any) => {
   return Date.now() > endDate.getTime() ? 'completed_late' : 'completed';
 };
 
+const isDynamicRateCardEnabled = (source: any) =>
+  Boolean(source?.dynamicRateCard || source?.rateCardMode === 'dynamic' || source?.dynamicRateCardConfig);
+
+const getDynamicRateCardUnits = (source: any) =>
+  Number(source?.dynamicRateCardConfig?.defaultUnits || source?.unitsToAdd || 1);
+
+const getRateCardDateKeys = (date = new Date()) => {
+  const year = date.getFullYear();
+  const dateKey = date.toISOString().slice(0, 10);
+  const monthKey = `${year}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  const startOfYear = new Date(year, 0, 1);
+  const dayOfYear = Math.floor((date.getTime() - startOfYear.getTime()) / 86400000) + 1;
+  const weekKey = `${year}-W${String(Math.ceil(dayOfYear / 7)).padStart(2, '0')}`;
+
+  return { dateKey, weekKey, monthKey };
+};
+
 export default function ProjectDetailsPage() {
   const params = useParams();
   const router = useRouter();
@@ -135,6 +153,15 @@ export default function ProjectDetailsPage() {
   const [taskForStructureEdit, setTaskForStructureEdit] = useState<any>(null);
   const [selectedTaskForIncrement, setSelectedTaskForIncrement] = useState<any>(null);
   const [selectedTaskForComments, setSelectedTaskForComments] = useState<any>(null);
+  const [dynamicRateCardStatusChange, setDynamicRateCardStatusChange] = useState<{
+    taskId: string;
+    newStatus: string;
+    task: any;
+  } | null>(null);
+  const [dynamicRateCardAssignee, setDynamicRateCardAssignee] = useState('');
+  const [dynamicRateCardId, setDynamicRateCardId] = useState('');
+  const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState<number | ''>(1);
+  const [dynamicRateCardComment, setDynamicRateCardComment] = useState('');
   const managedOrganizationIds = userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : [];
 
 
@@ -565,7 +592,69 @@ export default function ProjectDetailsPage() {
     }
   };
 
-  const handleUpdateTaskStatus = async (taskId: string, newStatus: string, task: any) => {
+  const resetDynamicRateCardFields = (task: any = null) => {
+    setDynamicRateCardAssignee(task?.assignedTo || '');
+    setDynamicRateCardId('');
+    setDynamicRateCardUnits(getDynamicRateCardUnits(task));
+    setDynamicRateCardComment('');
+  };
+
+  const addDynamicRateCardChargeToBatch = (
+    batch: ReturnType<typeof writeBatch>,
+    params: {
+      task: any;
+      rateCardId: string;
+      assigneeId: string;
+      units: number;
+      source: string;
+      comment?: string | null;
+      reversal?: boolean;
+    },
+  ) => {
+    const amount = Number(params.units);
+    if (!params.rateCardId || !params.assigneeId || !amount) return null;
+
+    const rcRef = doc(db, 'projects', projectId, 'rateCards', params.rateCardId);
+    batch.update(rcRef, {
+      currentValue: increment(amount),
+      [`userStats.${params.assigneeId}`]: increment(amount),
+    });
+
+    const entryRef = doc(collection(db, 'projects', projectId, 'rateCardEntries'));
+    const now = new Date();
+    batch.set(entryRef, {
+      projectId,
+      taskId: params.task.id,
+      taskTitle: params.task.title || params.task.name || 'Tarea',
+      rateCardId: params.rateCardId,
+      assignedTo: params.assigneeId,
+      units: amount,
+      source: params.source,
+      comment: params.comment || null,
+      reversal: Boolean(params.reversal),
+      ...getRateCardDateKeys(now),
+      createdAt: serverTimestamp(),
+      createdBy: user?.uid || null,
+      createdByEmail: user?.email || null,
+    });
+
+    return {
+      entryId: entryRef.id,
+      rateCardId: params.rateCardId,
+      assignedTo: params.assigneeId,
+      units: amount,
+      source: params.source,
+      reversal: Boolean(params.reversal),
+      createdAt: now.toISOString(),
+    };
+  };
+
+  const handleUpdateTaskStatus = async (taskId: string, newStatus: string, task: any, dynamicCharge?: {
+    assigneeId: string;
+    rateCardId: string;
+    units: number;
+    comment?: string | null;
+  }) => {
     if (!task) return;
     if (!canEditTaskStatus) {
       toast.error('No tienes permisos para cambiar el estado de tareas.');
@@ -591,13 +680,20 @@ export default function ProjectDetailsPage() {
         return;
       }
 
-      let progress = 0;
-      if (finalStatus === 'completed' || finalStatus === 'completed_late') progress = 100;
-      else if (finalStatus === 'in_progress') progress = Math.max(task.progress || 0, 10);
-      else if (finalStatus === 'stuck') progress = task.progress || 0;
+      const progress = getProgressForTaskStatus(finalStatus, task.progress);
+      const taskHasDynamicRateCard = isDynamicRateCardEnabled(task);
+      const wasCompleted = isCompletedTaskStatus(task.status);
+      const isCompleted = isCompletedTaskStatus(finalStatus);
+
+      if (taskHasDynamicRateCard && isCompleted && !wasCompleted && !dynamicCharge) {
+        setDynamicRateCardStatusChange({ taskId, newStatus, task });
+        resetDynamicRateCardFields(task);
+        return;
+      }
 
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
+      let dynamicRateCardCharge: any = null;
 
       // Handle Rate Card update
       if (task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
@@ -659,12 +755,44 @@ export default function ProjectDetailsPage() {
         }
       }
 
-      batch.update(taskRef, {
+      if (taskHasDynamicRateCard && isCompleted && !wasCompleted && dynamicCharge) {
+        dynamicRateCardCharge = addDynamicRateCardChargeToBatch(batch, {
+          task,
+          rateCardId: dynamicCharge.rateCardId,
+          assigneeId: dynamicCharge.assigneeId,
+          units: dynamicCharge.units,
+          source: 'project_task_status',
+          comment: dynamicCharge.comment || null,
+        });
+      }
+
+      if (taskHasDynamicRateCard && wasCompleted && !isCompleted && task.dynamicRateCardLastCharge) {
+        const lastCharge = task.dynamicRateCardLastCharge;
+        dynamicRateCardCharge = addDynamicRateCardChargeToBatch(batch, {
+          task,
+          rateCardId: lastCharge.rateCardId,
+          assigneeId: lastCharge.assignedTo,
+          units: -Math.abs(Number(lastCharge.units || 0)),
+          source: 'project_task_status_reversal',
+          comment: 'Reverso automático por cambio de estado desde finalizada.',
+          reversal: true,
+        });
+      }
+
+      const taskUpdate: any = {
         status: finalStatus,
         progress: progress,
         priority: task.priority || 'medium',
         updatedAt: serverTimestamp()
-      });
+      };
+
+      if (dynamicRateCardCharge && !dynamicRateCardCharge.reversal && dynamicCharge) {
+        taskUpdate.dynamicRateCardLastCharge = dynamicRateCardCharge;
+      } else if (taskHasDynamicRateCard && wasCompleted && !isCompleted) {
+        taskUpdate.dynamicRateCardLastCharge = null;
+      }
+
+      batch.update(taskRef, taskUpdate);
 
       await batch.commit();
 
@@ -676,6 +804,30 @@ export default function ProjectDetailsPage() {
       console.error("Error updating task status:", error);
       toast.error(`Error al actualizar el estado de la tarea: ${error.message}`);
     }
+  };
+
+  const confirmDynamicRateCardStatusChange = async () => {
+    if (!dynamicRateCardStatusChange) return;
+
+    if (!dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0) {
+      toast.warning('Completa la persona, el perfil y las unidades del Rate Card dinámico.');
+      return;
+    }
+
+    await handleUpdateTaskStatus(
+      dynamicRateCardStatusChange.taskId,
+      dynamicRateCardStatusChange.newStatus,
+      dynamicRateCardStatusChange.task,
+      {
+        assigneeId: dynamicRateCardAssignee,
+        rateCardId: dynamicRateCardId,
+        units: Number(dynamicRateCardUnits),
+        comment: dynamicRateCardComment.trim() || null,
+      },
+    );
+
+    setDynamicRateCardStatusChange(null);
+    resetDynamicRateCardFields();
   };
 
 
@@ -1685,6 +1837,116 @@ export default function ProjectDetailsPage() {
         task={selectedTaskForIncrement}
         onSubmit={handleIncrementTaskValue}
       />
+
+      {dynamicRateCardStatusChange && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 p-6">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Asignar Rate Card</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  {dynamicRateCardStatusChange.task.title || dynamicRateCardStatusChange.task.name || 'Tarea'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setDynamicRateCardStatusChange(null);
+                  resetDynamicRateCardFields();
+                }}
+                className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4 bg-slate-50 p-6">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
+                    Persona que aporta <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={dynamicRateCardAssignee}
+                    onChange={(e) => setDynamicRateCardAssignee(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="">Seleccionar...</option>
+                    {dynamicRateCardAssignee && !(project?.assignedTeamMembers || []).includes(dynamicRateCardAssignee) && (
+                      <option value={dynamicRateCardAssignee}>Responsable actual</option>
+                    )}
+                    {(project?.assignedTeamMembers || []).map((memberId: string) => {
+                      const member = teamMembers.find((item) => item.id === memberId);
+                      if (!member) return null;
+                      return (
+                        <option key={member.id} value={member.id}>{member.name}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
+                    Perfil de Rate Card <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={dynamicRateCardId}
+                    onChange={(e) => setDynamicRateCardId(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="">Seleccionar...</option>
+                    {rateCards.map((rateCard) => (
+                      <option key={rateCard.id} value={rateCard.id}>{rateCard.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">
+                  Unidades <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  value={dynamicRateCardUnits}
+                  onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Comentario</label>
+                <textarea
+                  value={dynamicRateCardComment}
+                  onChange={(e) => setDynamicRateCardComment(e.target.value)}
+                  className="h-20 w-full resize-none rounded-lg border border-slate-200 bg-white p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  placeholder="Detalle opcional del aporte..."
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 border-t border-slate-100 p-6">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDynamicRateCardStatusChange(null);
+                  resetDynamicRateCardFields();
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={confirmDynamicRateCardStatusChange}
+                disabled={!dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0}
+                className="bg-emerald-600 text-white hover:bg-emerald-700"
+              >
+                Guardar y finalizar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create Task Modal */}
       {canCreateTasks && (

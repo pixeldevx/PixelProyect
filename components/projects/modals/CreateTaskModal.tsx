@@ -70,6 +70,13 @@ export function CreateTaskModal({
       assignedTo: string;
       label: string;
       form?: CustomForm;
+      rateCardMode?: "static" | "dynamic";
+      dynamicRateCard?: boolean;
+      dynamicRateCardConfig?: {
+        defaultUnits: number;
+        requirePerson: boolean;
+        requireRateCard: boolean;
+      } | null;
       rateCardId?: string;
       unitsToAdd?: number;
       autoAddUnits?: boolean;
@@ -83,6 +90,9 @@ export function CreateTaskModal({
   const [workflowCycles, setWorkflowCycles] = useState<number>(1);
   const [newTaskRequiresDoc, setNewTaskRequiresDoc] = useState(false);
   const [newTaskIsRateCard, setNewTaskIsRateCard] = useState(false);
+  const [newTaskRateCardMode, setNewTaskRateCardMode] = useState<
+    "static" | "dynamic"
+  >("static");
   const [newTaskRateCardId, setNewTaskRateCardId] = useState("");
   const [newTaskUnitsToAdd, setNewTaskUnitsToAdd] = useState(1);
   const [newTaskPriority, setNewTaskPriority] = useState("medium");
@@ -138,6 +148,7 @@ export function CreateTaskModal({
     setWorkflowCycles(1);
     setNewTaskRequiresDoc(false);
     setNewTaskIsRateCard(false);
+    setNewTaskRateCardMode("static");
     setNewTaskRateCardId("");
     setNewTaskUnitsToAdd(1);
     setDraftSubtasks([]);
@@ -215,12 +226,26 @@ export function CreateTaskModal({
       return;
     }
 
+    if (newTaskIsRateCard && newTaskRateCardMode === "static" && !newTaskRateCardId) {
+      toast.warning("Selecciona el perfil de Rate Card que se va a afectar.");
+      return;
+    }
+
+    if (newTaskIsRateCard && Number(newTaskUnitsToAdd) <= 0) {
+      toast.warning("Define unidades de Rate Card mayores a cero.");
+      return;
+    }
+
     setIsCreatingTask(true);
 
     try {
       const taskTitle = newTaskTitle.trim();
       const parentStartDate = new Date(newTaskStart + "T00:00:00");
       const parentEndDate = new Date(newTaskEnd + "T00:00:00");
+      const usesStaticRateCard =
+        newTaskIsRateCard && newTaskRateCardMode === "static";
+      const usesDynamicRateCard =
+        newTaskIsRateCard && newTaskRateCardMode === "dynamic";
       const taskData: any = {
         projectId: projectId,
         title: taskTitle,
@@ -240,9 +265,18 @@ export function CreateTaskModal({
         requiresDocument: newTaskRequiresDoc,
         linkedDocumentId: null,
         isRateCardTask: newTaskIsRateCard,
-        rateCardId: newTaskIsRateCard ? newTaskRateCardId : null,
+        rateCardMode: newTaskIsRateCard ? newTaskRateCardMode : null,
+        dynamicRateCard: usesDynamicRateCard,
+        dynamicRateCardConfig: usesDynamicRateCard
+          ? {
+              defaultUnits: Number(newTaskUnitsToAdd) || 1,
+              requirePerson: true,
+              requireRateCard: true,
+            }
+          : null,
+        rateCardId: usesStaticRateCard ? newTaskRateCardId : null,
         unitsToAdd: newTaskIsRateCard ? Number(newTaskUnitsToAdd) : null,
-        syncExternal: newTaskIsRateCard
+        syncExternal: usesStaticRateCard
           ? rateCards.find((rc) => rc.id === newTaskRateCardId)?.syncExternal ||
             false
           : false,
@@ -715,16 +749,32 @@ export function CreateTaskModal({
                           </select>
 
                           <select
-                            value={step.rateCardId || ""}
+                            value={step.dynamicRateCard ? "__dynamic__" : step.rateCardId || ""}
                             onChange={(e) => {
                               const newSteps = [...workflowSteps];
-                              newSteps[idx].rateCardId =
-                                e.target.value || undefined;
+                              if (e.target.value === "__dynamic__") {
+                                newSteps[idx].rateCardMode = "dynamic";
+                                newSteps[idx].dynamicRateCard = true;
+                                newSteps[idx].dynamicRateCardConfig = {
+                                  defaultUnits: newSteps[idx].unitsToAdd || 1,
+                                  requirePerson: true,
+                                  requireRateCard: true,
+                                };
+                                newSteps[idx].rateCardId = undefined;
+                                newSteps[idx].autoAddUnits = false;
+                              } else {
+                                newSteps[idx].rateCardMode = e.target.value ? "static" : undefined;
+                                newSteps[idx].dynamicRateCard = false;
+                                newSteps[idx].dynamicRateCardConfig = null;
+                                newSteps[idx].rateCardId =
+                                  e.target.value || undefined;
+                              }
                               setWorkflowSteps(newSteps);
                             }}
                             className="flex-1 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
                           >
                             <option value="">Sin Rate Card</option>
+                            <option value="__dynamic__">Rate Card dinámico</option>
                             {rateCards.map((rc) => (
                               <option key={rc.id} value={rc.id}>
                                 {rc.name}
@@ -732,7 +782,34 @@ export function CreateTaskModal({
                             ))}
                           </select>
 
-                          {step.rateCardId && (
+                          {step.dynamicRateCard && (
+                            <div className="flex flex-col gap-1 items-end">
+                              <input
+                                type="number"
+                                min="0.1"
+                                step="0.1"
+                                value={step.unitsToAdd || 1}
+                                onChange={(e) => {
+                                  const newSteps = [...workflowSteps];
+                                  const units = Number(e.target.value);
+                                  newSteps[idx].unitsToAdd = units;
+                                  newSteps[idx].dynamicRateCardConfig = {
+                                    defaultUnits: units || 1,
+                                    requirePerson: true,
+                                    requireRateCard: true,
+                                  };
+                                  setWorkflowSteps(newSteps);
+                                }}
+                                className="w-16 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
+                                placeholder="Unid."
+                              />
+                              <span className="text-[9px] text-emerald-600 text-right">
+                                Pedirá persona y perfil al aprobar.
+                              </span>
+                            </div>
+                          )}
+
+                          {step.rateCardId && !step.dynamicRateCard && (
                             <div className="flex flex-col gap-1 items-end">
                               <div className="flex items-center gap-1">
                                 <label
@@ -1043,6 +1120,37 @@ export function CreateTaskModal({
 
             {newTaskIsRateCard && (
               <div className="grid grid-cols-2 gap-4 p-4 bg-emerald-50 rounded-xl border border-emerald-100 animate-in slide-in-from-top-2 duration-200">
+                <div className="col-span-2 space-y-2">
+                  <label className="text-xs font-bold text-emerald-600 uppercase tracking-wider">
+                    Tipo de asignación
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold ${newTaskRateCardMode === "static" ? "border-emerald-400 bg-white text-emerald-700" : "border-emerald-100 bg-emerald-50/60 text-slate-500"}`}>
+                      <input
+                        type="radio"
+                        name="taskRateCardMode"
+                        value="static"
+                        checked={newTaskRateCardMode === "static"}
+                        onChange={() => setNewTaskRateCardMode("static")}
+                        className="h-3.5 w-3.5 text-emerald-600"
+                      />
+                      Rate Card fijo
+                    </label>
+                    <label className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold ${newTaskRateCardMode === "dynamic" ? "border-emerald-400 bg-white text-emerald-700" : "border-emerald-100 bg-emerald-50/60 text-slate-500"}`}>
+                      <input
+                        type="radio"
+                        name="taskRateCardMode"
+                        value="dynamic"
+                        checked={newTaskRateCardMode === "dynamic"}
+                        onChange={() => setNewTaskRateCardMode("dynamic")}
+                        className="h-3.5 w-3.5 text-emerald-600"
+                      />
+                      Dinámico al completar
+                    </label>
+                  </div>
+                </div>
+
+                {newTaskRateCardMode === "static" && (
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-emerald-600 uppercase tracking-wider">
                     Seleccionar Perfil
@@ -1055,7 +1163,7 @@ export function CreateTaskModal({
                       if (rc) setNewTaskIndicator(rc.indicator);
                     }}
                     className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                    required={newTaskIsRateCard}
+                    required={newTaskIsRateCard && newTaskRateCardMode === "static"}
                   >
                     <option value="">Seleccionar...</option>
                     {rateCards.map((rc) => (
@@ -1065,9 +1173,10 @@ export function CreateTaskModal({
                     ))}
                   </select>
                 </div>
+                )}
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-emerald-600 uppercase tracking-wider">
-                    Unidades a sumar
+                    {newTaskRateCardMode === "dynamic" ? "Unidades sugeridas" : "Unidades a sumar"}
                   </label>
                   <input
                     type="number"
@@ -1081,8 +1190,15 @@ export function CreateTaskModal({
                     required={newTaskIsRateCard}
                   />
                 </div>
+                {newTaskRateCardMode === "dynamic" && (
+                  <p className="col-span-2 text-[10px] text-emerald-600">
+                    Al finalizar la tarea se solicitará qué persona aporta las unidades y qué perfil de Rate Card se cargará.
+                  </p>
+                )}
                 <p className="col-span-2 text-[10px] text-emerald-600">
-                  {newTaskType === "workflow"
+                  {newTaskRateCardMode === "dynamic"
+                    ? "El cargo se guardará en un historial por persona, día, semana y mes para reportes."
+                    : newTaskType === "workflow"
                     ? "Las unidades se sumarán automáticamente al finalizar todo el workflow."
                     : "Las unidades se sumarán proporcionalmente al progreso de la tarea."}
                 </p>
