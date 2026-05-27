@@ -6,7 +6,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2 } from 'lucide-react';
+import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck } from 'lucide-react';
 import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
@@ -19,6 +19,7 @@ import ProjectBilling from '@/components/projects/ProjectBilling';
 import { ProjectGantt } from '@/components/projects/ProjectGantt';
 import { ProjectDocumentsTree } from '@/components/projects/ProjectDocumentsTree';
 import { ProjectDriveRepositories } from '@/components/projects/ProjectDriveRepositories';
+import { ProjectQuality } from '@/components/projects/ProjectQuality';
 import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
 import { TaskCommentsModal } from '@/components/projects/TaskCommentsModal';
 import { StartWorkflowModal } from '@/components/projects/StartWorkflowModal';
@@ -131,7 +132,7 @@ export default function ProjectDetailsPage() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'tasks' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
+  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'tasks' | 'quality' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
   const [showDocumentIssueAlert, setShowDocumentIssueAlert] = useState(true);
 
   useEffect(() => {
@@ -140,7 +141,7 @@ export default function ProjectDetailsPage() {
       setActiveTab('tasks');
       return;
     }
-    if (tabParam && ['documents', 'drive', 'tasks', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
+    if (tabParam && ['documents', 'drive', 'tasks', 'quality', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
       setActiveTab(tabParam as any);
     }
   }, [searchParams]);
@@ -1441,6 +1442,19 @@ export default function ProjectDetailsPage() {
             </div>
           </button>
           <button
+            onClick={() => setActiveTab('quality')}
+            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
+              activeTab === 'quality'
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <ShieldCheck size={16} />
+              Gestión de calidad
+            </div>
+          </button>
+          <button
             onClick={() => setActiveTab('rateCards')}
             className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
               activeTab === 'rateCards'
@@ -1546,6 +1560,15 @@ export default function ProjectDetailsPage() {
           teamMembers={teamMembers}
           currentUser={user}
           canManage={canManageDriveRepositories}
+        />
+      )}
+
+      {activeTab === 'quality' && (
+        <ProjectQuality
+          projectId={projectId}
+          teamMembers={teamMembers}
+          currentUser={user}
+          canManage={canEditTaskStructure}
         />
       )}
 

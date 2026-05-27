@@ -19,6 +19,7 @@ type WorkflowStepDraft = {
   unitsToAdd?: number | null;
   autoAddUnits?: boolean | null;
   assignsNextStep?: boolean | null;
+  isQualityGate?: boolean | null;
 };
 
 type SubtaskDraft = {
@@ -87,6 +88,7 @@ const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
     unitsToAdd: step?.unitsToAdd ?? null,
     autoAddUnits: step?.autoAddUnits ?? null,
     assignsNextStep: step?.assignsNextStep ?? null,
+    isQualityGate: step?.isQualityGate ?? null,
   }));
 
 export function EditTaskStructureModal({
@@ -497,6 +499,16 @@ export function EditTaskStructureModal({
                           Ultimo paso del workflow
                         </div>
                       )}
+
+                      <label className="md:col-span-2 h-9 px-3 flex items-center gap-2 text-xs text-amber-800 border border-amber-100 rounded-lg bg-amber-50 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(step.isQualityGate)}
+                          onChange={(event) => updateStep(index, { isQualityGate: event.target.checked })}
+                          className="rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+                        />
+                        Paso de control de calidad
+                      </label>
                     </div>
 
                     {step.form && (

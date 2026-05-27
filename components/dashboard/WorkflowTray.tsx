@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { collection, query, where, onSnapshot, doc, arrayUnion, Timestamp, writeBatch, increment, getDoc, getDocs } from '@/lib/supabase/document-store';
 import { db, auth } from '@/lib/backend';
-import { CheckCircle2, XCircle, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, AlertCircle, X, ClipboardList, Play, Pause, ListTodo, FolderOpen } from 'lucide-react';
+import { CheckCircle2, XCircle, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, AlertCircle, X, ClipboardList, Play, Pause, ListTodo, FolderOpen, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -165,6 +165,28 @@ const getWorkflowDynamicRateCardSource = (task: any, action: string) => {
   return null;
 };
 
+const isQualityGateStep = (step: any) =>
+  Boolean(step?.isQualityGate || step?.type === 'quality_gate' || step?.taskType === 'quality_gate');
+
+const getQualityParticipantIds = (task: any, currentIndex: number, currentStep: any, reviewerId: string | null, userId?: string) => {
+  const previousStep = currentIndex > 0 ? task.workflowSteps?.[currentIndex - 1] : null;
+  const professionalId =
+    (previousStep?.assignedTo && previousStep.assignedTo !== 'DYNAMIC' ? previousStep.assignedTo : null) ||
+    task.assignedTo ||
+    task.assignedTeamMembers?.[0] ||
+    task.assignedUsers?.[0] ||
+    userId ||
+    null;
+
+  const qualityReviewerId =
+    (currentStep?.assignedTo && currentStep.assignedTo !== 'DYNAMIC' ? currentStep.assignedTo : null) ||
+    reviewerId ||
+    userId ||
+    null;
+
+  return { professionalId, reviewerId: qualityReviewerId };
+};
+
 const getDueState = (task: any) => {
   const status = task?.status || 'todo';
   if (status === 'completed' || status === 'completed_late' || status === 'listo') return 'closed';
@@ -237,6 +259,8 @@ export default function WorkflowTray() {
   const [nextStepAssignee, setNextStepAssignee] = useState<string>('');
   const [projectTeamMembers, setProjectTeamMembers] = useState<any[]>([]);
   const [projectRateCards, setProjectRateCards] = useState<any[]>([]);
+  const [projectQualityCauses, setProjectQualityCauses] = useState<any[]>([]);
+  const [qualityCauseId, setQualityCauseId] = useState('');
   const [dynamicRateCardAssignee, setDynamicRateCardAssignee] = useState('');
   const [dynamicRateCardId, setDynamicRateCardId] = useState('');
   const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState<number | ''>(1);
@@ -409,9 +433,17 @@ export default function WorkflowTray() {
           .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
           .sort((left: any, right: any) => String(left.name || '').localeCompare(String(right.name || ''))),
       );
+
+      const qualityCausesSnap = await getDocs(query(collection(db, 'projects', projectId, 'qualityCauses')));
+      setProjectQualityCauses(
+        qualityCausesSnap.docs
+          .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+          .filter((cause: any) => cause.active !== false)
+          .sort((left: any, right: any) => String(left.name || left.label || '').localeCompare(String(right.name || right.label || ''))),
+      );
     } catch (error) {
       console.error('Error loading rate card context:', error);
-      toast.error('No se pudieron cargar las personas o rate cards del proyecto.');
+      toast.error('No se pudieron cargar las personas, rate cards o causales del proyecto.');
     }
   };
 
@@ -491,6 +523,8 @@ export default function WorkflowTray() {
     const action = actionModal.type;
     const currentIndex = task.currentStepIndex || 0;
     const currentStep = task.workflowSteps[currentIndex];
+    const currentStepIsQualityGate = isQualityGateStep(currentStep);
+    const selectedQualityCause = projectQualityCauses.find((cause) => cause.id === qualityCauseId);
     const workflowDynamicRateCardSource = getWorkflowDynamicRateCardSource(task, action);
     const workflowDynamicRateCardRequestsUnits = workflowDynamicRateCardSource
       ? shouldRequestDynamicRateCardUnits(workflowDynamicRateCardSource.sourceConfig)
@@ -514,6 +548,11 @@ export default function WorkflowTray() {
         toast.warning("Completa la persona, el perfil y las unidades del Rate Card dinámico.");
         return;
       }
+    }
+
+    if (currentStepIsQualityGate && action === 'return' && !qualityCauseId) {
+      toast.warning("Selecciona la causal de devolución de calidad.");
+      return;
     }
     
     setProcessingId(task.id);
@@ -568,6 +607,34 @@ export default function WorkflowTray() {
           comment: actionComment,
           isRework: workflowDynamicRateCardSource.source === 'workflow_step' ? hasBeenActedUpon : taskWasCompletedBefore,
         });
+      }
+
+      let qualityEvent: any = null;
+      if (currentStepIsQualityGate && (action === 'approve' || action === 'return')) {
+        const eventRef = doc(collection(db, 'projects', task.projectId, 'qualityEvents'));
+        const now = new Date();
+        const participants = getQualityParticipantIds(task, currentIndex, currentStep, memberId, user.uid);
+        const result = action === 'approve' ? 'accepted' : 'rejected';
+        qualityEvent = {
+          id: eventRef.id,
+          projectId: task.projectId,
+          taskId: task.id,
+          taskTitle: task.title || task.name || 'Tarea',
+          stepIndex: currentIndex,
+          stepLabel: currentStep?.label || `Paso ${currentIndex + 1}`,
+          result,
+          action: result,
+          professionalId: participants.professionalId,
+          reviewerId: participants.reviewerId,
+          causeId: result === 'rejected' ? (selectedQualityCause?.id || qualityCauseId || null) : null,
+          causeLabel: result === 'rejected' ? (selectedQualityCause?.name || selectedQualityCause?.label || 'Sin causal') : null,
+          comment: actionComment.trim(),
+          ...getDateKeys(now),
+          createdAt: Timestamp.now(),
+          createdBy: user.uid,
+          createdByEmail: user.email || null,
+        };
+        batch.set(eventRef, qualityEvent);
       }
 
       if (action === 'approve') {
@@ -648,6 +715,7 @@ export default function WorkflowTray() {
           formData: action === 'approve' ? formData : null,
           nextStepAssignee: action === 'approve' && currentStep.assignsNextStep ? nextStepAssignee : null,
           dynamicRateCard: dynamicRateCardCharge,
+          qualityEvent,
           timestamp: Timestamp.now()
         })
       });
@@ -662,6 +730,7 @@ export default function WorkflowTray() {
       setActionModal({ isOpen: false, task: null, type: 'approve' });
       setActionComment('');
       setFormData({});
+      setQualityCauseId('');
       resetDynamicRateCardFields();
     } catch (error) {
       console.error('Error updating workflow:', error);
@@ -675,13 +744,14 @@ export default function WorkflowTray() {
     setActionComment('');
     setFormData({});
     setNextStepAssignee('');
+    setQualityCauseId('');
     
     const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
     setOverrideUnits(currentStep?.unitsToAdd || 1);
     const dynamicSource = getWorkflowDynamicRateCardSource(task, type);
     resetDynamicRateCardFields(dynamicSource?.sourceConfig, currentStep?.assignedTo || task.assignedTo || memberId || user?.uid || '');
 
-    if ((type === 'approve' && currentStep?.assignsNextStep) || dynamicSource) {
+    if ((type === 'approve' && currentStep?.assignsNextStep) || dynamicSource || isQualityGateStep(currentStep)) {
       await loadProjectRateCardContext(task.projectId);
     }
   };
@@ -902,6 +972,11 @@ export default function WorkflowTray() {
   const activeDynamicRateCardRequestsUnits = activeDynamicRateCardSource
     ? shouldRequestDynamicRateCardUnits(activeDynamicRateCardSource.sourceConfig)
     : false;
+  const activeQualityGateStep = actionModal.isOpen
+    ? actionModal.task?.workflowSteps?.[actionModal.task.currentStepIndex || 0]
+    : null;
+  const activeQualityGateRequiresCause =
+    isQualityGateStep(activeQualityGateStep) && actionModal.type === 'return';
   const assignedTaskDynamicRateCardRequestsUnits = dynamicRateCardModal.task
     ? shouldRequestDynamicRateCardUnits(dynamicRateCardModal.task)
     : false;
@@ -1117,6 +1192,7 @@ export default function WorkflowTray() {
               );
             }
 
+            const currentWorkflowStep = task.workflowSteps[task.currentStepIndex || 0];
             const isReturned = task.workflowSteps[task.currentStepIndex]?.status === 'devuelto' || task.workflowSteps[task.currentStepIndex]?.status === 'returned';
             const dueState = getDueState(task);
             const dueStyles = getDueStyles(dueState);
@@ -1137,6 +1213,12 @@ export default function WorkflowTray() {
                       <span className="text-xs text-slate-400">
                         Paso {task.currentStepIndex + 1} de {task.workflowSteps.length}
                       </span>
+                      {isQualityGateStep(currentWorkflowStep) && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider bg-amber-50 text-amber-700">
+                          <ShieldCheck size={11} />
+                          Calidad
+                        </span>
+                      )}
                       {dueState !== 'ok' && dueState !== 'none' && dueState !== 'closed' && (
                         <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${dueStyles.label}`}>
                           {getDueLabel(dueState)}
@@ -1509,6 +1591,43 @@ export default function WorkflowTray() {
                 </div>
               )}
 
+              {isQualityGateStep(activeQualityGateStep) && (
+                <div className="mb-4 rounded-xl border border-amber-100 bg-amber-50 p-4">
+                  <p className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-amber-700">
+                    <ShieldCheck size={14} />
+                    Control de calidad
+                  </p>
+                  {actionModal.type === 'return' ? (
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-700">
+                        Causal de devolución <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        value={qualityCauseId}
+                        onChange={(e) => setQualityCauseId(e.target.value)}
+                        className="w-full rounded-lg border border-amber-100 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                      >
+                        <option value="">Seleccionar causal...</option>
+                        {projectQualityCauses.map((cause) => (
+                          <option key={cause.id} value={cause.id}>
+                            {cause.name || cause.label}
+                          </option>
+                        ))}
+                      </select>
+                      {projectQualityCauses.length === 0 && (
+                        <p className="mt-2 text-xs text-amber-700">
+                          Configura primero las causales en la pestaña Gestión de calidad del proyecto.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-amber-700">
+                      Al aprobar este paso se registrará un acierto para el profesional y una revisión para el revisor de calidad.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {activeDynamicRateCardSource && (
                 <div className="mb-4 rounded-xl border border-emerald-100 bg-emerald-50 p-4">
                   <p className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-700">
@@ -1616,7 +1735,7 @@ export default function WorkflowTray() {
               </Button>
               <Button
                 onClick={confirmAction}
-                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || (actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && overrideUnits === '') || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))))}
+                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || activeQualityGateRequiresCause && !qualityCauseId || (actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && overrideUnits === '') || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))))}
                 className={
                   actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 
                   actionModal.type === 'return' ? 'bg-red-600 hover:bg-red-700 text-white' :

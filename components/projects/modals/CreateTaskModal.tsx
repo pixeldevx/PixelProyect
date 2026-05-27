@@ -82,6 +82,7 @@ export function CreateTaskModal({
       unitsToAdd?: number;
       autoAddUnits?: boolean;
       assignsNextStep?: boolean;
+      isQualityGate?: boolean;
     }[]
   >([]);
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
@@ -881,6 +882,20 @@ export function CreateTaskModal({
                               )}
                             </div>
                           )}
+
+                          <label className="sm:col-span-2 flex items-center gap-2 rounded-lg border border-amber-100 bg-amber-50 px-2 py-2 text-[10px] font-medium text-amber-800 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(step.isQualityGate)}
+                              onChange={(e) => {
+                                const newSteps = [...workflowSteps];
+                                newSteps[idx].isQualityGate = e.target.checked;
+                                setWorkflowSteps(newSteps);
+                              }}
+                              className="w-3 h-3 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+                            />
+                            Paso de control de calidad: al aprobar o devolver alimenta la gestión de calidad.
+                          </label>
                         </div>
 
                         {idx < workflowSteps.length - 1 && (
