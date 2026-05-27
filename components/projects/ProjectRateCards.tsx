@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users } from 'lucide-react';
+import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users, FileText, Download } from 'lucide-react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
@@ -23,6 +23,10 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [rateCardToEdit, setRateCardToEdit] = useState<any>(null);
+  const [rateCardEntries, setRateCardEntries] = useState<any[]>([]);
+  const [reportStartDate, setReportStartDate] = useState('');
+  const [reportEndDate, setReportEndDate] = useState('');
+  const [reportGenerated, setReportGenerated] = useState(false);
 
   useEffect(() => {
     const q = query(collection(db, 'projects', projectId, 'rateCards'));
@@ -33,6 +37,23 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       }));
       data.sort((a: any, b: any) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
       setRateCards(data);
+    });
+    return () => unsubscribe();
+  }, [projectId]);
+
+  useEffect(() => {
+    const q = query(collection(db, 'projects', projectId, 'rateCardEntries'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      data.sort((a: any, b: any) => {
+        const right = b.createdAt?.toMillis?.() || Date.parse(b.createdAt || b.dateKey || '') || 0;
+        const left = a.createdAt?.toMillis?.() || Date.parse(a.createdAt || a.dateKey || '') || 0;
+        return right - left;
+      });
+      setRateCardEntries(data);
     });
     return () => unsubscribe();
   }, [projectId]);
@@ -111,6 +132,113 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
   const userChartData = Object.values(userTotals).sort((a, b) => b.value - a.value);
   const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
+
+  const getEntryDateKey = (entry: any) => {
+    if (entry.dateKey) return entry.dateKey;
+    const createdAt = entry.createdAt?.toDate ? entry.createdAt.toDate() : entry.createdAt ? new Date(entry.createdAt) : null;
+    return createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt.toISOString().slice(0, 10) : '';
+  };
+
+  const formatReportDate = (dateKey: string) => {
+    if (!dateKey) return 'Sin fecha';
+    const [year, month, day] = dateKey.split('-').map(Number);
+    const date = new Date(year, (month || 1) - 1, day || 1);
+    return date.toLocaleDateString('es-CO', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    });
+  };
+
+  const getMemberName = (memberId: string) =>
+    teamMembers.find(member => member.id === memberId)?.name || 'Usuario desconocido';
+
+  const getRateCardById = (rateCardId: string) =>
+    rateCards.find(card => card.id === rateCardId);
+
+  const handleGenerateReport = () => {
+    if (!reportStartDate || !reportEndDate) {
+      toast.warning('Selecciona fecha inicial y fecha final para generar el informe.');
+      return;
+    }
+
+    if (reportEndDate < reportStartDate) {
+      toast.warning('La fecha final no puede ser anterior a la fecha inicial.');
+      return;
+    }
+
+    setReportGenerated(true);
+  };
+
+  const reportRows = reportGenerated
+    ? rateCardEntries
+      .map(entry => {
+        const dateKey = getEntryDateKey(entry);
+        const card = getRateCardById(entry.rateCardId);
+        const units = Number(entry.units || 0);
+        return {
+          ...entry,
+          dateKey,
+          personName: getMemberName(entry.assignedTo),
+          rateCardName: card?.name || 'Rate Card eliminado',
+          indicator: card?.indicator || 'unidades',
+          currency: card?.currency || 'USD',
+          value: units * Number(card?.rate || 0),
+          units,
+        };
+      })
+      .filter(entry => entry.dateKey && entry.dateKey >= reportStartDate && entry.dateKey <= reportEndDate)
+      .sort((a, b) => b.dateKey.localeCompare(a.dateKey) || a.personName.localeCompare(b.personName))
+    : [];
+
+  const reportSummaryRows = Object.values(reportRows.reduce((acc: Record<string, any>, entry: any) => {
+    const key = `${entry.assignedTo || 'unknown'}::${entry.rateCardId || 'unknown'}`;
+    if (!acc[key]) {
+      acc[key] = {
+        key,
+        personName: entry.personName,
+        rateCardName: entry.rateCardName,
+        indicator: entry.indicator,
+        currency: entry.currency,
+        units: 0,
+        value: 0,
+        movements: 0,
+      };
+    }
+    acc[key].units += entry.units;
+    acc[key].value += entry.value;
+    acc[key].movements += 1;
+    return acc;
+  }, {})).sort((a: any, b: any) => b.value - a.value || b.units - a.units);
+
+  const exportReportCsv = () => {
+    if (reportRows.length === 0) {
+      toast.info('No hay movimientos para exportar en este rango.');
+      return;
+    }
+
+    const headers = ['Fecha', 'Persona', 'Rate Card', 'Tarea', 'Unidades', 'Indicador', 'Valor', 'Moneda', 'Fuente'];
+    const csvRows = reportRows.map((entry: any) => [
+      entry.dateKey,
+      entry.personName,
+      entry.rateCardName,
+      entry.taskTitle || '',
+      entry.units,
+      entry.indicator,
+      entry.value.toFixed(2),
+      entry.currency,
+      entry.source || '',
+    ]);
+    const escapeCsv = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const csv = [headers, ...csvRows].map(row => row.map(escapeCsv).join(',')).join('\n');
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `informe-rate-cards-${reportStartDate}-${reportEndDate}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   const handleCreateRateCard = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -306,6 +434,168 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
           </Card>
         </div>
       )}
+
+      <Card className="border-slate-200 shadow-sm">
+        <CardHeader className="pb-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <CardTitle className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                <FileText size={18} className="text-indigo-500" />
+                Generador de Informes
+              </CardTitle>
+              <CardDescription className="mt-1">
+                Movimientos registrados por fecha, persona y rate card.
+              </CardDescription>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(150px,1fr)_minmax(150px,1fr)_auto_auto]">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                  Fecha inicial
+                </label>
+                <input
+                  type="date"
+                  value={reportStartDate}
+                  onChange={(event) => {
+                    setReportStartDate(event.target.value);
+                    setReportGenerated(false);
+                  }}
+                  className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
+                  Fecha final
+                </label>
+                <input
+                  type="date"
+                  value={reportEndDate}
+                  onChange={(event) => {
+                    setReportEndDate(event.target.value);
+                    setReportGenerated(false);
+                  }}
+                  className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+              <Button
+                type="button"
+                onClick={handleGenerateReport}
+                className="h-10 self-end bg-indigo-600 text-white hover:bg-indigo-700"
+              >
+                Generar
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={exportReportCsv}
+                disabled={!reportGenerated || reportRows.length === 0}
+                className="h-10 self-end border-slate-200 text-slate-700 hover:bg-slate-50"
+              >
+                <Download size={15} className="mr-2" />
+                CSV
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {reportGenerated ? (
+            <>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div className="rounded-lg border border-slate-100 bg-slate-50 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Movimientos</p>
+                  <p className="mt-1 text-2xl font-bold text-slate-900">{reportRows.length}</p>
+                </div>
+                <div className="rounded-lg border border-slate-100 bg-slate-50 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Personas</p>
+                  <p className="mt-1 text-2xl font-bold text-slate-900">
+                    {new Set(reportRows.map((entry: any) => entry.assignedTo)).size}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-100 bg-slate-50 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Rate cards</p>
+                  <p className="mt-1 text-2xl font-bold text-slate-900">
+                    {new Set(reportRows.map((entry: any) => entry.rateCardId)).size}
+                  </p>
+                </div>
+              </div>
+
+              {reportSummaryRows.length > 0 && (
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
+                        <TableHead className="font-semibold text-slate-600">Persona</TableHead>
+                        <TableHead className="font-semibold text-slate-600">Rate Card</TableHead>
+                        <TableHead className="font-semibold text-slate-600">Movimientos</TableHead>
+                        <TableHead className="font-semibold text-slate-600">Unidades netas</TableHead>
+                        <TableHead className="font-semibold text-slate-600 text-right">Valor estimado</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {reportSummaryRows.map((row: any) => (
+                        <TableRow key={row.key}>
+                          <TableCell className="font-medium text-slate-900">{row.personName}</TableCell>
+                          <TableCell className="text-slate-700">{row.rateCardName}</TableCell>
+                          <TableCell className="text-slate-600">{row.movements}</TableCell>
+                          <TableCell className="text-slate-700">
+                            {row.units.toFixed(2)} {row.indicator}
+                          </TableCell>
+                          <TableCell className="text-right font-semibold text-emerald-700">
+                            {row.value.toLocaleString('es-CO', { style: 'currency', currency: row.currency })}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
+                      <TableHead className="font-semibold text-slate-600">Día</TableHead>
+                      <TableHead className="font-semibold text-slate-600">Persona</TableHead>
+                      <TableHead className="font-semibold text-slate-600">Rate Card</TableHead>
+                      <TableHead className="font-semibold text-slate-600">Tarea</TableHead>
+                      <TableHead className="font-semibold text-slate-600">Unidades</TableHead>
+                      <TableHead className="font-semibold text-slate-600 text-right">Valor</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {reportRows.map((entry: any) => (
+                      <TableRow key={entry.id}>
+                        <TableCell className="whitespace-nowrap text-slate-700">{formatReportDate(entry.dateKey)}</TableCell>
+                        <TableCell className="font-medium text-slate-900">{entry.personName}</TableCell>
+                        <TableCell className="text-slate-700">{entry.rateCardName}</TableCell>
+                        <TableCell className="max-w-[260px] truncate text-slate-600" title={entry.taskTitle || ''}>
+                          {entry.taskTitle || 'Sin tarea'}
+                        </TableCell>
+                        <TableCell className={entry.units < 0 ? 'font-medium text-red-600' : 'font-medium text-emerald-700'}>
+                          {entry.units.toFixed(2)} {entry.indicator}
+                        </TableCell>
+                        <TableCell className={`text-right font-semibold ${entry.value < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                          {entry.value.toLocaleString('es-CO', { style: 'currency', currency: entry.currency })}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {reportRows.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={6} className="py-8 text-center text-sm text-slate-500">
+                          No hay movimientos registrados en el rango seleccionado.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 py-10 text-center text-sm text-slate-500">
+              Selecciona el rango de fechas para generar el informe.
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="border-slate-200 shadow-sm">
         <CardContent className="p-0">
