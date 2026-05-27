@@ -6,7 +6,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, ListTodo, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2 } from 'lucide-react';
+import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2 } from 'lucide-react';
 import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
@@ -17,7 +17,6 @@ import { ProjectRateCards } from '@/components/projects/ProjectRateCards';
 import { ProjectBudget } from '@/components/projects/ProjectBudget';
 import ProjectBilling from '@/components/projects/ProjectBilling';
 import { ProjectGantt } from '@/components/projects/ProjectGantt';
-import { ProjectTasksTable } from '@/components/projects/ProjectTasksTable';
 import { ProjectDocumentsTree } from '@/components/projects/ProjectDocumentsTree';
 import { ProjectDriveRepositories } from '@/components/projects/ProjectDriveRepositories';
 import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
@@ -97,11 +96,16 @@ export default function ProjectDetailsPage() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'tasks' | 'tasksList' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('documents');
+  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'tasks' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
+  const [showDocumentIssueAlert, setShowDocumentIssueAlert] = useState(true);
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');
-    if (tabParam && ['documents', 'drive', 'tasks', 'tasksList', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
+    if (tabParam === 'tasksList') {
+      setActiveTab('tasks');
+      return;
+    }
+    if (tabParam && ['documents', 'drive', 'tasks', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
       setActiveTab(tabParam as any);
     }
   }, [searchParams]);
@@ -1132,89 +1136,111 @@ export default function ProjectDetailsPage() {
   // Check if minimum required documents are present
   const hasContract = documents.some(d => d.type === 'contract');
   const hasProposal = documents.some(d => d.type === 'proposal');
-
-  // Calculate Gantt chart bounds
-  const getGanttBounds = () => {
-    if (tasks.length === 0) {
-      const now = new Date().getTime();
-      return { min: now, max: now, totalDays: 1 };
-    }
-
-    let minT = Infinity;
-    let maxT = -Infinity;
-
-    tasks.forEach(t => {
-      if (t.startDate) {
-        const start = t.startDate.toDate().getTime();
-        if (start < minT) minT = start;
-      }
-      if (t.endDate) {
-        const end = t.endDate.toDate().getTime();
-        if (end > maxT) maxT = end;
-      }
-    });
-
-    if (minT === Infinity || maxT === -Infinity) {
-      const now = new Date().getTime();
-      return { min: now, max: now, totalDays: 1 };
-    }
-
-    // Add some padding (3 days before and after)
-    const padding = 3 * 24 * 60 * 60 * 1000;
-    minT -= padding;
-    maxT += padding;
-
-    const totalDays = Math.max(1, (maxT - minT) / (1000 * 60 * 60 * 24));
-
-    return { min: minT, max: maxT, totalDays };
-  };
-
-  const ganttBounds = getGanttBounds();
+  const missingRequiredDocuments = [
+    !hasContract ? 'Contrato firmado' : null,
+    !hasProposal ? 'Propuesta técnica/comercial' : null,
+  ].filter(Boolean) as string[];
 
   return (
     <DashboardLayout>
-      <div className="mb-6">
-        <Link href="/projects" className="inline-flex items-center text-sm text-slate-500 hover:text-indigo-600 mb-4 transition-colors">
+      <div className="mb-4">
+        <Link href="/projects" className="inline-flex items-center text-sm text-slate-500 hover:text-indigo-600 mb-3 transition-colors">
           <ArrowLeft size={16} className="mr-1" /> Volver a Proyectos
         </Link>
-        <div className="flex justify-between items-start">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">{project.name}</h1>
-            <p className="text-slate-500 mt-1 max-w-3xl">{project.description || 'Sin descripción'}</p>
+        <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate text-xl font-bold tracking-tight text-slate-900">{project.name}</h1>
+              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                project.status === 'active' ? 'bg-amber-100 text-amber-800' :
+                project.status === 'completed' ? 'bg-emerald-100 text-emerald-800' :
+                'bg-slate-100 text-slate-800'
+              }`}>
+                {project.status === 'active' ? 'Activo' : project.status === 'completed' ? 'Completado' : 'En Pausa'}
+              </span>
+            </div>
+            <p className="mt-1 max-w-3xl truncate text-sm text-slate-500">{project.description || 'Sin descripción'}</p>
           </div>
-          <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-            project.status === 'active' ? 'bg-amber-100 text-amber-800' :
-            project.status === 'completed' ? 'bg-emerald-100 text-emerald-800' :
-            'bg-slate-100 text-slate-800'
-          }`}>
-            {project.status === 'active' ? 'Activo' : project.status === 'completed' ? 'Completado' : 'En Pausa'}
-          </span>
+          <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
+            <span className="rounded-md bg-slate-50 px-2.5 py-1">{tasks.length} tareas</span>
+            {missingRequiredDocuments.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowDocumentIssueAlert(true)}
+                className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1 font-semibold text-amber-700 transition-colors hover:bg-amber-100"
+              >
+                <AlertCircle size={13} />
+                {missingRequiredDocuments.length} alerta{missingRequiredDocuments.length > 1 ? 's' : ''}
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {(!hasContract || !hasProposal) && (
-        <div className="mb-8 bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
-          <div>
-            <h3 className="text-sm font-medium text-amber-800">Documentación Incompleta</h3>
-            <p className="text-sm text-amber-700 mt-1">
-              Para que el proyecto esté en regla, debes subir los siguientes documentos obligatorios:
-              {!hasContract && <strong className="block mt-1">• Contrato firmado</strong>}
-              {!hasProposal && <strong className="block mt-1">• Propuesta técnica/comercial</strong>}
-            </p>
+      {missingRequiredDocuments.length > 0 && showDocumentIssueAlert && (
+        <div className="fixed right-5 top-20 z-40 w-[min(360px,calc(100vw-2.5rem))] rounded-xl border border-amber-200 bg-white p-4 shadow-2xl">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-full bg-amber-50 p-2 text-amber-600">
+              <AlertCircle size={18} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Documentación pendiente</h3>
+                  <p className="mt-1 text-xs text-slate-500">Faltan documentos obligatorios del proyecto.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowDocumentIssueAlert(false)}
+                  className="rounded-full p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                  aria-label="Cerrar alerta"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+              <div className="mt-3 space-y-1">
+                {missingRequiredDocuments.map((documentName) => (
+                  <div key={documentName} className="rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">
+                    {documentName}
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('documents');
+                  setShowDocumentIssueAlert(false);
+                }}
+                className="mt-3 inline-flex h-8 items-center rounded-md bg-indigo-600 px-3 text-xs font-semibold text-white transition-colors hover:bg-indigo-700"
+              >
+                Ir a Documentos
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-
-      <div className="mb-6 border-b border-slate-200">
-        <div className="flex gap-6">
+      <div className="mb-5 rounded-xl border border-slate-200 bg-white px-2 shadow-sm">
+        <div className="flex gap-1 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab('tasks')}
+            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
+              activeTab === 'tasks'
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Calendar size={16} />
+              Tareas
+            </div>
+          </button>
           <button
             onClick={() => setActiveTab('documents')}
-            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
               activeTab === 'documents'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -1224,10 +1250,10 @@ export default function ProjectDetailsPage() {
           </button>
           <button
             onClick={() => setActiveTab('drive')}
-            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
               activeTab === 'drive'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -1236,37 +1262,11 @@ export default function ProjectDetailsPage() {
             </div>
           </button>
           <button
-            onClick={() => setActiveTab('tasks')}
-            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === 'tasks'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <Calendar size={16} />
-              Tareas (Gantt)
-            </div>
-          </button>
-          <button
-            onClick={() => setActiveTab('tasksList')}
-            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === 'tasksList'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <ListTodo size={16} />
-              Tareas (Lista)
-            </div>
-          </button>
-          <button
             onClick={() => setActiveTab('rateCards')}
-            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
               activeTab === 'rateCards'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -1276,10 +1276,10 @@ export default function ProjectDetailsPage() {
           </button>
           <button
             onClick={() => setActiveTab('budget')}
-            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
               activeTab === 'budget'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -1289,10 +1289,10 @@ export default function ProjectDetailsPage() {
           </button>
           <button
             onClick={() => setActiveTab('billing')}
-            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
               activeTab === 'billing'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -1302,10 +1302,10 @@ export default function ProjectDetailsPage() {
           </button>
           <button
             onClick={() => setActiveTab('orgChart')}
-            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
               activeTab === 'orgChart'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -1371,12 +1371,12 @@ export default function ProjectDetailsPage() {
       )}
 
       {activeTab === 'tasks' && (
-        <div className="space-y-6">
-          <div className="flex justify-between items-center">
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                 <Calendar size={20} className="text-indigo-500" />
-                Cronograma de Tareas
+                Tareas
               </h2>
               <p className="text-sm text-slate-500 mt-1">Seguimiento y progreso de las tareas del proyecto.</p>
             </div>
@@ -1421,57 +1421,6 @@ export default function ProjectDetailsPage() {
                 }}
                 onOpenTaskComments={setSelectedTaskForComments}
                 onResetWorkflowTask={canEditTaskDetails ? handleResetWorkflowTask : undefined}
-                onCreateTask={canCreateTasks ? () => setIsCreateTaskModalOpen(true) : undefined}
-              />
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {activeTab === 'tasksList' && (
-        <div className="space-y-6">
-          <div className="flex justify-between items-center">
-            <div>
-              <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                <ListTodo size={20} className="text-indigo-500" />
-                Lista de Tareas
-              </h2>
-              <p className="text-sm text-slate-500 mt-1">Gestión detallada de tareas del proyecto.</p>
-            </div>
-            {canCreateTasks && (
-              <Button
-                onClick={() => setIsCreateTaskModalOpen(true)}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white"
-              >
-                <Plus size={16} className="mr-2" />
-                Nueva Tarea
-              </Button>
-            )}
-          </div>
-
-          <Card className="border-slate-200 shadow-sm">
-            <CardContent className="p-0">
-              <ProjectTasksTable
-                tasks={tasks}
-                teamMembers={teamMembers}
-                onUpdateTaskProgress={canEditTaskDetails ? handleUpdateTaskProgress : undefined}
-                onUpdateTaskStatus={canEditTaskStatus ? handleUpdateTaskStatus : undefined}
-                onUpdateTaskPriority={canEditTaskDetails ? handleUpdateTaskPriority : undefined}
-                onUpdateTaskAssignee={canEditTaskDetails ? handleUpdateTaskAssignee : undefined}
-                onUpdateTaskDates={canEditTaskDates ? handleUpdateTaskDates : undefined}
-                onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
-                canEditTaskDetails={canEditTaskDetails}
-                canEditTaskDates={canEditTaskDates}
-                canEditTaskStatus={canEditTaskStatus}
-                canAddSubtasks={canAddSubtasks}
-                canEditTaskStructure={canEditTaskStructure}
-                canDeleteTasks={canDeleteTasks}
-                onEditTaskStructure={setTaskForStructureEdit}
-                onAddSubtask={canAddSubtasks ? setTaskForStructureEdit : undefined}
-                onOpenTaskDocs={(taskId, task) => {
-                  setSelectedTaskForDocs(task);
-                  setIsTaskDocsModalOpen(true);
-                }}
                 onCreateTask={canCreateTasks ? () => setIsCreateTaskModalOpen(true) : undefined}
               />
             </CardContent>
