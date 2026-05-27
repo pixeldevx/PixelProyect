@@ -80,7 +80,7 @@ const getStatusLabel = (status: string) => {
 };
 
 const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
-  steps.map((step) => ({
+  steps.map((step, index) => ({
     label: step?.label || "",
     assignedTo: step?.assignedTo || "",
     form: step?.form,
@@ -88,7 +88,7 @@ const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
     unitsToAdd: step?.unitsToAdd ?? null,
     autoAddUnits: step?.autoAddUnits ?? null,
     assignsNextStep: step?.assignsNextStep ?? null,
-    isQualityGate: step?.isQualityGate ?? null,
+    isQualityGate: index === 0 ? false : step?.isQualityGate ?? null,
   }));
 
 export function EditTaskStructureModal({
@@ -170,10 +170,25 @@ export function EditTaskStructureModal({
   };
 
   const removeStep = (index: number) => {
+    if (index === 0 && workflowSteps[1]?.isQualityGate) {
+      toast.warning("No puedes dejar un paso de calidad como primer paso. Mueve o desmarca ese control antes de borrar.");
+      return;
+    }
+
     setWorkflowSteps((currentSteps) => currentSteps.filter((_, stepIndex) => stepIndex !== index));
   };
 
   const moveStep = (index: number, direction: -1 | 1) => {
+    if (direction === -1 && index === 1 && workflowSteps[index]?.isQualityGate) {
+      toast.warning("El control de calidad necesita un paso anterior y no puede quedar primero.");
+      return;
+    }
+
+    if (direction === 1 && index === 0 && workflowSteps[1]?.isQualityGate) {
+      toast.warning("El control de calidad necesita un paso anterior y no puede quedar primero.");
+      return;
+    }
+
     setWorkflowSteps((currentSteps) => {
       const targetIndex = index + direction;
       if (targetIndex < 0 || targetIndex >= currentSteps.length) return currentSteps;
@@ -231,8 +246,9 @@ export function EditTaskStructureModal({
   };
 
   const getCleanWorkflowSteps = () =>
-    workflowSteps.map((step) => ({
+    workflowSteps.map((step, index) => ({
       ...step,
+      isQualityGate: index === 0 ? false : step.isQualityGate,
       label: step.label.trim(),
     }));
 
@@ -244,6 +260,11 @@ export function EditTaskStructureModal({
 
     if (workflowSteps.some((step) => !step.label.trim())) {
       toast.warning("Todos los pasos deben tener nombre.");
+      return false;
+    }
+
+    if (workflowSteps[0]?.isQualityGate) {
+      toast.warning("El primer paso no puede ser control de calidad; debe existir un paso anterior que envíe a revisión.");
       return false;
     }
 
@@ -414,7 +435,7 @@ export function EditTaskStructureModal({
                         <button
                           type="button"
                           onClick={() => moveStep(index, -1)}
-                          disabled={index === 0}
+                          disabled={index === 0 || (index === 1 && Boolean(step.isQualityGate))}
                           className="flex h-4 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-400 transition-colors hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
                           title="Mover paso arriba"
                           aria-label={`Mover paso ${index + 1} arriba`}
@@ -424,7 +445,7 @@ export function EditTaskStructureModal({
                         <button
                           type="button"
                           onClick={() => moveStep(index, 1)}
-                          disabled={index === workflowSteps.length - 1}
+                          disabled={index === workflowSteps.length - 1 || (index === 0 && Boolean(workflowSteps[1]?.isQualityGate))}
                           className="flex h-4 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-400 transition-colors hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-30"
                           title="Mover paso abajo"
                           aria-label={`Mover paso ${index + 1} abajo`}
@@ -500,14 +521,22 @@ export function EditTaskStructureModal({
                         </div>
                       )}
 
-                      <label className="md:col-span-2 h-9 px-3 flex items-center gap-2 text-xs text-amber-800 border border-amber-100 rounded-lg bg-amber-50 cursor-pointer">
+                      <label className={`md:col-span-2 h-9 px-3 flex items-center gap-2 text-xs border rounded-lg ${
+                        index === 0
+                          ? "cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400"
+                          : "cursor-pointer border-amber-100 bg-amber-50 text-amber-800"
+                      }`}>
                         <input
                           type="checkbox"
-                          checked={Boolean(step.isQualityGate)}
-                          onChange={(event) => updateStep(index, { isQualityGate: event.target.checked })}
+                          checked={index === 0 ? false : Boolean(step.isQualityGate)}
+                          disabled={index === 0}
+                          onChange={(event) => {
+                            if (index === 0) return;
+                            updateStep(index, { isQualityGate: event.target.checked });
+                          }}
                           className="rounded border-amber-300 text-amber-600 focus:ring-amber-500"
                         />
-                        Paso de control de calidad
+                        {index === 0 ? "El primer paso no puede ser control de calidad" : "Paso de control de calidad"}
                       </label>
                     </div>
 

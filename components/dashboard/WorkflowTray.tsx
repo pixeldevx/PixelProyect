@@ -554,6 +554,11 @@ export default function WorkflowTray() {
       toast.warning("Selecciona la causal de devolución de calidad.");
       return;
     }
+
+    if (currentStepIsQualityGate && currentIndex === 0 && (action === 'approve' || action === 'return')) {
+      toast.error("Este control de calidad no tiene un paso anterior. Edita el workflow y mueve calidad después del paso que envía a revisión.");
+      return;
+    }
     
     setProcessingId(task.id);
 

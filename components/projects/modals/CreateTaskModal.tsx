@@ -166,17 +166,47 @@ export function CreateTaskModal({
     onClose();
   };
 
+  const sanitizeWorkflowSteps = (steps: typeof workflowSteps) =>
+    steps.map((step, index) => ({
+      ...step,
+      isQualityGate: index === 0 ? false : step.isQualityGate,
+    }));
+
+  const validateWorkflowSteps = () => {
+    if (newTaskType !== "workflow") return true;
+
+    if (workflowSteps.length === 0) {
+      toast.warning("Agrega al menos un paso para el workflow.");
+      return false;
+    }
+
+    if (workflowSteps.some((step) => !step.label.trim())) {
+      toast.warning("Todos los pasos del workflow deben tener nombre.");
+      return false;
+    }
+
+    if (workflowSteps[0]?.isQualityGate) {
+      toast.warning("El primer paso no puede ser control de calidad; debe existir un paso anterior que envíe a revisión.");
+      return false;
+    }
+
+    return true;
+  };
+
   const handleSaveTemplate = async () => {
     if (!templateName.trim() || workflowSteps.length === 0) {
       toast.warning("Ingresa un nombre y asegúrate de tener pasos definidos.");
       return;
     }
+
+    if (!validateWorkflowSteps()) return;
+
     setIsSavingTemplate(true);
     try {
       const newTemplate = {
         name: templateName,
         projectId,
-        steps: workflowSteps,
+        steps: sanitizeWorkflowSteps(workflowSteps),
         createdAt: serverTimestamp(),
         createdBy: user?.uid || "unknown",
       };
@@ -203,7 +233,11 @@ export function CreateTaskModal({
     if (!templateId) return;
     const template = workflowTemplates.find((t) => t.id === templateId);
     if (template && template.steps) {
-      setWorkflowSteps(template.steps);
+      const loadedSteps = sanitizeWorkflowSteps(template.steps);
+      setWorkflowSteps(loadedSteps);
+      if (template.steps[0]?.isQualityGate) {
+        toast.warning("Se desmarcó calidad del primer paso porque necesita un paso anterior.");
+      }
       toast.success("Plantilla cargada.");
     }
   };
@@ -240,6 +274,8 @@ export function CreateTaskModal({
       toast.warning("Define unidades de Rate Card mayores a cero.");
       return;
     }
+
+    if (!validateWorkflowSteps()) return;
 
     setIsCreatingTask(true);
 
@@ -377,7 +413,7 @@ export function CreateTaskModal({
       }
 
       if (newTaskType === "workflow") {
-        taskData.workflowSteps = workflowSteps.map((step) => {
+        taskData.workflowSteps = sanitizeWorkflowSteps(workflowSteps).map((step) => {
           const cleanStep: any = {
             ...step,
             status: "not_started",
@@ -714,11 +750,14 @@ export function CreateTaskModal({
                           </button>
                           <button
                             type="button"
-                            onClick={() =>
-                              setWorkflowSteps(
-                                workflowSteps.filter((_, i) => i !== idx),
-                              )
-                            }
+                            onClick={() => {
+                              const nextSteps = workflowSteps.filter((_, i) => i !== idx);
+                              if (nextSteps[0]?.isQualityGate) {
+                                nextSteps[0] = { ...nextSteps[0], isQualityGate: false };
+                                toast.warning("Se desmarcó calidad del primer paso porque necesita un paso anterior.");
+                              }
+                              setWorkflowSteps(nextSteps);
+                            }}
                             className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
                           >
                             <X size={14} />
@@ -883,18 +922,26 @@ export function CreateTaskModal({
                             </div>
                           )}
 
-                          <label className="sm:col-span-2 flex items-center gap-2 rounded-lg border border-amber-100 bg-amber-50 px-2 py-2 text-[10px] font-medium text-amber-800 cursor-pointer">
+                          <label className={`sm:col-span-2 flex items-center gap-2 rounded-lg border px-2 py-2 text-[10px] font-medium ${
+                            idx === 0
+                              ? "cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400"
+                              : "cursor-pointer border-amber-100 bg-amber-50 text-amber-800"
+                          }`}>
                             <input
                               type="checkbox"
-                              checked={Boolean(step.isQualityGate)}
+                              checked={idx === 0 ? false : Boolean(step.isQualityGate)}
+                              disabled={idx === 0}
                               onChange={(e) => {
+                                if (idx === 0) return;
                                 const newSteps = [...workflowSteps];
                                 newSteps[idx].isQualityGate = e.target.checked;
                                 setWorkflowSteps(newSteps);
                               }}
                               className="w-3 h-3 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
                             />
-                            Paso de control de calidad: al aprobar o devolver alimenta la gestión de calidad.
+                            {idx === 0
+                              ? "El primer paso no puede ser control de calidad."
+                              : "Paso de control de calidad: al aprobar o devolver alimenta la gestión de calidad."}
                           </label>
                         </div>
 
