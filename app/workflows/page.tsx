@@ -9,7 +9,7 @@ import { Inbox, ChevronLeft } from 'lucide-react';
 export default function WorkflowsPage() {
   return (
     <DashboardLayout>
-      <div className="p-6 max-w-7xl mx-auto space-y-6">
+      <div className="mx-auto max-w-[1600px] space-y-4 p-4">
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <div className="flex items-center gap-2 mb-2">
@@ -18,11 +18,10 @@ export default function WorkflowsPage() {
                 Regresar al Dashboard
               </Link>
             </div>
-            <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-              <Inbox className="text-indigo-600" size={24} />
+            <h1 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+              <Inbox className="text-indigo-600" size={22} />
               Bandeja de entrada
             </h1>
-            <p className="text-slate-500">Gestiona tus tareas, comentarios y workflows pendientes desde un solo lugar.</p>
           </div>
         </div>
 
