@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Save, CheckCircle2, Circle, RotateCcw } from 'lucide-react';
+import { X, Save, CheckCircle2, Circle, RotateCcw, BookOpen } from 'lucide-react';
 import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
@@ -338,6 +338,29 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-8">
+          {task.originLogbook && (
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4">
+              <div className="flex items-start gap-3">
+                <div className="rounded-lg bg-white p-2 text-indigo-600">
+                  <BookOpen size={18} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold uppercase tracking-wider text-indigo-600">
+                    Origen en bitácora
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-slate-800">
+                    {task.originLogbook.entryTitle || "Entrada de bitácora"}
+                  </p>
+                  {task.originLogbook.candidateText && (
+                    <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                      {task.originLogbook.candidateText}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Workflow Steps */}
           {workflowSteps.length > 0 && (
             <div>
