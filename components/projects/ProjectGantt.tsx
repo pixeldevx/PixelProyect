@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Gantt, Task, ViewMode } from 'gantt-task-react';
 import "gantt-task-react/dist/index.css";
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
-import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw } from 'lucide-react';
+import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw, ClipboardList } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -35,6 +35,7 @@ interface ProjectGanttProps {
   onOpenTaskDocs?: (taskId: string, task: any) => void;
   onOpenTaskComments?: (task: any) => void;
   onResetWorkflowTask?: (task: any) => void | Promise<void>;
+  onCreateBulkWorkflowIterations?: (task: any) => void;
   onCreateTask?: () => void;
 }
 
@@ -111,6 +112,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onOpenTaskDocs,
   onOpenTaskComments,
   onResetWorkflowTask,
+  onCreateBulkWorkflowIterations,
   onCreateTask
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.Day);
@@ -444,6 +446,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                       !task.isParentTask &&
                       (task.status !== 'todo' || (task.progress || 0) > 0 || task.externalWorkflowId)
                     );
+                    const canCreateBulkWorkflowIterations = Boolean(
+                      canCreateSubtasks &&
+                      onCreateBulkWorkflowIterations &&
+                      task.type === 'workflow' &&
+                      !task.isWorkflowStep
+                    );
                     const hasActionItems = Boolean(
                       !task.isWorkflowStep &&
                       (
@@ -453,6 +461,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                         canAddSubtask ||
                         (canModifyTaskDetails && isQuantitative) ||
                         (canModifyTaskDetails && task.syncExternal && onSyncTask) ||
+                        canCreateBulkWorkflowIterations ||
                         canResetWorkflow ||
                         canRemoveTasks
                       )
@@ -787,6 +796,19 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                       >
                                         <Plus size={14} />
                                         Agregar subtarea
+                                      </button>
+                                    )}
+                                    {canCreateBulkWorkflowIterations && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          onCreateBulkWorkflowIterations?.(task);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                      >
+                                        <ClipboardList size={14} />
+                                        Iteraciones masivas
                                       </button>
                                     )}
                                     {canModifyTaskDetails && isQuantitative && task.type !== 'workflow' && (

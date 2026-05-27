@@ -25,6 +25,7 @@ import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
 import { TaskCommentsModal } from '@/components/projects/TaskCommentsModal';
 import { StartWorkflowModal } from '@/components/projects/StartWorkflowModal';
 import { CreateTaskModal } from '@/components/projects/modals/CreateTaskModal';
+import { BulkWorkflowIterationsModal } from '@/components/projects/modals/BulkWorkflowIterationsModal';
 import { EditTaskStructureModal } from '@/components/projects/modals/EditTaskStructureModal';
 import { IncrementTaskValueModal } from '@/components/projects/modals/IncrementTaskValueModal';
 import { UploadDocumentModal } from '@/components/projects/modals/UploadDocumentModal';
@@ -158,6 +159,7 @@ export default function ProjectDetailsPage() {
   const [taskForStructureEdit, setTaskForStructureEdit] = useState<any>(null);
   const [selectedTaskForIncrement, setSelectedTaskForIncrement] = useState<any>(null);
   const [selectedTaskForComments, setSelectedTaskForComments] = useState<any>(null);
+  const [taskForBulkIterations, setTaskForBulkIterations] = useState<any>(null);
   const [dynamicRateCardStatusChange, setDynamicRateCardStatusChange] = useState<{
     taskId: string;
     newStatus: string;
@@ -1666,6 +1668,7 @@ export default function ProjectDetailsPage() {
                 }}
                 onOpenTaskComments={setSelectedTaskForComments}
                 onResetWorkflowTask={canEditTaskDetails ? handleResetWorkflowTask : undefined}
+                onCreateBulkWorkflowIterations={canCreateTasks && canAddSubtasks ? setTaskForBulkIterations : undefined}
                 onCreateTask={canCreateTasks ? () => setIsCreateTaskModalOpen(true) : undefined}
               />
             </CardContent>
@@ -2042,6 +2045,17 @@ export default function ProjectDetailsPage() {
           rateCards={rateCards}
           tasksLength={tasks.length}
           canManageWorkflowTemplates={canManageWorkflowTemplates}
+        />
+      )}
+      {canCreateTasks && canAddSubtasks && (
+        <BulkWorkflowIterationsModal
+          isOpen={!!taskForBulkIterations}
+          onClose={() => setTaskForBulkIterations(null)}
+          projectId={projectId}
+          task={taskForBulkIterations}
+          user={user}
+          teamMembers={teamMembers}
+          tasks={tasks}
         />
       )}
       <EditTaskStructureModal
