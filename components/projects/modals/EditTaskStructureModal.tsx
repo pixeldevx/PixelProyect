@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, ClipboardList, CornerDownRight, Loader2, Plus, Settings, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { addDoc, collection, serverTimestamp } from "@/lib/supabase/document-store";
+import { addDoc, collection, deleteDoc, doc, getDocs, query, serverTimestamp, updateDoc, where } from "@/lib/supabase/document-store";
 import { db } from "@/lib/backend";
 import {
   CustomForm,
@@ -41,6 +41,7 @@ interface EditTaskStructureModalProps {
   teamMembers: any[];
   subtasks?: any[];
   canEditTaskStructure?: boolean;
+  canManageWorkflowTemplates?: boolean;
   onCreateSubtask?: (parentTask: any, subtask: SubtaskDraft) => Promise<void> | void;
   onSave: (updates: {
     title: string;
@@ -100,6 +101,7 @@ export function EditTaskStructureModal({
   teamMembers,
   subtasks = [],
   canEditTaskStructure = true,
+  canManageWorkflowTemplates = false,
   onCreateSubtask,
   onSave,
 }: EditTaskStructureModalProps) {
@@ -117,6 +119,7 @@ export function EditTaskStructureModal({
   const [isSaving, setIsSaving] = useState(false);
   const [isCreatingSubtask, setIsCreatingSubtask] = useState(false);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
+  const [workflowTemplates, setWorkflowTemplates] = useState<any[]>([]);
   const [templateName, setTemplateName] = useState("");
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
@@ -146,6 +149,28 @@ export function EditTaskStructureModal({
     setIsFormBuilderOpen(false);
     setCurrentStepIndexForForm(null);
   }, [isOpen, task]);
+
+  useEffect(() => {
+    if (!isOpen || !projectId) return;
+
+    const fetchTemplates = async () => {
+      try {
+        const templatesQuery = query(
+          collection(db, "workflow_templates"),
+          where("projectId", "==", projectId)
+        );
+        const snapshot = await getDocs(templatesQuery);
+        const templates = snapshot.docs
+          .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+          .sort((left: any, right: any) => String(left.name || "").localeCompare(String(right.name || "")));
+        setWorkflowTemplates(templates);
+      } catch (error) {
+        console.error("Error loading workflow templates:", error);
+      }
+    };
+
+    void fetchTemplates();
+  }, [isOpen, projectId]);
 
   if (!isOpen || !task) return null;
 
@@ -252,6 +277,8 @@ export function EditTaskStructureModal({
       label: step.label.trim(),
     }));
 
+  const normalizeTemplateName = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
+
   const validateWorkflowSteps = () => {
     if (workflowSteps.length === 0) {
       toast.warning("Esta tarea necesita al menos un paso de workflow.");
@@ -272,7 +299,8 @@ export function EditTaskStructureModal({
   };
 
   const handleSaveTemplate = async () => {
-    if (!templateName.trim()) {
+    const cleanTemplateName = templateName.trim().replace(/\s+/g, " ");
+    if (!cleanTemplateName) {
       toast.warning("Ingresa un nombre para la plantilla.");
       return;
     }
@@ -281,22 +309,75 @@ export function EditTaskStructureModal({
 
     setIsSavingTemplate(true);
     try {
-      await addDoc(collection(db, "workflow_templates"), {
-        name: templateName.trim(),
+      const existingTemplate = workflowTemplates.find(
+        (template) => normalizeTemplateName(template.name || "") === normalizeTemplateName(cleanTemplateName)
+      );
+      const templateData = {
+        name: cleanTemplateName,
         projectId,
         steps: getCleanWorkflowSteps(),
-        createdAt: serverTimestamp(),
-        createdBy: user?.uid || "unknown",
+        updatedAt: serverTimestamp(),
+        updatedBy: user?.uid || "unknown",
         sourceTaskId: task.id,
-      });
+      };
+
+      if (existingTemplate) {
+        const confirmed = window.confirm(`Ya existe la plantilla "${existingTemplate.name}". ¿Quieres reescribirla con este workflow?`);
+        if (!confirmed) return;
+
+        await updateDoc(doc(db, "workflow_templates", existingTemplate.id), templateData);
+        setWorkflowTemplates((currentTemplates) =>
+          currentTemplates
+            .map((template) =>
+              template.id === existingTemplate.id
+                ? { ...template, ...templateData }
+                : template
+            )
+            .sort((left: any, right: any) => String(left.name || "").localeCompare(String(right.name || "")))
+        );
+        toast.success("Plantilla reescrita correctamente.");
+      } else {
+        const templateToCreate = {
+          ...templateData,
+          createdAt: serverTimestamp(),
+          createdBy: user?.uid || "unknown",
+        };
+        const docRef = await addDoc(collection(db, "workflow_templates"), templateToCreate);
+        setWorkflowTemplates((currentTemplates) =>
+          [
+            ...currentTemplates,
+            { id: docRef.id, ...templateToCreate },
+          ].sort((left: any, right: any) => String(left.name || "").localeCompare(String(right.name || "")))
+        );
+        toast.success("Workflow guardado como plantilla.");
+      }
+
       setShowTemplateModal(false);
       setTemplateName("");
-      toast.success("Workflow guardado como plantilla.");
     } catch (error: any) {
       console.error("Error saving workflow template:", error);
       toast.error(error?.message || "Error al guardar el workflow.");
     } finally {
       setIsSavingTemplate(false);
+    }
+  };
+
+  const handleDeleteTemplate = async (templateId: string, name: string) => {
+    if (!canManageWorkflowTemplates) {
+      toast.error("No tienes permisos para eliminar plantillas.");
+      return;
+    }
+
+    const confirmed = window.confirm(`¿Eliminar la plantilla "${name}"? Esta acción no se puede deshacer.`);
+    if (!confirmed) return;
+
+    try {
+      await deleteDoc(doc(db, "workflow_templates", templateId));
+      setWorkflowTemplates((currentTemplates) => currentTemplates.filter((template) => template.id !== templateId));
+      toast.success("Plantilla eliminada.");
+    } catch (error: any) {
+      console.error("Error deleting workflow template:", error);
+      toast.error(error?.message || "No se pudo eliminar la plantilla.");
     }
   };
 
@@ -771,8 +852,37 @@ export function EditTaskStructureModal({
                 />
               </div>
               <p className="text-xs text-slate-500">
-                Se guardarán los pasos y formularios configurados actualmente solo para este proyecto.
+                Si usas el nombre de una plantilla existente, se pedirá confirmación para reescribirla.
               </p>
+              {canManageWorkflowTemplates && workflowTemplates.length > 0 && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Plantillas del proyecto
+                  </p>
+                  <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
+                    {workflowTemplates.map((template) => (
+                      <div key={template.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => setTemplateName(template.name || "")}
+                          className="min-w-0 truncate text-left text-sm font-medium text-slate-700 hover:text-indigo-700"
+                          title={template.name || "Plantilla"}
+                        >
+                          {template.name || "Plantilla sin nombre"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTemplate(template.id, template.name || "Plantilla")}
+                          className="shrink-0 rounded-md p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600"
+                          aria-label={`Eliminar plantilla ${template.name || ""}`}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
               <Button

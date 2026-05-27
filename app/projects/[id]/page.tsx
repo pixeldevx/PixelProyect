@@ -305,6 +305,9 @@ export default function ProjectDetailsPage() {
   const canManageDriveRepositories =
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
+  const canManageWorkflowTemplates =
+    userRole === 'admin' ||
+    (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
 
   const collectDependentTaskIds = (taskId: string) => {
     const taskIds = new Set<string>([taskId]);
@@ -2012,6 +2015,7 @@ export default function ProjectDetailsPage() {
           teamMembers={teamMembers}
           rateCards={rateCards}
           tasksLength={tasks.length}
+          canManageWorkflowTemplates={canManageWorkflowTemplates}
         />
       )}
       <EditTaskStructureModal
@@ -2023,6 +2027,7 @@ export default function ProjectDetailsPage() {
         teamMembers={teamMembers}
         subtasks={taskForStructureEdit ? tasks.filter((task) => task.parentTaskId === taskForStructureEdit.id) : []}
         canEditTaskStructure={canEditTaskStructure}
+        canManageWorkflowTemplates={canManageWorkflowTemplates}
         onCreateSubtask={canAddSubtasks ? handleCreateSubtask : undefined}
         onSave={async (updates) => {
           if (!taskForStructureEdit) return;
