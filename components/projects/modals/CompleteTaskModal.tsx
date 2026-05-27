@@ -15,6 +15,18 @@ interface CompleteTaskModalProps {
   user: any;
 }
 
+const getTaskDate = (value: any) => {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const getCompletionStatus = (task: any) => {
+  const endDate = getTaskDate(task?.endDate || task?.end);
+  return endDate && Date.now() > endDate.getTime() ? 'completed_late' : 'completed';
+};
+
 export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, user }: CompleteTaskModalProps) {
   const [taskDocFile, setTaskDocFile] = useState<File | null>(null);
   const [isCompletingTask, setIsCompletingTask] = useState(false);
@@ -72,7 +84,7 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
           }
         } else {
           // Workflow: only if completing the whole task
-          if (taskForCompletion.status !== 'completed') {
+          if (taskForCompletion.status !== 'completed' && taskForCompletion.status !== 'completed_late') {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', taskForCompletion.rateCardId);
             const units = taskForCompletion.unitsToAdd || 1;
             const updateData: any = {
@@ -87,7 +99,7 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
       }
 
       batch.update(taskRef, {
-        status: 'completed',
+        status: getCompletionStatus(taskForCompletion),
         progress: 100,
         linkedDocumentId: docRef.id,
         updatedAt: serverTimestamp()

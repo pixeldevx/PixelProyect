@@ -2,13 +2,14 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { collection, query, where, onSnapshot, doc, updateDoc, arrayUnion, Timestamp, writeBatch, increment } from '@/lib/supabase/document-store';
+import { collection, query, where, onSnapshot, doc, arrayUnion, Timestamp, writeBatch, increment } from '@/lib/supabase/document-store';
 import { db, auth } from '@/lib/backend';
 import { CheckCircle2, XCircle, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, AlertCircle, X, ClipboardList, Play, Pause, ListTodo, FolderOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { TaskDocumentsViewer } from '@/components/projects/TaskDocumentsViewer';
+import { TaskCommentsModal } from '@/components/projects/TaskCommentsModal';
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 
@@ -53,11 +54,15 @@ const isAssignedToCurrentUser = (task: any, assignedIds: string[]) => {
 
 const isOpenTask = (task: any) => {
   const status = task?.status || 'todo';
-  return status !== 'completed' && status !== 'listo';
+  return status !== 'completed' && status !== 'completed_late' && status !== 'listo';
 };
 
 const getTaskStatusLabel = (status: string) => {
   switch (status) {
+    case 'completed':
+      return 'Finalizada';
+    case 'completed_late':
+      return 'Finalizada con retraso';
     case 'in_progress':
       return 'Trabajando';
     case 'stuck':
@@ -72,6 +77,10 @@ const getTaskStatusLabel = (status: string) => {
 
 const getTaskStatusClass = (status: string) => {
   switch (status) {
+    case 'completed':
+      return 'bg-emerald-50 text-emerald-700';
+    case 'completed_late':
+      return 'bg-orange-50 text-orange-700';
     case 'in_progress':
       return 'bg-amber-50 text-amber-700';
     case 'stuck':
@@ -89,6 +98,73 @@ const getTaskDate = (value: any) => {
   if (value.toDate) return value.toDate();
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const getTaskTimestamp = (value: any) => {
+  const date = getTaskDate(value);
+  return date ? date.getTime() : 0;
+};
+
+const isAfterTaskDeadline = (task: any, date = new Date()) => {
+  const endDate = getTaskDate(task?.endDate || task?.end);
+  if (!endDate) return false;
+  return date.getTime() > endDate.getTime();
+};
+
+const normalizeCompletionStatus = (nextStatus: string, task: any) => {
+  if (nextStatus !== 'completed') return nextStatus;
+  return isAfterTaskDeadline(task) ? 'completed_late' : 'completed';
+};
+
+const getDueState = (task: any) => {
+  const status = task?.status || 'todo';
+  if (status === 'completed' || status === 'completed_late' || status === 'listo') return 'closed';
+
+  const endDate = getTaskDate(task?.endDate || task?.end);
+  if (!endDate) return 'none';
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date(endDate);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  if (endOfDay.getTime() < today.getTime()) return 'overdue';
+
+  const msUntilDue = endOfDay.getTime() - Date.now();
+  return msUntilDue <= 2 * 24 * 60 * 60 * 1000 ? 'due_soon' : 'ok';
+};
+
+const getDueStyles = (dueState: string) => {
+  switch (dueState) {
+    case 'overdue':
+      return {
+        card: 'border-red-200 bg-red-50/30',
+        label: 'bg-red-100 text-red-700',
+        bar: 'bg-red-500',
+        text: 'text-red-600',
+      };
+    case 'due_soon':
+      return {
+        card: 'border-orange-200 bg-orange-50/30',
+        label: 'bg-orange-100 text-orange-700',
+        bar: 'bg-orange-500',
+        text: 'text-orange-600',
+      };
+    default:
+      return {
+        card: 'border-slate-200 bg-white',
+        label: 'bg-slate-100 text-slate-600',
+        bar: 'bg-indigo-600',
+        text: 'text-slate-400',
+      };
+  }
+};
+
+const getDueLabel = (dueState: string) => {
+  if (dueState === 'overdue') return 'Vencida';
+  if (dueState === 'due_soon') return 'Por vencer';
+  return 'En fecha';
 };
 
 export default function WorkflowTray() {
@@ -113,7 +189,10 @@ export default function WorkflowTray() {
   const [projectTeamMembers, setProjectTeamMembers] = useState<any[]>([]);
   const [docsModalTask, setDocsModalTask] = useState<any>(null);
   const [historyModalTask, setHistoryModalTask] = useState<any>(null);
+  const [commentsModalTask, setCommentsModalTask] = useState<any>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [projectFilter, setProjectFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
 
   useEffect(() => {
     const unsubscribe = onSnapshot(query(collection(db, 'organizations')), (snapshot) => {
@@ -327,7 +406,7 @@ export default function WorkflowTray() {
           }
         } else {
           // Last step approved
-          newStatus = 'completed';
+          newStatus = normalizeCompletionStatus('completed', task);
           
           // Task-level rate card update if whole workflow completes
           if (task.isRateCardTask && task.rateCardId) {
@@ -370,7 +449,7 @@ export default function WorkflowTray() {
       }
 
       progress = Math.round((nextIndex / steps.length) * 100);
-      if (newStatus === 'completed') progress = 100;
+      if (newStatus === 'completed' || newStatus === 'completed_late') progress = 100;
 
       batch.update(taskRef, {
         workflowSteps: steps,
@@ -442,6 +521,72 @@ export default function WorkflowTray() {
     }
   };
 
+  const updateAssignedTaskStatus = async (task: any, nextStatus: string) => {
+    if (!user || !task?.id || isWorkflowItem(task)) return;
+
+    const finalStatus = normalizeCompletionStatus(nextStatus, task);
+    let progress = task.progress || 0;
+
+    if (finalStatus === 'completed' || finalStatus === 'completed_late') {
+      progress = 100;
+    } else if (finalStatus === 'in_progress') {
+      progress = Math.max(progress, 10);
+    } else if (finalStatus === 'todo' || finalStatus === 'pending') {
+      progress = 0;
+    }
+
+    setProcessingId(task.id);
+
+    try {
+      const batch = writeBatch(db);
+      const taskRef = doc(db, 'projects', task.projectId, 'tasks', task.id);
+
+      if (task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
+        const oldProgress = task.progress || 0;
+        const deltaProgress = progress - oldProgress;
+        const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
+
+        if (unitsDelta !== 0) {
+          const rcRef = doc(db, 'projects', task.projectId, 'rateCards', task.rateCardId);
+          const updateData: any = {
+            currentValue: increment(unitsDelta),
+          };
+          if (task.assignedTo) {
+            updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
+          }
+          batch.update(rcRef, updateData);
+        }
+      }
+
+      batch.update(taskRef, {
+        status: finalStatus,
+        progress,
+        updatedAt: Timestamp.now(),
+        statusHistory: arrayUnion({
+          status: finalStatus,
+          changedBy: user.uid,
+          changedByEmail: user.email || null,
+          timestamp: Timestamp.now(),
+          source: 'inbox',
+        }),
+      });
+
+      await batch.commit();
+
+      if (task.parentTaskId) {
+        const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+        await updateParentTaskStatus(task.projectId, task.parentTaskId);
+      }
+
+      toast.success(finalStatus === 'completed_late' ? 'Tarea finalizada con retraso.' : 'Estado actualizado.');
+    } catch (error: any) {
+      console.error('Error updating assigned task status:', error);
+      toast.error(error?.message || 'No se pudo actualizar la tarea.');
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -449,6 +594,20 @@ export default function WorkflowTray() {
       </div>
     );
   }
+
+  const pendingInboxCount = workflows.filter((task) => {
+    const taskIsWorkflow = isWorkflowItem(task);
+    const currentStep = taskIsWorkflow ? task.workflowSteps?.[task.currentStepIndex || 0] : null;
+    const assignedIds = memberIds.length > 0 ? memberIds : [user?.uid, memberId].filter(Boolean);
+    return taskIsWorkflow
+      ? currentStep?.assignedTo && assignedIds.includes(currentStep.assignedTo) &&
+        (currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido')
+      : isOpenTask(task) && isAssignedToCurrentUser(task, assignedIds as string[]);
+  }).length;
+
+  const projectOptions = Array.from(
+    new Map(workflows.map((task) => [task.projectId, task.projectName || 'Proyecto'])).entries()
+  ).sort((a, b) => a[1].localeCompare(b[1]));
 
   const filteredWorkflows = workflows.filter(task => {
     const searchLower = searchTerm.toLowerCase();
@@ -482,20 +641,47 @@ export default function WorkflowTray() {
       if (!hasInteracted || isPendingForMe) return false;
     }
 
+    if (projectFilter !== 'all' && task.projectId !== projectFilter) return false;
+
+    if (statusFilter !== 'all') {
+      const dueState = getDueState(task);
+      if (statusFilter === 'workflow' && !taskIsWorkflow) return false;
+      if (statusFilter === 'assigned_task' && taskIsWorkflow) return false;
+      if (statusFilter === 'overdue' && dueState !== 'overdue') return false;
+      if (statusFilter === 'due_soon' && dueState !== 'due_soon') return false;
+      if (!['workflow', 'assigned_task', 'overdue', 'due_soon'].includes(statusFilter) && currentStepStatus !== statusFilter) return false;
+    }
+
     return externalId.includes(searchLower) || 
            taskId.includes(searchLower) || 
            title.includes(searchLower) ||
            organizationName.includes(searchLower) ||
            projectName.includes(searchLower) ||
            currentStepStatus.includes(searchLower);
+  }).sort((a, b) => {
+    const bTime = getTaskTimestamp(b.createdAt) || getTaskTimestamp(b.updatedAt);
+    const aTime = getTaskTimestamp(a.createdAt) || getTaskTimestamp(a.updatedAt);
+    return bTime - aTime;
   });
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <h2 className="text-2xl font-bold text-slate-900">Bandeja de Trabajo</h2>
-          <div className="flex bg-slate-100 p-1 rounded-lg">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-2xl font-bold text-slate-900">Recibidos</h2>
+              <span className="inline-flex items-center rounded-full bg-indigo-600 px-2.5 py-1 text-xs font-bold text-white">
+                {pendingInboxCount} pendiente{pendingInboxCount === 1 ? '' : 's'}
+              </span>
+            </div>
+            <p className="mt-1 text-sm text-slate-500">
+              Gestiona tareas y workflows sin salir de la bandeja.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+            <div className="flex rounded-lg bg-slate-100 p-1">
             <button
               onClick={() => setActiveTab('pending')}
               className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
@@ -516,16 +702,46 @@ export default function WorkflowTray() {
             >
               Revisados
             </button>
+            </div>
           </div>
         </div>
-        <div className="w-full sm:w-72">
+
+        <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[1fr_220px_220px]">
           <input
             type="text"
-            placeholder="Buscar por ID, título, proyecto o estado..."
+            placeholder="Buscar por ID, título, proyecto, organización o estado..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            className="h-10 w-full rounded-lg border border-slate-200 bg-white px-4 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           />
+          <select
+            value={projectFilter}
+            onChange={(event) => setProjectFilter(event.target.value)}
+            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          >
+            <option value="all">Todos los proyectos</option>
+            {projectOptions.map(([projectId, projectName]) => (
+              <option key={projectId} value={projectId}>
+                {projectName}
+              </option>
+            ))}
+          </select>
+          <select
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          >
+            <option value="all">Todos los estados</option>
+            <option value="todo">Pendiente</option>
+            <option value="in_progress">Trabajando</option>
+            <option value="stuck">Estancada</option>
+            <option value="en_curso">Workflow en curso</option>
+            <option value="detenido">Workflow detenido</option>
+            <option value="overdue">Vencidas</option>
+            <option value="due_soon">Por vencer</option>
+            <option value="assigned_task">Solo tareas</option>
+            <option value="workflow">Solo workflows</option>
+          </select>
         </div>
       </div>
 
@@ -547,9 +763,13 @@ export default function WorkflowTray() {
               const endDate = getTaskDate(task.endDate || task.end);
               const progress = Number(task.progress || 0);
               const status = task.status || 'todo';
+              const dueState = getDueState(task);
+              const dueStyles = getDueStyles(dueState);
+              const commentCount = Number(task.commentCount || 0);
 
               return (
-                <div key={`${task.projectId}-${task.id}`} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden hover:shadow-md transition-shadow">
+                <div key={`${task.projectId}-${task.id}`} className={`overflow-hidden rounded-xl border shadow-sm transition-shadow hover:shadow-md ${dueStyles.card}`}>
+                  <div className={`h-1.5 w-full ${dueStyles.bar}`} />
                   <div className="p-5">
                     <div className="flex items-start justify-between gap-4 mb-4">
                       <div className="min-w-0">
@@ -563,6 +783,11 @@ export default function WorkflowTray() {
                           <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${getTaskStatusClass(status)}`}>
                             {getTaskStatusLabel(status)}
                           </span>
+                          {dueState !== 'ok' && dueState !== 'none' && dueState !== 'closed' && (
+                            <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${dueStyles.label}`}>
+                              {getDueLabel(dueState)}
+                            </span>
+                          )}
                         </div>
                         <h3 className="text-lg font-bold text-slate-900 truncate">
                           {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{task.title || task.name || 'Tarea sin nombre'}
@@ -573,7 +798,7 @@ export default function WorkflowTray() {
                       </div>
 
                       <div className="text-right shrink-0">
-                        <div className="flex items-center gap-1 text-xs text-slate-400 mb-1">
+                        <div className={`mb-1 flex items-center gap-1 text-xs ${dueStyles.text}`}>
                           <Clock size={12} />
                           <span>{endDate ? `Vence ${format(endDate, 'd MMM', { locale: es })}` : 'Sin fecha fin'}</span>
                         </div>
@@ -601,11 +826,33 @@ export default function WorkflowTray() {
                       )}
                     </div>
 
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                       <div className="text-xs text-slate-400">
                         {task.priority === 'high' ? 'Prioridad alta' : task.priority === 'low' ? 'Prioridad baja' : 'Prioridad media'}
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          value={status}
+                          onChange={(event) => void updateAssignedTaskStatus(task, event.target.value)}
+                          disabled={processingId === task.id}
+                          className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60"
+                          title="Cambiar estado"
+                        >
+                          <option value="todo">Pendiente</option>
+                          <option value="in_progress">Trabajando</option>
+                          <option value="stuck">Estancada</option>
+                          <option value="completed">Finalizar</option>
+                          {status === 'completed_late' && <option value="completed_late">Finalizada con retraso</option>}
+                        </select>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setCommentsModalTask(task)}
+                          className="text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        >
+                          <MessageSquare size={14} className="mr-1.5" />
+                          {commentCount > 0 ? `${commentCount} comentarios` : 'Comentar'}
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"
@@ -629,12 +876,16 @@ export default function WorkflowTray() {
             }
 
             const isReturned = task.workflowSteps[task.currentStepIndex]?.status === 'devuelto' || task.workflowSteps[task.currentStepIndex]?.status === 'returned';
+            const dueState = getDueState(task);
+            const dueStyles = getDueStyles(dueState);
+            const commentCount = Number(task.commentCount || 0);
             return (
-            <div key={`${task.projectId}-${task.id}`} className={`bg-white rounded-xl border shadow-sm overflow-hidden hover:shadow-md transition-shadow ${isReturned ? 'border-red-300' : 'border-slate-200'}`}>
+            <div key={`${task.projectId}-${task.id}`} className={`overflow-hidden rounded-xl border shadow-sm transition-shadow hover:shadow-md ${isReturned ? 'border-red-300 bg-red-50/30' : dueStyles.card}`}>
+              <div className={`h-1.5 w-full ${isReturned ? 'bg-red-500' : dueStyles.bar}`} />
               <div className="p-5">
                 <div className="flex items-start justify-between mb-4">
                   <div>
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
                       <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${isReturned || task.workflowSteps[task.currentStepIndex]?.status === 'detenido' ? 'bg-red-50 text-red-600' : 'bg-indigo-50 text-indigo-600'}`}>
                         Workflow {isReturned && '- Devuelto'} {task.workflowSteps[task.currentStepIndex]?.status === 'detenido' && '- Detenido'}
                       </span>
@@ -644,6 +895,11 @@ export default function WorkflowTray() {
                       <span className="text-xs text-slate-400">
                         Paso {task.currentStepIndex + 1} de {task.workflowSteps.length}
                       </span>
+                      {dueState !== 'ok' && dueState !== 'none' && dueState !== 'closed' && (
+                        <span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase tracking-wider ${dueStyles.label}`}>
+                          {getDueLabel(dueState)}
+                        </span>
+                      )}
                     </div>
                     <h3 className="text-lg font-bold text-slate-900">
                       {task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}{task.title}
@@ -653,9 +909,13 @@ export default function WorkflowTray() {
                     </p>
                   </div>
                   <div className="text-right">
-                    <div className="flex items-center gap-1 text-xs text-slate-400 mb-1">
+                    <div className={`mb-1 flex items-center gap-1 text-xs ${dueStyles.text}`}>
                       <Clock size={12} />
-                      <span>Iniciado {format(task.createdAt.toDate(), 'd MMM', { locale: es })}</span>
+                      <span>
+                        {getTaskDate(task.endDate || task.end)
+                          ? `Vence ${format(getTaskDate(task.endDate || task.end)!, 'd MMM', { locale: es })}`
+                          : `Iniciado ${format(getTaskDate(task.createdAt) || new Date(), 'd MMM', { locale: es })}`}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -817,6 +1077,15 @@ export default function WorkflowTray() {
                       className="text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
                     >
                       Ver Documentos
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setCommentsModalTask(task)}
+                      className="flex items-center gap-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                    >
+                      <MessageSquare size={14} />
+                      <span className="text-xs">{commentCount > 0 ? `${commentCount} comentarios` : 'Comentar'}</span>
                     </Button>
                     {task.workflowHistory && task.workflowHistory.length > 0 && (
                       <Button
@@ -1186,6 +1455,15 @@ export default function WorkflowTray() {
         onClose={() => setDocsModalTask(null)}
         task={docsModalTask}
         userId={user?.uid || ''}
+      />
+
+      <TaskCommentsModal
+        isOpen={!!commentsModalTask}
+        onClose={() => setCommentsModalTask(null)}
+        projectId={commentsModalTask?.projectId || ''}
+        task={commentsModalTask}
+        currentUser={user}
+        teamMembers={projectTeamMembers}
       />
     </div>
   );

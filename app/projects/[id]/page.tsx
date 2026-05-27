@@ -75,6 +75,20 @@ const resetWorkflowStepRuntime = (step: any = {}) => ({
   completed: false,
 });
 
+const getDateValue = (value: any) => {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const normalizeCompletedTaskStatus = (status: string, task: any) => {
+  if (status !== 'completed') return status;
+  const endDate = getDateValue(task?.endDate || task?.end);
+  if (!endDate) return status;
+  return Date.now() > endDate.getTime() ? 'completed_late' : 'completed';
+};
+
 export default function ProjectDetailsPage() {
   const params = useParams();
   const router = useRouter();
@@ -293,6 +307,7 @@ export default function ProjectDetailsPage() {
       let status = 'in_progress';
       if (newProgress === 0) status = 'todo';
       if (newProgress === 100) status = 'completed';
+      status = normalizeCompletedTaskStatus(status, task);
 
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
@@ -317,8 +332,8 @@ export default function ProjectDetailsPage() {
           }
         } else {
           // For workflow, only if completing/reverting the whole task
-          const wasCompleted = task.status === 'completed';
-          const isCompleted = status === 'completed';
+          const wasCompleted = task.status === 'completed' || task.status === 'completed_late';
+          const isCompleted = status === 'completed' || status === 'completed_late';
 
           if (wasCompleted !== isCompleted) {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
@@ -567,17 +582,19 @@ export default function ProjectDetailsPage() {
         return;
       }
 
+      const finalStatus = normalizeCompletedTaskStatus(newStatus, task);
+
       // If it's a workflow and moving to in-progress, show the start modal
-      if (task.type === 'workflow' && newStatus === 'in_progress' && task.status === 'todo') {
+      if (task.type === 'workflow' && finalStatus === 'in_progress' && task.status === 'todo') {
         setSelectedTaskForStartWorkflow(task);
         setIsStartWorkflowModalOpen(true);
         return;
       }
 
       let progress = 0;
-      if (newStatus === 'completed') progress = 100;
-      else if (newStatus === 'in_progress') progress = Math.max(task.progress || 0, 10);
-      else if (newStatus === 'stuck') progress = task.progress || 0;
+      if (finalStatus === 'completed' || finalStatus === 'completed_late') progress = 100;
+      else if (finalStatus === 'in_progress') progress = Math.max(task.progress || 0, 10);
+      else if (finalStatus === 'stuck') progress = task.progress || 0;
 
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
@@ -602,8 +619,8 @@ export default function ProjectDetailsPage() {
           }
         } else {
           // For workflow, only if completing the whole task
-          const wasCompleted = task.status === 'completed';
-          const isCompleted = newStatus === 'completed';
+          const wasCompleted = task.status === 'completed' || task.status === 'completed_late';
+          const isCompleted = finalStatus === 'completed' || finalStatus === 'completed_late';
 
           if (wasCompleted !== isCompleted) {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
@@ -643,7 +660,7 @@ export default function ProjectDetailsPage() {
       }
 
       batch.update(taskRef, {
-        status: newStatus,
+        status: finalStatus,
         progress: progress,
         priority: task.priority || 'medium',
         updatedAt: serverTimestamp()
@@ -691,7 +708,7 @@ export default function ProjectDetailsPage() {
               if (t.assignedTo) updateData[`userStats.${t.assignedTo}`] = increment(-units);
               batch.update(rcRef, updateData);
             }
-          } else if (t.status === 'completed') {
+          } else if (t.status === 'completed' || t.status === 'completed_late') {
             const units = t.unitsToAdd || 1;
             const updateData: any = { currentValue: increment(-units) };
             if (t.assignedTo) updateData[`userStats.${t.assignedTo}`] = increment(-units);
@@ -892,7 +909,7 @@ export default function ProjectDetailsPage() {
     const currentSubtasks = tasks.filter((candidate) => candidate.parentTaskId === parentTask.id);
     const batch = writeBatch(db);
     const subtaskRef = doc(collection(db, 'projects', projectId, 'tasks'));
-    const progress = subtask.status === 'completed' ? 100 : subtask.status === 'in_progress' ? 10 : 0;
+    const progress = subtask.status === 'completed' || subtask.status === 'completed_late' ? 100 : subtask.status === 'in_progress' ? 10 : 0;
 
     try {
       batch.set(subtaskRef, {
@@ -1064,7 +1081,7 @@ export default function ProjectDetailsPage() {
         }
       });
 
-      if (task.status === 'completed' && task.isRateCardTask && task.rateCardId) {
+      if ((task.status === 'completed' || task.status === 'completed_late') && task.isRateCardTask && task.rateCardId) {
         const taskRcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
         const taskUnits = Number(task.unitsToAdd || 1);
         const updateData: any = {

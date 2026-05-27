@@ -77,6 +77,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   const getStatusSolidColor = (status: string) => {
     switch (status) {
       case 'completed': return 'bg-emerald-500 text-white';
+      case 'completed_late': return 'bg-orange-500 text-white';
       case 'in_progress': return 'bg-amber-500 text-white';
       case 'stuck': return 'bg-red-500 text-white';
       case 'todo':
@@ -88,6 +89,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   const getStatusBorderColor = (status: string) => {
     switch (status) {
       case 'completed': return 'border-l-emerald-500';
+      case 'completed_late': return 'border-l-orange-500';
       case 'in_progress': return 'border-l-amber-500';
       case 'stuck': return 'border-l-red-500';
       case 'todo':
@@ -99,6 +101,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   const getStatusLabel = (status: string) => {
     switch (status) {
       case 'completed': return 'Listo';
+      case 'completed_late': return 'Finalizado con retraso';
       case 'in_progress': return 'En curso';
       case 'stuck': return 'Detenido';
       case 'todo':
@@ -334,6 +337,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
               <option value="in_progress">En curso</option>
               <option value="stuck">Detenido</option>
               <option value="completed">Listo</option>
+              {task.status === 'completed_late' && <option value="completed_late">Finalizado con retraso</option>}
             </select>
           </td>
 

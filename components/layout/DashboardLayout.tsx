@@ -22,11 +22,13 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
+import { useInboxPendingCount } from '@/hooks/useInboxPendingCount';
 import { ProfileModal } from '@/components/settings/ProfileModal';
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, userRole, loading, accessError, loginWithEmail, requestPasswordReset, logout } = useAuth();
+  const inboxPendingCount = useInboxPendingCount();
   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -239,7 +241,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
             </div>
           )}
           <NavItem href="/dashboard" icon={<LayoutDashboard size={18} />} label="Dashboard" active={pathname === '/dashboard'} collapsed={isCollapsed} />
-          <NavItem href="/workflows" icon={<Inbox size={18} />} label="Bandeja Workflows" active={pathname?.startsWith('/workflows')} collapsed={isCollapsed} />
+          <NavItem href="/workflows" icon={<Inbox size={18} />} label="Bandeja de entrada" active={pathname?.startsWith('/workflows')} collapsed={isCollapsed} badge={inboxPendingCount} />
           <NavItem href="/projects" icon={<FolderKanban size={18} />} label="Projects" active={pathname?.startsWith('/projects')} collapsed={isCollapsed} />
           <NavItem href="/team" icon={<Users size={18} />} label="Team Performance" active={pathname?.startsWith('/team')} collapsed={isCollapsed} />
           <NavItem href="/alerts" icon={<Bell size={18} />} label="Alertas" active={pathname?.startsWith('/alerts')} collapsed={isCollapsed} />
@@ -364,11 +366,11 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   );
 }
 
-function NavItem({ href, icon, label, active, collapsed }: { href: string, icon: React.ReactNode, label: string, active?: boolean, collapsed?: boolean }) {
+function NavItem({ href, icon, label, active, collapsed, badge }: { href: string, icon: React.ReactNode, label: string, active?: boolean, collapsed?: boolean, badge?: number }) {
   return (
     <Link 
       href={href} 
-      className={`flex items-center ${collapsed ? 'justify-center' : 'gap-3 px-3'} py-2 rounded-md transition-all text-sm font-medium ${
+      className={`relative flex items-center ${collapsed ? 'justify-center' : 'gap-3 px-3'} py-2 rounded-md transition-all text-sm font-medium ${
         active 
           ? 'bg-indigo-50 text-indigo-700' 
           : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
@@ -377,6 +379,11 @@ function NavItem({ href, icon, label, active, collapsed }: { href: string, icon:
     >
       <span className={`${active ? 'text-indigo-600' : 'text-slate-400'} shrink-0`}>{icon}</span>
       {!collapsed && <span className="truncate">{label}</span>}
+      {Boolean(badge) && (
+        <span className={`${collapsed ? 'absolute -right-1 -top-1' : 'ml-auto'} min-w-5 rounded-full bg-indigo-600 px-1.5 text-center text-[11px] font-bold leading-5 text-white`}>
+          {badge && badge > 99 ? '99+' : badge}
+        </span>
+      )}
     </Link>
   );
 }

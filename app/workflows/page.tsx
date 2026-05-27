@@ -20,15 +20,13 @@ export default function WorkflowsPage() {
             </div>
             <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
               <Inbox className="text-indigo-600" size={24} />
-              Bandeja de Workflows
+              Bandeja de entrada
             </h1>
-            <p className="text-slate-500">Gestiona tus tareas pendientes de aprobación y seguimiento.</p>
+            <p className="text-slate-500">Gestiona tus tareas, comentarios y workflows pendientes desde un solo lugar.</p>
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <WorkflowTray />
-        </div>
+        <WorkflowTray />
       </div>
     </DashboardLayout>
   );

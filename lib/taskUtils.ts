@@ -23,8 +23,8 @@ export const updateParentTaskStatus = async (projectId: string, parentTaskId: st
 
     subtasks.forEach(task => {
       const status = task.status || 'todo';
-      if (status !== 'completed') allDone = false;
-      if (status === 'in_progress' || status === 'completed') anyStarted = true;
+      if (status !== 'completed' && status !== 'completed_late') allDone = false;
+      if (status === 'in_progress' || status === 'completed' || status === 'completed_late') anyStarted = true;
       if (status === 'todo' || status === 'pending') anyPending = true;
       
       totalProgress += (task.progress || 0);
@@ -32,7 +32,7 @@ export const updateParentTaskStatus = async (projectId: string, parentTaskId: st
 
     let newStatus = 'todo';
     if (allDone) {
-      newStatus = 'completed';
+      newStatus = subtasks.some((task) => task.status === 'completed_late') ? 'completed_late' : 'completed';
     } else if (anyStarted) {
       newStatus = 'in_progress';
     }

@@ -241,8 +241,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         project: t.parentTaskId || undefined,
         displayOrder: index + 1,
         styles: {
-          backgroundColor: t.status === 'completed' ? '#00c875' : t.status === 'in_progress' ? '#fdab3d' : '#c4c4c4',
-          backgroundSelectedColor: t.status === 'completed' ? '#00a35f' : t.status === 'in_progress' ? '#e69a35' : '#b0b0b0',
+          backgroundColor: t.status === 'completed_late' ? '#f97316' : t.status === 'completed' ? '#00c875' : t.status === 'in_progress' ? '#fdab3d' : '#c4c4c4',
+          backgroundSelectedColor: t.status === 'completed_late' ? '#ea580c' : t.status === 'completed' ? '#00a35f' : t.status === 'in_progress' ? '#e69a35' : '#b0b0b0',
           progressColor: '#ffffff44',
           progressSelectedColor: '#ffffff66',
         }
@@ -296,6 +296,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     switch (status) {
       case 'completed':
       case 'listo': return 'bg-[#00c875] text-white';
+      case 'completed_late': return 'bg-orange-500 text-white';
       case 'in_progress':
       case 'en_curso': return 'bg-[#fdab3d] text-white';
       case 'stuck':
@@ -312,6 +313,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const getStatusLabel = (status: string) => {
     switch (status) {
       case 'completed': return 'LISTO';
+      case 'completed_late': return 'LISTO CON RETRASO';
       case 'in_progress': return 'TRABAJANDO';
       case 'stuck': return 'ESTANCADO';
       case 'todo':
@@ -466,6 +468,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                           >
                             {/* Monday-style colored left bar */}
                             <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${
+                              task.status === 'completed_late' ? 'bg-orange-500' :
                               task.status === 'completed' ? 'bg-[#00c875]' :
                               task.status === 'in_progress' ? 'bg-[#fdab3d]' :
                               task.status === 'stuck' ? 'bg-[#e2445c]' :
@@ -516,7 +519,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   <button
                                     type="button"
                                     onDoubleClick={() => startEditingTitle(task)}
-                                    className={`min-w-0 flex-1 truncate text-left text-sm font-medium ${task.status === 'completed' || task.status === 'listo' ? 'text-slate-400 line-through' : isSubTask ? 'text-slate-600' : 'text-slate-700'}`}
+                                    className={`min-w-0 flex-1 truncate text-left text-sm font-medium ${task.status === 'completed' || task.status === 'completed_late' || task.status === 'listo' ? 'text-slate-400 line-through' : isSubTask ? 'text-slate-600' : 'text-slate-700'}`}
                                     title={taskTitle}
                                   >
                                     {taskDisplayTitle}
@@ -631,6 +634,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   <option value="in_progress" className="bg-white text-slate-700">TRABAJANDO</option>
                                   <option value="stuck" className="bg-white text-slate-700">ESTANCADO</option>
                                   <option value="completed" className="bg-white text-slate-700">LISTO</option>
+                                  {task.status === 'completed_late' && <option value="completed_late" className="bg-white text-slate-700">LISTO CON RETRASO</option>}
                                 </select>
                               )}
                               <div className="absolute inset-0 pointer-events-none opacity-0 group-hover/status:opacity-100 bg-black/5 transition-opacity" />
@@ -667,6 +671,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 className={`rounded-md h-7 w-full flex items-center justify-center relative overflow-hidden group/timeline border ${
                                   canEditThisTaskDates ? 'cursor-pointer hover:ring-2 hover:ring-indigo-500/10' : 'cursor-default'
                                 } ${
+                                task.status === 'completed_late' ? 'bg-orange-50 border-orange-200' :
                                 task.status === 'completed' ? 'bg-[#00c875]/10 border-[#00c875]/20' :
                                 task.status === 'in_progress' ? 'bg-[#fdab3d]/10 border-[#fdab3d]/20' :
                                 'bg-slate-50 border-slate-200'
@@ -674,6 +679,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 title={canEditThisTaskDates ? 'Editar fechas' : 'Sin permiso para editar fechas'}
                               >
                                 <div className={`text-[9px] font-bold z-10 flex items-center gap-1 ${
+                                  task.status === 'completed_late' ? 'text-orange-600' :
                                   task.status === 'completed' ? 'text-[#00c875]' :
                                   task.status === 'in_progress' ? 'text-[#fdab3d]' :
                                   'text-slate-500'
@@ -704,6 +710,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden shadow-inner">
                                 <div
                                   className={`h-full transition-all duration-700 ease-out ${
+                                    task.status === 'completed_late' ? 'bg-orange-500' :
                                     task.status === 'completed' ? 'bg-[#00c875]' :
                                     task.status === 'stuck' ? 'bg-[#e2445c]' :
                                     'bg-indigo-500'

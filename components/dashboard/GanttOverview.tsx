@@ -340,12 +340,17 @@ export const GanttOverview: React.FC = () => {
         return;
       }
 
+      const endDate = task?.endDate?.toDate ? task.endDate.toDate() : task?.endDate ? new Date(task.endDate) : null;
+      const finalStatus = status === 'completed' && endDate && !Number.isNaN(endDate.getTime()) && Date.now() > endDate.getTime()
+        ? 'completed_late'
+        : status;
+
       let progress = task.progress || 0;
-      if (status === 'completed') progress = 100;
-      else if (status === 'in_progress') progress = Math.max(progress, 10);
+      if (finalStatus === 'completed' || finalStatus === 'completed_late') progress = 100;
+      else if (finalStatus === 'in_progress') progress = Math.max(progress, 10);
 
       await updateDoc(doc(db, 'projects', selectedProjectId, 'tasks', taskId), {
-        status,
+        status: finalStatus,
         progress,
         priority: task.priority || 'medium',
         updatedAt: serverTimestamp()

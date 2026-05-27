@@ -13,12 +13,23 @@ interface TaskDetailsModalProps {
 }
 
 const getTaskTitle = (task: any) => task?.title || task?.name || "Sin título";
+const getTaskDate = (value: any) => {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
 const getTaskDisplayTitle = (task: any) => {
   const title = getTaskTitle(task);
   if (!task?.externalWorkflowId || title === task.externalWorkflowId) {
     return title;
   }
   return `[${task.externalWorkflowId}] ${title}`;
+};
+
+const getCompletedStatus = (task: any) => {
+  const endDate = getTaskDate(task?.endDate || task?.end);
+  return endDate && Date.now() > endDate.getTime() ? "completed_late" : "completed";
 };
 
 export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
@@ -166,7 +177,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         newProgress = Math.round((approvedCount / workflowSteps.length) * 100);
 
         if (newProgress === 100) {
-          newStatus = "completed";
+          newStatus = getCompletedStatus(task);
         } else if (newProgress > 0) {
           newStatus = "in_progress";
         } else {
