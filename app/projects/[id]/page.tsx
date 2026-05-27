@@ -96,6 +96,9 @@ const isDynamicRateCardEnabled = (source: any) =>
 const getDynamicRateCardUnits = (source: any) =>
   Number(source?.dynamicRateCardConfig?.defaultUnits || source?.unitsToAdd || 1);
 
+const shouldRequestDynamicRateCardUnits = (source: any) =>
+  source?.autoAddUnits === false || source?.dynamicRateCardConfig?.promptForUnits === true;
+
 const getRateCardDateKeys = (date = new Date()) => {
   const year = date.getFullYear();
   const dateKey = date.toISOString().slice(0, 10);
@@ -808,8 +811,13 @@ export default function ProjectDetailsPage() {
 
   const confirmDynamicRateCardStatusChange = async () => {
     if (!dynamicRateCardStatusChange) return;
+    const taskRequestsUnits = shouldRequestDynamicRateCardUnits(dynamicRateCardStatusChange.task);
 
-    if (!dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0) {
+    if (
+      !dynamicRateCardAssignee ||
+      !dynamicRateCardId ||
+      (taskRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))
+    ) {
       toast.warning('Completa la persona, el perfil y las unidades del Rate Card dinámico.');
       return;
     }
@@ -821,7 +829,9 @@ export default function ProjectDetailsPage() {
       {
         assigneeId: dynamicRateCardAssignee,
         rateCardId: dynamicRateCardId,
-        units: Number(dynamicRateCardUnits),
+        units: taskRequestsUnits
+          ? Number(dynamicRateCardUnits)
+          : getDynamicRateCardUnits(dynamicRateCardStatusChange.task),
         comment: dynamicRateCardComment.trim() || null,
       },
     );
@@ -1901,19 +1911,25 @@ export default function ProjectDetailsPage() {
                 </div>
               </div>
 
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Unidades <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="number"
-                  min="0.1"
-                  step="0.1"
-                  value={dynamicRateCardUnits}
-                  onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                />
-              </div>
+              {shouldRequestDynamicRateCardUnits(dynamicRateCardStatusChange.task) ? (
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
+                    Unidades <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={dynamicRateCardUnits}
+                    onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                </div>
+              ) : (
+                <div className="rounded-lg border border-emerald-100 bg-white px-3 py-2 text-sm text-emerald-700">
+                  Auto suma: se cargarán <strong>{getDynamicRateCardUnits(dynamicRateCardStatusChange.task)}</strong> unidades configuradas.
+                </div>
+              )}
 
               <div>
                 <label className="mb-1 block text-sm font-medium text-slate-700">Comentario</label>
@@ -1938,7 +1954,7 @@ export default function ProjectDetailsPage() {
               </Button>
               <Button
                 onClick={confirmDynamicRateCardStatusChange}
-                disabled={!dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0}
+                disabled={!dynamicRateCardAssignee || !dynamicRateCardId || (shouldRequestDynamicRateCardUnits(dynamicRateCardStatusChange.task) && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))}
                 className="bg-emerald-600 text-white hover:bg-emerald-700"
               >
                 Guardar y finalizar

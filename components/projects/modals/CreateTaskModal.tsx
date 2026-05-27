@@ -76,6 +76,7 @@ export function CreateTaskModal({
         defaultUnits: number;
         requirePerson: boolean;
         requireRateCard: boolean;
+        promptForUnits?: boolean;
       } | null;
       rateCardId?: string;
       unitsToAdd?: number;
@@ -93,6 +94,8 @@ export function CreateTaskModal({
   const [newTaskRateCardMode, setNewTaskRateCardMode] = useState<
     "static" | "dynamic"
   >("static");
+  const [newTaskDynamicAutoAddUnits, setNewTaskDynamicAutoAddUnits] =
+    useState(true);
   const [newTaskRateCardId, setNewTaskRateCardId] = useState("");
   const [newTaskUnitsToAdd, setNewTaskUnitsToAdd] = useState(1);
   const [newTaskPriority, setNewTaskPriority] = useState("medium");
@@ -149,6 +152,7 @@ export function CreateTaskModal({
     setNewTaskRequiresDoc(false);
     setNewTaskIsRateCard(false);
     setNewTaskRateCardMode("static");
+    setNewTaskDynamicAutoAddUnits(true);
     setNewTaskRateCardId("");
     setNewTaskUnitsToAdd(1);
     setDraftSubtasks([]);
@@ -272,10 +276,12 @@ export function CreateTaskModal({
               defaultUnits: Number(newTaskUnitsToAdd) || 1,
               requirePerson: true,
               requireRateCard: true,
+              promptForUnits: !newTaskDynamicAutoAddUnits,
             }
           : null,
         rateCardId: usesStaticRateCard ? newTaskRateCardId : null,
         unitsToAdd: newTaskIsRateCard ? Number(newTaskUnitsToAdd) : null,
+        autoAddUnits: usesDynamicRateCard ? newTaskDynamicAutoAddUnits : true,
         syncExternal: usesStaticRateCard
           ? rateCards.find((rc) => rc.id === newTaskRateCardId)?.syncExternal ||
             false
@@ -759,9 +765,10 @@ export function CreateTaskModal({
                                   defaultUnits: newSteps[idx].unitsToAdd || 1,
                                   requirePerson: true,
                                   requireRateCard: true,
+                                  promptForUnits: false,
                                 };
                                 newSteps[idx].rateCardId = undefined;
-                                newSteps[idx].autoAddUnits = false;
+                                newSteps[idx].autoAddUnits = true;
                               } else {
                                 newSteps[idx].rateCardMode = e.target.value ? "static" : undefined;
                                 newSteps[idx].dynamicRateCard = false;
@@ -784,27 +791,52 @@ export function CreateTaskModal({
 
                             {step.dynamicRateCard && (
                               <div className="sm:col-span-2 flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-2">
-                                <input
-                                type="number"
-                                min="0.1"
-                                step="0.1"
-                                value={step.unitsToAdd || 1}
-                                onChange={(e) => {
-                                  const newSteps = [...workflowSteps];
-                                  const units = Number(e.target.value);
-                                  newSteps[idx].unitsToAdd = units;
-                                  newSteps[idx].dynamicRateCardConfig = {
-                                    defaultUnits: units || 1,
-                                    requirePerson: true,
-                                    requireRateCard: true,
-                                  };
-                                  setWorkflowSteps(newSteps);
-                                }}
-                                  className="h-8 w-24 px-2 text-[10px] border border-emerald-100 focus:ring-0 bg-white rounded"
-                                  placeholder="Unid."
-                                />
+                                <label className="flex items-center gap-1 text-[10px] text-emerald-700 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={step.autoAddUnits !== false}
+                                    onChange={(e) => {
+                                      const newSteps = [...workflowSteps];
+                                      const autoAddUnits = e.target.checked;
+                                      newSteps[idx].autoAddUnits = autoAddUnits;
+                                      newSteps[idx].dynamicRateCardConfig = {
+                                        defaultUnits: newSteps[idx].unitsToAdd || 1,
+                                        requirePerson: true,
+                                        requireRateCard: true,
+                                        promptForUnits: !autoAddUnits,
+                                      };
+                                      setWorkflowSteps(newSteps);
+                                    }}
+                                    className="w-3 h-3 text-emerald-600 border-emerald-200 rounded focus:ring-emerald-500"
+                                  />
+                                  Sumar auto.
+                                </label>
+                                {step.autoAddUnits !== false && (
+                                  <input
+                                    type="number"
+                                    min="0.1"
+                                    step="0.1"
+                                    value={step.unitsToAdd || 1}
+                                    onChange={(e) => {
+                                      const newSteps = [...workflowSteps];
+                                      const units = Number(e.target.value);
+                                      newSteps[idx].unitsToAdd = units;
+                                      newSteps[idx].dynamicRateCardConfig = {
+                                        defaultUnits: units || 1,
+                                        requirePerson: true,
+                                        requireRateCard: true,
+                                        promptForUnits: false,
+                                      };
+                                      setWorkflowSteps(newSteps);
+                                    }}
+                                    className="h-8 w-24 px-2 text-[10px] border border-emerald-100 focus:ring-0 bg-white rounded"
+                                    placeholder="Unid."
+                                  />
+                                )}
                                 <span className="min-w-0 flex-1 text-[9px] text-emerald-600">
-                                  Pedirá persona y perfil al aprobar.
+                                  {step.autoAddUnits === false
+                                    ? "Pedirá persona, perfil y unidades al aprobar."
+                                    : "Pedirá persona y perfil; sumará estas unidades."}
                                 </span>
                               </div>
                             )}
@@ -1191,9 +1223,22 @@ export function CreateTaskModal({
                   />
                 </div>
                 {newTaskRateCardMode === "dynamic" && (
-                  <p className="col-span-2 text-[10px] text-emerald-600">
-                    Al finalizar la tarea se solicitará qué persona aporta las unidades y qué perfil de Rate Card se cargará.
-                  </p>
+                  <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-emerald-100 bg-white px-3 py-2">
+                    <label className="flex items-center gap-2 text-xs font-bold text-emerald-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newTaskDynamicAutoAddUnits}
+                        onChange={(e) => setNewTaskDynamicAutoAddUnits(e.target.checked)}
+                        className="h-3.5 w-3.5 rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      Sumar auto.
+                    </label>
+                    <span className="min-w-0 flex-1 text-[10px] text-emerald-600">
+                      {newTaskDynamicAutoAddUnits
+                        ? "Al finalizar se pedirá persona y perfil; las unidades se tomarán de este valor."
+                        : "Al finalizar se pedirá persona, perfil y unidades."}
+                    </span>
+                  </div>
                 )}
                 <p className="col-span-2 text-[10px] text-emerald-600">
                   {newTaskRateCardMode === "dynamic"

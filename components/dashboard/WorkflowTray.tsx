@@ -123,6 +123,9 @@ const isDynamicRateCardEnabled = (source: any) =>
 const getDynamicRateCardUnits = (source: any) =>
   Number(source?.dynamicRateCardConfig?.defaultUnits || source?.unitsToAdd || 1);
 
+const shouldRequestDynamicRateCardUnits = (source: any) =>
+  source?.autoAddUnits === false || source?.dynamicRateCardConfig?.promptForUnits === true;
+
 const getDateKeys = (date = new Date()) => {
   const year = date.getFullYear();
   const dateKey = date.toISOString().slice(0, 10);
@@ -489,6 +492,9 @@ export default function WorkflowTray() {
     const currentIndex = task.currentStepIndex || 0;
     const currentStep = task.workflowSteps[currentIndex];
     const workflowDynamicRateCardSource = getWorkflowDynamicRateCardSource(task, action);
+    const workflowDynamicRateCardRequestsUnits = workflowDynamicRateCardSource
+      ? shouldRequestDynamicRateCardUnits(workflowDynamicRateCardSource.sourceConfig)
+      : false;
 
     // Validate form data if approving and form exists
     if (action === 'approve' && currentStep?.form?.fields) {
@@ -500,7 +506,11 @@ export default function WorkflowTray() {
     }
 
     if (workflowDynamicRateCardSource) {
-      if (!dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0) {
+      if (
+        !dynamicRateCardAssignee ||
+        !dynamicRateCardId ||
+        (workflowDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))
+      ) {
         toast.warning("Completa la persona, el perfil y las unidades del Rate Card dinámico.");
         return;
       }
@@ -550,7 +560,9 @@ export default function WorkflowTray() {
           task,
           rateCardId: dynamicRateCardId,
           assigneeId: dynamicRateCardAssignee,
-          units: Number(dynamicRateCardUnits),
+          units: workflowDynamicRateCardRequestsUnits
+            ? Number(dynamicRateCardUnits)
+            : getDynamicRateCardUnits(workflowDynamicRateCardSource.sourceConfig),
           source: workflowDynamicRateCardSource.source,
           stepIndex: workflowDynamicRateCardSource.stepIndex,
           comment: actionComment,
@@ -786,8 +798,13 @@ export default function WorkflowTray() {
   const confirmAssignedTaskDynamicRateCard = async () => {
     const task = dynamicRateCardModal.task;
     if (!task) return;
+    const taskRequestsUnits = shouldRequestDynamicRateCardUnits(task);
 
-    if (!dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0) {
+    if (
+      !dynamicRateCardAssignee ||
+      !dynamicRateCardId ||
+      (taskRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))
+    ) {
       toast.warning("Completa la persona, el perfil y las unidades del Rate Card dinámico.");
       return;
     }
@@ -795,7 +812,7 @@ export default function WorkflowTray() {
     await updateAssignedTaskStatus(task, dynamicRateCardModal.nextStatus, {
       assigneeId: dynamicRateCardAssignee,
       rateCardId: dynamicRateCardId,
-      units: Number(dynamicRateCardUnits),
+      units: taskRequestsUnits ? Number(dynamicRateCardUnits) : getDynamicRateCardUnits(task),
       comment: dynamicRateCardComment.trim() || null,
     });
 
@@ -879,6 +896,15 @@ export default function WorkflowTray() {
     const aTime = getTaskTimestamp(a.createdAt) || getTaskTimestamp(a.updatedAt);
     return bTime - aTime;
   });
+  const activeDynamicRateCardSource = actionModal.isOpen
+    ? getWorkflowDynamicRateCardSource(actionModal.task, actionModal.type)
+    : null;
+  const activeDynamicRateCardRequestsUnits = activeDynamicRateCardSource
+    ? shouldRequestDynamicRateCardUnits(activeDynamicRateCardSource.sourceConfig)
+    : false;
+  const assignedTaskDynamicRateCardRequestsUnits = dynamicRateCardModal.task
+    ? shouldRequestDynamicRateCardUnits(dynamicRateCardModal.task)
+    : false;
 
   return (
     <div className="space-y-6">
@@ -1483,12 +1509,12 @@ export default function WorkflowTray() {
                 </div>
               )}
 
-              {getWorkflowDynamicRateCardSource(actionModal.task, actionModal.type) && (
+              {activeDynamicRateCardSource && (
                 <div className="mb-4 rounded-xl border border-emerald-100 bg-emerald-50 p-4">
                   <p className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-700">
                     Rate Card dinámico
                   </p>
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                     <div>
                       <label className="mb-1 block text-xs font-medium text-slate-600">
                         Persona <span className="text-red-500">*</span>
@@ -1522,19 +1548,25 @@ export default function WorkflowTray() {
                         ))}
                       </select>
                     </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-slate-600">
-                        Unidades <span className="text-red-500">*</span>
-                      </label>
-                      <input
-                        type="number"
-                        min="0.1"
-                        step="0.1"
-                        value={dynamicRateCardUnits}
-                        onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
-                        className="w-full rounded-lg border border-emerald-100 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                      />
-                    </div>
+                    {activeDynamicRateCardRequestsUnits ? (
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-xs font-medium text-slate-600">
+                          Unidades <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="number"
+                          min="0.1"
+                          step="0.1"
+                          value={dynamicRateCardUnits}
+                          onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                          className="w-full rounded-lg border border-emerald-100 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                        />
+                      </div>
+                    ) : (
+                      <div className="md:col-span-2 rounded-lg border border-emerald-100 bg-white px-3 py-2 text-xs text-emerald-700">
+                        Auto suma: se cargarán <strong>{getDynamicRateCardUnits(activeDynamicRateCardSource.sourceConfig)}</strong> unidades configuradas.
+                      </div>
+                    )}
                   </div>
                   <p className="mt-2 text-[10px] text-emerald-700">
                     Este cargo quedará registrado por persona, día, semana y mes.
@@ -1584,7 +1616,7 @@ export default function WorkflowTray() {
               </Button>
               <Button
                 onClick={confirmAction}
-                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || (actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && overrideUnits === '') || (Boolean(getWorkflowDynamicRateCardSource(actionModal.task, actionModal.type)) && (!dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))}
+                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || (actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && overrideUnits === '') || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))))}
                 className={
                   actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 
                   actionModal.type === 'return' ? 'bg-red-600 hover:bg-red-700 text-white' :
@@ -1671,19 +1703,25 @@ export default function WorkflowTray() {
                 </div>
               </div>
 
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
-                  Unidades <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="number"
-                  min="0.1"
-                  step="0.1"
-                  value={dynamicRateCardUnits}
-                  onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                />
-              </div>
+              {assignedTaskDynamicRateCardRequestsUnits ? (
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
+                    Unidades <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={dynamicRateCardUnits}
+                    onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                </div>
+              ) : (
+                <div className="rounded-lg border border-emerald-100 bg-white px-3 py-2 text-sm text-emerald-700">
+                  Auto suma: se cargarán <strong>{getDynamicRateCardUnits(dynamicRateCardModal.task)}</strong> unidades configuradas.
+                </div>
+              )}
 
               <div>
                 <label className="mb-1 block text-sm font-medium text-slate-700">
@@ -1710,7 +1748,7 @@ export default function WorkflowTray() {
               </Button>
               <Button
                 onClick={confirmAssignedTaskDynamicRateCard}
-                disabled={processingId === dynamicRateCardModal.task.id || !dynamicRateCardAssignee || !dynamicRateCardId || dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0}
+                disabled={processingId === dynamicRateCardModal.task.id || !dynamicRateCardAssignee || !dynamicRateCardId || (assignedTaskDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))}
                 className="bg-emerald-600 text-white hover:bg-emerald-700"
               >
                 {processingId === dynamicRateCardModal.task.id && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
