@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useMemo, useState } from "react";
-import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, updateDoc } from "@/lib/supabase/document-store";
+import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from "@/lib/supabase/document-store";
 import { db } from "@/lib/backend";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,9 @@ type LogbookEntry = {
   title: string;
   content: string;
   type: string;
+  systemType?: string;
+  source?: string;
+  systemGenerated?: boolean;
   actionCandidates?: ActionCandidate[];
   derivedLinks?: any[];
   createdAt?: any;
@@ -53,6 +56,7 @@ type ActionForm = {
 };
 
 const ENTRY_TYPES = [
+  { value: "project_start", label: "Inicio" },
   { value: "meeting", label: "Reunión" },
   { value: "decision", label: "Decisión" },
   { value: "problem", label: "Problema" },
@@ -145,6 +149,42 @@ const formatDate = (value: any) => {
   });
 };
 
+const formatProjectDate = (value: any) => {
+  const date = getDateValue(value);
+  if (!date) return "Sin fecha registrada";
+  return date.toLocaleDateString("es-CO", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
+};
+
+const getProjectOrganizationLabel = (project: any) =>
+  project?.organizationName ||
+  project?.clientName ||
+  project?.companyName ||
+  project?.organizationId ||
+  "";
+
+const buildInitialLogbookContent = (project: any) => {
+  const projectName = project?.name || "este proyecto";
+  const description = project?.description?.trim() || "Sin descripción inicial registrada.";
+  const organization = getProjectOrganizationLabel(project);
+  const startDate = formatProjectDate(project?.startDate || project?.start || project?.createdAt);
+  const endDate = formatProjectDate(project?.endDate || project?.end);
+
+  return [
+    `El proyecto "${projectName}" inicia con esta entrada base de bitácora.`,
+    `Descripción inicial: ${description}`,
+    `Fecha de inicio registrada: ${startDate}.`,
+    endDate !== "Sin fecha registrada" ? `Fecha de cierre registrada: ${endDate}.` : null,
+    organization ? `Organización o cliente: ${organization}.` : null,
+    "Esta entrada conserva el punto de partida para entender cómo evolucionan las decisiones, tareas y compromisos del proyecto.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+};
+
 const toDateInputValue = (date: Date) => date.toISOString().slice(0, 10);
 
 const addDays = (date: Date, days: number) => {
@@ -218,6 +258,7 @@ export function ProjectLogbook({
   const [selectedAction, setSelectedAction] = useState<{ entry: LogbookEntry; candidate: ActionCandidate } | null>(null);
   const [actionForm, setActionForm] = useState<ActionForm>(emptyActionForm());
   const [savingAction, setSavingAction] = useState(false);
+  const initialEntrySeedRef = React.useRef<Set<string>>(new Set());
 
   const projectMemberIds = useMemo(
     () => new Set((project?.assignedTeamMembers || []).filter(Boolean)),
@@ -265,6 +306,46 @@ export function ProjectLogbook({
 
     return () => unsubscribe();
   }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || !project || loading) return;
+
+    const hasInitialEntry = entries.some((entry) =>
+      entry.type === "project_start" ||
+      entry.systemType === "project_start" ||
+      entry.source === "project_start" ||
+      entry.id === "project-start"
+    );
+
+    if (hasInitialEntry) {
+      initialEntrySeedRef.current.add(projectId);
+      return;
+    }
+
+    if (initialEntrySeedRef.current.has(projectId)) return;
+    initialEntrySeedRef.current.add(projectId);
+
+    const projectCreatedAt = getDateValue(project?.createdAt);
+
+    setDoc(doc(db, "projects", projectId, "logbookEntries", "project-start"), {
+      projectId,
+      title: `Inicio del proyecto: ${project?.name || "Proyecto"}`,
+      content: buildInitialLogbookContent(project),
+      type: "project_start",
+      systemType: "project_start",
+      source: "project_start",
+      systemGenerated: true,
+      actionCandidates: [],
+      derivedLinks: [],
+      createdAt: projectCreatedAt || serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: project?.ownerId || currentUser?.uid || null,
+      createdByEmail: currentUser?.email || null,
+    }).catch((error) => {
+      initialEntrySeedRef.current.delete(projectId);
+      console.error("Error seeding initial project logbook entry:", error);
+    });
+  }, [currentUser?.email, currentUser?.uid, entries, loading, project, projectId]);
 
   const resetEntryForm = () => {
     setTitle("");
