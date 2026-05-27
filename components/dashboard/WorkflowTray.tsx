@@ -43,6 +43,30 @@ const formatFormValue = (value: any) => {
   return value || 'Sin respuesta';
 };
 
+const renderHistoryFormValue = (value: any) => {
+  const formattedValue = String(formatFormValue(value));
+  const isUrl = /^https?:\/\//i.test(formattedValue.trim());
+
+  if (isUrl) {
+    return (
+      <a
+        href={formattedValue}
+        target="_blank"
+        rel="noreferrer"
+        className="min-w-0 break-all text-xs font-bold text-indigo-700 underline decoration-indigo-300 underline-offset-2 [overflow-wrap:anywhere] hover:text-indigo-900"
+      >
+        {formattedValue}
+      </a>
+    );
+  }
+
+  return (
+    <span className="min-w-0 whitespace-pre-wrap break-words text-xs font-bold text-slate-800 [overflow-wrap:anywhere]">
+      {formattedValue}
+    </span>
+  );
+};
+
 const isWorkflowItem = (task: any) =>
   task?.trayItemType === 'workflow' || (task?.type === 'workflow' && Array.isArray(task?.workflowSteps));
 
@@ -1950,7 +1974,7 @@ export default function WorkflowTray() {
       {/* History Modal */}
       {historyModalTask && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden max-h-[90vh] flex flex-col">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl overflow-hidden max-h-[90vh] flex flex-col">
             <div className="p-6 border-b border-slate-100 flex items-center justify-between shrink-0">
               <div>
                 <h2 className="text-xl font-bold text-slate-800">Historial de Interacciones</h2>
@@ -1966,7 +1990,7 @@ export default function WorkflowTray() {
             <div className="p-6 overflow-y-auto bg-slate-50 flex-1">
               <div className="space-y-6">
                 {historyModalTask.workflowHistory?.slice().reverse().map((history: any, index: number) => (
-                  <div key={index} className="flex gap-4">
+                  <div key={index} className="flex min-w-0 gap-3 sm:gap-4">
                     <div className="shrink-0 mt-1">
                       {history.action === 'approve' ? (
                         <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">
@@ -1990,17 +2014,17 @@ export default function WorkflowTray() {
                         </div>
                       )}
                     </div>
-                    <div className="flex-1 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                      <div className="flex items-start justify-between mb-2">
-                        <div>
-                          <p className="text-sm font-bold text-slate-900">
+                    <div className="min-w-0 flex-1 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                      <div className="mb-2 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-bold text-slate-900">
                             {history.userName || 'Usuario'}
                           </p>
-                          <p className="text-xs text-slate-500">
+                          <p className="break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
                             Paso {history.stepIndex + 1}: {historyModalTask.workflowSteps[history.stepIndex]?.label || 'Desconocido'}
                           </p>
                         </div>
-                        <div className="text-right">
+                        <div className="shrink-0 text-left sm:text-right">
                           <span className={`text-xs font-medium px-2 py-1 rounded-full ${
                             history.action === 'approve' ? 'bg-emerald-50 text-emerald-700' :
                             history.action === 'return' ? 'bg-red-50 text-red-700' :
@@ -2019,7 +2043,7 @@ export default function WorkflowTray() {
                         </div>
                       </div>
                       {history.comment && (
-                        <div className="mt-3 text-sm text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                        <div className="mt-3 whitespace-pre-wrap break-words text-sm text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-100 [overflow-wrap:anywhere]">
                           {history.comment}
                         </div>
                       )}
@@ -2027,16 +2051,19 @@ export default function WorkflowTray() {
                       {history.formData && Object.keys(history.formData).length > 0 && (
                         <div className="mt-3 p-3 bg-indigo-50 border border-indigo-100 rounded-lg">
                           <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider mb-2">Datos del Formulario</p>
-                          <div className="grid grid-cols-1 gap-2">
+                          <div className="space-y-2">
                             {Object.entries(history.formData).map(([fieldId, value]: [string, any]) => {
                               const step = historyModalTask.workflowSteps[history.stepIndex];
                               const field = step?.form?.fields?.find((f: any) => f.id === fieldId);
                               return (
-                                <div key={fieldId} className="flex justify-between items-start border-b border-indigo-100/50 pb-1 last:border-0">
-                                  <span className="text-xs font-medium text-slate-600">{field?.label || fieldId}:</span>
-                                  <span className="text-xs font-bold text-slate-800 text-right">
-                                    {formatFormValue(value)}
+                                <div
+                                  key={fieldId}
+                                  className="grid min-w-0 gap-1 rounded-md border border-indigo-100/60 bg-white/55 p-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-3"
+                                >
+                                  <span className="min-w-0 break-words text-[11px] font-bold uppercase tracking-wide text-slate-600 [overflow-wrap:anywhere]">
+                                    {field?.label || fieldId}
                                   </span>
+                                  {renderHistoryFormValue(value)}
                                 </div>
                               );
                             })}
