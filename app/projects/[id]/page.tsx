@@ -861,6 +861,16 @@ export default function ProjectDetailsPage() {
       const task = tasks.find(t => t.id === taskToDelete.id);
       const batch = writeBatch(db);
 
+      const deleteTaskLinkedData = async (taskId: string) => {
+        const [qualitySnapshot, commentsSnapshot] = await Promise.all([
+          getDocs(query(collection(db, 'projects', projectId, 'qualityEvents'), where('taskId', '==', taskId))),
+          getDocs(query(collection(db, 'projects', projectId, 'tasks', taskId, 'comments'))),
+        ]);
+
+        qualitySnapshot.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+        commentsSnapshot.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+      };
+
       const revertRateCard = (t: any) => {
         if (t.isRateCardTask && t.rateCardId && t.unitsToAdd) {
           const rcRef = doc(db, 'projects', projectId, 'rateCards', t.rateCardId);
@@ -899,16 +909,20 @@ export default function ProjectDetailsPage() {
           where('parentTaskId', '==', task.id)
         );
         const snapshot = await getDocs(subtasksQuery);
+        const taskIdsToDelete: string[] = [task.id];
         snapshot.docs.forEach(d => {
           const subtask = { id: d.id, ...d.data() };
           revertRateCard(subtask);
+          taskIdsToDelete.push(d.id);
           batch.delete(d.ref);
         });
         revertRateCard(task);
         batch.delete(doc(db, 'projects', projectId, 'tasks', task.id));
+        await Promise.all(taskIdsToDelete.map(deleteTaskLinkedData));
       } else if (task) {
         revertRateCard(task);
         batch.delete(doc(db, 'projects', projectId, 'tasks', task.id));
+        await deleteTaskLinkedData(task.id);
       }
 
       await batch.commit();
