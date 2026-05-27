@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
-import { Plus, RefreshCw, Shield, Trash2, User as UserIcon } from 'lucide-react';
+import { Plus, RefreshCw, Send, Shield, Trash2, User as UserIcon } from 'lucide-react';
 import { collection, query, onSnapshot, doc, updateDoc, setDoc, getDocs, where } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
@@ -100,6 +100,7 @@ export function UserManagement() {
   const [isUploading, setIsUploading] = useState(false);
   const [selectedOrganizationIds, setSelectedOrganizationIds] = useState<string[]>([]);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+  const [resendingUserId, setResendingUserId] = useState<string | null>(null);
 
   const systemRoles = [
     { id: 'admin', name: 'Administrador Global' },
@@ -288,6 +289,46 @@ export function UserManagement() {
       toast.error(error instanceof Error ? error.message : "Error al eliminar usuario");
     } finally {
       setDeletingUserId(null);
+    }
+  };
+
+  const resendInvitation = async (targetUser: any) => {
+    if (currentUserRole !== 'admin') return;
+    if (targetUser.emailConfirmed) {
+      toast.info('Este usuario ya confirmó su correo.');
+      return;
+    }
+
+    const confirmed = window.confirm(`¿Reenviar el enlace de invitación a ${targetUser.email}?`);
+    if (!confirmed) return;
+
+    setResendingUserId(targetUser.id);
+    try {
+      const accessToken = await getAccessToken();
+      const response = await fetchWithTimeout('/api/admin/users/resend-invite', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          userId: targetUser.id,
+          email: targetUser.email,
+        }),
+      }, 'El reenvío tardó demasiado. Refresca la lista para confirmar el estado.');
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'No fue posible reenviar la invitación.');
+      }
+
+      toast.success(result.message || 'Invitación reenviada.');
+      await loadAuthUsers();
+    } catch (error) {
+      console.error("Error resending invitation:", error);
+      toast.error(error instanceof Error ? error.message : "Error al reenviar invitación");
+    } finally {
+      setResendingUserId(null);
     }
   };
 
@@ -531,13 +572,27 @@ export function UserManagement() {
                     </span>
                   </TableCell>
                   <TableCell className="text-slate-500 text-sm">
-                    {formatDate(u.invitedAt || u.confirmationSentAt || u.recoverySentAt)}
+                    {formatDate(u.lastInvitationSentAt || u.inviteResentAt || u.invitedAt || u.confirmationSentAt || u.recoverySentAt)}
                   </TableCell>
                   <TableCell className="text-slate-500 text-sm">
                     {u.lastSignInAt || u.lastLoginAt ? formatDate(u.lastSignInAt || u.lastLoginAt) : 'Nunca'}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
+                      {currentUserRole === 'admin' && !u.emailConfirmed && (
+                        <button
+                          onClick={() => resendInvitation(u)}
+                          disabled={resendingUserId === u.id}
+                          className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="Reenviar invitación"
+                        >
+                          {resendingUserId === u.id ? (
+                            <RefreshCw size={16} className="animate-spin" />
+                          ) : (
+                            <Send size={16} />
+                          )}
+                        </button>
+                      )}
                       <button 
                         onClick={() => handleOpenModal(u)}
                         className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"

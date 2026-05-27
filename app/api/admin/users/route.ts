@@ -154,10 +154,14 @@ const indexProfiles = (rows: AppDocumentRow[]) => {
   return { usersById, usersByEmail, teamByAuthId, teamByEmail };
 };
 
-const authStatusFor = (user: any, profile?: AppDocumentRow) => {
+const authStatusFor = (user: any, profile?: AppDocumentRow, teamMember?: AppDocumentRow) => {
+  const profileData = profile?.data || {};
+  const teamData = teamMember?.data || {};
+  const inviteStatus = profileData.inviteStatus || teamData.inviteStatus;
+
   if (user.email_confirmed_at || user.confirmed_at) return 'confirmed';
-  if (user.invited_at || profile?.data?.inviteStatus === 'invite_sent') return 'invite_sent';
-  if (user.recovery_sent_at || profile?.data?.inviteStatus === 'recovery_sent') return 'recovery_sent';
+  if (user.invited_at || inviteStatus === 'invite_sent') return 'invite_sent';
+  if (user.recovery_sent_at || inviteStatus === 'recovery_sent') return 'recovery_sent';
   if (user.confirmation_sent_at) return 'confirmation_sent';
   return 'pending';
 };
@@ -193,12 +197,14 @@ const compactUser = (
     organizationIds,
     isPreRegistered: Boolean(profileData.isPreRegistered) && !(user.email_confirmed_at || user.confirmed_at),
     inviteStatus: profileData.inviteStatus || null,
-    authStatus: authStatusFor(user, profile),
+    authStatus: authStatusFor(user, profile, teamMember),
     emailConfirmed: Boolean(user.email_confirmed_at || user.confirmed_at),
     emailConfirmedAt: user.email_confirmed_at || user.confirmed_at || null,
     confirmationSentAt: user.confirmation_sent_at || null,
     invitedAt: user.invited_at || profileData.invitedAt || null,
-    recoverySentAt: user.recovery_sent_at || null,
+    inviteResentAt: profileData.inviteResentAt || teamData.inviteResentAt || null,
+    lastInvitationSentAt: profileData.lastInvitationSentAt || teamData.lastInvitationSentAt || null,
+    recoverySentAt: user.recovery_sent_at || profileData.recoverySentAt || teamData.recoverySentAt || null,
     lastSignInAt: user.last_sign_in_at || profileData.lastLoginAt || null,
     createdAt: user.created_at || profileData.createdAt || null,
     teamMemberId: teamMember?.doc_id || null,
