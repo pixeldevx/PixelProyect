@@ -670,11 +670,11 @@ export function CreateTaskModal({
                 ) : (
                   <div className="space-y-3">
                     {workflowSteps.map((step, idx) => (
-                      <div
-                        key={idx}
-                        className="flex flex-col gap-2 bg-white p-3 rounded-lg border border-indigo-100 shadow-sm"
-                      >
-                        <div className="flex items-center gap-2">
+                        <div
+                          key={idx}
+                          className="flex min-w-0 flex-col gap-2 bg-white p-3 rounded-lg border border-indigo-100 shadow-sm"
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
                           <div className="w-6 h-6 rounded-full bg-indigo-600 flex items-center justify-center text-white text-[10px] font-bold shrink-0">
                             {idx + 1}
                           </div>
@@ -687,7 +687,7 @@ export function CreateTaskModal({
                               newSteps[idx].label = e.target.value;
                               setWorkflowSteps(newSteps);
                             }}
-                            className="flex-1 h-8 px-2 text-xs border-none focus:ring-0 font-medium"
+                              className="min-w-0 flex-1 h-8 px-2 text-xs border-none focus:ring-0 font-medium"
                             required
                           />
                           <button
@@ -718,15 +718,15 @@ export function CreateTaskModal({
                           </button>
                         </div>
 
-                        <div className="flex items-center gap-2 pl-8">
-                          <select
+                          <div className="grid grid-cols-1 gap-2 pl-8 sm:grid-cols-2">
+                            <select
                             value={step.assignedTo}
                             onChange={(e) => {
                               const newSteps = [...workflowSteps];
                               newSteps[idx].assignedTo = e.target.value;
                               setWorkflowSteps(newSteps);
                             }}
-                            className="flex-1 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
+                              className="h-8 w-full min-w-0 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
                             required
                           >
                             <option value="">Asignar a...</option>
@@ -771,7 +771,7 @@ export function CreateTaskModal({
                               }
                               setWorkflowSteps(newSteps);
                             }}
-                            className="flex-1 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
+                              className="h-8 w-full min-w-0 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
                           >
                             <option value="">Sin Rate Card</option>
                             <option value="__dynamic__">Rate Card dinámico</option>
@@ -782,9 +782,9 @@ export function CreateTaskModal({
                             ))}
                           </select>
 
-                          {step.dynamicRateCard && (
-                            <div className="flex flex-col gap-1 items-end">
-                              <input
+                            {step.dynamicRateCard && (
+                              <div className="sm:col-span-2 flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-2 py-2">
+                                <input
                                 type="number"
                                 min="0.1"
                                 step="0.1"
@@ -800,18 +800,18 @@ export function CreateTaskModal({
                                   };
                                   setWorkflowSteps(newSteps);
                                 }}
-                                className="w-16 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
-                                placeholder="Unid."
-                              />
-                              <span className="text-[9px] text-emerald-600 text-right">
-                                Pedirá persona y perfil al aprobar.
-                              </span>
-                            </div>
-                          )}
+                                  className="h-8 w-24 px-2 text-[10px] border border-emerald-100 focus:ring-0 bg-white rounded"
+                                  placeholder="Unid."
+                                />
+                                <span className="min-w-0 flex-1 text-[9px] text-emerald-600">
+                                  Pedirá persona y perfil al aprobar.
+                                </span>
+                              </div>
+                            )}
 
-                          {step.rateCardId && !step.dynamicRateCard && (
-                            <div className="flex flex-col gap-1 items-end">
-                              <div className="flex items-center gap-1">
+                            {step.rateCardId && !step.dynamicRateCard && (
+                              <div className="sm:col-span-2 flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-2 py-2">
+                                <div className="flex items-center gap-1">
                                 <label
                                   className="flex items-center gap-1 text-[10px] text-slate-500 cursor-pointer"
                                   title="Si se desmarca, se le preguntará al usuario las unidades al completar el paso."
@@ -830,8 +830,8 @@ export function CreateTaskModal({
                                   Sumar auto.
                                 </label>
                               </div>
-                              {step.autoAddUnits !== false && (
-                                <input
+                                {step.autoAddUnits !== false && (
+                                  <input
                                   type="number"
                                   min="0.1"
                                   step="0.1"
@@ -843,7 +843,7 @@ export function CreateTaskModal({
                                     );
                                     setWorkflowSteps(newSteps);
                                   }}
-                                  className="w-16 h-8 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
+                                    className="h-8 w-24 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-white rounded"
                                   placeholder="Unid."
                                 />
                               )}
