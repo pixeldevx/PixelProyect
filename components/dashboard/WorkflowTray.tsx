@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { collection, query, where, onSnapshot, doc, arrayUnion, Timestamp, writeBatch, increment, getDoc, getDocs } from '@/lib/supabase/document-store';
 import { db, auth } from '@/lib/backend';
-import { CheckCircle2, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, X, ClipboardList, Play, Pause, FolderOpen, ShieldCheck, FileText } from 'lucide-react';
+import { CheckCircle2, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, X, ClipboardList, Play, Pause, FolderOpen, ShieldCheck, FileText, Eye } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -206,28 +206,39 @@ const getDueState = (task: any) => {
   return msUntilDue <= 2 * 24 * 60 * 60 * 1000 ? 'due_soon' : 'ok';
 };
 
-const getDueStyles = (dueState: string) => {
+const getInboxUrgencyStyles = (dueState: string) => {
   switch (dueState) {
     case 'overdue':
       return {
-        card: 'border-red-200 bg-red-50/30',
-        label: 'bg-red-100 text-red-700',
-        bar: 'bg-red-500',
-        text: 'text-red-600',
+        row: 'border-red-200 bg-red-50 hover:bg-red-100/80',
+        rail: 'bg-red-600',
+        due: 'bg-red-600 text-white shadow-sm',
+        text: 'text-red-700',
+        progress: 'bg-red-600',
       };
     case 'due_soon':
       return {
-        card: 'border-orange-200 bg-orange-50/30',
-        label: 'bg-orange-100 text-orange-700',
-        bar: 'bg-orange-500',
-        text: 'text-orange-600',
+        row: 'border-orange-200 bg-orange-50 hover:bg-orange-100/80',
+        rail: 'bg-orange-500',
+        due: 'bg-orange-500 text-white shadow-sm',
+        text: 'text-orange-700',
+        progress: 'bg-orange-500',
+      };
+    case 'ok':
+      return {
+        row: 'border-emerald-200 bg-emerald-50/70 hover:bg-emerald-100/70',
+        rail: 'bg-emerald-500',
+        due: 'bg-emerald-100 text-emerald-700',
+        text: 'text-emerald-700',
+        progress: 'bg-emerald-500',
       };
     default:
       return {
-        card: 'border-slate-200 bg-white',
-        label: 'bg-slate-100 text-slate-600',
-        bar: 'bg-indigo-600',
-        text: 'text-slate-400',
+        row: 'border-slate-200 bg-white hover:bg-slate-50',
+        rail: 'bg-slate-300',
+        due: 'bg-slate-100 text-slate-600',
+        text: 'text-slate-500',
+        progress: 'bg-indigo-600',
       };
   }
 };
@@ -245,9 +256,41 @@ const getPriorityLabel = (priority: string) => {
 };
 
 const getPriorityClass = (priority: string) => {
-  if (priority === 'high') return 'bg-red-50 text-red-700';
+  if (priority === 'high') return 'bg-red-600 text-white shadow-sm ring-1 ring-red-700/20';
   if (priority === 'low') return 'bg-slate-100 text-slate-600';
-  return 'bg-indigo-50 text-indigo-700';
+  return 'bg-amber-100 text-amber-800';
+};
+
+const getWorkflowStepStatusLabel = (status: string) => {
+  switch (status) {
+    case 'listo':
+      return 'Listo';
+    case 'en_curso':
+      return 'En curso';
+    case 'devuelto':
+    case 'returned':
+      return 'Devuelto';
+    case 'detenido':
+      return 'Detenido';
+    default:
+      return 'Pendiente';
+  }
+};
+
+const getWorkflowStepStatusClass = (status: string) => {
+  switch (status) {
+    case 'listo':
+      return 'bg-emerald-100 text-emerald-700';
+    case 'en_curso':
+      return 'bg-indigo-100 text-indigo-700';
+    case 'devuelto':
+    case 'returned':
+      return 'bg-red-100 text-red-700';
+    case 'detenido':
+      return 'bg-orange-100 text-orange-700';
+    default:
+      return 'bg-slate-100 text-slate-600';
+  }
 };
 
 export default function WorkflowTray() {
@@ -283,6 +326,7 @@ export default function WorkflowTray() {
   }>({ isOpen: false, task: null, nextStatus: 'completed' });
   const [dynamicRateCardComment, setDynamicRateCardComment] = useState('');
   const [docsModalTask, setDocsModalTask] = useState<any>(null);
+  const [detailsModalTask, setDetailsModalTask] = useState<any>(null);
   const [historyModalTask, setHistoryModalTask] = useState<any>(null);
   const [commentsModalTask, setCommentsModalTask] = useState<any>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -1008,7 +1052,7 @@ export default function WorkflowTray() {
     <button
       type="button"
       onClick={onClick}
-      className={`relative inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${extraClassName}`}
+      className={`relative inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors ${extraClassName}`}
       title={label}
       aria-label={label}
     >
@@ -1024,11 +1068,12 @@ export default function WorkflowTray() {
   const renderInboxItem = (task: any) => {
     const taskIsWorkflow = isWorkflowItem(task);
     const dueState = getDueState(task);
-    const dueStyles = getDueStyles(dueState);
+    const urgencyStyles = getInboxUrgencyStyles(dueState);
     const endDate = getTaskDate(task.endDate || task.end);
     const dueText = endDate
       ? `Vence ${format(endDate, 'd MMM', { locale: es })}`
       : `Creada ${format(getTaskDate(task.createdAt) || new Date(), 'd MMM', { locale: es })}`;
+    const dueLabel = dueState === 'none' ? 'Sin fecha' : getDueLabel(dueState);
     const commentCount = Number(task.commentCount || 0);
     const title = `${task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}${task.title || task.name || 'Tarea sin nombre'}`;
     const description = task.initialObservation || task.description || 'Sin descripción';
@@ -1041,59 +1086,59 @@ export default function WorkflowTray() {
       return (
         <article
           key={`${task.projectId}-${task.id}`}
-          className={`relative grid gap-3 px-4 py-3 transition-colors hover:bg-slate-50 lg:grid-cols-[minmax(0,1fr)_auto] ${dueState === 'overdue' ? 'bg-red-50/20' : dueState === 'due_soon' ? 'bg-orange-50/20' : 'bg-white'}`}
+          className={`relative grid min-h-[54px] gap-2 px-3 py-1.5 transition-colors lg:grid-cols-[minmax(0,1fr)_auto] ${urgencyStyles.row}`}
         >
-          <span className={`absolute bottom-0 left-0 top-0 w-1 ${dueStyles.bar}`} />
-          <div className="min-w-0 pl-2">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="rounded bg-sky-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-sky-700">
+          <span className={`absolute bottom-0 left-0 top-0 w-1 ${urgencyStyles.rail}`} />
+          <div className="min-w-0 pl-2.5">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-sky-700">
                 {task.parentTaskId ? 'Subtarea' : 'Tarea'}
               </span>
-              <span className="rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700">
-                {task.organizationName || 'Sin organización'}
-              </span>
-              <span className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${getTaskStatusClass(status)}`}>
+              <h3 className="min-w-0 flex-1 truncate text-sm font-bold text-slate-900">{title}</h3>
+              <span className={`hidden shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider sm:inline-flex ${getTaskStatusClass(status)}`}>
                 {getTaskStatusLabel(status)}
               </span>
-              <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${dueState === 'ok' || dueState === 'none' || dueState === 'closed' ? 'bg-slate-100 text-slate-500' : dueStyles.label}`}>
+              <span className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${urgencyStyles.due}`}>
                 <Clock size={11} />
-                {dueText}
+                {dueState === 'ok' ? 'A tiempo' : dueLabel}
               </span>
-              <span className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${getPriorityClass(priority)}`}>
+              <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${getPriorityClass(priority)}`}>
                 {getPriorityLabel(priority)}
               </span>
             </div>
 
-            <div className="mt-1 flex min-w-0 items-center gap-2">
-              <h3 className="truncate text-sm font-bold text-slate-900">{title}</h3>
-            </div>
-            <p className="mt-0.5 truncate text-xs text-slate-500">
-              {task.projectName ? `${task.projectName} · ` : ''}{description}
-            </p>
-
-            <div className="mt-2 flex min-w-0 items-center gap-3">
-              <div className="h-1.5 w-36 overflow-hidden rounded-full bg-slate-100">
-                <div
-                  className={`h-full ${status === 'stuck' ? 'bg-red-500' : status === 'in_progress' ? 'bg-amber-500' : 'bg-indigo-600'}`}
-                  style={{ width: `${progress}%` }}
-                />
+            <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-slate-600">
+              <span className={`shrink-0 font-bold ${urgencyStyles.text}`}>
+                {task.organizationName || 'Sin organización'}
+              </span>
+              <span className="truncate">
+                {task.projectName ? `${task.projectName} · ` : ''}{description}
+              </span>
+              <span className="hidden shrink-0 text-slate-400 sm:inline">{dueText}</span>
+              <div className="ml-auto hidden shrink-0 items-center gap-2 md:flex">
+                <div className="h-1.5 w-20 overflow-hidden rounded-full bg-white/80">
+                  <div
+                    className={`h-full ${status === 'stuck' ? 'bg-red-600' : status === 'in_progress' ? 'bg-orange-500' : urgencyStyles.progress}`}
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+                <span className="w-8 text-right text-[11px] font-bold text-slate-600">{progress}%</span>
+                {task.type === 'quantitative' && (
+                  <span className="max-w-[120px] truncate text-[11px] text-slate-500">
+                    {task.currentValue || 0}/{task.indicatorValue || 0} {task.indicator || ''}
+                  </span>
+                )}
               </div>
-              <span className="text-[11px] font-bold text-slate-500">{progress}%</span>
-              {task.type === 'quantitative' && (
-                <span className="truncate text-[11px] text-slate-500">
-                  {task.currentValue || 0}/{task.indicatorValue || 0} {task.indicator || ''}
-                </span>
-              )}
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1 pl-2 lg:justify-end lg:pl-0">
+          <div className="flex items-center gap-1 pl-2 lg:justify-end lg:pl-0">
             {activeTab === 'pending' && (
               <select
                 value={status}
                 onChange={(event) => void updateAssignedTaskStatus(task, event.target.value)}
                 disabled={processingId === task.id}
-                className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60"
+                className="h-7 w-[126px] rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60"
                 title="Cambiar estado"
               >
                 <option value="todo">Pendiente</option>
@@ -1103,15 +1148,16 @@ export default function WorkflowTray() {
                 {status === 'completed_late' && <option value="completed_late">Finalizada con retraso</option>}
               </select>
             )}
-            {renderUtilityButton('Comentarios', <MessageSquare size={15} />, () => setCommentsModalTask(task), 'text-slate-500 hover:bg-indigo-50 hover:text-indigo-600', commentCount)}
-            {renderUtilityButton('Documentos', <FileText size={15} />, () => setDocsModalTask(task), 'text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700')}
+            {renderUtilityButton('Detalles', <Eye size={14} />, () => setDetailsModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-indigo-700')}
+            {renderUtilityButton('Comentarios', <MessageSquare size={14} />, () => setCommentsModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-indigo-700', commentCount)}
+            {renderUtilityButton('Documentos', <FileText size={14} />, () => setDocsModalTask(task), 'text-indigo-600 hover:bg-white/80 hover:text-indigo-700')}
             <Link
               href={`/projects/${task.projectId}?tab=tasks`}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-600 transition-colors hover:bg-white/80 hover:text-slate-900"
               title="Abrir proyecto"
               aria-label="Abrir proyecto"
             >
-              <FolderOpen size={15} />
+              <FolderOpen size={14} />
             </Link>
           </div>
         </article>
@@ -1124,62 +1170,50 @@ export default function WorkflowTray() {
     const stepStatus = currentWorkflowStep?.status;
     const isReturned = stepStatus === 'devuelto' || stepStatus === 'returned';
     const isStopped = stepStatus === 'detenido';
-    const currentStepLabel = currentWorkflowStep?.label || `Paso ${currentIndex + 1}`;
-    const stepProgress = workflowSteps.length ? Math.round(((currentIndex + 1) / workflowSteps.length) * 100) : 0;
+    const workflowUrgencyStyles = isReturned ? getInboxUrgencyStyles('overdue') : urgencyStyles;
 
     return (
       <article
         key={`${task.projectId}-${task.id}`}
-        className={`relative grid gap-3 px-4 py-3 transition-colors hover:bg-slate-50 lg:grid-cols-[minmax(0,1fr)_auto] ${isReturned ? 'bg-red-50/20' : dueState === 'overdue' ? 'bg-red-50/20' : dueState === 'due_soon' ? 'bg-orange-50/20' : 'bg-white'}`}
+        className={`relative grid min-h-[54px] gap-2 px-3 py-1.5 transition-colors lg:grid-cols-[minmax(0,1fr)_auto] ${workflowUrgencyStyles.row}`}
       >
-        <span className={`absolute bottom-0 left-0 top-0 w-1 ${isReturned ? 'bg-red-500' : dueStyles.bar}`} />
-        <div className="min-w-0 pl-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${isReturned || isStopped ? 'bg-red-50 text-red-600' : 'bg-indigo-50 text-indigo-700'}`}>
-              {isStopped ? 'Workflow detenido' : isReturned ? 'Workflow devuelto' : 'Workflow'}
+        <span className={`absolute bottom-0 left-0 top-0 w-1 ${workflowUrgencyStyles.rail}`} />
+        <div className="min-w-0 pl-2.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${isReturned || isStopped ? 'bg-red-600 text-white' : 'bg-indigo-100 text-indigo-700'}`}>
+              {isStopped ? 'Detenido' : isReturned ? 'Devuelto' : 'Workflow'}
             </span>
-            <span className="rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700">
-              {task.organizationName || 'Sin organización'}
-            </span>
-            <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-600">
+            <h3 className="min-w-0 flex-1 truncate text-sm font-bold text-slate-900">{title}</h3>
+            <span className="hidden shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 sm:inline-flex">
               Paso {currentIndex + 1}/{workflowSteps.length || 1}
             </span>
             {isQualityGateStep(currentWorkflowStep) && (
-              <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700">
+              <span className="hidden shrink-0 items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-800 sm:inline-flex">
                 <ShieldCheck size={11} />
                 Calidad
               </span>
             )}
-            <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${dueState === 'ok' || dueState === 'none' || dueState === 'closed' ? 'bg-slate-100 text-slate-500' : dueStyles.label}`}>
+            <span className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${workflowUrgencyStyles.due}`}>
               <Clock size={11} />
-              {dueText}
+              {dueState === 'ok' ? 'A tiempo' : dueLabel}
+            </span>
+            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${getPriorityClass(priority)}`}>
+              {getPriorityLabel(priority)}
             </span>
           </div>
 
-          <div className="mt-1 flex min-w-0 items-center gap-2">
-            <h3 className="truncate text-sm font-bold text-slate-900">{title}</h3>
-          </div>
-          <p className="mt-0.5 truncate text-xs text-slate-500">
-            {task.projectName ? `${task.projectName} · ` : ''}{description}
-          </p>
-
-          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
-            <div className={`flex h-7 min-w-0 items-center gap-2 rounded-lg border px-2 ${isReturned ? 'border-red-100 bg-red-50 text-red-700' : isStopped ? 'border-orange-100 bg-orange-50 text-orange-700' : 'border-indigo-100 bg-indigo-50 text-indigo-700'}`}>
-              <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white ${isReturned ? 'bg-red-500' : isStopped ? 'bg-orange-500' : 'bg-indigo-600'}`}>
-                {currentIndex + 1}
-              </span>
-              <span className="truncate text-xs font-semibold">{currentStepLabel}</span>
-            </div>
-            <div className="h-1.5 w-32 overflow-hidden rounded-full bg-slate-100">
-              <div
-                className={`h-full ${isReturned ? 'bg-red-500' : isStopped ? 'bg-orange-500' : 'bg-indigo-600'}`}
-                style={{ width: `${stepProgress}%` }}
-              />
-            </div>
+          <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-slate-600">
+            <span className={`shrink-0 font-bold ${workflowUrgencyStyles.text}`}>
+              {task.organizationName || 'Sin organización'}
+            </span>
+            <span className="truncate">
+              {task.projectName ? `${task.projectName} · ` : ''}{description}
+            </span>
+            <span className="hidden shrink-0 text-slate-400 sm:inline">{dueText}</span>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1 pl-2 lg:justify-end lg:pl-0">
+        <div className="flex items-center gap-1 pl-2 lg:justify-end lg:pl-0">
           {activeTab === 'pending' ? (
             <>
               {isStopped ? (
@@ -1188,10 +1222,10 @@ export default function WorkflowTray() {
                   size="sm"
                   onClick={() => openActionModal(task, 'resume')}
                   disabled={processingId === task.id}
-                  className="h-8 border-blue-100 px-2 text-blue-600 hover:bg-blue-50"
+                  className="h-7 px-2 text-blue-600 hover:bg-white/80"
                   title="Reanudar workflow"
                 >
-                  <Play className="h-4 w-4" />
+                  <Play className="h-3.5 w-3.5" />
                 </Button>
               ) : (
                 <Button
@@ -1199,10 +1233,10 @@ export default function WorkflowTray() {
                   size="sm"
                   onClick={() => openActionModal(task, 'stop')}
                   disabled={processingId === task.id}
-                  className="h-8 border-orange-100 px-2 text-orange-600 hover:bg-orange-50"
+                  className="h-7 px-2 text-orange-600 hover:bg-white/80"
                   title="Detener workflow"
                 >
-                  <Pause className="h-4 w-4" />
+                  <Pause className="h-3.5 w-3.5" />
                 </Button>
               )}
               <Button
@@ -1210,21 +1244,21 @@ export default function WorkflowTray() {
                 size="sm"
                 onClick={() => openActionModal(task, 'return')}
                 disabled={processingId === task.id || currentIndex === 0 || isStopped}
-                className="h-8 border-red-100 px-2 text-red-600 hover:bg-red-50"
+                className="h-7 px-2 text-red-600 hover:bg-white/80"
                 title="Devolver"
               >
-                <ArrowLeft className="h-4 w-4" />
+                <ArrowLeft className="h-3.5 w-3.5" />
               </Button>
               <Button
                 size="sm"
                 onClick={() => openActionModal(task, 'approve')}
                 disabled={processingId === task.id || isStopped}
-                className="h-8 bg-emerald-600 px-3 text-white hover:bg-emerald-700"
+                className="h-7 bg-emerald-600 px-2.5 text-white hover:bg-emerald-700"
               >
                 {currentIndex === workflowSteps.length - 1 ? (
-                  <CheckCircle2 className="mr-1.5 h-4 w-4" />
+                  <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
                 ) : (
-                  <ArrowRight className="mr-1.5 h-4 w-4" />
+                  <ArrowRight className="mr-1 h-3.5 w-3.5" />
                 )}
                 <span className="text-xs font-bold">
                   {currentIndex === workflowSteps.length - 1 ? 'Finalizar' : 'Aprobar'}
@@ -1232,26 +1266,27 @@ export default function WorkflowTray() {
               </Button>
             </>
           ) : (
-            <span className="rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-400">
+            <span className="rounded-md border border-slate-100 bg-white/70 px-2 py-1 text-xs font-semibold text-slate-500">
               Revisado
             </span>
           )}
-          {renderUtilityButton('Documentos', <FileText size={15} />, () => setDocsModalTask(task), 'text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700')}
-          {renderUtilityButton('Comentarios', <MessageSquare size={15} />, () => setCommentsModalTask(task), 'text-slate-500 hover:bg-indigo-50 hover:text-indigo-600', commentCount)}
+          {renderUtilityButton('Detalles', <Eye size={14} />, () => setDetailsModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-indigo-700')}
+          {renderUtilityButton('Documentos', <FileText size={14} />, () => setDocsModalTask(task), 'text-indigo-600 hover:bg-white/80 hover:text-indigo-700')}
+          {renderUtilityButton('Comentarios', <MessageSquare size={14} />, () => setCommentsModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-indigo-700', commentCount)}
           {task.workflowHistory?.length > 0 &&
-            renderUtilityButton('Interacciones', <MessageSquare size={15} />, () => setHistoryModalTask(task), 'text-slate-500 hover:bg-slate-100 hover:text-slate-800', task.workflowHistory.length)}
+            renderUtilityButton('Interacciones', <MessageSquare size={14} />, () => setHistoryModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-slate-900', task.workflowHistory.length)}
         </div>
       </article>
     );
   };
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+    <div className="space-y-3">
+      <div className="rounded-xl border border-slate-200 bg-white p-2.5 shadow-sm">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-lg font-bold text-slate-900">Recibidos</h2>
+              <h2 className="text-base font-bold text-slate-900">Recibidos</h2>
               <span className="inline-flex items-center rounded-full bg-indigo-600 px-2.5 py-0.5 text-xs font-bold text-white">
                 {pendingInboxCount} pendiente{pendingInboxCount === 1 ? '' : 's'}
               </span>
@@ -1262,7 +1297,7 @@ export default function WorkflowTray() {
             <div className="flex rounded-lg bg-slate-100 p-1">
             <button
               onClick={() => setActiveTab('pending')}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
                 activeTab === 'pending'
                   ? 'bg-white text-indigo-600 shadow-sm'
                   : 'text-slate-500 hover:text-slate-700'
@@ -1272,7 +1307,7 @@ export default function WorkflowTray() {
             </button>
             <button
               onClick={() => setActiveTab('reviewed')}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
                 activeTab === 'reviewed'
                   ? 'bg-white text-indigo-600 shadow-sm'
                   : 'text-slate-500 hover:text-slate-700'
@@ -1284,18 +1319,18 @@ export default function WorkflowTray() {
           </div>
         </div>
 
-        <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-[1fr_220px_220px]">
+        <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-[1fr_220px_220px]">
           <input
             type="text"
             placeholder="Buscar por ID, título, proyecto, organización o estado..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            className="h-8 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           />
           <select
             value={projectFilter}
             onChange={(event) => setProjectFilter(event.target.value)}
-            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           >
             <option value="all">Todos los proyectos</option>
             {projectOptions.map(([projectId, projectName]) => (
@@ -1307,7 +1342,7 @@ export default function WorkflowTray() {
           <select
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value)}
-            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           >
             <option value="all">Todos los estados</option>
             <option value="todo">Pendiente</option>
@@ -1782,6 +1817,135 @@ export default function WorkflowTray() {
           </div>
         </div>
       )}
+
+      {detailsModalTask && (() => {
+        const detailTask = detailsModalTask;
+        const taskIsWorkflow = isWorkflowItem(detailTask);
+        const detailDueState = getDueState(detailTask);
+        const detailUrgencyStyles = getInboxUrgencyStyles(detailDueState);
+        const detailEndDate = getTaskDate(detailTask.endDate || detailTask.end);
+        const detailTitle = `${detailTask.externalWorkflowId ? `[${detailTask.externalWorkflowId}] ` : ''}${detailTask.title || detailTask.name || 'Tarea sin nombre'}`;
+        const detailProgress = Math.min(100, Math.max(0, Number(detailTask.progress || 0)));
+        const detailWorkflowSteps = detailTask.workflowSteps || [];
+        const detailCurrentIndex = detailTask.currentStepIndex || 0;
+
+        return (
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden max-h-[90vh] flex flex-col">
+              <div className="p-5 border-b border-slate-100 flex items-start justify-between gap-4 shrink-0">
+                <div className="min-w-0">
+                  <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                    <span className="rounded bg-indigo-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-700">
+                      {taskIsWorkflow ? 'Workflow' : detailTask.parentTaskId ? 'Subtarea' : 'Tarea'}
+                    </span>
+                    <span className={`rounded px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${detailUrgencyStyles.due}`}>
+                      {detailDueState === 'ok' ? 'A tiempo' : detailDueState === 'none' ? 'Sin fecha' : getDueLabel(detailDueState)}
+                    </span>
+                    <span className={`rounded px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${getPriorityClass(detailTask.priority || 'medium')}`}>
+                      {getPriorityLabel(detailTask.priority || 'medium')}
+                    </span>
+                  </div>
+                  <h2 className="truncate text-lg font-bold text-slate-900">{detailTitle}</h2>
+                  <p className="mt-1 truncate text-sm text-slate-500">
+                    {detailTask.organizationName || 'Sin organización'} · {detailTask.projectName || 'Sin proyecto'}
+                    {detailEndDate ? ` · Vence ${format(detailEndDate, 'd MMM yyyy', { locale: es })}` : ''}
+                  </p>
+                </div>
+                <Button variant="ghost" size="icon" onClick={() => setDetailsModalTask(null)} className="shrink-0">
+                  <X className="w-5 h-5 text-slate-400" />
+                </Button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto bg-slate-50 p-5">
+                <div className="rounded-xl border border-slate-200 bg-white p-4">
+                  <p className="text-sm text-slate-700">
+                    {detailTask.initialObservation || detailTask.description || 'Sin descripción'}
+                  </p>
+
+                  {taskIsWorkflow ? (
+                    <div className="mt-4 space-y-2">
+                      {detailWorkflowSteps.map((step: any, index: number) => {
+                        const isCurrent = index === detailCurrentIndex;
+                        const stepStatus = step?.status || (isCurrent ? 'en_curso' : 'pendiente');
+
+                        return (
+                          <div
+                            key={step.id || step.label || index}
+                            className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${isCurrent ? 'border-indigo-200 bg-indigo-50' : 'border-slate-100 bg-slate-50'}`}
+                          >
+                            <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${isCurrent ? 'bg-indigo-600 text-white' : 'bg-white text-slate-500 ring-1 ring-slate-200'}`}>
+                              {index + 1}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-semibold text-slate-900">
+                                {step.label || `Paso ${index + 1}`}
+                              </p>
+                              <p className="truncate text-xs text-slate-500">
+                                {step.assignedToName || step.assigneeName || step.assignedRole || 'Sin responsable visible'}
+                              </p>
+                            </div>
+                            <span className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${getWorkflowStepStatusClass(stepStatus)}`}>
+                              {getWorkflowStepStatusLabel(stepStatus)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-lg bg-slate-50 p-3">
+                      <div className="flex items-center justify-between text-xs font-semibold text-slate-600">
+                        <span>{getTaskStatusLabel(detailTask.status || 'todo')}</span>
+                        <span>{detailProgress}%</span>
+                      </div>
+                      <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
+                        <div className={`h-full ${detailUrgencyStyles.progress}`} style={{ width: `${detailProgress}%` }} />
+                      </div>
+                      {detailTask.type === 'quantitative' && (
+                        <p className="mt-2 text-xs text-slate-500">
+                          Avance: {detailTask.currentValue || 0}/{detailTask.indicatorValue || 0} {detailTask.indicator || ''}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 p-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setCommentsModalTask(detailTask);
+                    setDetailsModalTask(null);
+                  }}
+                >
+                  <MessageSquare className="mr-2 h-4 w-4" />
+                  Comentarios
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setDocsModalTask(detailTask);
+                    setDetailsModalTask(null);
+                  }}
+                >
+                  <FileText className="mr-2 h-4 w-4" />
+                  Documentos
+                </Button>
+                <Link
+                  href={`/projects/${detailTask.projectId}?tab=tasks`}
+                  onClick={() => setDetailsModalTask(null)}
+                  className="inline-flex h-9 items-center justify-center rounded-md bg-slate-900 px-3 text-sm font-semibold text-white transition-colors hover:bg-slate-800"
+                >
+                  <FolderOpen className="mr-2 h-4 w-4" />
+                  Abrir proyecto
+                </Link>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* History Modal */}
       {historyModalTask && (
