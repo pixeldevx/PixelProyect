@@ -18,6 +18,7 @@ interface ProjectGanttProps {
   onUpdateTaskValue?: (taskId: string, value: number, task: any) => void;
   onUpdateTaskStatus?: (taskId: string, status: string, task: any) => void;
   onUpdateTaskPriority?: (taskId: string, priority: string, task: any) => void;
+  onUpdateTaskAssignee?: (taskId: string, assigneeId: string, task: any) => void;
   onDeleteTask?: (taskId: string) => void;
   onSyncTask?: (taskId: string, task: any) => void;
   onReorderTasks?: (newTasks: any[]) => void;
@@ -147,6 +148,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onUpdateTaskValue,
   onUpdateTaskStatus,
   onUpdateTaskPriority,
+  onUpdateTaskAssignee,
   onDeleteTask,
   onSyncTask,
   onReorderTasks,
@@ -177,6 +179,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
   const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
+  const canChangeTaskAssignee = Boolean(canModifyTaskDetails && onUpdateTaskAssignee);
   const canCreateSubtasks = Boolean(canAddSubtasks && onAddSubtask);
   const canRemoveTasks = Boolean(canDeleteTasks && onDeleteTask);
 
@@ -515,6 +518,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const taskPriority = getTaskPriority(task);
                     const commentCount = getTaskCommentCount(task);
                     const canEditThisTaskDates = Boolean(canModifyTaskDates && !task.isWorkflowStep);
+                    const canEditThisTaskAssignee = Boolean(canChangeTaskAssignee && !task.isWorkflowStep && task.assignedTo !== 'DYNAMIC');
                     const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId && !task.isWorkflowStep);
                     const canResetWorkflow = Boolean(
                       canModifyTaskDetails &&
@@ -647,36 +651,68 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             </div>
 
                             <div className="w-24 px-2 flex justify-center">
-                              {task.assignedTo === 'DYNAMIC' ? (
-                                <div className="flex items-center gap-1.5">
-                                  <div className="w-7 h-7 rounded-full bg-orange-50 border border-orange-200 flex items-center justify-center shadow-sm" title="Asignación Dinámica">
-                                    <span className="text-[10px] font-bold text-orange-600">?</span>
+                              <div
+                                className={`relative flex max-w-full items-center justify-center rounded-md ${
+                                  canEditThisTaskAssignee ? 'cursor-pointer hover:bg-indigo-50/70' : ''
+                                }`}
+                                title={canEditThisTaskAssignee ? 'Cambiar responsable' : assignedMember?.name || 'Sin asignar'}
+                              >
+                                {task.assignedTo === 'DYNAMIC' ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="w-7 h-7 rounded-full bg-orange-50 border border-orange-200 flex items-center justify-center shadow-sm" title="Asignación Dinámica">
+                                      <span className="text-[10px] font-bold text-orange-600">?</span>
+                                    </div>
+                                    <span className="text-[10px] text-slate-500 hidden lg:block truncate max-w-[50px]">Dinámica</span>
                                   </div>
-                                  <span className="text-[10px] text-slate-500 hidden lg:block truncate max-w-[50px]">Dinámica</span>
-                                </div>
-                              ) : assignedMember ? (
-                                <div className="flex items-center gap-1.5">
-                                  <div className="w-7 h-7 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center overflow-hidden shadow-sm" title={assignedMember.name}>
-                                    {assignedMember.photoURL ? (
-                                      <Image
-                                        src={assignedMember.photoURL}
-                                        alt={assignedMember.name}
-                                        width={28}
-                                        height={28}
-                                        className="w-full h-full object-cover"
-                                        referrerPolicy="no-referrer"
-                                      />
-                                    ) : (
-                                      <span className="text-[10px] font-bold text-indigo-600">{assignedMember.name.charAt(0).toUpperCase()}</span>
-                                    )}
+                                ) : assignedMember ? (
+                                  <div className="flex items-center gap-1.5 px-1 py-0.5">
+                                    <div className={`w-7 h-7 rounded-full bg-indigo-50 border flex items-center justify-center overflow-hidden shadow-sm ${
+                                      canEditThisTaskAssignee ? 'border-indigo-300 ring-2 ring-indigo-100' : 'border-indigo-100'
+                                    }`}>
+                                      {assignedMember.photoURL ? (
+                                        <Image
+                                          src={assignedMember.photoURL}
+                                          alt={assignedMember.name}
+                                          width={28}
+                                          height={28}
+                                          className="w-full h-full object-cover"
+                                          referrerPolicy="no-referrer"
+                                        />
+                                      ) : (
+                                        <span className="text-[10px] font-bold text-indigo-600">{assignedMember.name.charAt(0).toUpperCase()}</span>
+                                      )}
+                                    </div>
+                                    <span className="text-[10px] text-slate-500 hidden lg:block truncate max-w-[50px]">{assignedMember.name.split(' ')[0]}</span>
                                   </div>
-                                  <span className="text-[10px] text-slate-500 hidden lg:block truncate max-w-[50px]">{assignedMember.name.split(' ')[0]}</span>
-                                </div>
-                              ) : (
-                                <div className="w-7 h-7 rounded-full border border-dashed border-slate-300 flex items-center justify-center bg-slate-50/50">
-                                  <Users size={12} className="text-slate-300" />
-                                </div>
-                              )}
+                                ) : (
+                                  <div className={`w-7 h-7 rounded-full border border-dashed flex items-center justify-center bg-slate-50/50 ${
+                                    canEditThisTaskAssignee ? 'border-indigo-300 text-indigo-500 ring-2 ring-indigo-100' : 'border-slate-300 text-slate-300'
+                                  }`}>
+                                    <Users size={12} className={canEditThisTaskAssignee ? 'text-indigo-500' : 'text-slate-300'} />
+                                  </div>
+                                )}
+
+                                {canEditThisTaskAssignee && (
+                                  <select
+                                    value={task.assignedTo || ''}
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => event.stopPropagation()}
+                                    onChange={(event) => {
+                                      event.stopPropagation();
+                                      onUpdateTaskAssignee?.(task.id, event.target.value, task);
+                                    }}
+                                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                                    aria-label={`Cambiar responsable de ${taskTitle}`}
+                                  >
+                                    <option value="">Sin asignar</option>
+                                    {teamMembers.map((member) => (
+                                      <option key={member.id} value={member.id}>
+                                        {member.name || member.email}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
+                              </div>
                             </div>
 
                             <div className="w-28 h-full relative group/status">

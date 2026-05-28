@@ -1658,6 +1658,7 @@ export default function ProjectDetailsPage() {
                 onUpdateTaskValue={canEditTaskDetails ? handleUpdateTaskValue : undefined}
                 onUpdateTaskStatus={canEditTaskStatus ? handleUpdateTaskStatus : undefined}
                 onUpdateTaskPriority={canEditTaskDetails ? handleUpdateTaskPriority : undefined}
+                onUpdateTaskAssignee={canEditTaskDetails ? handleUpdateTaskAssignee : undefined}
                 onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
                 onSyncTask={canEditTaskDetails ? handleSyncTaskValue : undefined}
                 onReorderTasks={canEditTaskDetails ? handleReorderTasks : undefined}

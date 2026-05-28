@@ -296,7 +296,9 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
           <td className="px-2 py-2 text-center border-l border-slate-200 w-16 relative">
             <div className="flex justify-center">
               {assignee ? (
-                <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-sm font-bold shadow-sm overflow-hidden relative" title={assignee.name}>
+                <div className={`w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-sm font-bold shadow-sm overflow-hidden relative ${
+                  canModifyTaskDetails && onUpdateTaskAssignee ? 'ring-2 ring-indigo-100 border border-indigo-300' : ''
+                }`} title={canModifyTaskDetails && onUpdateTaskAssignee ? 'Cambiar responsable' : assignee.name}>
                   {assignee.photoURL ? (
                     <Image src={assignee.photoURL} alt={assignee.name} fill className="object-cover" referrerPolicy="no-referrer" />
                   ) : (
@@ -312,8 +314,14 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
             {canModifyTaskDetails && onUpdateTaskAssignee && (
               <select 
                 value={task.assignedTo || ''}
-                onChange={(e) => onUpdateTaskAssignee(task.id, e.target.value, task)}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => event.stopPropagation()}
+                onChange={(e) => {
+                  e.stopPropagation();
+                  onUpdateTaskAssignee(task.id, e.target.value, task);
+                }}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                aria-label={`Cambiar responsable de ${taskTitle}`}
               >
                 <option value="">Sin asignar</option>
                 {teamMembers.map(m => (
