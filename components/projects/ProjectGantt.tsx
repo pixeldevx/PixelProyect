@@ -11,6 +11,8 @@ import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { TaskDateEditorModal } from './TaskDateEditorModal';
 
+type ScheduleFilter = 'overdue' | 'due_soon' | 'completed_late' | null;
+
 interface ProjectGanttProps {
   tasks: any[];
   teamMembers: any[];
@@ -178,6 +180,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [editingTaskTitle, setEditingTaskTitle] = useState("");
   const [openActionMenuTaskId, setOpenActionMenuTaskId] = useState<string | null>(null);
   const [taskForDateEdit, setTaskForDateEdit] = useState<any>(null);
+  const [scheduleFilter, setScheduleFilter] = useState<ScheduleFilter>(null);
   const taskAssigneeOptions = assigneeOptions || teamMembers;
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
@@ -225,13 +228,30 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     });
   }, [tasks]);
 
+  const scheduleStats = useMemo(() => {
+    const realTasks = sortedTasks.filter((task) => !task.isWorkflowStep);
+    return {
+      overdue: realTasks.filter((task) => getTaskScheduleState(task) === 'overdue').length,
+      dueSoon: realTasks.filter((task) => getTaskScheduleState(task) === 'due_soon').length,
+      completedLate: realTasks.filter((task) => getTaskScheduleState(task) === 'completed_late').length,
+    };
+  }, [sortedTasks]);
+
+  const filteredSortedTasks = useMemo(() => {
+    if (!scheduleFilter) return sortedTasks;
+    return sortedTasks.filter((task) => getTaskScheduleState(task) === scheduleFilter);
+  }, [scheduleFilter, sortedTasks]);
+
   const visibleTasks = useMemo(() => {
-    const parentsAndNormal = sortedTasks.filter(t => !t.parentTaskId);
+    if (scheduleFilter) return filteredSortedTasks;
+
+    const sourceTasks = scheduleFilter ? filteredSortedTasks : sortedTasks;
+    const parentsAndNormal = sourceTasks.filter(t => !t.parentTaskId);
     const result: any[] = [];
 
     parentsAndNormal.forEach(task => {
       result.push(task);
-      const subTasks = sortChildTasks(sortedTasks.filter(t => t.parentTaskId === task.id));
+      const subTasks = sortChildTasks(sourceTasks.filter(t => t.parentTaskId === task.id));
       if (subTasks.length > 0 && expandedParents[task.id]) {
 
         subTasks.forEach(subTask => {
@@ -282,24 +302,15 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     });
 
     return result;
-  }, [sortedTasks, expandedParents]);
-
-  const workflowIterationStats = useMemo(() => {
-    const workflowIterations = sortedTasks.filter((task) => task.parentTaskId && task.type === 'workflow');
-    return {
-      total: workflowIterations.length,
-      overdue: workflowIterations.filter((task) => getTaskScheduleState(task) === 'overdue').length,
-      dueSoon: workflowIterations.filter((task) => getTaskScheduleState(task) === 'due_soon').length,
-      completedLate: workflowIterations.filter((task) => getTaskScheduleState(task) === 'completed_late').length,
-    };
-  }, [sortedTasks]);
+  }, [filteredSortedTasks, scheduleFilter, sortedTasks, expandedParents]);
 
   // Map Supabase tasks to gantt-task-react tasks
   const ganttTasks: Task[] = useMemo(() => {
     if (visibleTasks.length === 0) return [];
+    const visibleTaskIds = new Set(visibleTasks.map((task) => task.id));
 
     return visibleTasks.map((t, index) => {
-      const hasChildren = sortedTasks.some(task => task.parentTaskId === t.id);
+      const hasChildren = visibleTasks.some(task => task.parentTaskId === t.id);
       const barColors = getScheduleBarColors(t);
 
       return {
@@ -309,7 +320,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         end: getTaskDate(t.endDate) || new Date(),
         progress: t.progress || 0,
         type: t.isParentTask || hasChildren ? 'project' : 'task',
-        project: t.parentTaskId || undefined,
+        project: t.parentTaskId && visibleTaskIds.has(t.parentTaskId) ? t.parentTaskId : undefined,
         displayOrder: index + 1,
         styles: {
           backgroundColor: barColors.backgroundColor,
@@ -319,10 +330,11 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         }
       };
     });
-  }, [visibleTasks, sortedTasks]);
+  }, [visibleTasks]);
 
   const handleDragEnd = (result: DropResult) => {
     if (!canModifyTaskDetails || !onReorderTasks) return;
+    if (scheduleFilter) return;
     if (!result.destination) return;
 
     // We only allow dragging of top-level tasks (parents and normal)
@@ -399,6 +411,33 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     }
   };
 
+  const toggleScheduleFilter = (filter: Exclude<ScheduleFilter, null>) => {
+    setScheduleFilter((current) => current === filter ? null : filter);
+  };
+
+  const renderScheduleFilterChip = (
+    filter: Exclude<ScheduleFilter, null>,
+    count: number,
+    label: string,
+    inactiveClassName: string,
+    activeClassName: string
+  ) => {
+    const isActive = scheduleFilter === filter;
+    return (
+      <button
+        type="button"
+        onClick={() => toggleScheduleFilter(filter)}
+        className={`rounded-full px-2.5 py-1 font-bold transition-all focus:outline-none focus:ring-2 focus:ring-indigo-500/20 ${
+          isActive ? activeClassName : inactiveClassName
+        }`}
+        aria-pressed={isActive}
+        title={isActive ? 'Quitar filtro' : `Filtrar tareas ${label}`}
+      >
+        {count} {label}
+      </button>
+    );
+  };
+
   if (tasks.length === 0) {
     return (
       <div className="text-center py-12 px-4 bg-white rounded-lg border border-slate-200">
@@ -468,20 +507,37 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           </Button>
         </div>
         <div className="flex items-center gap-2 text-[11px] font-medium text-slate-400">
-          {workflowIterationStats.total > 0 && (
-            <>
-              <span className="rounded-full bg-red-50 px-2 py-1 font-bold text-red-700">
-                {workflowIterationStats.overdue} atrasadas
-              </span>
-              <span className="rounded-full bg-orange-50 px-2 py-1 font-bold text-orange-700">
-                {workflowIterationStats.dueSoon} por vencer
-              </span>
-              <span className="rounded-full bg-slate-100 px-2 py-1 font-bold text-slate-600">
-                {workflowIterationStats.completedLate} con retraso
-              </span>
-            </>
+          {renderScheduleFilterChip(
+            'overdue',
+            scheduleStats.overdue,
+            'atrasadas',
+            'bg-red-50 text-red-700 hover:bg-red-100',
+            'bg-red-600 text-white shadow-sm ring-2 ring-red-200'
           )}
-          <span>{tasks.length} tareas en total</span>
+          {renderScheduleFilterChip(
+            'due_soon',
+            scheduleStats.dueSoon,
+            'por vencer',
+            'bg-orange-50 text-orange-700 hover:bg-orange-100',
+            'bg-orange-500 text-white shadow-sm ring-2 ring-orange-200'
+          )}
+          {renderScheduleFilterChip(
+            'completed_late',
+            scheduleStats.completedLate,
+            'con retraso',
+            'bg-slate-100 text-slate-600 hover:bg-slate-200',
+            'bg-slate-700 text-white shadow-sm ring-2 ring-slate-200'
+          )}
+          {scheduleFilter && (
+            <button
+              type="button"
+              onClick={() => setScheduleFilter(null)}
+              className="rounded-full bg-indigo-50 px-2.5 py-1 font-bold text-indigo-700 transition-colors hover:bg-indigo-100"
+            >
+              Limpiar filtro
+            </button>
+          )}
+          <span>{scheduleFilter ? `${visibleTasks.length} filtradas` : `${tasks.length} tareas en total`}</span>
         </div>
       </div>
 
@@ -506,6 +562,19 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                   ref={provided.innerRef}
                   className="flex-1 overflow-y-auto max-h-[600px] scrollbar-thin scrollbar-thumb-slate-200"
                 >
+                  {visibleTasks.length === 0 && scheduleFilter && (
+                    <div className="flex min-h-[180px] flex-col items-center justify-center border-b border-slate-100 px-4 text-center">
+                      <ListTodo className="mb-2 text-slate-300" size={28} />
+                      <p className="text-sm font-semibold text-slate-700">No hay tareas con este filtro.</p>
+                      <button
+                        type="button"
+                        onClick={() => setScheduleFilter(null)}
+                        className="mt-2 rounded-md bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 transition-colors hover:bg-indigo-100"
+                      >
+                        Ver todas las tareas
+                      </button>
+                    </div>
+                  )}
                   {visibleTasks.map((task, index) => {
                     const assignedMember = teamMembers.find(m => m.id === task.assignedTo);
                     const taskTitle = getTaskTitle(task);
@@ -552,7 +621,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     );
 
                     return (
-                      <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={!canModifyTaskDetails || isSubTask || isEditingTitle}>
+                      <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={Boolean(scheduleFilter) || !canModifyTaskDetails || isSubTask || isEditingTitle}>
                         {(provided, snapshot) => (
                           <div
                             ref={provided.innerRef}
@@ -995,28 +1064,34 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           }`}
         >
           <div className="project-gantt-timeline-only h-full overflow-x-auto scrollbar-thin scrollbar-thumb-slate-200">
-            <Gantt
-              tasks={ganttTasks}
-              viewMode={viewMode}
-              listCellWidth=""
-              columnWidth={viewMode === ViewMode.Day ? 65 : viewMode === ViewMode.Week ? 150 : 250}
-              headerHeight={40}
-              rowHeight={40}
-              barCornerRadius={4}
-              barFill={70}
-              handleWidth={8}
-              fontSize="11px"
-              fontFamily="Inter, sans-serif"
-              todayColor="rgba(99, 102, 241, 0.03)"
-              onProgressChange={canModifyTaskDetails && onUpdateTaskProgress ? (task) => {
-                const originalTask = tasks.find(t => t.id === task.id);
-                onUpdateTaskProgress(task.id, task.progress, originalTask);
-              } : undefined}
-              onDateChange={canModifyTaskDates ? (task) => {
-                const originalTask = tasks.find(t => t.id === task.id);
-                onUpdateTaskDates?.(task.id, task.start, task.end, originalTask);
-              } : undefined}
-            />
+            {ganttTasks.length > 0 ? (
+              <Gantt
+                tasks={ganttTasks}
+                viewMode={viewMode}
+                listCellWidth=""
+                columnWidth={viewMode === ViewMode.Day ? 65 : viewMode === ViewMode.Week ? 150 : 250}
+                headerHeight={40}
+                rowHeight={40}
+                barCornerRadius={4}
+                barFill={70}
+                handleWidth={8}
+                fontSize="11px"
+                fontFamily="Inter, sans-serif"
+                todayColor="rgba(99, 102, 241, 0.03)"
+                onProgressChange={canModifyTaskDetails && onUpdateTaskProgress ? (task) => {
+                  const originalTask = tasks.find(t => t.id === task.id);
+                  onUpdateTaskProgress(task.id, task.progress, originalTask);
+                } : undefined}
+                onDateChange={canModifyTaskDates ? (task) => {
+                  const originalTask = tasks.find(t => t.id === task.id);
+                  onUpdateTaskDates?.(task.id, task.start, task.end, originalTask);
+                } : undefined}
+              />
+            ) : (
+              <div className="flex h-full min-h-[180px] items-center justify-center text-sm font-medium text-slate-400">
+                Sin tareas para mostrar en el cronograma.
+              </div>
+            )}
           </div>
         </div>
       </div>
