@@ -21,6 +21,9 @@ type ParsedIteration = {
   raw: string;
   externalWorkflowId: string;
   observation: string;
+  startDate?: string;
+  endDate?: string;
+  usesCustomDates?: boolean;
   error?: string;
 };
 
@@ -45,10 +48,62 @@ const toDateInputValue = (value: any) => {
   return date.toISOString().slice(0, 10);
 };
 
+const startOfDate = (date: Date) => {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+};
+
 const endOfDate = (date: Date) => {
   const next = new Date(date);
   next.setHours(23, 59, 59, 999);
   return next;
+};
+
+const padDatePart = (value: number) => String(value).padStart(2, "0");
+
+const normalizeDateParts = (year: number, month: number, day: number) => {
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return "";
+  }
+
+  return `${year}-${padDatePart(month)}-${padDatePart(day)}`;
+};
+
+const normalizeDateInputText = (value: string) => {
+  const cleanValue = value.trim();
+  if (!cleanValue) return "";
+
+  const ymdMatch = cleanValue.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (ymdMatch) {
+    return normalizeDateParts(
+      Number(ymdMatch[1]),
+      Number(ymdMatch[2]),
+      Number(ymdMatch[3])
+    );
+  }
+
+  const dmyMatch = cleanValue.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
+  if (dmyMatch) {
+    const year = dmyMatch[3].length === 2 ? Number(`20${dmyMatch[3]}`) : Number(dmyMatch[3]);
+    return normalizeDateParts(year, Number(dmyMatch[2]), Number(dmyMatch[1]));
+  }
+
+  return "";
+};
+
+const looksLikeDateText = (value: string) =>
+  /^(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})$/.test(value.trim());
+
+const dateFromInputValue = (value: string) => {
+  if (!value) return null;
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
 };
 
 const stripWorkflowStepRuntime = (step: any = {}) => {
@@ -88,6 +143,36 @@ const parseIterationLine = (rawLine: string, lineNumber: number): ParsedIteratio
     return null;
   }
 
+  const commaParts = raw.split(",").map((part) => part.trim());
+  const lastCommaPart = commaParts[commaParts.length - 1] || "";
+  const penultimateCommaPart = commaParts[commaParts.length - 2] || "";
+  const hasCommaDateColumns =
+    (commaParts.length >= 4 && (looksLikeDateText(lastCommaPart) || looksLikeDateText(penultimateCommaPart))) ||
+    (commaParts.length === 3 && looksLikeDateText(lastCommaPart));
+
+  if (hasCommaDateColumns) {
+    const possibleStartDate = commaParts.length >= 4 ? commaParts[commaParts.length - 2] : "";
+    const possibleEndDate = commaParts[commaParts.length - 1];
+    const normalizedStartDate = normalizeDateInputText(possibleStartDate);
+    const normalizedEndDate = normalizeDateInputText(possibleEndDate);
+
+    return {
+      lineNumber,
+      raw,
+      externalWorkflowId: commaParts[0] || "",
+      observation: commaParts.slice(1, commaParts.length >= 4 ? -2 : -1).join(", ").trim(),
+      startDate: normalizedStartDate,
+      endDate: normalizedEndDate,
+      usesCustomDates: true,
+      error:
+        commaParts[0] && normalizedStartDate && normalizedEndDate
+          ? undefined
+          : !commaParts[0]
+            ? "Falta el ID"
+            : "Completa fecha inicio y fecha fin válidas",
+    };
+  }
+
   const separators = ["\t", ";", "|", ","];
   const separator = separators.find((candidate) => raw.includes(candidate)) || "";
   const separatorIndex = separator ? raw.indexOf(separator) : -1;
@@ -106,7 +191,55 @@ const parseIterationLine = (rawLine: string, lineNumber: number): ParsedIteratio
   };
 };
 
-const parseIterations = (value: string, existingIds: Set<string>) => {
+const validateIterationSchedule = (
+  item: ParsedIteration,
+  options: {
+    fallbackStartDate: string;
+    fallbackEndDate: string;
+    parentStartDate: Date | null;
+    parentEndDate: Date | null;
+  }
+) => {
+  if (item.error) return item;
+
+  const iterationStartDate = dateFromInputValue(item.startDate || options.fallbackStartDate);
+  const iterationEndDate = dateFromInputValue(item.endDate || options.fallbackEndDate);
+
+  if (!iterationStartDate || !iterationEndDate) {
+    return { ...item, error: "Define fechas válidas para la iteración" };
+  }
+
+  if (iterationStartDate.getTime() > iterationEndDate.getTime()) {
+    return { ...item, error: "La fecha inicio supera la fecha fin" };
+  }
+
+  if (
+    options.parentStartDate &&
+    startOfDate(iterationStartDate).getTime() < startOfDate(options.parentStartDate).getTime()
+  ) {
+    return { ...item, error: "Inicia antes que la tarea principal" };
+  }
+
+  if (
+    options.parentEndDate &&
+    endOfDate(iterationEndDate).getTime() > endOfDate(options.parentEndDate).getTime()
+  ) {
+    return { ...item, error: "Termina después que la tarea principal" };
+  }
+
+  return item;
+};
+
+const parseIterations = (
+  value: string,
+  existingIds: Set<string>,
+  options: {
+    fallbackStartDate: string;
+    fallbackEndDate: string;
+    parentStartDate: Date | null;
+    parentEndDate: Date | null;
+  }
+) => {
   const seenIds = new Set<string>();
 
   return value
@@ -118,16 +251,16 @@ const parseIterations = (value: string, existingIds: Set<string>) => {
       if (!normalizedId) return item;
 
       if (seenIds.has(normalizedId)) {
-        return { ...item, error: "ID duplicado en el lote" };
+        return { ...item, error: item.error || "ID duplicado en el lote" };
       }
 
       seenIds.add(normalizedId);
 
       if (existingIds.has(normalizedId)) {
-        return { ...item, error: "Ya existe en este flujo" };
+        return { ...item, error: item.error || "Ya existe en este flujo" };
       }
 
-      return item;
+      return validateIterationSchedule(item, options);
     });
 };
 
@@ -170,7 +303,16 @@ export function BulkWorkflowIterationsModal({
   const parentStartValue = parentStartDate ? parentStartDate.toISOString().slice(0, 10) : "";
   const parentEndValue = parentEndDate ? parentEndDate.toISOString().slice(0, 10) : "";
   const existingIds = useMemo(() => getExistingWorkflowIdsForTask(tasks, task), [tasks, task]);
-  const parsedIterations = useMemo(() => parseIterations(rawItems, existingIds), [rawItems, existingIds]);
+  const parsedIterations = useMemo(
+    () =>
+      parseIterations(rawItems, existingIds, {
+        fallbackStartDate: startDate,
+        fallbackEndDate: endDate,
+        parentStartDate,
+        parentEndDate,
+      }),
+    [rawItems, existingIds, startDate, endDate, parentStartDate, parentEndDate]
+  );
   const validIterations = parsedIterations.filter((item) => !item.error);
   const invalidIterations = parsedIterations.filter((item) => item.error);
   const childTaskCount = useMemo(
@@ -202,7 +344,7 @@ export function BulkWorkflowIterationsModal({
     }
 
     if (invalidIterations.length > 0) {
-      toast.warning("Corrige los IDs duplicados o existentes antes de crear las iteraciones.");
+      toast.warning("Corrige los IDs, fechas o rangos antes de crear las iteraciones.");
       return;
     }
 
@@ -223,7 +365,7 @@ export function BulkWorkflowIterationsModal({
       return;
     }
 
-    if (parentStartDate && parsedStartDate.getTime() < parentStartDate.getTime()) {
+    if (parentStartDate && startOfDate(parsedStartDate).getTime() < startOfDate(parentStartDate).getTime()) {
       toast.warning("Las iteraciones no pueden iniciar antes que la tarea principal.");
       return;
     }
@@ -246,6 +388,8 @@ export function BulkWorkflowIterationsModal({
         const iterationRef = doc(collection(db, "projects", projectId, "tasks"));
         const cleanWorkflowId = iteration.externalWorkflowId.trim();
         const cleanObservation = iteration.observation.trim();
+        const iterationStartDate = dateFromInputValue(iteration.startDate || startDate) || parsedStartDate;
+        const iterationEndDate = dateFromInputValue(iteration.endDate || endDate) || parsedEndDate;
         const workflowSteps = task.workflowSteps.map((step: any, stepIndex: number) => {
           const cleanStep: any = {
             ...stripWorkflowStepRuntime(step),
@@ -282,10 +426,10 @@ export function BulkWorkflowIterationsModal({
           name: cleanWorkflowId,
           originalTitle: sourceTitle,
           description: task.description || "",
-          startDate: parsedStartDate,
-          endDate: parsedEndDate,
-          start: parsedStartDate,
-          end: parsedEndDate,
+          startDate: iterationStartDate,
+          endDate: iterationEndDate,
+          start: iterationStartDate,
+          end: iterationEndDate,
           assignedTo: task.assignedTo || "",
           indicator: null,
           indicatorValue: null,
@@ -317,8 +461,8 @@ export function BulkWorkflowIterationsModal({
               comment: cleanObservation || "Workflow iniciado por carga masiva",
               timestamp: now.toISOString(),
               workflowId: cleanWorkflowId,
-              plannedStartDate: parsedStartDate.toISOString(),
-              plannedEndDate: parsedEndDate.toISOString(),
+              plannedStartDate: iterationStartDate.toISOString(),
+              plannedEndDate: iterationEndDate.toISOString(),
               source: "bulk_iteration",
             },
           ],
@@ -390,7 +534,7 @@ export function BulkWorkflowIterationsModal({
             <div>
               <label className="mb-1 flex items-center gap-2 text-sm font-semibold text-slate-700">
                 <Hash size={15} className="text-slate-400" />
-                Fecha inicio
+                Fecha inicio general
               </label>
               <input
                 type="date"
@@ -404,7 +548,7 @@ export function BulkWorkflowIterationsModal({
             <div>
               <label className="mb-1 flex items-center gap-2 text-sm font-semibold text-slate-700">
                 <Hash size={15} className="text-slate-400" />
-                Fecha fin
+                Fecha fin general
               </label>
               <input
                 type="date"
@@ -447,11 +591,16 @@ export function BulkWorkflowIterationsModal({
             <textarea
               value={rawItems}
               onChange={(event) => setRawItems(event.target.value)}
-              placeholder={"ID-001, Observación de la iteración\nID-002, Segunda observación\nID-003; También puedes usar punto y coma o tabulación"}
+              placeholder={
+                "ID-001, Observación de la iteración, 2026-06-01, 2026-06-05\n" +
+                "ID-002, Segunda observación, 01/06/2026, 05/06/2026\n" +
+                "ID-003, Sin fechas propias usa el cronograma general"
+              }
               className="min-h-44 w-full resize-y rounded-lg border border-slate-200 bg-white p-3 font-mono text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
             />
             <p className="mt-1 text-xs text-slate-500">
-              Usa una línea por iteración. El primer valor será el ID del workflow y el resto de la línea quedará como observación inicial.
+              Usa una línea por iteración. Formato con fechas: ID, observación, fecha inicio, fecha fin. Si no agregas fechas en la línea,
+              se usará el cronograma general.
             </p>
           </div>
 
@@ -472,7 +621,10 @@ export function BulkWorkflowIterationsModal({
               </div>
               <div className="max-h-48 overflow-y-auto">
                 {parsedIterations.map((item) => (
-                  <div key={`${item.lineNumber}-${item.raw}`} className="grid grid-cols-[88px_1fr] gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0">
+                  <div
+                    key={`${item.lineNumber}-${item.raw}`}
+                    className="grid gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0 sm:grid-cols-[88px_1fr_156px]"
+                  >
                     <div className="min-w-0">
                       <p className="truncate text-xs font-bold text-slate-700">{item.externalWorkflowId || "Sin ID"}</p>
                       <p className="text-[10px] text-slate-400">Línea {item.lineNumber}</p>
@@ -480,6 +632,14 @@ export function BulkWorkflowIterationsModal({
                     <div className="min-w-0">
                       <p className="truncate text-xs text-slate-600">{item.observation || "Sin observación"}</p>
                       {item.error && <p className="mt-0.5 text-[10px] font-semibold text-red-600">{item.error}</p>}
+                    </div>
+                    <div className="min-w-0 text-left sm:text-right">
+                      <p className="truncate text-[10px] font-semibold text-slate-500">
+                        {item.startDate || startDate || "Sin inicio"} - {item.endDate || endDate || "Sin fin"}
+                      </p>
+                      <p className="text-[10px] text-slate-400">
+                        {item.usesCustomDates ? "Fechas individuales" : "Cronograma general"}
+                      </p>
                     </div>
                   </div>
                 ))}
