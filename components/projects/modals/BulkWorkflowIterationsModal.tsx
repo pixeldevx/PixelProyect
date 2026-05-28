@@ -44,6 +44,12 @@ const toDateInputValue = (value: any) => {
   return date.toISOString().slice(0, 10);
 };
 
+const endOfDate = (date: Date) => {
+  const next = new Date(date);
+  next.setHours(23, 59, 59, 999);
+  return next;
+};
+
 const stripWorkflowStepRuntime = (step: any = {}) => {
   const nextStep = { ...step };
   [
@@ -158,6 +164,10 @@ export function BulkWorkflowIterationsModal({
   }, [isOpen, task]);
 
   const firstStepIsDynamic = task?.workflowSteps?.[0]?.assignedTo === "DYNAMIC";
+  const parentStartDate = getTaskDate(task?.startDate || task?.start);
+  const parentEndDate = getTaskDate(task?.endDate || task?.end);
+  const parentStartValue = parentStartDate ? parentStartDate.toISOString().slice(0, 10) : "";
+  const parentEndValue = parentEndDate ? parentEndDate.toISOString().slice(0, 10) : "";
   const existingIds = useMemo(() => getExistingWorkflowIdsForTask(tasks, task), [tasks, task]);
   const parsedIterations = useMemo(() => parseIterations(rawItems, existingIds), [rawItems, existingIds]);
   const validIterations = parsedIterations.filter((item) => !item.error);
@@ -204,6 +214,21 @@ export function BulkWorkflowIterationsModal({
     const parsedEndDate = new Date(`${endDate}T00:00:00`);
     if (Number.isNaN(parsedStartDate.getTime()) || Number.isNaN(parsedEndDate.getTime())) {
       toast.warning("Define fechas válidas para las iteraciones.");
+      return;
+    }
+
+    if (parsedStartDate.getTime() > parsedEndDate.getTime()) {
+      toast.warning("La fecha de inicio no puede ser posterior a la fecha fin.");
+      return;
+    }
+
+    if (parentStartDate && parsedStartDate.getTime() < parentStartDate.getTime()) {
+      toast.warning("Las iteraciones no pueden iniciar antes que la tarea principal.");
+      return;
+    }
+
+    if (parentEndDate && endOfDate(parsedEndDate).getTime() > endOfDate(parentEndDate).getTime()) {
+      toast.warning("Las iteraciones no pueden terminar después que la tarea principal.");
       return;
     }
 
@@ -282,6 +307,8 @@ export function BulkWorkflowIterationsModal({
               comment: cleanObservation || "Workflow iniciado por carga masiva",
               timestamp: now.toISOString(),
               workflowId: cleanWorkflowId,
+              plannedStartDate: parsedStartDate.toISOString(),
+              plannedEndDate: parsedEndDate.toISOString(),
               source: "bulk_iteration",
             },
           ],
@@ -356,6 +383,8 @@ export function BulkWorkflowIterationsModal({
               <input
                 type="date"
                 value={startDate}
+                min={parentStartValue || undefined}
+                max={parentEndValue || undefined}
                 onChange={(event) => setStartDate(event.target.value)}
                 className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
               />
@@ -368,11 +397,19 @@ export function BulkWorkflowIterationsModal({
               <input
                 type="date"
                 value={endDate}
+                min={startDate || parentStartValue || undefined}
+                max={parentEndValue || undefined}
                 onChange={(event) => setEndDate(event.target.value)}
                 className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
               />
             </div>
           </div>
+
+          {parentStartValue && parentEndValue && (
+            <div className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
+              Las iteraciones deben quedar dentro del cronograma de la tarea principal: {parentStartValue} a {parentEndValue}.
+            </div>
+          )}
 
           {firstStepIsDynamic && (
             <div>

@@ -79,6 +79,58 @@ const getPriorityColor = (priority: string) => {
   }
 };
 
+const getTaskScheduleState = (task: any) => {
+  const status = task?.status || 'todo';
+  if (status === 'completed_late') return 'completed_late';
+  if (status === 'completed' || status === 'listo') return 'completed';
+
+  const endDate = getTaskDate(task?.endDate || task?.end);
+  if (!endDate) return 'none';
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date(endDate);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  if (endOfDay.getTime() < today.getTime()) return 'overdue';
+
+  const msUntilDue = endOfDay.getTime() - Date.now();
+  return msUntilDue <= 2 * 24 * 60 * 60 * 1000 ? 'due_soon' : 'ok';
+};
+
+const getScheduleRailColor = (task: any) => {
+  const scheduleState = getTaskScheduleState(task);
+  if (scheduleState === 'overdue') return 'bg-red-600';
+  if (scheduleState === 'due_soon') return 'bg-orange-500';
+  if (scheduleState === 'completed_late') return 'bg-orange-600';
+  if (scheduleState === 'completed') return 'bg-[#00c875]';
+  if (task.status === 'in_progress') return 'bg-[#fdab3d]';
+  if (task.status === 'stuck') return 'bg-[#e2445c]';
+  return 'bg-slate-300';
+};
+
+const getScheduleDateClass = (task: any) => {
+  const scheduleState = getTaskScheduleState(task);
+  if (scheduleState === 'overdue') return 'bg-red-50 border-red-200 text-red-700';
+  if (scheduleState === 'due_soon') return 'bg-orange-50 border-orange-200 text-orange-700';
+  if (scheduleState === 'completed_late') return 'bg-orange-50 border-orange-200 text-orange-700';
+  if (scheduleState === 'completed') return 'bg-[#00c875]/10 border-[#00c875]/20 text-[#00a35f]';
+  if (task.status === 'in_progress') return 'bg-[#fdab3d]/10 border-[#fdab3d]/20 text-[#d97706]';
+  return 'bg-slate-50 border-slate-200 text-slate-500';
+};
+
+const getScheduleBarColors = (task: any) => {
+  const scheduleState = getTaskScheduleState(task);
+  if (scheduleState === 'overdue') return { backgroundColor: '#dc2626', backgroundSelectedColor: '#b91c1c' };
+  if (scheduleState === 'due_soon') return { backgroundColor: '#f97316', backgroundSelectedColor: '#ea580c' };
+  if (scheduleState === 'completed_late') return { backgroundColor: '#f97316', backgroundSelectedColor: '#ea580c' };
+  if (scheduleState === 'completed') return { backgroundColor: '#00c875', backgroundSelectedColor: '#00a35f' };
+  if (task.status === 'in_progress') return { backgroundColor: '#fdab3d', backgroundSelectedColor: '#e69a35' };
+  if (task.status === 'stuck') return { backgroundColor: '#e2445c', backgroundSelectedColor: '#c8374d' };
+  return { backgroundColor: '#c4c4c4', backgroundSelectedColor: '#b0b0b0' };
+};
+
 const sortChildTasks = (childTasks: any[]) => {
   return [...childTasks].sort((a, b) => {
     const aOrder = a.cycleNumber ?? a.displayOrder ?? 0;
@@ -226,12 +278,23 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     return result;
   }, [sortedTasks, expandedParents]);
 
+  const workflowIterationStats = useMemo(() => {
+    const workflowIterations = sortedTasks.filter((task) => task.parentTaskId && task.type === 'workflow');
+    return {
+      total: workflowIterations.length,
+      overdue: workflowIterations.filter((task) => getTaskScheduleState(task) === 'overdue').length,
+      dueSoon: workflowIterations.filter((task) => getTaskScheduleState(task) === 'due_soon').length,
+      completedLate: workflowIterations.filter((task) => getTaskScheduleState(task) === 'completed_late').length,
+    };
+  }, [sortedTasks]);
+
   // Map Supabase tasks to gantt-task-react tasks
   const ganttTasks: Task[] = useMemo(() => {
     if (visibleTasks.length === 0) return [];
 
     return visibleTasks.map((t, index) => {
       const hasChildren = sortedTasks.some(task => task.parentTaskId === t.id);
+      const barColors = getScheduleBarColors(t);
 
       return {
         id: t.id,
@@ -243,8 +306,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         project: t.parentTaskId || undefined,
         displayOrder: index + 1,
         styles: {
-          backgroundColor: t.status === 'completed_late' ? '#f97316' : t.status === 'completed' ? '#00c875' : t.status === 'in_progress' ? '#fdab3d' : '#c4c4c4',
-          backgroundSelectedColor: t.status === 'completed_late' ? '#ea580c' : t.status === 'completed' ? '#00a35f' : t.status === 'in_progress' ? '#e69a35' : '#b0b0b0',
+          backgroundColor: barColors.backgroundColor,
+          backgroundSelectedColor: barColors.backgroundSelectedColor,
           progressColor: '#ffffff44',
           progressSelectedColor: '#ffffff66',
         }
@@ -398,8 +461,21 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             {isTimelineCollapsed ? "Mostrar Gantt" : "Solo tareas"}
           </Button>
         </div>
-        <div className="text-[11px] font-medium text-slate-400">
-          {tasks.length} tareas en total
+        <div className="flex items-center gap-2 text-[11px] font-medium text-slate-400">
+          {workflowIterationStats.total > 0 && (
+            <>
+              <span className="rounded-full bg-red-50 px-2 py-1 font-bold text-red-700">
+                {workflowIterationStats.overdue} atrasadas
+              </span>
+              <span className="rounded-full bg-orange-50 px-2 py-1 font-bold text-orange-700">
+                {workflowIterationStats.dueSoon} por vencer
+              </span>
+              <span className="rounded-full bg-slate-100 px-2 py-1 font-bold text-slate-600">
+                {workflowIterationStats.completedLate} con retraso
+              </span>
+            </>
+          )}
+          <span>{tasks.length} tareas en total</span>
         </div>
       </div>
 
@@ -430,6 +506,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const taskDisplayTitle = getTaskDisplayTitle(task);
                     const startDate = getTaskDate(task.startDate);
                     const endDate = getTaskDate(task.endDate);
+                    const scheduleState = getTaskScheduleState(task);
                     const isQuantitative = task.type === 'quantitative';
                     const isParent = task.isParentTask || sortedTasks.some(t => t.parentTaskId === task.id);
                     const isSubTask = !!task.parentTaskId;
@@ -476,13 +553,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             className={`flex items-center h-10 border-b transition-colors group relative ${snapshot.isDragging ? 'bg-white shadow-xl z-50 ring-1 ring-indigo-500/20' : ''} ${isSubTask ? 'bg-indigo-50/30 border-indigo-100 hover:bg-indigo-50/60' : 'border-slate-100 hover:bg-slate-50'}`}
                           >
                             {/* Monday-style colored left bar */}
-                            <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${
-                              task.status === 'completed_late' ? 'bg-orange-500' :
-                              task.status === 'completed' ? 'bg-[#00c875]' :
-                              task.status === 'in_progress' ? 'bg-[#fdab3d]' :
-                              task.status === 'stuck' ? 'bg-[#e2445c]' :
-                              'bg-slate-300'
-                            }`} />
+                            <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${getScheduleRailColor(task)}`} />
 
                             {isSubTask && (
                               <>
@@ -679,20 +750,10 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 disabled={!canEditThisTaskDates}
                                 className={`rounded-md h-7 w-full flex items-center justify-center relative overflow-hidden group/timeline border ${
                                   canEditThisTaskDates ? 'cursor-pointer hover:ring-2 hover:ring-indigo-500/10' : 'cursor-default'
-                                } ${
-                                task.status === 'completed_late' ? 'bg-orange-50 border-orange-200' :
-                                task.status === 'completed' ? 'bg-[#00c875]/10 border-[#00c875]/20' :
-                                task.status === 'in_progress' ? 'bg-[#fdab3d]/10 border-[#fdab3d]/20' :
-                                'bg-slate-50 border-slate-200'
-                              }`}
-                                title={canEditThisTaskDates ? 'Editar fechas' : 'Sin permiso para editar fechas'}
+                                } ${getScheduleDateClass(task)}`}
+                                title={`${canEditThisTaskDates ? 'Editar fechas' : 'Sin permiso para editar fechas'}${scheduleState === 'overdue' ? ' · Atrasada' : scheduleState === 'due_soon' ? ' · Por vencer' : scheduleState === 'completed_late' ? ' · Finalizada con retraso' : ''}`}
                               >
-                                <div className={`text-[9px] font-bold z-10 flex items-center gap-1 ${
-                                  task.status === 'completed_late' ? 'text-orange-600' :
-                                  task.status === 'completed' ? 'text-[#00c875]' :
-                                  task.status === 'in_progress' ? 'text-[#fdab3d]' :
-                                  'text-slate-500'
-                                }`}>
+                                <div className="z-10 flex items-center gap-1 text-[9px] font-bold">
                                   <Calendar size={10} />
                                   {startDate && endDate ? (
                                     `${format(startDate, 'd MMM', { locale: es })} - ${format(endDate, 'd MMM', { locale: es })}`
@@ -719,6 +780,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden shadow-inner">
                                 <div
                                   className={`h-full transition-all duration-700 ease-out ${
+                                    scheduleState === 'overdue' ? 'bg-red-600' :
+                                    scheduleState === 'due_soon' ? 'bg-orange-500' :
                                     task.status === 'completed_late' ? 'bg-orange-500' :
                                     task.status === 'completed' ? 'bg-[#00c875]' :
                                     task.status === 'stuck' ? 'bg-[#e2445c]' :

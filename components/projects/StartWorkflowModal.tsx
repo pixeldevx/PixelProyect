@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, Upload, Save, FileText, MessageSquare, Hash } from 'lucide-react';
+import { X, Upload, Save, FileText, MessageSquare, Hash, Calendar } from 'lucide-react';
 import { doc, updateDoc, serverTimestamp, addDoc, collection } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
@@ -9,12 +9,33 @@ interface StartWorkflowModalProps {
   isOpen: boolean;
   onClose: () => void;
   task: any;
+  parentTask?: any | null;
   projectId: string;
   userId: string;
   teamMembers: any[];
 }
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Sin título';
+const getTaskDate = (value: any) => {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+const toDateInputValue = (value: any) => {
+  const date = getTaskDate(value);
+  return date ? date.toISOString().slice(0, 10) : '';
+};
+const parseDateInput = (value: string) => {
+  if (!value) return null;
+  const parsed = new Date(`${value}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+const endOfDate = (date: Date) => {
+  const next = new Date(date);
+  next.setHours(23, 59, 59, 999);
+  return next;
+};
 const getTaskDisplayTitle = (task: any) => {
   const title = getTaskTitle(task);
   if (!task?.externalWorkflowId || title === task.externalWorkflowId) {
@@ -27,12 +48,15 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   isOpen,
   onClose,
   task,
+  parentTask,
   projectId,
   userId,
   teamMembers
 }) => {
   const [workflowId, setWorkflowId] = useState('');
   const [observation, setObservation] = useState('');
+  const [workflowStartDate, setWorkflowStartDate] = useState('');
+  const [workflowEndDate, setWorkflowEndDate] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const [firstStepAssignee, setFirstStepAssignee] = useState<string>('');
@@ -41,11 +65,16 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
     if (!isOpen || !task) return;
     setWorkflowId(task.externalWorkflowId || '');
     setObservation('');
+    setWorkflowStartDate(toDateInputValue(task.startDate || task.start));
+    setWorkflowEndDate(toDateInputValue(task.endDate || task.end));
     setFile(null);
     setFirstStepAssignee('');
   }, [isOpen, task]);
 
   if (!isOpen || !task) return null;
+
+  const parentStartValue = parentTask ? toDateInputValue(parentTask.startDate || parentTask.start) : '';
+  const parentEndValue = parentTask ? toDateInputValue(parentTask.endDate || parentTask.end) : '';
 
   const handleStart = async () => {
     const cleanWorkflowId = workflowId.trim();
@@ -57,6 +86,30 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
 
     if (task.workflowSteps?.[0]?.assignedTo === 'DYNAMIC' && !firstStepAssignee) {
       toast.warning("Por favor asigne el primer paso a un miembro del equipo.");
+      return;
+    }
+
+    const parsedWorkflowStart = parseDateInput(workflowStartDate);
+    const parsedWorkflowEnd = parseDateInput(workflowEndDate);
+    if (!parsedWorkflowStart || !parsedWorkflowEnd) {
+      toast.warning("Define fecha de inicio y fecha fin para este workflow.");
+      return;
+    }
+
+    if (parsedWorkflowStart.getTime() > parsedWorkflowEnd.getTime()) {
+      toast.warning("La fecha de inicio no puede ser posterior a la fecha fin.");
+      return;
+    }
+
+    const parentStartDate = getTaskDate(parentTask?.startDate || parentTask?.start);
+    const parentEndDate = getTaskDate(parentTask?.endDate || parentTask?.end);
+    if (parentTask && parentStartDate && parsedWorkflowStart.getTime() < parentStartDate.getTime()) {
+      toast.warning("El workflow no puede iniciar antes que la tarea principal.");
+      return;
+    }
+
+    if (parentTask && parentEndDate && endOfDate(parsedWorkflowEnd).getTime() > endOfDate(parentEndDate).getTime()) {
+      toast.warning("El workflow no puede terminar después que la tarea principal.");
       return;
     }
 
@@ -92,7 +145,9 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         action: 'start',
         comment: observation || 'Workflow iniciado',
         timestamp: new Date(),
-        workflowId: cleanWorkflowId
+        workflowId: cleanWorkflowId,
+        plannedStartDate: parsedWorkflowStart.toISOString(),
+        plannedEndDate: parsedWorkflowEnd.toISOString()
       };
 
       // 3. Update task
@@ -114,6 +169,10 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         originalTitle: task.originalTitle || getTaskTitle(task),
         status: 'in_progress',
         progress: 10,
+        startDate: parsedWorkflowStart,
+        endDate: parsedWorkflowEnd,
+        start: parsedWorkflowStart,
+        end: parsedWorkflowEnd,
         externalWorkflowId: cleanWorkflowId,
         initialObservation: observation,
         startDocumentId: documentId,
@@ -140,7 +199,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg flex flex-col overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[92vh] flex flex-col overflow-hidden">
         <div className="flex items-center justify-between p-6 border-b border-slate-100">
           <div>
             <h2 className="text-xl font-bold text-slate-800">Iniciar Workflow</h2>
@@ -156,7 +215,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
           </button>
         </div>
 
-        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-6 overflow-y-auto">
           {/* Workflow ID */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
@@ -170,6 +229,42 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
               placeholder="Ej: WKF-2024-001"
               className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
             />
+          </div>
+
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4">
+            <label className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-800">
+              <Calendar size={16} className="text-indigo-500" />
+              Cronograma del workflow
+            </label>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <span className="mb-1 block text-xs font-medium text-slate-600">Fecha inicio</span>
+                <input
+                  type="date"
+                  value={workflowStartDate}
+                  min={parentStartValue || undefined}
+                  max={parentEndValue || undefined}
+                  onChange={(e) => setWorkflowStartDate(e.target.value)}
+                  className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+              <div>
+                <span className="mb-1 block text-xs font-medium text-slate-600">Fecha fin</span>
+                <input
+                  type="date"
+                  value={workflowEndDate}
+                  min={workflowStartDate || parentStartValue || undefined}
+                  max={parentEndValue || undefined}
+                  onChange={(e) => setWorkflowEndDate(e.target.value)}
+                  className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+            </div>
+            {parentTask && parentStartValue && parentEndValue && (
+              <p className="mt-2 text-xs text-indigo-700">
+                Debe quedar dentro de la tarea principal: {parentStartValue} a {parentEndValue}.
+              </p>
+            )}
           </div>
 
           {/* Initial Observation */}

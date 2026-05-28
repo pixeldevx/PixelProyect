@@ -1705,6 +1705,7 @@ export default function ProjectDetailsPage() {
           setSelectedTaskForStartWorkflow(null);
         }}
         task={selectedTaskForStartWorkflow}
+        parentTask={selectedTaskForStartWorkflow?.parentTaskId ? tasks.find((task) => task.id === selectedTaskForStartWorkflow.parentTaskId) : null}
         projectId={projectId}
         userId={user?.uid || ''}
         teamMembers={teamMembers}
