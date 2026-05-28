@@ -14,6 +14,7 @@ import { TaskDateEditorModal } from './TaskDateEditorModal';
 interface ProjectGanttProps {
   tasks: any[];
   teamMembers: any[];
+  assigneeOptions?: any[];
   onUpdateTaskProgress?: (taskId: string, progress: number, task: any) => void;
   onUpdateTaskValue?: (taskId: string, value: number, task: any) => void;
   onUpdateTaskStatus?: (taskId: string, status: string, task: any) => void;
@@ -144,6 +145,7 @@ const sortChildTasks = (childTasks: any[]) => {
 export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   tasks,
   teamMembers,
+  assigneeOptions,
   onUpdateTaskProgress,
   onUpdateTaskValue,
   onUpdateTaskStatus,
@@ -176,6 +178,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [editingTaskTitle, setEditingTaskTitle] = useState("");
   const [openActionMenuTaskId, setOpenActionMenuTaskId] = useState<string | null>(null);
   const [taskForDateEdit, setTaskForDateEdit] = useState<any>(null);
+  const taskAssigneeOptions = assigneeOptions || teamMembers;
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
   const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
@@ -705,7 +708,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                     aria-label={`Cambiar responsable de ${taskTitle}`}
                                   >
                                     <option value="">Sin asignar</option>
-                                    {teamMembers.map((member) => (
+                                    {taskAssigneeOptions.map((member) => (
                                       <option key={member.id} value={member.id}>
                                         {member.name || member.email}
                                       </option>

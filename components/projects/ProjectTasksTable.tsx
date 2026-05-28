@@ -12,6 +12,7 @@ import { TaskDateEditorModal } from './TaskDateEditorModal';
 interface ProjectTasksTableProps {
   tasks: any[];
   teamMembers: any[];
+  assigneeOptions?: any[];
   onUpdateTaskProgress?: (taskId: string, progress: number, task: any) => void;
   onUpdateTaskStatus?: (taskId: string, status: string, task: any) => void;
   onUpdateTaskPriority?: (taskId: string, priority: string, task: any) => void;
@@ -43,6 +44,7 @@ const getTaskDate = (task: any, field: 'start' | 'end') => {
 export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
   tasks,
   teamMembers,
+  assigneeOptions,
   onUpdateTaskStatus,
   onUpdateTaskPriority,
   onUpdateTaskAssignee,
@@ -61,6 +63,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
 }) => {
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
   const [taskForDateEdit, setTaskForDateEdit] = useState<any>(null);
+  const taskAssigneeOptions = assigneeOptions || teamMembers;
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
   const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
@@ -324,7 +327,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
                 aria-label={`Cambiar responsable de ${taskTitle}`}
               >
                 <option value="">Sin asignar</option>
-                {teamMembers.map(m => (
+                {taskAssigneeOptions.map(m => (
                   <option key={m.id} value={m.id}>{m.name}</option>
                 ))}
               </select>

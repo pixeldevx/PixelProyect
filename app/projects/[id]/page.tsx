@@ -36,7 +36,7 @@ import { ProjectOrgChart } from '@/components/projects/ProjectOrgChart';
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 import Image from 'next/image';
-import { belongsToAnyOrganization } from '@/lib/organizations';
+import { belongsToAnyOrganization, getOrganizationIds } from '@/lib/organizations';
 import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
 import { notifyTaskAssignment } from '@/lib/notifications';
 
@@ -312,6 +312,16 @@ export default function ProjectDetailsPage() {
   const canManageWorkflowTemplates =
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
+
+  const projectOrganizationIds = getOrganizationIds(project);
+  const organizationTeamMembers = teamMembers.filter((member) => {
+    if (projectOrganizationIds.length === 0) return true;
+    const memberOrganizationIds = getOrganizationIds(member);
+    return memberOrganizationIds.some((organizationId) => projectOrganizationIds.includes(organizationId));
+  });
+  const projectAssignableTeamMembers = organizationTeamMembers.filter((member) =>
+    (project?.assignedTeamMembers || []).includes(member.id)
+  );
 
   const collectDependentTaskIds = (taskId: string) => {
     const taskIds = new Set<string>([taskId]);
@@ -829,6 +839,10 @@ export default function ProjectDetailsPage() {
       toast.warning('Completa la persona, el perfil y las unidades del Rate Card dinámico.');
       return;
     }
+    if (!projectAssignableTeamMembers.some((member) => member.id === dynamicRateCardAssignee)) {
+      toast.warning('La persona seleccionada debe pertenecer a la organización y al proyecto.');
+      return;
+    }
 
     await handleUpdateTaskStatus(
       dynamicRateCardStatusChange.taskId,
@@ -1046,6 +1060,10 @@ export default function ProjectDetailsPage() {
     if (!task) return;
     if (!canEditTaskDetails) {
       toast.error('No tienes permisos para editar el responsable de tareas.');
+      return;
+    }
+    if (assignedTo && !projectAssignableTeamMembers.some((member) => member.id === assignedTo)) {
+      toast.error('Solo puedes asignar personas que pertenezcan a la organización y al proyecto.');
       return;
     }
 
@@ -1611,7 +1629,7 @@ export default function ProjectDetailsPage() {
           projectId={projectId}
           project={project}
           tasks={tasks}
-          teamMembers={teamMembers}
+          teamMembers={projectAssignableTeamMembers}
           currentUser={user}
           canCreateTasks={canCreateTasks}
           canAddSubtasks={canAddSubtasks}
@@ -1621,7 +1639,7 @@ export default function ProjectDetailsPage() {
       {activeTab === 'quality' && (
         <ProjectQuality
           projectId={projectId}
-          teamMembers={teamMembers}
+          teamMembers={projectAssignableTeamMembers}
           currentUser={user}
           canManage={canEditTaskStructure}
         />
@@ -1654,6 +1672,7 @@ export default function ProjectDetailsPage() {
               <ProjectGantt
                 tasks={tasks}
                 teamMembers={teamMembers}
+                assigneeOptions={projectAssignableTeamMembers}
                 onUpdateTaskProgress={canEditTaskDetails ? handleUpdateTaskProgress : undefined}
                 onUpdateTaskValue={canEditTaskDetails ? handleUpdateTaskValue : undefined}
                 onUpdateTaskStatus={canEditTaskStatus ? handleUpdateTaskStatus : undefined}
@@ -1908,7 +1927,7 @@ export default function ProjectDetailsPage() {
         isOpen={isAssignModalOpen}
         onClose={() => setIsAssignModalOpen(false)}
         projectId={projectId}
-        teamMembers={teamMembers}
+        teamMembers={organizationTeamMembers}
         project={project}
       />
 
@@ -1963,16 +1982,9 @@ export default function ProjectDetailsPage() {
                     className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                   >
                     <option value="">Seleccionar...</option>
-                    {dynamicRateCardAssignee && !(project?.assignedTeamMembers || []).includes(dynamicRateCardAssignee) && (
-                      <option value={dynamicRateCardAssignee}>Responsable actual</option>
-                    )}
-                    {(project?.assignedTeamMembers || []).map((memberId: string) => {
-                      const member = teamMembers.find((item) => item.id === memberId);
-                      if (!member) return null;
-                      return (
-                        <option key={member.id} value={member.id}>{member.name}</option>
-                      );
-                    })}
+                    {projectAssignableTeamMembers.map((member) => (
+                      <option key={member.id} value={member.id}>{member.name || member.email}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -2053,7 +2065,7 @@ export default function ProjectDetailsPage() {
           projectId={projectId}
           project={project}
           user={user}
-          teamMembers={teamMembers}
+          teamMembers={projectAssignableTeamMembers}
           rateCards={rateCards}
           tasksLength={tasks.length}
           canManageWorkflowTemplates={canManageWorkflowTemplates}
@@ -2066,7 +2078,7 @@ export default function ProjectDetailsPage() {
           projectId={projectId}
           task={taskForBulkIterations}
           user={user}
-          teamMembers={teamMembers}
+          teamMembers={projectAssignableTeamMembers}
           tasks={tasks}
         />
       )}
@@ -2076,7 +2088,7 @@ export default function ProjectDetailsPage() {
         projectId={projectId}
         task={taskForStructureEdit}
         user={user}
-        teamMembers={teamMembers}
+        teamMembers={projectAssignableTeamMembers}
         subtasks={taskForStructureEdit ? tasks.filter((task) => task.parentTaskId === taskForStructureEdit.id) : []}
         canEditTaskStructure={canEditTaskStructure}
         canManageWorkflowTemplates={canManageWorkflowTemplates}
