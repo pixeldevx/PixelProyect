@@ -983,19 +983,38 @@ export default function WorkflowTray() {
     );
   }
 
-  const pendingInboxCount = workflows.filter((task) => {
+  const assignedIdsForInbox = memberIds.length > 0 ? memberIds : [user?.uid, memberId].filter(Boolean);
+
+  const isPendingTaskForMe = (task: any) => {
     const taskIsWorkflow = isWorkflowItem(task);
     const currentStep = taskIsWorkflow ? task.workflowSteps?.[task.currentStepIndex || 0] : null;
-    const assignedIds = memberIds.length > 0 ? memberIds : [user?.uid, memberId].filter(Boolean);
     return taskIsWorkflow
-      ? currentStep?.assignedTo && assignedIds.includes(currentStep.assignedTo) &&
+      ? currentStep?.assignedTo && assignedIdsForInbox.includes(currentStep.assignedTo) &&
         (currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido')
-      : isOpenTask(task) && isAssignedToCurrentUser(task, assignedIds as string[]);
-  }).length;
+      : isOpenTask(task) && isAssignedToCurrentUser(task, assignedIdsForInbox as string[]);
+  };
+
+  const isReviewedTaskForMe = (task: any) => {
+    if (!isWorkflowItem(task)) return false;
+    const hasInteracted = task.workflowHistory?.some((h: any) => h.userId === user?.uid);
+    return Boolean(hasInteracted && !isPendingTaskForMe(task));
+  };
+
+  const isInActiveInboxTab = (task: any) =>
+    activeTab === 'pending' ? isPendingTaskForMe(task) : isReviewedTaskForMe(task);
+
+  const pendingInboxCount = workflows.filter(isPendingTaskForMe).length;
 
   const projectOptions = Array.from(
     new Map(workflows.map((task) => [task.projectId, task.projectName || 'Proyecto'])).entries()
-  ).sort((a, b) => a[1].localeCompare(b[1]));
+  ).filter(([projectId]) => Boolean(projectId)).sort((a, b) => a[1].localeCompare(b[1]));
+
+  const mailboxCounts = workflows.reduce((counts, task) => {
+    if (!isInActiveInboxTab(task) || !task.projectId) return counts;
+    counts.set(task.projectId, (counts.get(task.projectId) || 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+  const allMailboxCount = workflows.filter(isInActiveInboxTab).length;
 
   const filteredWorkflows = workflows.filter(task => {
     const searchLower = searchTerm.toLowerCase();
@@ -1009,25 +1028,7 @@ export default function WorkflowTray() {
       ? (task.workflowSteps?.[task.currentStepIndex]?.status || '').toLowerCase()
       : (task.status || 'todo').toLowerCase();
     
-    // Filter by tab
-    const currentStep = taskIsWorkflow ? task.workflowSteps?.[task.currentStepIndex || 0] : null;
-    
-    // We need to re-evaluate isPending for the current user
-    // Let's use a more robust check
-    const assignedIds = memberIds.length > 0 ? memberIds : [user?.uid, memberId].filter(Boolean);
-    const isPendingForMe = taskIsWorkflow
-      ? currentStep?.assignedTo && assignedIds.includes(currentStep.assignedTo) &&
-        (currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido')
-      : isOpenTask(task) && isAssignedToCurrentUser(task, assignedIds as string[]);
-    const hasInteracted = task.workflowHistory?.some((h: any) => h.userId === user?.uid);
-
-    if (activeTab === 'pending') {
-      if (!isPendingForMe) return false;
-    } else {
-      if (!taskIsWorkflow) return false;
-      // Reviewed: I have interacted AND it's not currently pending for me
-      if (!hasInteracted || isPendingForMe) return false;
-    }
+    if (!isInActiveInboxTab(task)) return false;
 
     if (projectFilter !== 'all' && task.projectId !== projectFilter) return false;
 
@@ -1343,7 +1344,51 @@ export default function WorkflowTray() {
           </div>
         </div>
 
-        <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-[1fr_220px_220px]">
+        <div className="mt-2 border-t border-slate-100 pt-2">
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            <button
+              type="button"
+              onClick={() => setProjectFilter('all')}
+              className={`inline-flex h-8 shrink-0 items-center gap-2 rounded-lg border px-3 text-xs font-bold transition-colors ${
+                projectFilter === 'all'
+                  ? 'border-indigo-200 bg-indigo-600 text-white shadow-sm'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700'
+              }`}
+            >
+              Todo
+              <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                projectFilter === 'all' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'
+              }`}>
+                {allMailboxCount}
+              </span>
+            </button>
+            {projectOptions.map(([projectId, projectName]) => {
+              const isActiveMailbox = projectFilter === projectId;
+              return (
+                <button
+                  key={projectId}
+                  type="button"
+                  onClick={() => setProjectFilter(projectId)}
+                  className={`inline-flex h-8 max-w-[240px] shrink-0 items-center gap-2 rounded-lg border px-3 text-xs font-bold transition-colors ${
+                    isActiveMailbox
+                      ? 'border-indigo-200 bg-indigo-600 text-white shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700'
+                  }`}
+                  title={projectName}
+                >
+                  <span className="truncate">{projectName}</span>
+                  <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                    isActiveMailbox ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'
+                  }`}>
+                    {mailboxCounts.get(projectId) || 0}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-[1fr_220px]">
           <input
             type="text"
             placeholder="Buscar por ID, título, proyecto, organización o estado..."
@@ -1351,18 +1396,6 @@ export default function WorkflowTray() {
             onChange={(e) => setSearchTerm(e.target.value)}
             className="h-8 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           />
-          <select
-            value={projectFilter}
-            onChange={(event) => setProjectFilter(event.target.value)}
-            className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-          >
-            <option value="all">Todos los proyectos</option>
-            {projectOptions.map(([projectId, projectName]) => (
-              <option key={projectId} value={projectId}>
-                {projectName}
-              </option>
-            ))}
-          </select>
           <select
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value)}
