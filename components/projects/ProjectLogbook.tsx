@@ -5,8 +5,14 @@ import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverT
 import { db } from "@/lib/backend";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { BookOpen, CheckCircle2, Sparkles, X } from "lucide-react";
+import { BookOpen, CheckCircle2, Sparkles, Wand2, X } from "lucide-react";
 import { toast } from "sonner";
+import {
+  ACTION_VERBS,
+  ActionCandidate,
+  detectActionCandidates,
+  mergeActionCandidates,
+} from "@/lib/project-logbook/action-detection";
 
 type ProjectLogbookProps = {
   projectId: string;
@@ -16,16 +22,6 @@ type ProjectLogbookProps = {
   currentUser: any;
   canCreateTasks: boolean;
   canAddSubtasks: boolean;
-};
-
-type ActionCandidate = {
-  id: string;
-  text: string;
-  verb: string;
-  status?: "open" | "linked" | "ignored";
-  linkedTaskId?: string | null;
-  linkedTaskTitle?: string | null;
-  relationType?: string | null;
 };
 
 type LogbookEntry = {
@@ -65,71 +61,7 @@ const ENTRY_TYPES = [
   { value: "internal", label: "Interno" },
 ];
 
-const ACTION_VERBS = [
-  "hacer",
-  "revisar",
-  "corregir",
-  "validar",
-  "aprobar",
-  "entregar",
-  "enviar",
-  "coordinar",
-  "documentar",
-  "ajustar",
-  "verificar",
-  "levantar",
-  "programar",
-  "medir",
-  "calificar",
-  "crear",
-  "actualizar",
-  "definir",
-  "resolver",
-  "analizar",
-  "confirmar",
-  "preparar",
-  "cargar",
-  "responder",
-  "completar",
-  "gestionar",
-  "calidad",
-];
-
-const foldText = (value: string) =>
-  value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-
-const normalizeWhitespace = (value: string) => value.trim().replace(/\s+/g, " ");
-
-const candidateIdFor = (text: string, index: number, verb: string) =>
-  `${index}-${verb}-${foldText(text).replace(/[^a-z0-9]+/g, "-").slice(0, 48)}`;
-
-const detectActionCandidates = (content: string): ActionCandidate[] => {
-  const segments = content
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map(normalizeWhitespace)
-    .filter((segment) => segment.length >= 8);
-
-  return segments.reduce<ActionCandidate[]>((candidates, segment, index) => {
-    const foldedSegment = foldText(segment);
-    const verb = ACTION_VERBS.find((candidateVerb) => {
-      const foldedVerb = foldText(candidateVerb);
-      return new RegExp(`(^|[^a-z0-9])${foldedVerb}([^a-z0-9]|$)`, "i").test(foldedSegment);
-    });
-
-    if (!verb) return candidates;
-
-    candidates.push({
-      id: candidateIdFor(segment, index, verb),
-      text: segment,
-      verb,
-      status: "open",
-    });
-    return candidates;
-  }, []);
-};
+const ACTION_VERB_EXAMPLES = ACTION_VERBS.slice(0, 8).join(", ");
 
 const getDateValue = (value: any) => {
   if (!value) return null;
@@ -282,6 +214,10 @@ export function ProjectLogbook({
   const defaultAssignee = viewerMember?.id || projectMembers[0]?.id || "";
   const parentTaskOptions = tasks.filter((task) => !task.parentTaskId);
   const tasksById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+  const liveCandidates = useMemo(() => detectActionCandidates(content), [content]);
+
+  const getEntryCandidates = (entry: LogbookEntry) =>
+    mergeActionCandidates(entry.actionCandidates || [], entry.content || "");
 
   useEffect(() => {
     if (!projectId) return;
@@ -398,9 +334,7 @@ export function ProjectLogbook({
   };
 
   const updateCandidateLink = async (entry: LogbookEntry, candidate: ActionCandidate, link: any) => {
-    const currentCandidates = entry.actionCandidates?.length
-      ? entry.actionCandidates
-      : detectActionCandidates(entry.content || "");
+    const currentCandidates = mergeActionCandidates(entry.actionCandidates || [], entry.content || "");
     const nextCandidates = currentCandidates.map((item) =>
       item.id === candidate.id
         ? {
@@ -586,16 +520,20 @@ export function ProjectLogbook({
   };
 
   const renderAnnotatedContent = (entry: LogbookEntry) => {
-    const candidates = (entry.actionCandidates?.length ? entry.actionCandidates : detectActionCandidates(entry.content || ""))
+    const entryContent = entry.content || "";
+    const candidates = mergeActionCandidates(entry.actionCandidates || [], entryContent)
       .filter((candidate) => candidate.status !== "ignored")
       .map((candidate) => ({
         ...candidate,
-        index: (entry.content || "").indexOf(candidate.text),
+        index: typeof candidate.startIndex === "number" ? candidate.startIndex : entryContent.indexOf(candidate.text),
+        endIndex: typeof candidate.endIndex === "number"
+          ? candidate.endIndex
+          : entryContent.indexOf(candidate.text) + candidate.text.length,
       }))
-      .filter((candidate) => candidate.index >= 0)
+      .filter((candidate) => candidate.index >= 0 && candidate.endIndex > candidate.index)
       .sort((left, right) => left.index - right.index);
 
-    if (candidates.length === 0) return entry.content;
+    if (candidates.length === 0) return entryContent;
 
     const nodes: React.ReactNode[] = [];
     let cursor = 0;
@@ -603,8 +541,9 @@ export function ProjectLogbook({
     candidates.forEach((candidate) => {
       if (candidate.index < cursor) return;
       if (candidate.index > cursor) {
-        nodes.push(entry.content.slice(cursor, candidate.index));
+        nodes.push(entryContent.slice(cursor, candidate.index));
       }
+      const highlightedText = entryContent.slice(candidate.index, candidate.endIndex) || candidate.text;
       nodes.push(
         <button
           key={candidate.id}
@@ -617,18 +556,18 @@ export function ProjectLogbook({
           }`}
           title={candidate.status === "linked" ? "Acción vinculada" : "Convertir en tarea"}
         >
-          {candidate.text}
+          {highlightedText}
         </button>
       );
-      cursor = candidate.index + candidate.text.length;
+      cursor = candidate.endIndex;
     });
 
-    if (cursor < entry.content.length) nodes.push(entry.content.slice(cursor));
+    if (cursor < entryContent.length) nodes.push(entryContent.slice(cursor));
     return nodes;
   };
 
   const actionCandidateCount = entries.reduce(
-    (total, entry) => total + (entry.actionCandidates || []).filter((candidate) => candidate.status !== "ignored").length,
+    (total, entry) => total + getEntryCandidates(entry).filter((candidate) => candidate.status !== "ignored").length,
     0
   );
   const linkedActionCount = entries.reduce(
@@ -684,13 +623,51 @@ export function ProjectLogbook({
         <textarea
           value={content}
           onChange={(event) => setContent(event.target.value)}
-          placeholder="Pega la minuta o escribe lo ocurrido. Las frases accionables se detectarán al guardar."
+          placeholder="Pega la minuta o escribe lo ocurrido. Ej: Hay que revisar el contrato, validar el entregable y enviar observaciones al cliente."
           className="mt-3 min-h-32 w-full resize-y rounded-xl border border-slate-200 px-3 py-3 text-sm outline-none transition-all focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
         />
+        {content.trim() && (
+          <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2 text-sm font-bold text-indigo-900">
+                <Wand2 size={16} className="text-indigo-500" />
+                Detección inteligente
+              </div>
+              <Badge variant="secondary" className={liveCandidates.length ? "bg-indigo-600 text-white" : "bg-white text-slate-500"}>
+                {liveCandidates.length} posibles acciones
+              </Badge>
+            </div>
+            {liveCandidates.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {liveCandidates.slice(0, 6).map((candidate) => (
+                  <span
+                    key={candidate.id}
+                    className="inline-flex max-w-full items-center gap-2 rounded-full border border-indigo-200 bg-white px-3 py-1 text-xs text-indigo-800 shadow-sm"
+                    title={candidate.text}
+                  >
+                    <span className="rounded-full bg-indigo-100 px-2 py-0.5 font-bold uppercase tracking-wide text-indigo-700">
+                      {candidate.verb}
+                    </span>
+                    <span className="max-w-[420px] truncate font-semibold">{candidate.text}</span>
+                  </span>
+                ))}
+                {liveCandidates.length > 6 && (
+                  <span className="rounded-full border border-indigo-200 bg-white px-3 py-1 text-xs font-bold text-indigo-700">
+                    +{liveCandidates.length - 6} más
+                  </span>
+                )}
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-slate-500">
+                Aún no veo una acción clara. Prueba con frases como &quot;hay que validar...&quot;, &quot;queda pendiente corregir...&quot; o &quot;se debe enviar...&quot;.
+              </p>
+            )}
+          </div>
+        )}
         <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <Sparkles size={14} className="text-indigo-500" />
-            Detecta verbos como revisar, corregir, validar, entregar, coordinar y calidad.
+            Detecta verbos como {ACTION_VERB_EXAMPLES} y señales de compromiso o calidad.
           </div>
           <Button type="submit" disabled={savingEntry || !title.trim() || !content.trim()} className="bg-indigo-600 text-white hover:bg-indigo-700">
             {savingEntry ? "Guardando..." : "Guardar entrada"}
@@ -711,7 +688,7 @@ export function ProjectLogbook({
           </div>
         ) : (
           entries.map((entry) => {
-            const candidates = (entry.actionCandidates || []).filter((candidate) => candidate.status !== "ignored");
+            const candidates = getEntryCandidates(entry).filter((candidate) => candidate.status !== "ignored");
             const links = entry.derivedLinks || [];
 
             return (
