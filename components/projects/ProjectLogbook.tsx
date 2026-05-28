@@ -5,7 +5,7 @@ import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverT
 import { db } from "@/lib/backend";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { BookOpen, CheckCircle2, Sparkles, Wand2, X } from "lucide-react";
+import { BookOpen, Calendar, CheckCircle2, Clock, MessageSquare, Sparkles, UserRound, Wand2, X } from "lucide-react";
 import { toast } from "sonner";
 import {
   ACTION_VERBS,
@@ -127,6 +127,96 @@ const addDays = (date: Date, days: number) => {
 
 const getTaskTitle = (task: any) => task?.title || task?.name || "Tarea";
 
+const getTaskDate = (value: any) => {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const formatShortDate = (value: any) => {
+  const date = getTaskDate(value);
+  if (!date) return "Sin fecha";
+  return date.toLocaleDateString("es-CO", {
+    day: "numeric",
+    month: "short",
+  });
+};
+
+const getDueState = (task: any) => {
+  const status = task?.status || "todo";
+  if (status === "completed" || status === "completed_late" || status === "listo") return "closed";
+
+  const endDate = getTaskDate(task?.endDate || task?.end);
+  if (!endDate) return "none";
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date(endDate);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  if (endOfDay.getTime() < today.getTime()) return "overdue";
+  return endOfDay.getTime() - Date.now() <= 2 * 24 * 60 * 60 * 1000 ? "due_soon" : "ok";
+};
+
+const getDueLabel = (dueState: string) => {
+  if (dueState === "overdue") return "Vencida";
+  if (dueState === "due_soon") return "Por vencer";
+  if (dueState === "closed") return "Cerrada";
+  if (dueState === "none") return "Sin fecha";
+  return "A tiempo";
+};
+
+const getInboxUrgencyStyles = (dueState: string) => {
+  switch (dueState) {
+    case "overdue":
+      return {
+        row: "border-red-200 bg-red-50",
+        rail: "bg-red-600",
+        due: "bg-red-600 text-white",
+        text: "text-red-700",
+        progress: "bg-red-600",
+      };
+    case "due_soon":
+      return {
+        row: "border-orange-200 bg-orange-50",
+        rail: "bg-orange-500",
+        due: "bg-orange-500 text-white",
+        text: "text-orange-700",
+        progress: "bg-orange-500",
+      };
+    case "ok":
+      return {
+        row: "border-emerald-200 bg-emerald-50/70",
+        rail: "bg-emerald-500",
+        due: "bg-emerald-100 text-emerald-700",
+        text: "text-emerald-700",
+        progress: "bg-emerald-500",
+      };
+    default:
+      return {
+        row: "border-slate-200 bg-white",
+        rail: "bg-slate-300",
+        due: "bg-slate-100 text-slate-600",
+        text: "text-slate-500",
+        progress: "bg-indigo-600",
+      };
+  }
+};
+
+const getPriorityLabel = (priority: string) => {
+  if (priority === "high") return "Alta";
+  if (priority === "low") return "Baja";
+  return "Media";
+};
+
+const getPriorityClass = (priority: string) => {
+  if (priority === "high") return "bg-red-600 text-white shadow-sm ring-1 ring-red-700/20";
+  if (priority === "low") return "bg-slate-100 text-slate-600";
+  return "bg-amber-100 text-amber-800";
+};
+
 const getStatusLabel = (status: string) => {
   switch (status) {
     case "completed":
@@ -158,6 +248,13 @@ const getStatusClass = (status: string) => {
     default:
       return "bg-slate-50 text-slate-600 border-slate-200";
   }
+};
+
+const getRelationLabel = (relationType: string) => {
+  if (relationType === "workflow") return "Workflow";
+  if (relationType === "subtask") return "Subtarea";
+  if (relationType === "comment") return "Comentario";
+  return "Tarea";
 };
 
 const emptyActionForm = (defaultAssignee = ""): ActionForm => ({
@@ -218,6 +315,17 @@ export function ProjectLogbook({
 
   const getEntryCandidates = (entry: LogbookEntry) =>
     mergeActionCandidates(entry.actionCandidates || [], entry.content || "");
+
+  const getMemberName = (memberId: string) => {
+    if (!memberId) return "Sin responsable";
+    const normalizedMemberId = memberId.toLowerCase();
+    const member = teamMembers.find((item) =>
+      item.id === memberId ||
+      item.authUserId === memberId ||
+      item.email?.toLowerCase() === normalizedMemberId
+    );
+    return member?.name || member?.email || "Responsable no encontrado";
+  };
 
   useEffect(() => {
     if (!projectId) return;
@@ -421,10 +529,11 @@ export function ProjectLogbook({
 
       if (actionForm.relationType === "comment") {
         const targetTask = tasksById.get(actionForm.targetTaskId);
+        const cleanComment = actionForm.comment.trim() || cleanTitle;
         await addDoc(collection(db, "projects", projectId, "tasks", actionForm.targetTaskId, "comments"), {
           projectId,
           taskId: actionForm.targetTaskId,
-          text: actionForm.comment.trim() || cleanTitle,
+          text: cleanComment,
           source: "logbook",
           logbookEntryId: entry.id,
           logbookEntryTitle: entry.title,
@@ -442,6 +551,7 @@ export function ProjectLogbook({
           ...link,
           taskId: actionForm.targetTaskId,
           taskTitle: getTaskTitle(targetTask),
+          commentText: cleanComment,
         };
       } else {
         const isWorkflow = actionForm.relationType === "workflow";
@@ -564,6 +674,111 @@ export function ProjectLogbook({
 
     if (cursor < entryContent.length) nodes.push(entryContent.slice(cursor));
     return nodes;
+  };
+
+  const renderLinkedTaskCard = (entry: LogbookEntry, link: any, index: number) => {
+    const linkedTask = tasksById.get(link.taskId);
+    const relationLabel = getRelationLabel(link.relationType);
+
+    if (!linkedTask) {
+      return (
+        <div key={`${entry.id}-link-${index}`} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-slate-800">{link.taskTitle || "Tarea vinculada"}</p>
+              <p className="mt-0.5 text-xs text-slate-500">{relationLabel}</p>
+            </div>
+            <span className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+              Sin tarea
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    const status = linkedTask.status || "todo";
+    const dueState = getDueState(linkedTask);
+    const urgencyStyles = getInboxUrgencyStyles(dueState);
+    const progress = Math.min(100, Math.max(0, Number(linkedTask.progress || 0)));
+    const priority = linkedTask.priority || "medium";
+    const assigneeName = getMemberName(linkedTask.assignedTo || linkedTask.assignedTeamMembers?.[0] || linkedTask.assignedUsers?.[0] || "");
+    const description = linkedTask.initialObservation || linkedTask.description || link.candidateText || "Sin descripción";
+    const commentText = link.commentText || link.candidateText;
+
+    return (
+      <article
+        key={`${entry.id}-link-${index}`}
+        className={`relative overflow-hidden rounded-xl border px-4 py-3 shadow-sm ${urgencyStyles.row}`}
+      >
+        <span className={`absolute bottom-0 left-0 top-0 w-1.5 ${urgencyStyles.rail}`} />
+        <div className="min-w-0 pl-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span className="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-sky-700">
+              {linkedTask.parentTaskId ? "Subtarea" : relationLabel}
+            </span>
+            {link.relationType === "comment" && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-700">
+                <MessageSquare size={11} />
+                Comentario vinculado
+              </span>
+            )}
+            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${getStatusClass(status)}`}>
+              {getStatusLabel(status)}
+            </span>
+            <span className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${urgencyStyles.due}`}>
+              <Clock size={11} />
+              {getDueLabel(dueState)}
+            </span>
+            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${getPriorityClass(priority)}`}>
+              {getPriorityLabel(priority)}
+            </span>
+          </div>
+
+          <div className="mt-2 grid gap-3 lg:grid-cols-[minmax(0,1fr)_240px]">
+            <div className="min-w-0">
+              <h4 className="truncate text-base font-black text-slate-900">{getTaskTitle(linkedTask)}</h4>
+              <p className="mt-0.5 line-clamp-2 text-sm text-slate-600">
+                {project?.name ? `${project.name} · ` : ""}{description}
+              </p>
+            </div>
+
+            <div className="grid gap-2 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-1">
+              <span className="inline-flex min-w-0 items-center gap-1.5">
+                <UserRound size={13} className="shrink-0 text-slate-400" />
+                <span className="truncate font-semibold">{assigneeName}</span>
+              </span>
+              <span className={`inline-flex min-w-0 items-center gap-1.5 font-semibold ${urgencyStyles.text}`}>
+                <Calendar size={13} className="shrink-0" />
+                <span className="truncate">
+                  {formatShortDate(linkedTask.startDate || linkedTask.start)} - {formatShortDate(linkedTask.endDate || linkedTask.end)}
+                </span>
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center">
+            <div className="flex min-w-[180px] flex-1 items-center gap-2">
+              <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/80">
+                <div className={`h-full ${status === "stuck" ? "bg-red-600" : status === "in_progress" ? "bg-orange-500" : urgencyStyles.progress}`} style={{ width: `${progress}%` }} />
+              </div>
+              <span className="w-10 text-right text-xs font-black text-slate-600">{progress}%</span>
+            </div>
+            {linkedTask.type === "quantitative" && (
+              <span className="shrink-0 rounded bg-white/80 px-2 py-1 text-xs font-bold text-slate-600">
+                {linkedTask.currentValue || 0}/{linkedTask.indicatorValue || 0} {linkedTask.indicator || ""}
+              </span>
+            )}
+          </div>
+
+          {commentText && (
+            <div className="mt-3 rounded-lg border border-white/80 bg-white/70 px-3 py-2 text-sm text-slate-700">
+              <span className="font-bold text-slate-900">Comentario desde bitácora: </span>
+              {commentText}
+            </div>
+          )}
+        </div>
+      </article>
+    );
   };
 
   const actionCandidateCount = entries.reduce(
@@ -751,26 +966,8 @@ export function ProjectLogbook({
                 )}
 
                 {links.length > 0 && (
-                  <div className="mt-4 grid gap-2 md:grid-cols-2">
-                    {links.map((link: any, index: number) => {
-                      const linkedTask = tasksById.get(link.taskId);
-                      const status = linkedTask?.status || "missing";
-                      return (
-                        <div key={`${entry.id}-link-${index}`} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-slate-800">{link.taskTitle || "Tarea vinculada"}</p>
-                              <p className="mt-0.5 text-xs text-slate-500">
-                                {link.relationType === "workflow" ? "Workflow" : link.relationType === "subtask" ? "Subtarea" : link.relationType === "comment" ? "Comentario" : "Tarea"}
-                              </p>
-                            </div>
-                            <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${getStatusClass(status)}`}>
-                              {linkedTask ? getStatusLabel(status) : "Sin tarea"}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
+                  <div className="mt-4 space-y-2">
+                    {links.map((link: any, index: number) => renderLinkedTaskCard(entry, link, index))}
                   </div>
                 )}
               </article>
