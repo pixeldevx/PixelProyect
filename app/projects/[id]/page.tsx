@@ -38,6 +38,7 @@ import { toast } from 'sonner';
 import Image from 'next/image';
 import { belongsToAnyOrganization } from '@/lib/organizations';
 import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
+import { notifyTaskAssignment } from '@/lib/notifications';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 
@@ -1051,6 +1052,15 @@ export default function ProjectDetailsPage() {
     try {
       const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
       await updateDoc(taskRef, { assignedTo, updatedAt: serverTimestamp() });
+      if (assignedTo && assignedTo !== task.assignedTo && !isCompletedTaskStatus(task.status)) {
+        void notifyTaskAssignment({
+          projectId,
+          taskId,
+          assigneeId: assignedTo,
+          eventType: 'task_assigned',
+          source: 'task_assignee_changed',
+        });
+      }
       toast.success('Asignado actualizado');
     } catch (error) {
       console.error('Error updating task assignee:', error);

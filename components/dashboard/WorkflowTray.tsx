@@ -16,6 +16,7 @@ import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgr
 
 import { useAuth } from '@/hooks/useAuth';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
+import { notifyTaskAssignment } from '@/lib/notifications';
 
 const hasRequiredFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -810,6 +811,20 @@ export default function WorkflowTray() {
       if (task.parentTaskId) {
         const { updateParentTaskStatus } = await import('@/lib/taskUtils');
         await updateParentTaskStatus(task.projectId, task.parentTaskId);
+      }
+
+      const shouldNotifyNextAssignee =
+        (action === 'approve' && currentIndex < steps.length - 1) ||
+        (action === 'return' && currentIndex > 0);
+      if (shouldNotifyNextAssignee) {
+        void notifyTaskAssignment({
+          projectId: task.projectId,
+          taskId: task.id,
+          assigneeId: steps[nextIndex]?.assignedTo,
+          stepIndex: nextIndex,
+          eventType: 'workflow_step_assigned',
+          source: `workflow_${action}`,
+        });
       }
 
       setActionModal({ isOpen: false, task: null, type: 'approve' });

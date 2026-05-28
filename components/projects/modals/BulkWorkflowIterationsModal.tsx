@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { collection, doc, serverTimestamp, writeBatch } from "@/lib/supabase/document-store";
 import { db } from "@/lib/backend";
 import { toast } from "sonner";
+import { notifyTaskAssignment, TaskAssignmentNotificationPayload } from "@/lib/notifications";
 
 type BulkWorkflowIterationsModalProps = {
   isOpen: boolean;
@@ -239,6 +240,7 @@ export function BulkWorkflowIterationsModal({
       const now = new Date();
       const sourceTitle = task.originalTitle || getTaskTitle(task);
       const nextTotalSubtasks = childTaskCount + validIterations.length;
+      const notifications: TaskAssignmentNotificationPayload[] = [];
 
       validIterations.forEach((iteration, index) => {
         const iterationRef = doc(collection(db, "projects", projectId, "tasks"));
@@ -264,6 +266,14 @@ export function BulkWorkflowIterationsModal({
           });
 
           return cleanStep;
+        });
+        notifications.push({
+          projectId,
+          taskId: iterationRef.id,
+          assigneeId: workflowSteps[0]?.assignedTo,
+          stepIndex: 0,
+          eventType: "workflow_step_assigned",
+          source: "bulk_iteration",
         });
 
         batch.set(iterationRef, {
@@ -334,6 +344,8 @@ export function BulkWorkflowIterationsModal({
       });
 
       await batch.commit();
+
+      void Promise.allSettled(notifications.map((notification) => notifyTaskAssignment(notification)));
 
       const { updateParentTaskStatus } = await import("@/lib/taskUtils");
       await updateParentTaskStatus(projectId, task.id);

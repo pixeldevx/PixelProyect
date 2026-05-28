@@ -4,6 +4,7 @@ import { doc, updateDoc, serverTimestamp, addDoc, collection } from '@/lib/supab
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
 import { toast } from 'sonner';
+import { notifyTaskAssignment } from '@/lib/notifications';
 
 interface StartWorkflowModalProps {
   isOpen: boolean;
@@ -180,6 +181,15 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         workflowSteps: updatedSteps,
         workflowHistory: [historyEntry, ...(task.workflowHistory || [])],
         updatedAt: serverTimestamp()
+      });
+
+      void notifyTaskAssignment({
+        projectId,
+        taskId: task.id,
+        assigneeId: updatedSteps[0]?.assignedTo,
+        stepIndex: 0,
+        eventType: 'workflow_step_assigned',
+        source: 'workflow_start',
       });
 
       if (task.parentTaskId) {

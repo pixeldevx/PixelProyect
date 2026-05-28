@@ -5,6 +5,7 @@ import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, query,
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { WorkflowStepFormBuilderModal, CustomForm } from '@/components/projects/WorkflowStepFormBuilderModal';
+import { notifyTaskAssignment, TaskAssignmentNotificationPayload } from '@/lib/notifications';
 
 interface CreateTaskModalProps {
   isOpen: boolean;
@@ -389,6 +390,17 @@ export function CreateTaskModal({
 
       const batch = writeBatch(db);
       const taskRef = doc(collection(db, "projects", projectId, "tasks"));
+      const notifications: TaskAssignmentNotificationPayload[] = [];
+      const queueTaskNotification = (taskId: string, assigneeId: string, status: string, source: string) => {
+        if (!assigneeId || status === "completed" || status === "completed_late") return;
+        notifications.push({
+          projectId,
+          taskId,
+          assigneeId,
+          eventType: "task_assigned",
+          source,
+        });
+      };
       const addManualSubtasksToBatch = (
         parentTaskId: string,
         displayOrderOffset: number,
@@ -432,6 +444,12 @@ export function CreateTaskModal({
             updatedAt: serverTimestamp(),
             createdBy: user.uid,
           });
+          queueTaskNotification(
+            subtaskRef.id,
+            subtask.assignedTo || newTaskAssignedTo,
+            subtask.status,
+            "manual_subtask_created",
+          );
         });
       };
 
@@ -515,13 +533,19 @@ export function CreateTaskModal({
         } else {
           batch.set(taskRef, taskData);
           addManualSubtasksToBatch(taskRef.id, tasksLength + 1);
+          if (newTaskType !== "workflow") {
+            queueTaskNotification(taskRef.id, newTaskAssignedTo, taskData.status, "task_created");
+          }
           await batch.commit();
         }
       } else {
         batch.set(taskRef, taskData);
         addManualSubtasksToBatch(taskRef.id, tasksLength + 1);
+        queueTaskNotification(taskRef.id, newTaskAssignedTo, taskData.status, "task_created");
         await batch.commit();
       }
+
+      void Promise.allSettled(notifications.map((notification) => notifyTaskAssignment(notification)));
 
       toast.success("Tarea creada exitosamente");
       handleClose();

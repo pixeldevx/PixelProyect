@@ -10,10 +10,22 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Plus, Trash2, Edit, Bell, Mail, Clock, AlertTriangle, CheckCircle2, Settings } from 'lucide-react';
-import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, serverTimestamp, getDocs, where } from '@/lib/supabase/document-store';
+import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, serverTimestamp, getDocs, where, setDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
+
+const defaultPreferences = {
+  taskAssignmentEmailEnabled: true,
+  disabledOrganizationIds: [] as string[],
+  disabledProjectIds: [] as string[],
+};
+
+const normalizePreferences = (data: any = {}) => ({
+  taskAssignmentEmailEnabled: data.taskAssignmentEmailEnabled !== false,
+  disabledOrganizationIds: Array.isArray(data.disabledOrganizationIds) ? data.disabledOrganizationIds : [],
+  disabledProjectIds: Array.isArray(data.disabledProjectIds) ? data.disabledProjectIds : [],
+});
 
 export default function AlertsPage() {
   const { user } = useAuth();
@@ -22,6 +34,9 @@ export default function AlertsPage() {
   const [isCreatingRule, setIsCreatingRule] = useState(false);
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState<any[]>([]);
+  const [organizations, setOrganizations] = useState<any[]>([]);
+  const [preferences, setPreferences] = useState(defaultPreferences);
+  const [savingPreferences, setSavingPreferences] = useState(false);
 
   // Form state for new rule
   const [newRule, setNewRule] = useState({
@@ -63,16 +78,60 @@ export default function AlertsPage() {
     // Fetch projects for dropdown
     const fetchProjects = async () => {
       const projectsSnapshot = await getDocs(collection(db, 'projects'));
-      const projectsData = projectsSnapshot.docs.map(doc => ({ id: doc.id, name: doc.data().name }));
+      const projectsData = projectsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setProjects(projectsData);
     };
     fetchProjects();
 
+    const fetchOrganizations = async () => {
+      const organizationsSnapshot = await getDocs(collection(db, 'organizations'));
+      const organizationsData = organizationsSnapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() }))
+        .sort((left: any, right: any) => String(left.name || '').localeCompare(String(right.name || '')));
+      setOrganizations(organizationsData);
+    };
+    fetchOrganizations();
+
+    const unsubscribePreferences = onSnapshot(doc(db, 'alert_preferences', user.uid), (snapshot) => {
+      setPreferences(normalizePreferences(snapshot.exists() ? snapshot.data() : {}));
+    }, (error) => {
+      console.error("Error fetching alert preferences:", error);
+    });
+
     return () => {
       unsubscribeRules();
       unsubscribeAlerts();
+      unsubscribePreferences();
     };
   }, [user]);
+
+  const savePreferences = async (nextPreferences: typeof defaultPreferences) => {
+    if (!user) return;
+    setPreferences(nextPreferences);
+    setSavingPreferences(true);
+    try {
+      await setDoc(doc(db, 'alert_preferences', user.uid), {
+        ...nextPreferences,
+        userId: user.uid,
+        email: user.email || null,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      toast.success("Preferencias de alertas actualizadas.");
+    } catch (error) {
+      console.error("Error saving alert preferences:", error);
+      toast.error("No se pudieron guardar las preferencias.");
+    } finally {
+      setSavingPreferences(false);
+    }
+  };
+
+  const toggleDisabledPreference = (field: 'disabledOrganizationIds' | 'disabledProjectIds', id: string) => {
+    const current = preferences[field];
+    const nextValues = current.includes(id)
+      ? current.filter((item) => item !== id)
+      : [...current, id];
+    void savePreferences({ ...preferences, [field]: nextValues });
+  };
 
   const handleCreateRule = async () => {
     if (!user || !newRule.title) return;
@@ -154,6 +213,87 @@ export default function AlertsPage() {
             {isCreatingRule ? 'Cancelar' : <><Plus className="w-4 h-4 mr-2" /> Nueva Regla</>}
           </Button>
         </div>
+
+        <Card className="overflow-hidden border-slate-200 bg-slate-950 text-white shadow-xl">
+          <CardHeader className="border-b border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(99,102,241,.35),_transparent_35%),linear-gradient(135deg,#0f172a,#111827)]">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-xl text-white">
+                  <Mail className="h-5 w-5 text-cyan-300" />
+                  Alertas futuristas de bandeja
+                </CardTitle>
+                <CardDescription className="mt-1 text-slate-300">
+                  Recibe correos con plantilla Pixel Project cuando una tarea o workflow entre a tu bandeja.
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
+                <div className="text-right">
+                  <p className="text-sm font-bold text-white">Correo de asignación</p>
+                  <p className="text-xs text-slate-300">{preferences.taskAssignmentEmailEnabled ? 'Activo' : 'Desactivado'}</p>
+                </div>
+                <Switch
+                  checked={preferences.taskAssignmentEmailEnabled}
+                  disabled={savingPreferences}
+                  onCheckedChange={(checked) => void savePreferences({ ...preferences, taskAssignmentEmailEnabled: checked })}
+                />
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="grid gap-4 bg-slate-950 p-5 lg:grid-cols-2">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <h3 className="text-sm font-bold uppercase tracking-wider text-cyan-200">Organizaciones</h3>
+              <p className="mt-1 text-xs text-slate-400">Desactiva correos de organizaciones específicas.</p>
+              <div className="mt-4 space-y-2">
+                {organizations.length === 0 ? (
+                  <p className="text-sm text-slate-500">No hay organizaciones disponibles.</p>
+                ) : (
+                  organizations.map((organization) => {
+                    const disabled = preferences.disabledOrganizationIds.includes(organization.id);
+                    return (
+                      <div key={organization.id} className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2">
+                        <span className="truncate text-sm font-medium text-slate-100">{organization.name || organization.displayName || 'Organización'}</span>
+                        <Switch
+                          checked={!disabled}
+                          disabled={savingPreferences || !preferences.taskAssignmentEmailEnabled}
+                          onCheckedChange={() => toggleDisabledPreference('disabledOrganizationIds', organization.id)}
+                        />
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <h3 className="text-sm font-bold uppercase tracking-wider text-indigo-200">Proyectos</h3>
+              <p className="mt-1 text-xs text-slate-400">Controla los correos por proyecto asignado.</p>
+              <div className="mt-4 max-h-64 space-y-2 overflow-y-auto pr-1">
+                {projects.length === 0 ? (
+                  <p className="text-sm text-slate-500">No hay proyectos disponibles.</p>
+                ) : (
+                  projects.map((project) => {
+                    const disabled = preferences.disabledProjectIds.includes(project.id);
+                    return (
+                      <div key={project.id} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-slate-100">{project.name || project.title || 'Proyecto'}</p>
+                          <p className="truncate text-[11px] text-slate-500">
+                            {organizations.find((organization) => organization.id === project.organizationId)?.name || project.organizationName || 'Sin organización'}
+                          </p>
+                        </div>
+                        <Switch
+                          checked={!disabled}
+                          disabled={savingPreferences || !preferences.taskAssignmentEmailEnabled}
+                          onCheckedChange={() => toggleDisabledPreference('disabledProjectIds', project.id)}
+                        />
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         {isCreatingRule && (
           <Card className="border-indigo-100 shadow-md">
