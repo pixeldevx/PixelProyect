@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, ClipboardList, CornerDownRight, Loader2, Plus, Settings, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ClipboardList, CornerDownRight, CreditCard, Loader2, Plus, Settings, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { addDoc, collection, deleteDoc, doc, serverTimestamp, updateDoc } from "@/lib/supabase/document-store";
@@ -645,13 +645,18 @@ export function EditTaskStructureModal({
           )}
 
           {canEditTaskStructure && (
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-800">Rate Card de la tarea</h3>
-                  <p className="text-xs text-slate-500">
-                    Define si esta tarea suma unidades a un perfil de Rate Card al completarse.
-                  </p>
+                <div className="flex items-start gap-2">
+                  <div className="mt-0.5 rounded-lg bg-white p-1.5 text-indigo-600 shadow-sm">
+                    <CreditCard size={15} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-800">Rate Card de la tarea principal</h3>
+                    <p className="text-xs text-slate-500">
+                      Define si esta tarea suma unidades a un perfil de Rate Card al completarse.
+                    </p>
+                  </div>
                 </div>
                 <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-600">
                   <input
@@ -849,33 +854,44 @@ export function EditTaskStructureModal({
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 pl-10">
-                      <select
-                        value={step.assignedTo || ""}
-                        onChange={(event) => updateStep(index, { assignedTo: event.target.value })}
-                        className="h-9 px-3 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                      >
-                        <option value="">Sin responsable fijo</option>
-                        <option value="DYNAMIC">Asignacion dinamica</option>
-                        {teamMembers.map((member) => (
-                          <option key={member.id} value={member.id}>
-                            {member.name || member.email}
-                          </option>
-                        ))}
-                      </select>
+                      <div>
+                        <label className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          Responsable
+                        </label>
+                        <select
+                          value={step.assignedTo || ""}
+                          onChange={(event) => updateStep(index, { assignedTo: event.target.value })}
+                          className="h-9 w-full px-3 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                        >
+                          <option value="">Sin responsable fijo</option>
+                          <option value="DYNAMIC">Asignacion dinamica</option>
+                          {teamMembers.map((member) => (
+                            <option key={member.id} value={member.id}>
+                              {member.name || member.email}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
 
-                      <select
-                        value={step.dynamicRateCard ? "__dynamic__" : step.rateCardId || ""}
-                        onChange={(event) => updateStepRateCard(index, event.target.value)}
-                        className="h-9 px-3 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                      >
-                        <option value="">Sin Rate Card</option>
-                        <option value="__dynamic__">Rate Card dinámico</option>
-                        {rateCards.map((rateCard) => (
-                          <option key={rateCard.id} value={rateCard.id}>
-                            {rateCard.name}
-                          </option>
-                        ))}
-                      </select>
+                      <div>
+                        <label className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          <CreditCard size={12} />
+                          Rate Card del paso
+                        </label>
+                        <select
+                          value={step.dynamicRateCard ? "__dynamic__" : step.rateCardId || ""}
+                          onChange={(event) => updateStepRateCard(index, event.target.value)}
+                          className="h-9 w-full px-3 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                        >
+                          <option value="">Sin Rate Card</option>
+                          <option value="__dynamic__">Rate Card dinámico</option>
+                          {rateCards.map((rateCard) => (
+                            <option key={rateCard.id} value={rateCard.id}>
+                              {rateCard.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
 
                       {(step.dynamicRateCard || step.rateCardId) && (
                         <div className="md:col-span-2 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">

@@ -112,6 +112,9 @@ const getStaticRateCardSource = (step: any) => {
   return null;
 };
 
+const normalizeEmailAddress = (value: unknown) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+
 const getRateCardDateKeys = (date = new Date()) => {
   const year = date.getFullYear();
   const dateKey = date.toISOString().slice(0, 10);
@@ -183,6 +186,44 @@ export default function ProjectDetailsPage() {
     () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
     [userOrganizationId, userOrganizationIds]
   );
+  const currentGlobalAdminAssignee = React.useMemo(() => {
+    if (!user || userRole !== 'admin') return null;
+
+    const currentEmail = normalizeEmailAddress(user.email);
+    const existingMember = teamMembers.find((member) =>
+      member.id === user.uid ||
+      member.authUserId === user.uid ||
+      normalizeEmailAddress(member.email) === currentEmail
+    );
+
+    if (existingMember) {
+      return {
+        ...existingMember,
+        authUserId: existingMember.authUserId || user.uid,
+        roleName: existingMember.roleName || 'Administrador Global',
+        systemRole: existingMember.systemRole || 'admin',
+      };
+    }
+
+    return {
+      id: user.uid,
+      authUserId: user.uid,
+      email: user.email || '',
+      name: user.displayName || user.email?.split('@')[0] || 'Administrador Global',
+      displayName: user.displayName || user.email?.split('@')[0] || 'Administrador Global',
+      photoURL: user.photoURL || null,
+      roleName: 'Administrador Global',
+      systemRole: 'admin',
+      organizationId: null,
+      organizationIds: [],
+    };
+  }, [teamMembers, user, userRole]);
+
+  const teamMembersForAssignment = React.useMemo(() => {
+    if (!currentGlobalAdminAssignee) return teamMembers;
+    if (teamMembers.some((member) => member.id === currentGlobalAdminAssignee.id)) return teamMembers;
+    return [currentGlobalAdminAssignee, ...teamMembers];
+  }, [currentGlobalAdminAssignee, teamMembers]);
 
 
   useEffect(() => {
@@ -325,15 +366,18 @@ export default function ProjectDetailsPage() {
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
 
+  const currentGlobalAdminAssigneeId = currentGlobalAdminAssignee?.id || '';
   const projectOrganizationIds = getOrganizationIds(project);
-  const organizationTeamMembers = teamMembers.filter((member) => {
+  const organizationTeamMembers = teamMembersForAssignment.filter((member) => {
+    if (member.id === currentGlobalAdminAssigneeId) return true;
     if (projectOrganizationIds.length === 0) return true;
     const memberOrganizationIds = getOrganizationIds(member);
     return memberOrganizationIds.some((organizationId) => projectOrganizationIds.includes(organizationId));
   });
-  const projectAssignableTeamMembers = organizationTeamMembers.filter((member) =>
-    (project?.assignedTeamMembers || []).includes(member.id)
-  );
+  const projectAssignableTeamMembers = organizationTeamMembers.filter((member) => {
+    if (member.id === currentGlobalAdminAssigneeId) return true;
+    return (project?.assignedTeamMembers || []).includes(member.id);
+  });
 
   const collectDependentTaskIds = (taskId: string) => {
     const taskIds = new Set<string>([taskId]);
@@ -1739,7 +1783,7 @@ export default function ProjectDetailsPage() {
             <CardContent className="p-0">
               <ProjectGantt
                 tasks={tasks}
-                teamMembers={teamMembers}
+                teamMembers={teamMembersForAssignment}
                 assigneeOptions={projectAssignableTeamMembers}
                 onUpdateTaskProgress={canEditTaskDetails ? handleUpdateTaskProgress : undefined}
                 onUpdateTaskValue={canEditTaskDetails ? handleUpdateTaskValue : undefined}
@@ -1792,7 +1836,7 @@ export default function ProjectDetailsPage() {
         projectId={projectId}
         task={selectedTaskForComments}
         currentUser={user}
-        teamMembers={teamMembers}
+        teamMembers={teamMembersForAssignment}
       />
 
       {/* Start Workflow Modal */}
@@ -1806,12 +1850,12 @@ export default function ProjectDetailsPage() {
         parentTask={selectedTaskForStartWorkflow?.parentTaskId ? tasks.find((task) => task.id === selectedTaskForStartWorkflow.parentTaskId) : null}
         projectId={projectId}
         userId={user?.uid || ''}
-        teamMembers={teamMembers}
+        teamMembers={projectAssignableTeamMembers}
       />
 
       {activeTab === 'rateCards' && (
         <div className="mt-6">
-          <ProjectRateCards projectId={projectId} currentUser={user} tasks={tasks} teamMembers={teamMembers} budgetLines={budgetLines} />
+          <ProjectRateCards projectId={projectId} currentUser={user} tasks={tasks} teamMembers={teamMembersForAssignment} budgetLines={budgetLines} />
         </div>
       )}
 
