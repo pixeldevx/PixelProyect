@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ClipboardList, Hash, Loader2, MapPin, MessageSquare, Play, X } from "lucide-react";
+import { ClipboardList, Hash, Loader2, MapPin, Play, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { collection, doc, serverTimestamp, writeBatch } from "@/lib/supabase/document-store";
 import { db } from "@/lib/backend";
@@ -21,6 +21,7 @@ type ParsedIteration = {
   raw: string;
   externalWorkflowId: string;
   observation: string;
+  municipality: string;
   startDate?: string;
   endDate?: string;
   usesCustomDates?: boolean;
@@ -143,51 +144,78 @@ const parseIterationLine = (rawLine: string, lineNumber: number): ParsedIteratio
     return null;
   }
 
-  const commaParts = raw.split(",").map((part) => part.trim());
-  const lastCommaPart = commaParts[commaParts.length - 1] || "";
-  const penultimateCommaPart = commaParts[commaParts.length - 2] || "";
-  const hasCommaDateColumns =
-    (commaParts.length >= 4 && (looksLikeDateText(lastCommaPart) || looksLikeDateText(penultimateCommaPart))) ||
-    (commaParts.length === 3 && looksLikeDateText(lastCommaPart));
+  const parseDelimitedParts = (parts: string[]): ParsedIteration => {
+    const externalWorkflowId = parts[0] || "";
+    let bodyParts = parts.slice(1).map((part) => part.trim());
+    let startDate = "";
+    let endDate = "";
+    let usesCustomDates = false;
 
-  if (hasCommaDateColumns) {
-    const possibleStartDate = commaParts.length >= 4 ? commaParts[commaParts.length - 2] : "";
-    const possibleEndDate = commaParts[commaParts.length - 1];
-    const normalizedStartDate = normalizeDateInputText(possibleStartDate);
-    const normalizedEndDate = normalizeDateInputText(possibleEndDate);
+    const lastPart = bodyParts[bodyParts.length - 1] || "";
+    const penultimatePart = bodyParts[bodyParts.length - 2] || "";
+    const hasDateColumns = bodyParts.length >= 3 && (looksLikeDateText(lastPart) || looksLikeDateText(penultimatePart));
+
+    if (hasDateColumns) {
+      usesCustomDates = true;
+      startDate = normalizeDateInputText(bodyParts[bodyParts.length - 2] || "");
+      endDate = normalizeDateInputText(bodyParts[bodyParts.length - 1] || "");
+      bodyParts = bodyParts.slice(0, -2);
+    }
+
+    const municipality =
+      bodyParts.length >= 2
+        ? bodyParts[bodyParts.length - 1].trim()
+        : usesCustomDates && bodyParts.length === 1
+          ? bodyParts[0].trim()
+          : "";
+    const observation =
+      bodyParts.length >= 2
+        ? bodyParts.slice(0, -1).join(", ").trim()
+        : usesCustomDates
+          ? ""
+          : bodyParts[0]?.trim() || "";
+
+    let error: string | undefined;
+    if (!externalWorkflowId) {
+      error = "Falta el ID";
+    } else if (!municipality) {
+      error = "Falta el municipio";
+    } else if (usesCustomDates && (!startDate || !endDate)) {
+      error = "Completa fecha inicio y fecha fin válidas";
+    }
 
     return {
       lineNumber,
       raw,
-      externalWorkflowId: commaParts[0] || "",
-      observation: commaParts.slice(1, commaParts.length >= 4 ? -2 : -1).join(", ").trim(),
-      startDate: normalizedStartDate,
-      endDate: normalizedEndDate,
-      usesCustomDates: true,
-      error:
-        commaParts[0] && normalizedStartDate && normalizedEndDate
-          ? undefined
-          : !commaParts[0]
-            ? "Falta el ID"
-            : "Completa fecha inicio y fecha fin válidas",
+      externalWorkflowId,
+      observation,
+      municipality,
+      startDate,
+      endDate,
+      usesCustomDates,
+      error,
     };
+  };
+
+  const commaParts = raw.split(",").map((part) => part.trim());
+  if (commaParts.length > 1) {
+    return parseDelimitedParts(commaParts);
   }
 
-  const separators = ["\t", ";", "|", ","];
+  const separators = ["\t", ";", "|"];
   const separator = separators.find((candidate) => raw.includes(candidate)) || "";
-  const separatorIndex = separator ? raw.indexOf(separator) : -1;
+  if (separator) {
+    return parseDelimitedParts(raw.split(separator).map((part) => part.trim()));
+  }
 
-  const externalWorkflowId =
-    separatorIndex >= 0 ? raw.slice(0, separatorIndex).trim() : raw.trim();
-  const observation =
-    separatorIndex >= 0 ? raw.slice(separatorIndex + separator.length).trim() : "";
-
+  const externalWorkflowId = raw.trim();
   return {
     lineNumber,
     raw,
     externalWorkflowId,
-    observation,
-    error: externalWorkflowId ? undefined : "Falta el ID",
+    observation: "",
+    municipality: "",
+    error: externalWorkflowId ? "Falta el municipio" : "Falta el ID",
   };
 };
 
@@ -283,7 +311,6 @@ export function BulkWorkflowIterationsModal({
   tasks,
 }: BulkWorkflowIterationsModalProps) {
   const [rawItems, setRawItems] = useState("");
-  const [municipality, setMunicipality] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [firstStepAssignee, setFirstStepAssignee] = useState("");
@@ -293,7 +320,6 @@ export function BulkWorkflowIterationsModal({
     if (!isOpen || !task) return;
 
     setRawItems("");
-    setMunicipality(task.municipality || task.workflowMunicipality || "");
     setStartDate(toDateInputValue(task.startDate || task.start));
     setEndDate(toDateInputValue(task.endDate || task.end));
     setFirstStepAssignee("");
@@ -346,13 +372,7 @@ export function BulkWorkflowIterationsModal({
     }
 
     if (invalidIterations.length > 0) {
-      toast.warning("Corrige los IDs, fechas o rangos antes de crear las iteraciones.");
-      return;
-    }
-
-    const cleanMunicipality = municipality.trim();
-    if (!cleanMunicipality) {
-      toast.warning("Ingresa el municipio que se asociará a estas iteraciones.");
+      toast.warning("Corrige los IDs, municipios, fechas o rangos antes de crear las iteraciones.");
       return;
     }
 
@@ -396,6 +416,7 @@ export function BulkWorkflowIterationsModal({
         const iterationRef = doc(collection(db, "projects", projectId, "tasks"));
         const cleanWorkflowId = iteration.externalWorkflowId.trim();
         const cleanObservation = iteration.observation.trim();
+        const cleanMunicipality = iteration.municipality.trim();
         const iterationStartDate = dateFromInputValue(iteration.startDate || startDate) || parsedStartDate;
         const iterationEndDate = dateFromInputValue(iteration.endDate || endDate) || parsedEndDate;
         const workflowSteps = task.workflowSteps.map((step: any, stepIndex: number) => {
@@ -546,20 +567,7 @@ export function BulkWorkflowIterationsModal({
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto bg-slate-50 p-5">
-          <div className="grid gap-4 md:grid-cols-3">
-            <div>
-              <label className="mb-1 flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <MapPin size={15} className="text-slate-400" />
-                Municipio
-              </label>
-              <input
-                type="text"
-                value={municipality}
-                onChange={(event) => setMunicipality(event.target.value)}
-                placeholder="Ej: Medellín"
-                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
-              />
-            </div>
+          <div className="grid gap-4 md:grid-cols-2">
             <div>
               <label className="mb-1 flex items-center gap-2 text-sm font-semibold text-slate-700">
                 <Hash size={15} className="text-slate-400" />
@@ -614,22 +622,22 @@ export function BulkWorkflowIterationsModal({
 
           <div>
             <label className="mb-1 flex items-center gap-2 text-sm font-semibold text-slate-700">
-              <MessageSquare size={15} className="text-slate-400" />
-              IDs y observaciones
+              <MapPin size={15} className="text-slate-400" />
+              IDs, observaciones y municipios
             </label>
             <textarea
               value={rawItems}
               onChange={(event) => setRawItems(event.target.value)}
               placeholder={
-                "ID-001, Observación de la iteración, 2026-06-01, 2026-06-05\n" +
-                "ID-002, Segunda observación, 01/06/2026, 05/06/2026\n" +
-                "ID-003, Sin fechas propias usa el cronograma general"
+                "ID-001, Observación de la iteración, Medellín, 2026-06-01, 2026-06-05\n" +
+                "ID-002, Segunda observación, Cali, 01/06/2026, 05/06/2026\n" +
+                "ID-003, Sin fechas propias usa el cronograma general, Bogotá"
               }
               className="min-h-44 w-full resize-y rounded-lg border border-slate-200 bg-white p-3 font-mono text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
             />
             <p className="mt-1 text-xs text-slate-500">
-              Usa una línea por iteración. Formato con fechas: ID, observación, fecha inicio, fecha fin. Si no agregas fechas en la línea,
-              se usará el cronograma general.
+              Usa una línea por iteración. Formato: ID, observación, municipio, fecha inicio, fecha fin. Las fechas son opcionales;
+              si no las agregas, se usará el cronograma general.
             </p>
           </div>
 
@@ -652,7 +660,7 @@ export function BulkWorkflowIterationsModal({
                 {parsedIterations.map((item) => (
                   <div
                     key={`${item.lineNumber}-${item.raw}`}
-                    className="grid gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0 sm:grid-cols-[88px_1fr_156px]"
+                    className="grid gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0 sm:grid-cols-[88px_minmax(0,1fr)_120px_156px]"
                   >
                     <div className="min-w-0">
                       <p className="truncate text-xs font-bold text-slate-700">{item.externalWorkflowId || "Sin ID"}</p>
@@ -661,6 +669,12 @@ export function BulkWorkflowIterationsModal({
                     <div className="min-w-0">
                       <p className="truncate text-xs text-slate-600">{item.observation || "Sin observación"}</p>
                       {item.error && <p className="mt-0.5 text-[10px] font-semibold text-red-600">{item.error}</p>}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-semibold text-indigo-700">
+                        {item.municipality || "Sin municipio"}
+                      </p>
+                      <p className="text-[10px] text-slate-400">Municipio</p>
                     </div>
                     <div className="min-w-0 text-left sm:text-right">
                       <p className="truncate text-[10px] font-semibold text-slate-500">
@@ -688,7 +702,7 @@ export function BulkWorkflowIterationsModal({
             <Button
               type="button"
               onClick={handleCreateIterations}
-              disabled={isCreating || !municipality.trim() || validIterations.length === 0 || invalidIterations.length > 0}
+              disabled={isCreating || validIterations.length === 0 || invalidIterations.length > 0}
               className="bg-indigo-600 text-white hover:bg-indigo-700"
             >
               {isCreating ? (
