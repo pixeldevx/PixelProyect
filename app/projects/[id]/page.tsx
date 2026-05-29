@@ -2036,6 +2036,7 @@ export default function ProjectDetailsPage() {
         }}
         task={selectedTaskForDocs}
         projectId={projectId}
+        teamMembers={projectAssignableTeamMembers}
         onResetWorkflowTask={canEditTaskDetails ? handleResetWorkflowTask : undefined}
       />
 

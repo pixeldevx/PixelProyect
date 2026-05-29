@@ -204,6 +204,50 @@ const getDynamicRateCardUnits = (source: any) =>
 const shouldRequestDynamicRateCardUnits = (source: any) =>
   source?.autoAddUnits === false || source?.dynamicRateCardConfig?.promptForUnits === true;
 
+const applyRuntimeStaticRateCardAssigneesToStep = (
+  step: any,
+  assigneesByKey: Record<string, string>
+) => {
+  if (!step) return step;
+  let updatedStep = { ...step };
+  const sources = getStaticRateCardSources(updatedStep).filter((source) => source.assigneeMode === 'runtime');
+
+  sources.forEach((source) => {
+    const assignedTo = assigneesByKey[source.key];
+    if (!assignedTo) return;
+
+    if (source.source === 'form') {
+      if (typeof source.itemIndex === 'number' && Array.isArray(updatedStep.form?.rateCards)) {
+        updatedStep = {
+          ...updatedStep,
+          form: {
+            ...updatedStep.form,
+            rateCards: updatedStep.form.rateCards.map((item: any, itemIndex: number) =>
+              itemIndex === source.itemIndex ? { ...item, assignedTo } : item
+            ),
+          },
+        };
+      } else if (updatedStep.form) {
+        updatedStep = { ...updatedStep, form: { ...updatedStep.form, assignedTo } };
+      }
+      return;
+    }
+
+    if (typeof source.itemIndex === 'number' && Array.isArray(updatedStep.rateCards)) {
+      updatedStep = {
+        ...updatedStep,
+        rateCards: updatedStep.rateCards.map((item: any, itemIndex: number) =>
+          itemIndex === source.itemIndex ? { ...item, assignedTo } : item
+        ),
+      };
+    } else {
+      updatedStep = { ...updatedStep, assignedTo };
+    }
+  });
+
+  return updatedStep;
+};
+
 const getDateKeys = (date = new Date()) => {
   const year = date.getFullYear();
   const dateKey = date.toISOString().slice(0, 10);
@@ -402,6 +446,7 @@ export default function WorkflowTray() {
   
   const [actionModal, setActionModal] = useState<{ isOpen: boolean, task: any, type: 'approve' | 'return' | 'stop' | 'resume' }>({ isOpen: false, task: null, type: 'approve' });
   const [staticRateCardUnits, setStaticRateCardUnits] = useState<Record<string, number | ''>>({});
+  const [staticRateCardAssignees, setStaticRateCardAssignees] = useState<Record<string, string>>({});
   const [actionComment, setActionComment] = useState('');
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [nextStepAssignee, setNextStepAssignee] = useState<string>('');
@@ -687,6 +732,7 @@ export default function WorkflowTray() {
     const currentStepIsQualityGate = isQualityGateStep(currentStep);
     const selectedQualityCause = projectQualityCauses.find((cause) => cause.id === qualityCauseId);
     const staticRateCardSources = getStaticRateCardSources(currentStep);
+    const runtimeStaticRateCardSources = staticRateCardSources.filter((source) => source.assigneeMode === 'runtime');
     const workflowDynamicRateCardSource = getWorkflowDynamicRateCardSource(task, action);
     const workflowDynamicRateCardRequestsUnits = workflowDynamicRateCardSource
       ? shouldRequestDynamicRateCardUnits(workflowDynamicRateCardSource.sourceConfig)
@@ -710,6 +756,14 @@ export default function WorkflowTray() {
         toast.warning("Completa la persona, el perfil y las unidades del Rate Card dinámico.");
         return;
       }
+    }
+
+    if (
+      (action === 'approve' || action === 'return') &&
+      runtimeStaticRateCardSources.some((source) => !staticRateCardAssignees[source.key])
+    ) {
+      toast.warning("Selecciona el profesional para cada Rate Card fijo que se asigna al ejecutar.");
+      return;
     }
 
     if (currentStepIsQualityGate && action === 'return' && !qualityCauseId) {
@@ -744,7 +798,8 @@ export default function WorkflowTray() {
             : (staticRateCardSource.unitsToAdd || 1);
           const assignedUser = getStaticRateCardAssignee(
             staticRateCardSource,
-            currentStep.assignedTo || task.assignedTo || user?.uid
+            currentStep.assignedTo || task.assignedTo || user?.uid,
+            staticRateCardAssignees[staticRateCardSource.key]
           );
 
           if (!units) return;
@@ -763,6 +818,10 @@ export default function WorkflowTray() {
           }
           batch.update(rcRef, updateData);
         });
+      }
+
+      if (runtimeStaticRateCardSources.length > 0 && (action === 'approve' || action === 'return')) {
+        steps[currentIndex] = applyRuntimeStaticRateCardAssigneesToStep(steps[currentIndex], staticRateCardAssignees);
       }
 
       let dynamicRateCardCharge: any = null;
@@ -918,6 +977,7 @@ export default function WorkflowTray() {
       setActionModal({ isOpen: false, task: null, type: 'approve' });
       setActionComment('');
       setFormData({});
+      setStaticRateCardAssignees({});
       setQualityCauseId('');
       resetDynamicRateCardFields();
     } catch (error) {
@@ -943,6 +1003,13 @@ export default function WorkflowTray() {
     const staticRateCardSources = getStaticRateCardSources(currentStep);
     setStaticRateCardUnits(
       Object.fromEntries(staticRateCardSources.map((source) => [source.key, source.unitsToAdd || 1]))
+    );
+    setStaticRateCardAssignees(
+      Object.fromEntries(
+        staticRateCardSources
+          .filter((source) => source.assigneeMode === 'runtime')
+          .map((source) => [source.key, source.assignedTo || ''])
+      )
     );
     const dynamicSource = getWorkflowDynamicRateCardSource(task, type);
     resetDynamicRateCardFields(dynamicSource?.sourceConfig, currentStep?.assignedTo || task.assignedTo || memberId || user?.uid || '');
@@ -1181,6 +1248,10 @@ export default function WorkflowTray() {
   const manualStaticRateCardSources = activeStaticRateCardSources.filter((source) => source.autoAddUnits === false);
   const hasMissingManualStaticUnits = manualStaticRateCardSources.some(
     (source) => staticRateCardUnits[source.key] === '' || Number(staticRateCardUnits[source.key] || 0) <= 0
+  );
+  const runtimeStaticRateCardSources = activeStaticRateCardSources.filter((source) => source.assigneeMode === 'runtime');
+  const hasMissingRuntimeStaticAssignees = runtimeStaticRateCardSources.some(
+    (source) => !staticRateCardAssignees[source.key]
   );
   const activeQualityGateStep = actionModal.isOpen
     ? actionModal.task?.workflowSteps?.[actionModal.task.currentStepIndex || 0]
@@ -1872,6 +1943,48 @@ export default function WorkflowTray() {
                 </div>
               )}
 
+              {runtimeStaticRateCardSources.length > 0 && (
+                <div className="mb-4 rounded-xl border border-indigo-100 bg-indigo-50 p-3">
+                  <p className="mb-2 text-sm font-medium text-indigo-800">
+                    Profesional del Rate Card <span className="text-red-500">*</span>
+                  </p>
+                  <div className="space-y-2">
+                    {runtimeStaticRateCardSources.map((source) => {
+                      const rateCard = projectRateCards.find((candidate) => candidate.id === source.rateCardId);
+
+                      return (
+                        <label key={source.key} className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_minmax(180px,260px)] md:items-center">
+                          <span className="truncate text-xs font-bold text-indigo-700">
+                            {rateCard?.name || 'Rate Card'}
+                          </span>
+                          <select
+                            value={staticRateCardAssignees[source.key] || ''}
+                            onChange={(e) =>
+                              setStaticRateCardAssignees((current) => ({
+                                ...current,
+                                [source.key]: e.target.value,
+                              }))
+                            }
+                            className="h-9 rounded-lg border border-indigo-100 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                            required
+                          >
+                            <option value="">Selecciona profesional</option>
+                            {projectTeamMembers.map((member) => (
+                              <option key={member.id} value={member.id}>
+                                {member.name || member.email || 'Profesional'}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-2 text-[10px] text-indigo-700">
+                    Este indicador se cargará al profesional seleccionado en esta aprobación.
+                  </p>
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
                   Observaciones <span className="text-red-500">*</span>
@@ -1889,13 +2002,16 @@ export default function WorkflowTray() {
             <div className="p-6 border-t border-slate-100 flex items-center justify-end gap-3">
               <Button
                 variant="outline"
-                onClick={() => setActionModal({ isOpen: false, task: null, type: 'approve' })}
+                onClick={() => {
+                  setActionModal({ isOpen: false, task: null, type: 'approve' });
+                  setStaticRateCardAssignees({});
+                }}
               >
                 Cancelar
               </Button>
               <Button
                 onClick={confirmAction}
-                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || activeQualityGateRequiresCause && !qualityCauseId || hasMissingManualStaticUnits || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))))}
+                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || activeQualityGateRequiresCause && !qualityCauseId || hasMissingManualStaticUnits || hasMissingRuntimeStaticAssignees || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))))}
                 className={
                   actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 
                   actionModal.type === 'return' ? 'bg-red-600 hover:bg-red-700 text-white' :

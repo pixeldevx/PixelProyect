@@ -10,6 +10,7 @@ interface TaskDetailsModalProps {
   onClose: () => void;
   task: any;
   projectId: string;
+  teamMembers?: any[];
   onResetWorkflowTask?: (task: any) => void | Promise<void>;
 }
 
@@ -38,6 +39,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   onClose,
   task,
   projectId,
+  teamMembers = [],
   onResetWorkflowTask,
 }) => {
   const [documentation, setDocumentation] = useState("");
@@ -46,6 +48,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   const [stepUnitPrompt, setStepUnitPrompt] = useState<{
     index: number;
     unitsByKey: Record<string, number | ''>;
+    assigneesByKey: Record<string, string>;
   } | null>(null);
   const [additionalCycles, setAdditionalCycles] = useState(1);
   const [isAddingCycles, setIsAddingCycles] = useState(false);
@@ -298,12 +301,18 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     const manualRateCardSources = getStaticRateCardSources(step).filter(
       (source) => source.autoAddUnits === false
     );
+    const runtimeRateCardSources = getStaticRateCardSources(step).filter(
+      (source) => source.assigneeMode === "runtime"
+    );
 
-    if (currentStatus !== "listo" && manualRateCardSources.length > 0) {
+    if (currentStatus !== "listo" && (manualRateCardSources.length > 0 || runtimeRateCardSources.length > 0)) {
       setStepUnitPrompt({
         index,
         unitsByKey: Object.fromEntries(
           manualRateCardSources.map((source) => [source.key, source.unitsToAdd || 1])
+        ),
+        assigneesByKey: Object.fromEntries(
+          runtimeRateCardSources.map((source) => [source.key, source.assignedTo || ""])
         ),
       });
       return;
@@ -322,15 +331,24 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     const currentStep = newSteps[stepUnitPrompt.index];
     const sources = getStaticRateCardSources(currentStep);
     const manualSources = sources.filter((source) => source.autoAddUnits === false);
+    const runtimeSources = sources.filter((source) => source.assigneeMode === "runtime");
     if (manualSources.some((source) => Number(stepUnitPrompt.unitsByKey[source.key] || 0) <= 0)) {
       toast.warning("Define unidades mayores a cero para cada Rate Card manual.");
+      return;
+    }
+    if (runtimeSources.some((source) => !stepUnitPrompt.assigneesByKey[source.key])) {
+      toast.warning("Selecciona el profesional para cada Rate Card que se asigna al ejecutar.");
       return;
     }
     let updatedStep = { ...currentStep };
 
     sources.forEach((source) => {
       const units = Number(stepUnitPrompt.unitsByKey[source.key] || 0);
-      if (units <= 0) return;
+      const assignedTo = stepUnitPrompt.assigneesByKey[source.key] || "";
+      const updates: any = {};
+      if (source.autoAddUnits === false && units > 0) updates.unitsToAdd = units;
+      if (source.assigneeMode === "runtime" && assignedTo) updates.assignedTo = assignedTo;
+      if (Object.keys(updates).length === 0) return;
 
       if (source.source === "form") {
         if (typeof source.itemIndex === "number" && Array.isArray(updatedStep.form?.rateCards)) {
@@ -339,7 +357,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
             form: {
               ...updatedStep.form,
               rateCards: updatedStep.form.rateCards.map((item: any, itemIndex: number) =>
-                itemIndex === source.itemIndex ? { ...item, unitsToAdd: units } : item
+                itemIndex === source.itemIndex ? { ...item, ...updates } : item
               ),
             },
           };
@@ -348,7 +366,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
             ...updatedStep,
             form: {
               ...updatedStep.form,
-              unitsToAdd: units,
+              ...updates,
             },
           };
         }
@@ -359,13 +377,13 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         updatedStep = {
           ...updatedStep,
           rateCards: updatedStep.rateCards.map((item: any, itemIndex: number) =>
-            itemIndex === source.itemIndex ? { ...item, unitsToAdd: units } : item
+            itemIndex === source.itemIndex ? { ...item, ...updates } : item
           ),
         };
       } else {
         updatedStep = {
           ...updatedStep,
-          unitsToAdd: units,
+          ...updates,
         };
       }
     });
@@ -567,11 +585,10 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         <div className="fixed inset-0 z-[60] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
             <h3 className="text-lg font-bold text-slate-800 mb-2">
-              Ingresar Unidades
+              Confirmar Rate Cards
             </h3>
             <p className="text-sm text-slate-500 mb-4">
-              Por favor, confirma la cantidad de unidades que se sumarán al
-              completar este paso.
+              Completa los datos requeridos para cargar los indicadores de este paso.
             </p>
             <div className="mb-6 space-y-3">
               {getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.autoAddUnits === false).map((source, sourceIndex) => (
@@ -598,6 +615,33 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                   />
                 </label>
               ))}
+              {getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.assigneeMode === "runtime").map((source) => (
+                <label key={source.key} className="block">
+                  <span className="mb-1 block text-sm font-medium text-slate-700">
+                    Profesional asignado
+                  </span>
+                  <select
+                    value={stepUnitPrompt.assigneesByKey[source.key] || ""}
+                    onChange={(e) =>
+                      setStepUnitPrompt({
+                        ...stepUnitPrompt,
+                        assigneesByKey: {
+                          ...stepUnitPrompt.assigneesByKey,
+                          [source.key]: e.target.value,
+                        },
+                      })
+                    }
+                    className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                  >
+                    <option value="">Selecciona profesional</option>
+                    {teamMembers.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name || member.email || "Profesional"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
             </div>
             <div className="flex justify-end gap-2">
               <button
@@ -608,7 +652,10 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
               </button>
               <button
                 onClick={confirmStepUnitToggle}
-                disabled={getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.autoAddUnits === false).some((source) => Number(stepUnitPrompt.unitsByKey[source.key] || 0) <= 0)}
+                disabled={
+                  getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.autoAddUnits === false).some((source) => Number(stepUnitPrompt.unitsByKey[source.key] || 0) <= 0) ||
+                  getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.assigneeMode === "runtime").some((source) => !stepUnitPrompt.assigneesByKey[source.key])
+                }
                 className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg transition-colors disabled:opacity-50"
               >
                 Confirmar y Completar

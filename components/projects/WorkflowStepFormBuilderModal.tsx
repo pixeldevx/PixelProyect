@@ -17,6 +17,7 @@ export interface FormRateCardItem {
   rateCardId: string;
   unitsToAdd: number;
   autoAddUnits: boolean;
+  assigneeMode?: 'default' | 'fixed' | 'runtime';
   assignToProfessional?: boolean;
   assignedTo?: string | null;
 }
@@ -36,6 +37,7 @@ export interface CustomForm {
   rateCardId?: string | null;
   unitsToAdd?: number | null;
   autoAddUnits?: boolean | null;
+  assigneeMode?: 'default' | 'fixed' | 'runtime' | null;
   assignToProfessional?: boolean | null;
   assignedTo?: string | null;
 }
@@ -78,7 +80,8 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
           rateCardId: item.rateCardId || '',
           unitsToAdd: Number(item.unitsToAdd || 1),
           autoAddUnits: item.autoAddUnits !== false,
-          assignToProfessional: Boolean(item.assignToProfessional),
+          assigneeMode: item.assigneeMode || (item.assignToProfessional ? 'fixed' : 'default'),
+          assignToProfessional: Boolean(item.assignToProfessional || item.assigneeMode === 'fixed' || item.assigneeMode === 'runtime'),
           assignedTo: item.assignedTo || '',
         }));
       }
@@ -90,7 +93,8 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
             rateCardId: form.rateCardId,
             unitsToAdd: Number(form.unitsToAdd || 1),
             autoAddUnits: form.autoAddUnits !== false,
-            assignToProfessional: Boolean(form.assignToProfessional),
+            assigneeMode: form.assigneeMode || (form.assignToProfessional ? 'fixed' : 'default'),
+            assignToProfessional: Boolean(form.assignToProfessional || form.assigneeMode === 'fixed' || form.assigneeMode === 'runtime'),
             assignedTo: form.assignedTo || '',
           },
         ];
@@ -174,6 +178,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
         rateCardId: '',
         unitsToAdd: 1,
         autoAddUnits: true,
+        assigneeMode: 'default',
         assignToProfessional: false,
         assignedTo: '',
       },
@@ -243,8 +248,9 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
         ...item,
         unitsToAdd: Number(item.unitsToAdd),
         autoAddUnits: item.autoAddUnits !== false,
-        assignToProfessional: Boolean(item.assignToProfessional),
-        assignedTo: item.assignToProfessional ? item.assignedTo || '' : '',
+        assigneeMode: item.assigneeMode || (item.assignToProfessional ? 'fixed' : 'default'),
+        assignToProfessional: (item.assigneeMode || (item.assignToProfessional ? 'fixed' : 'default')) !== 'default',
+        assignedTo: (item.assigneeMode || (item.assignToProfessional ? 'fixed' : 'default')) === 'fixed' ? item.assignedTo || '' : '',
       }))
       .filter((item) => item.rateCardId);
 
@@ -268,7 +274,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
     }
 
     const hasMissingStaticAssignee = cleanedStaticRateCards.some(
-      (item) => item.assignToProfessional && !item.assignedTo
+      (item) => item.assigneeMode === 'fixed' && !item.assignedTo
     );
     if (formRateCardMode === 'static' && hasMissingStaticAssignee) {
       toast.warning('Selecciona el profesional para cada Rate Card fijo asignable.');
@@ -314,6 +320,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
               rateCardId: cleanedStaticRateCards[0]?.rateCardId || null,
               unitsToAdd: cleanedStaticRateCards[0]?.unitsToAdd || 1,
               autoAddUnits: cleanedStaticRateCards[0]?.autoAddUnits !== false,
+              assigneeMode: cleanedStaticRateCards[0]?.assigneeMode || 'default',
               assignToProfessional: cleanedStaticRateCards[0]?.assignToProfessional || false,
               assignedTo: cleanedStaticRateCards[0]?.assignedTo || null,
             };
@@ -476,21 +483,23 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                         </button>
                       </div>
                       <div className="grid grid-cols-1 gap-2 md:grid-cols-[auto_minmax(0,1fr)] md:items-center">
-                        <label className="flex h-9 items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 text-xs font-medium text-indigo-700">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(item.assignToProfessional)}
-                            onChange={(event) =>
-                              updateFormRateCard(item.id, {
-                                assignToProfessional: event.target.checked,
-                                assignedTo: event.target.checked ? item.assignedTo || '' : '',
-                              })
-                            }
-                            className="rounded border-indigo-200 text-indigo-600 focus:ring-indigo-500"
-                          />
-                          Asignar profesional
-                        </label>
-                        {item.assignToProfessional && (
+                        <select
+                          value={item.assigneeMode || (item.assignToProfessional ? 'fixed' : 'default')}
+                          onChange={(event) => {
+                            const mode = event.target.value as 'default' | 'fixed' | 'runtime';
+                            updateFormRateCard(item.id, {
+                              assigneeMode: mode,
+                              assignToProfessional: mode !== 'default',
+                              assignedTo: mode === 'fixed' ? item.assignedTo || '' : '',
+                            });
+                          }}
+                          className="h-9 rounded-lg border border-indigo-100 bg-indigo-50 px-3 text-xs font-medium text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                        >
+                          <option value="default">Responsable del paso</option>
+                          <option value="fixed">Profesional fijo</option>
+                          <option value="runtime">Pedir al ejecutar</option>
+                        </select>
+                        {(item.assigneeMode || (item.assignToProfessional ? 'fixed' : 'default')) === 'fixed' && (
                           <select
                             value={item.assignedTo || ''}
                             onChange={(event) => updateFormRateCard(item.id, { assignedTo: event.target.value })}
@@ -503,6 +512,11 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                               </option>
                             ))}
                           </select>
+                        )}
+                        {(item.assigneeMode || (item.assignToProfessional ? 'fixed' : 'default')) === 'runtime' && (
+                          <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+                            Se solicitará el profesional al aprobar este paso.
+                          </div>
                         )}
                       </div>
                     </div>

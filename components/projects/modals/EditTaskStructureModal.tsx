@@ -89,6 +89,7 @@ const createStepRateCardItem = (): FormRateCardItem => ({
   rateCardId: "",
   unitsToAdd: 1,
   autoAddUnits: true,
+  assigneeMode: "default",
   assignToProfessional: false,
   assignedTo: "",
 });
@@ -100,7 +101,8 @@ const getEditableStepRateCards = (step: any): FormRateCardItem[] => {
       rateCardId: item.rateCardId || "",
       unitsToAdd: Number(item.unitsToAdd || 1),
       autoAddUnits: item.autoAddUnits !== false,
-      assignToProfessional: Boolean(item.assignToProfessional),
+      assigneeMode: item.assigneeMode || (item.assignToProfessional ? "fixed" : "default"),
+      assignToProfessional: Boolean(item.assignToProfessional || item.assigneeMode === "fixed" || item.assigneeMode === "runtime"),
       assignedTo: item.assignedTo || "",
     }));
   }
@@ -112,7 +114,8 @@ const getEditableStepRateCards = (step: any): FormRateCardItem[] => {
         rateCardId: step.rateCardId,
         unitsToAdd: Number(step.unitsToAdd || 1),
         autoAddUnits: step.autoAddUnits !== false,
-        assignToProfessional: Boolean(step.assignToProfessional),
+        assigneeMode: step.assigneeMode || (step.assignToProfessional ? "fixed" : "default"),
+        assignToProfessional: Boolean(step.assignToProfessional || step.assigneeMode === "fixed" || step.assigneeMode === "runtime"),
         assignedTo: step.assignedTo || "",
       },
     ];
@@ -128,8 +131,9 @@ const cleanStepRateCards = (step: any) =>
       ...item,
       unitsToAdd: Number(item.unitsToAdd),
       autoAddUnits: item.autoAddUnits !== false,
-      assignToProfessional: Boolean(item.assignToProfessional),
-      assignedTo: item.assignToProfessional ? item.assignedTo || "" : "",
+      assigneeMode: item.assigneeMode || (item.assignToProfessional ? "fixed" : "default"),
+      assignToProfessional: (item.assigneeMode || (item.assignToProfessional ? "fixed" : "default")) !== "default",
+      assignedTo: (item.assigneeMode || (item.assignToProfessional ? "fixed" : "default")) === "fixed" ? item.assignedTo || "" : "",
     }));
 
 const getTaskDate = (value: any) => {
@@ -577,7 +581,7 @@ export function EditTaskStructureModal({
     }
 
     const hasMissingStepRateCardAssignee = workflowSteps.some((step) =>
-      cleanStepRateCards(step).some((item) => item.assignToProfessional && !item.assignedTo)
+      cleanStepRateCards(step).some((item) => item.assigneeMode === "fixed" && !item.assignedTo)
     );
     if (hasMissingStepRateCardAssignee) {
       toast.warning("Selecciona el profesional para cada Rate Card fijo asignable.");
@@ -1189,24 +1193,30 @@ export function EditTaskStructureModal({
                                 </button>
                               </div>
                               <div className="grid grid-cols-1 gap-2 md:grid-cols-[auto_minmax(0,1fr)] md:items-center">
-                                <label className="flex h-9 items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 text-xs font-medium text-indigo-700">
-                                  <input
-                                    type="checkbox"
-                                    checked={Boolean(rateCardItem.assignToProfessional)}
-                                    onChange={(event) =>
-                                      updateStepStaticRateCards(index, (currentCards) =>
-                                        currentCards.map((item) =>
-                                          item.id === rateCardItem.id
-                                            ? { ...item, assignToProfessional: event.target.checked, assignedTo: event.target.checked ? item.assignedTo || "" : "" }
-                                            : item
-                                        )
+                                <select
+                                  value={rateCardItem.assigneeMode || (rateCardItem.assignToProfessional ? "fixed" : "default")}
+                                  onChange={(event) => {
+                                    const mode = event.target.value as "default" | "fixed" | "runtime";
+                                    updateStepStaticRateCards(index, (currentCards) =>
+                                      currentCards.map((item) =>
+                                        item.id === rateCardItem.id
+                                          ? {
+                                              ...item,
+                                              assigneeMode: mode,
+                                              assignToProfessional: mode !== "default",
+                                              assignedTo: mode === "fixed" ? item.assignedTo || "" : "",
+                                            }
+                                          : item
                                       )
-                                    }
-                                    className="rounded border-indigo-200 text-indigo-600 focus:ring-indigo-500"
-                                  />
-                                  Asignar profesional
-                                </label>
-                                {rateCardItem.assignToProfessional && (
+                                    );
+                                  }}
+                                  className="h-9 rounded-lg border border-indigo-100 bg-indigo-50 px-3 text-xs font-medium text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                >
+                                  <option value="default">Responsable del paso</option>
+                                  <option value="fixed">Profesional fijo</option>
+                                  <option value="runtime">Pedir al ejecutar</option>
+                                </select>
+                                {(rateCardItem.assigneeMode || (rateCardItem.assignToProfessional ? "fixed" : "default")) === "fixed" && (
                                   <select
                                     value={rateCardItem.assignedTo || ""}
                                     onChange={(event) =>
@@ -1225,6 +1235,11 @@ export function EditTaskStructureModal({
                                       </option>
                                     ))}
                                   </select>
+                                )}
+                                {(rateCardItem.assigneeMode || (rateCardItem.assignToProfessional ? "fixed" : "default")) === "runtime" && (
+                                  <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+                                    Se solicitará el profesional al aprobar este paso.
+                                  </div>
                                 )}
                               </div>
                             </div>
