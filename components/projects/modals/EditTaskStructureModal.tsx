@@ -4,12 +4,17 @@ import React, { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, ClipboardList, CornerDownRight, Loader2, Plus, Settings, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { addDoc, collection, deleteDoc, doc, getDocs, query, serverTimestamp, updateDoc, where } from "@/lib/supabase/document-store";
+import { addDoc, collection, deleteDoc, doc, serverTimestamp, updateDoc } from "@/lib/supabase/document-store";
 import { db } from "@/lib/backend";
 import {
   CustomForm,
   WorkflowStepFormBuilderModal,
 } from "@/components/projects/WorkflowStepFormBuilderModal";
+import {
+  getWorkflowTemplateScopeData,
+  getWorkflowTemplateScopeLabel,
+  loadWorkflowTemplatesForScope,
+} from "@/lib/workflow-templates";
 
 type WorkflowStepDraft = {
   assignedTo?: string;
@@ -36,12 +41,15 @@ interface EditTaskStructureModalProps {
   isOpen: boolean;
   onClose: () => void;
   projectId: string;
+  project?: any;
   task: any | null;
   user: any;
   teamMembers: any[];
   subtasks?: any[];
   canEditTaskStructure?: boolean;
   canManageWorkflowTemplates?: boolean;
+  userRole?: string | null;
+  templateScopeOrganizationIds?: string[];
   onCreateSubtask?: (parentTask: any, subtask: SubtaskDraft) => Promise<void> | void;
   onSave: (updates: {
     title: string;
@@ -96,12 +104,15 @@ export function EditTaskStructureModal({
   isOpen,
   onClose,
   projectId,
+  project,
   task,
   user,
   teamMembers,
   subtasks = [],
   canEditTaskStructure = true,
   canManageWorkflowTemplates = false,
+  userRole,
+  templateScopeOrganizationIds = [],
   onCreateSubtask,
   onSave,
 }: EditTaskStructureModalProps) {
@@ -124,6 +135,7 @@ export function EditTaskStructureModal({
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
   const [currentStepIndexForForm, setCurrentStepIndexForForm] = useState<number | null>(null);
+  const templateScopeOrganizationKey = templateScopeOrganizationIds.join("|");
 
   const canEditWorkflow = Boolean(canEditTaskStructure && (task?.type === "workflow" || (task?.workflowSteps?.length || 0) > 0));
   const canManageSubtasks = Boolean(task?.type === "state" && !task?.parentTaskId && onCreateSubtask);
@@ -155,14 +167,12 @@ export function EditTaskStructureModal({
 
     const fetchTemplates = async () => {
       try {
-        const templatesQuery = query(
-          collection(db, "workflow_templates"),
-          where("projectId", "==", projectId)
-        );
-        const snapshot = await getDocs(templatesQuery);
-        const templates = snapshot.docs
-          .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
-          .sort((left: any, right: any) => String(left.name || "").localeCompare(String(right.name || "")));
+        const templates = await loadWorkflowTemplatesForScope({
+          projectId,
+          project,
+          userRole,
+          organizationIds: templateScopeOrganizationKey ? templateScopeOrganizationKey.split("|") : [],
+        });
         setWorkflowTemplates(templates);
       } catch (error) {
         console.error("Error loading workflow templates:", error);
@@ -170,7 +180,16 @@ export function EditTaskStructureModal({
     };
 
     void fetchTemplates();
-  }, [isOpen, projectId]);
+  }, [isOpen, projectId, project, userRole, templateScopeOrganizationKey]);
+
+  const currentProjectWorkflowTemplates = React.useMemo(
+    () => workflowTemplates.filter((template) => template.projectId === projectId),
+    [projectId, workflowTemplates]
+  );
+  const sharedWorkflowTemplates = React.useMemo(
+    () => workflowTemplates.filter((template) => template.projectId !== projectId),
+    [projectId, workflowTemplates]
+  );
 
   if (!isOpen || !task) return null;
 
@@ -309,12 +328,12 @@ export function EditTaskStructureModal({
 
     setIsSavingTemplate(true);
     try {
-      const existingTemplate = workflowTemplates.find(
+      const existingTemplate = currentProjectWorkflowTemplates.find(
         (template) => normalizeTemplateName(template.name || "") === normalizeTemplateName(cleanTemplateName)
       );
       const templateData = {
         name: cleanTemplateName,
-        projectId,
+        ...getWorkflowTemplateScopeData(projectId, project),
         steps: getCleanWorkflowSteps(),
         updatedAt: serverTimestamp(),
         updatedBy: user?.uid || "unknown",
@@ -379,6 +398,19 @@ export function EditTaskStructureModal({
       console.error("Error deleting workflow template:", error);
       toast.error(error?.message || "No se pudo eliminar la plantilla.");
     }
+  };
+
+  const handleLoadTemplate = (templateId: string) => {
+    if (!templateId) return;
+
+    const template = workflowTemplates.find((candidate) => candidate.id === templateId);
+    if (!template?.steps) return;
+
+    setWorkflowSteps(toDraftSteps(template.steps));
+    if (template.steps[0]?.isQualityGate) {
+      toast.warning("Se desmarco calidad del primer paso porque necesita un paso anterior.");
+    }
+    toast.success("Plantilla cargada.");
   };
 
   const handleSave = async () => {
@@ -476,7 +508,36 @@ export function EditTaskStructureModal({
                     Cambia nombres, responsables y formularios de cada paso.
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {workflowTemplates.length > 0 && (
+                    <select
+                      className="h-8 rounded-lg border border-indigo-200 bg-white px-2 text-xs text-slate-700"
+                      onChange={(event) => handleLoadTemplate(event.target.value)}
+                      defaultValue=""
+                    >
+                      <option value="" disabled>
+                        Cargar plantilla...
+                      </option>
+                      {currentProjectWorkflowTemplates.length > 0 && (
+                        <optgroup label="Este proyecto">
+                          {currentProjectWorkflowTemplates.map((template) => (
+                            <option key={template.id} value={template.id}>
+                              {template.name || "Plantilla sin nombre"}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {sharedWorkflowTemplates.length > 0 && (
+                        <optgroup label="Organizaciones asignadas">
+                          {sharedWorkflowTemplates.map((template) => (
+                            <option key={template.id} value={template.id}>
+                              {template.name || "Plantilla sin nombre"} · {getWorkflowTemplateScopeLabel(template, projectId)}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  )}
                   {workflowSteps.length > 0 && (
                     <Button
                       type="button"
@@ -854,13 +915,13 @@ export function EditTaskStructureModal({
               <p className="text-xs text-slate-500">
                 Si usas el nombre de una plantilla existente, se pedirá confirmación para reescribirla.
               </p>
-              {canManageWorkflowTemplates && workflowTemplates.length > 0 && (
+              {canManageWorkflowTemplates && currentProjectWorkflowTemplates.length > 0 && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
                     Plantillas del proyecto
                   </p>
                   <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
-                    {workflowTemplates.map((template) => (
+                    {currentProjectWorkflowTemplates.map((template) => (
                       <div key={template.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
                         <button
                           type="button"

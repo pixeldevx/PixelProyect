@@ -170,7 +170,10 @@ export default function ProjectDetailsPage() {
   const [dynamicRateCardId, setDynamicRateCardId] = useState('');
   const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState<number | ''>(1);
   const [dynamicRateCardComment, setDynamicRateCardComment] = useState('');
-  const managedOrganizationIds = userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : [];
+  const managedOrganizationIds = React.useMemo(
+    () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
+    [userOrganizationId, userOrganizationIds]
+  );
 
 
   useEffect(() => {
@@ -2069,6 +2072,8 @@ export default function ProjectDetailsPage() {
           rateCards={rateCards}
           tasksLength={tasks.length}
           canManageWorkflowTemplates={canManageWorkflowTemplates}
+          userRole={userRole}
+          templateScopeOrganizationIds={managedOrganizationIds}
         />
       )}
       {canCreateTasks && canAddSubtasks && (
@@ -2089,9 +2094,12 @@ export default function ProjectDetailsPage() {
         task={taskForStructureEdit}
         user={user}
         teamMembers={projectAssignableTeamMembers}
+        project={project}
         subtasks={taskForStructureEdit ? tasks.filter((task) => task.parentTaskId === taskForStructureEdit.id) : []}
         canEditTaskStructure={canEditTaskStructure}
         canManageWorkflowTemplates={canManageWorkflowTemplates}
+        userRole={userRole}
+        templateScopeOrganizationIds={managedOrganizationIds}
         onCreateSubtask={canAddSubtasks ? handleCreateSubtask : undefined}
         onSave={async (updates) => {
           if (!taskForStructureEdit) return;

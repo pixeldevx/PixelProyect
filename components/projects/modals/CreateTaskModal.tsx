@@ -1,11 +1,16 @@
 import React, { useState } from 'react';
 import { X, ListTodo, Plus, ClipboardList, Loader2, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, query, where, getDocs, updateDoc, deleteDoc } from '@/lib/supabase/document-store';
+import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, updateDoc, deleteDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { WorkflowStepFormBuilderModal, CustomForm } from '@/components/projects/WorkflowStepFormBuilderModal';
 import { notifyTaskAssignment, TaskAssignmentNotificationPayload } from '@/lib/notifications';
+import {
+  getWorkflowTemplateScopeData,
+  getWorkflowTemplateScopeLabel,
+  loadWorkflowTemplatesForScope,
+} from '@/lib/workflow-templates';
 
 interface CreateTaskModalProps {
   isOpen: boolean;
@@ -17,6 +22,8 @@ interface CreateTaskModalProps {
   rateCards: any[];
   tasksLength: number;
   canManageWorkflowTemplates?: boolean;
+  userRole?: string | null;
+  templateScopeOrganizationIds?: string[];
 }
 
 type DraftSubtask = {
@@ -54,6 +61,8 @@ export function CreateTaskModal({
   rateCards,
   tasksLength,
   canManageWorkflowTemplates = false,
+  userRole,
+  templateScopeOrganizationIds = [],
 }: CreateTaskModalProps) {
   const [isCreatingTask, setIsCreatingTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState("");
@@ -114,20 +123,18 @@ export function CreateTaskModal({
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const [templateName, setTemplateName] = useState("");
   const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const templateScopeOrganizationKey = templateScopeOrganizationIds.join("|");
 
   React.useEffect(() => {
     if (isOpen) {
       const fetchTemplates = async () => {
         try {
-          const q = query(
-            collection(db, "workflow_templates"),
-            where("projectId", "==", projectId),
-          );
-          const snap = await getDocs(q);
-          const templates = snap.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          })).sort((left: any, right: any) => String(left.name || "").localeCompare(String(right.name || "")));
+          const templates = await loadWorkflowTemplatesForScope({
+            projectId,
+            project,
+            userRole,
+            organizationIds: templateScopeOrganizationKey ? templateScopeOrganizationKey.split("|") : [],
+          });
           setWorkflowTemplates(templates);
         } catch (error) {
           console.error("Error fetching templates:", error);
@@ -135,7 +142,16 @@ export function CreateTaskModal({
       };
       fetchTemplates();
     }
-  }, [isOpen, projectId]);
+  }, [isOpen, projectId, project, userRole, templateScopeOrganizationKey]);
+
+  const currentProjectWorkflowTemplates = React.useMemo(
+    () => workflowTemplates.filter((template) => template.projectId === projectId),
+    [projectId, workflowTemplates]
+  );
+  const sharedWorkflowTemplates = React.useMemo(
+    () => workflowTemplates.filter((template) => template.projectId !== projectId),
+    [projectId, workflowTemplates]
+  );
 
   if (!isOpen) return null;
 
@@ -209,12 +225,13 @@ export function CreateTaskModal({
 
     setIsSavingTemplate(true);
     try {
-      const existingTemplate = workflowTemplates.find(
-        (template) => normalizeTemplateName(template.name || "") === normalizeTemplateName(cleanTemplateName)
+      const existingTemplate = currentProjectWorkflowTemplates.find(
+        (template) =>
+          normalizeTemplateName(template.name || "") === normalizeTemplateName(cleanTemplateName)
       );
       const newTemplate = {
         name: cleanTemplateName,
-        projectId,
+        ...getWorkflowTemplateScopeData(projectId, project),
         steps: sanitizeWorkflowSteps(workflowSteps),
         updatedAt: serverTimestamp(),
         updatedBy: user?.uid || "unknown",
@@ -746,13 +763,26 @@ export function CreateTaskModal({
                         defaultValue=""
                       >
                         <option value="" disabled>
-                          Plantillas del proyecto...
+                          Plantillas disponibles...
                         </option>
-                        {workflowTemplates.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.name}
-                          </option>
-                        ))}
+                        {currentProjectWorkflowTemplates.length > 0 && (
+                          <optgroup label="Este proyecto">
+                            {currentProjectWorkflowTemplates.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {sharedWorkflowTemplates.length > 0 && (
+                          <optgroup label="Organizaciones asignadas">
+                            {sharedWorkflowTemplates.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.name} · {getWorkflowTemplateScopeLabel(t, projectId)}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
                       </select>
                     )}
                     {workflowSteps.length > 0 && (
@@ -1476,13 +1506,13 @@ export function CreateTaskModal({
                   Si usas el nombre de una plantilla existente, se pedirá confirmación para reescribirla.
                 </p>
               </div>
-              {canManageWorkflowTemplates && workflowTemplates.length > 0 && (
+              {canManageWorkflowTemplates && currentProjectWorkflowTemplates.length > 0 && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
                     Plantillas del proyecto
                   </p>
                   <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
-                    {workflowTemplates.map((template) => (
+                    {currentProjectWorkflowTemplates.map((template) => (
                       <div key={template.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
                         <button
                           type="button"
