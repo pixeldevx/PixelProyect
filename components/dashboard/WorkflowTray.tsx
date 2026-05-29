@@ -17,6 +17,7 @@ import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgr
 import { useAuth } from '@/hooks/useAuth';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
 import { notifyTaskAssignment } from '@/lib/notifications';
+import { getStaticRateCardSources } from '@/lib/rate-card-config';
 
 const hasRequiredFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -202,12 +203,6 @@ const getDynamicRateCardUnits = (source: any) =>
 
 const shouldRequestDynamicRateCardUnits = (source: any) =>
   source?.autoAddUnits === false || source?.dynamicRateCardConfig?.promptForUnits === true;
-
-const getStaticRateCardSource = (step: any) => {
-  if (step?.rateCardId) return step;
-  if (step?.form?.rateCardId) return step.form;
-  return null;
-};
 
 const getDateKeys = (date = new Date()) => {
   const year = date.getFullYear();
@@ -406,7 +401,7 @@ export default function WorkflowTray() {
   );
   
   const [actionModal, setActionModal] = useState<{ isOpen: boolean, task: any, type: 'approve' | 'return' | 'stop' | 'resume' }>({ isOpen: false, task: null, type: 'approve' });
-  const [overrideUnits, setOverrideUnits] = useState<number | ''>('');
+  const [staticRateCardUnits, setStaticRateCardUnits] = useState<Record<string, number | ''>>({});
   const [actionComment, setActionComment] = useState('');
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [nextStepAssignee, setNextStepAssignee] = useState<string>('');
@@ -691,7 +686,7 @@ export default function WorkflowTray() {
     const currentStep = task.workflowSteps[currentIndex];
     const currentStepIsQualityGate = isQualityGateStep(currentStep);
     const selectedQualityCause = projectQualityCauses.find((cause) => cause.id === qualityCauseId);
-    const staticRateCardSource = getStaticRateCardSource(currentStep);
+    const staticRateCardSources = getStaticRateCardSources(currentStep);
     const workflowDynamicRateCardSource = getWorkflowDynamicRateCardSource(task, action);
     const workflowDynamicRateCardRequestsUnits = workflowDynamicRateCardSource
       ? shouldRequestDynamicRateCardUnits(workflowDynamicRateCardSource.sourceConfig)
@@ -741,26 +736,31 @@ export default function WorkflowTray() {
       const hasBeenActedUpon = task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex && (h.action === 'approve' || h.action === 'return'));
 
       // Rate Card Update for the current step (whether approved or returned)
-      if (staticRateCardSource?.rateCardId && (action === 'approve' || action === 'return')) {
-        const rcRef = doc(db, 'projects', task.projectId, 'rateCards', staticRateCardSource.rateCardId);
-        const units = (staticRateCardSource.autoAddUnits === false && overrideUnits !== '') ? Number(overrideUnits) : (staticRateCardSource.unitsToAdd || 1);
+      if (staticRateCardSources.length > 0 && (action === 'approve' || action === 'return')) {
         const assignedUser = currentStep.assignedTo || user?.uid;
-        
-        const updateData: any = {};
-        if (!hasBeenActedUpon) {
-          // First attempt: Normal Rate
-          updateData.currentValue = increment(units);
-          if (assignedUser) {
-            updateData[`userStats.${assignedUser}`] = increment(units);
+
+        staticRateCardSources.forEach((staticRateCardSource) => {
+          const rcRef = doc(db, 'projects', task.projectId, 'rateCards', staticRateCardSource.rateCardId);
+          const units = staticRateCardSource.autoAddUnits === false
+            ? Number(staticRateCardUnits[staticRateCardSource.key] || 0)
+            : (staticRateCardSource.unitsToAdd || 1);
+
+          if (!units) return;
+
+          const updateData: any = {};
+          if (!hasBeenActedUpon) {
+            updateData.currentValue = increment(units);
+            if (assignedUser) {
+              updateData[`userStats.${assignedUser}`] = increment(units);
+            }
+          } else {
+            updateData.reworkValue = increment(units);
+            if (assignedUser) {
+              updateData[`userReworkStats.${assignedUser}`] = increment(units);
+            }
           }
-        } else {
-          // Second attempt or more: Rework Rate
-          updateData.reworkValue = increment(units);
-          if (assignedUser) {
-            updateData[`userReworkStats.${assignedUser}`] = increment(units);
-          }
-        }
-        batch.update(rcRef, updateData);
+          batch.update(rcRef, updateData);
+        });
       }
 
       let dynamicRateCardCharge: any = null;
@@ -938,12 +938,14 @@ export default function WorkflowTray() {
     setNextStepAssignee('');
     setQualityCauseId('');
     
-    const staticRateCardSource = getStaticRateCardSource(currentStep);
-    setOverrideUnits(staticRateCardSource?.unitsToAdd || currentStep?.unitsToAdd || 1);
+    const staticRateCardSources = getStaticRateCardSources(currentStep);
+    setStaticRateCardUnits(
+      Object.fromEntries(staticRateCardSources.map((source) => [source.key, source.unitsToAdd || 1]))
+    );
     const dynamicSource = getWorkflowDynamicRateCardSource(task, type);
     resetDynamicRateCardFields(dynamicSource?.sourceConfig, currentStep?.assignedTo || task.assignedTo || memberId || user?.uid || '');
 
-    if ((type === 'approve' && currentStep?.assignsNextStep) || dynamicSource || isQualityGateStep(currentStep)) {
+    if ((type === 'approve' && currentStep?.assignsNextStep) || dynamicSource || staticRateCardSources.length > 0 || isQualityGateStep(currentStep)) {
       await loadProjectRateCardContext(task.projectId);
     }
   };
@@ -1171,9 +1173,13 @@ export default function WorkflowTray() {
   const activeDynamicRateCardRequestsUnits = activeDynamicRateCardSource
     ? shouldRequestDynamicRateCardUnits(activeDynamicRateCardSource.sourceConfig)
     : false;
-  const activeStaticRateCardSource = actionModal.isOpen
-    ? getStaticRateCardSource(actionModal.task?.workflowSteps?.[actionModal.task.currentStepIndex || 0])
-    : null;
+  const activeStaticRateCardSources = actionModal.isOpen
+    ? getStaticRateCardSources(actionModal.task?.workflowSteps?.[actionModal.task.currentStepIndex || 0])
+    : [];
+  const manualStaticRateCardSources = activeStaticRateCardSources.filter((source) => source.autoAddUnits === false);
+  const hasMissingManualStaticUnits = manualStaticRateCardSources.some(
+    (source) => staticRateCardUnits[source.key] === '' || Number(staticRateCardUnits[source.key] || 0) <= 0
+  );
   const activeQualityGateStep = actionModal.isOpen
     ? actionModal.task?.workflowSteps?.[actionModal.task.currentStepIndex || 0]
     : null;
@@ -1825,21 +1831,42 @@ export default function WorkflowTray() {
                 </div>
               )}
 
-              {activeStaticRateCardSource?.rateCardId && activeStaticRateCardSource?.autoAddUnits === false && (
-                <div className="mb-4">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Unidades a sumar para este paso <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="number"
-                    min="0.1"
-                    step="0.1"
-                    value={overrideUnits}
-                    onChange={(e) => setOverrideUnits(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                    required
-                  />
-                  <p className="text-[10px] text-slate-500 mt-1">Este paso requiere confirmación manual de las unidades a sumar al Rate Card.</p>
+              {manualStaticRateCardSources.length > 0 && (
+                <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="mb-2 text-sm font-medium text-slate-700">
+                    Unidades a sumar <span className="text-red-500">*</span>
+                  </p>
+                  <div className="space-y-2">
+                    {manualStaticRateCardSources.map((source) => {
+                      const rateCard = projectRateCards.find((candidate) => candidate.id === source.rateCardId);
+
+                      return (
+                        <label key={source.key} className="grid grid-cols-[minmax(0,1fr)_110px] items-center gap-2">
+                          <span className="truncate text-xs font-bold text-slate-600">
+                            {rateCard?.name || 'Rate Card'}
+                          </span>
+                          <input
+                            type="number"
+                            min="0.1"
+                            step="0.1"
+                            value={staticRateCardUnits[source.key] ?? source.unitsToAdd}
+                            onChange={(e) => {
+                              const nextValue = e.target.value === '' ? '' : Number(e.target.value);
+                              setStaticRateCardUnits((current) => ({
+                                ...current,
+                                [source.key]: nextValue,
+                              }));
+                            }}
+                            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                            required
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-500">
+                    Este paso tiene uno o varios indicadores con unidades manuales.
+                  </p>
                 </div>
               )}
 
@@ -1866,7 +1893,7 @@ export default function WorkflowTray() {
               </Button>
               <Button
                 onClick={confirmAction}
-                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || activeQualityGateRequiresCause && !qualityCauseId || (activeStaticRateCardSource?.rateCardId && activeStaticRateCardSource?.autoAddUnits === false && overrideUnits === '') || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))))}
+                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || activeQualityGateRequiresCause && !qualityCauseId || hasMissingManualStaticUnits || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))))}
                 className={
                   actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 
                   actionModal.type === 'return' ? 'bg-red-600 hover:bg-red-700 text-white' :

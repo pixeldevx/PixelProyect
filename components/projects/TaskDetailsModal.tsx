@@ -3,6 +3,7 @@ import { X, Save, CheckCircle2, Circle, RotateCcw, BookOpen } from 'lucide-react
 import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
+import { getStaticRateCardSources } from '@/lib/rate-card-config';
 
 interface TaskDetailsModalProps {
   isOpen: boolean;
@@ -32,12 +33,6 @@ const getCompletedStatus = (task: any) => {
   return endDate && Date.now() > endDate.getTime() ? "completed_late" : "completed";
 };
 
-const getStaticRateCardSource = (step: any) => {
-  if (step?.rateCardId) return step;
-  if (step?.form?.rateCardId) return step.form;
-  return null;
-};
-
 export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   isOpen,
   onClose,
@@ -50,7 +45,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   const [workflowSteps, setWorkflowSteps] = useState<any[]>([]);
   const [stepUnitPrompt, setStepUnitPrompt] = useState<{
     index: number;
-    units: number;
+    unitsByKey: Record<string, number | ''>;
   } | null>(null);
   const [additionalCycles, setAdditionalCycles] = useState(1);
   const [isAddingCycles, setIsAddingCycles] = useState(false);
@@ -204,28 +199,30 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         const wasApproved = oldStep?.status === "listo";
         const isApproved = step.status === "listo";
 
-        const rateCardSource = getStaticRateCardSource(step);
+        const rateCardSources = getStaticRateCardSources(step);
 
-        if (wasApproved !== isApproved && rateCardSource?.rateCardId) {
-          const rcRef = doc(
-            db,
-            "projects",
-            projectId,
-            "rateCards",
-            rateCardSource.rateCardId,
-          );
-          const units = rateCardSource.unitsToAdd || 1;
-          const updateData: any = {
-            currentValue: increment(isApproved ? units : -units),
-          };
-
-          if (step.assignedTo) {
-            updateData[`userStats.${step.assignedTo}`] = increment(
-              isApproved ? units : -units,
+        if (wasApproved !== isApproved && rateCardSources.length > 0) {
+          rateCardSources.forEach((rateCardSource) => {
+            const rcRef = doc(
+              db,
+              "projects",
+              projectId,
+              "rateCards",
+              rateCardSource.rateCardId,
             );
-          }
+            const units = rateCardSource.unitsToAdd || 1;
+            const updateData: any = {
+              currentValue: increment(isApproved ? units : -units),
+            };
 
-          batch.update(rcRef, updateData);
+            if (step.assignedTo) {
+              updateData[`userStats.${step.assignedTo}`] = increment(
+                isApproved ? units : -units,
+              );
+            }
+
+            batch.update(rcRef, updateData);
+          });
         }
       });
 
@@ -297,12 +294,17 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     const currentStatus = newSteps[index].status || "not_started";
     const step = newSteps[index];
 
-    if (
-      currentStatus !== "listo" &&
-      getStaticRateCardSource(step)?.rateCardId &&
-      getStaticRateCardSource(step)?.autoAddUnits === false
-    ) {
-      setStepUnitPrompt({ index, units: getStaticRateCardSource(step)?.unitsToAdd || 1 });
+    const manualRateCardSources = getStaticRateCardSources(step).filter(
+      (source) => source.autoAddUnits === false
+    );
+
+    if (currentStatus !== "listo" && manualRateCardSources.length > 0) {
+      setStepUnitPrompt({
+        index,
+        unitsByKey: Object.fromEntries(
+          manualRateCardSources.map((source) => [source.key, source.unitsToAdd || 1])
+        ),
+      });
       return;
     }
 
@@ -317,18 +319,58 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     if (!stepUnitPrompt) return;
     const newSteps = [...workflowSteps];
     const currentStep = newSteps[stepUnitPrompt.index];
-    const updates =
-      currentStep?.form?.rateCardId && !currentStep?.rateCardId
-        ? {
+    const sources = getStaticRateCardSources(currentStep);
+    const manualSources = sources.filter((source) => source.autoAddUnits === false);
+    if (manualSources.some((source) => Number(stepUnitPrompt.unitsByKey[source.key] || 0) <= 0)) {
+      toast.warning("Define unidades mayores a cero para cada Rate Card manual.");
+      return;
+    }
+    let updatedStep = { ...currentStep };
+
+    sources.forEach((source) => {
+      const units = Number(stepUnitPrompt.unitsByKey[source.key] || 0);
+      if (units <= 0) return;
+
+      if (source.source === "form") {
+        if (typeof source.itemIndex === "number" && Array.isArray(updatedStep.form?.rateCards)) {
+          updatedStep = {
+            ...updatedStep,
             form: {
-              ...currentStep.form,
-              unitsToAdd: stepUnitPrompt.units,
+              ...updatedStep.form,
+              rateCards: updatedStep.form.rateCards.map((item: any, itemIndex: number) =>
+                itemIndex === source.itemIndex ? { ...item, unitsToAdd: units } : item
+              ),
             },
-          }
-        : { unitsToAdd: stepUnitPrompt.units };
+          };
+        } else {
+          updatedStep = {
+            ...updatedStep,
+            form: {
+              ...updatedStep.form,
+              unitsToAdd: units,
+            },
+          };
+        }
+        return;
+      }
+
+      if (typeof source.itemIndex === "number" && Array.isArray(updatedStep.rateCards)) {
+        updatedStep = {
+          ...updatedStep,
+          rateCards: updatedStep.rateCards.map((item: any, itemIndex: number) =>
+            itemIndex === source.itemIndex ? { ...item, unitsToAdd: units } : item
+          ),
+        };
+      } else {
+        updatedStep = {
+          ...updatedStep,
+          unitsToAdd: units,
+        };
+      }
+    });
+
     newSteps[stepUnitPrompt.index] = {
-      ...currentStep,
-      ...updates,
+      ...updatedStep,
       status: "listo",
     };
     setWorkflowSteps(newSteps);
@@ -530,24 +572,31 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
               Por favor, confirma la cantidad de unidades que se sumarán al
               completar este paso.
             </p>
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                Unidades Acumuladas
-              </label>
-              <input
-                type="number"
-                min="0.1"
-                step="0.1"
-                value={stepUnitPrompt.units}
-                onChange={(e) =>
-                  setStepUnitPrompt({
-                    ...stepUnitPrompt,
-                    units: Number(e.target.value),
-                  })
-                }
-                className="w-full text-center text-lg h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
-                autoFocus
-              />
+            <div className="mb-6 space-y-3">
+              {getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.autoAddUnits === false).map((source, sourceIndex) => (
+                <label key={source.key} className="block">
+                  <span className="mb-1 block text-sm font-medium text-slate-700">
+                    Unidades acumuladas {sourceIndex + 1}
+                  </span>
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={stepUnitPrompt.unitsByKey[source.key] || ''}
+                    onChange={(e) =>
+                      setStepUnitPrompt({
+                        ...stepUnitPrompt,
+                        unitsByKey: {
+                          ...stepUnitPrompt.unitsByKey,
+                          [source.key]: e.target.value === '' ? '' : Number(e.target.value),
+                        },
+                      })
+                    }
+                    className="w-full text-center text-lg h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    autoFocus={sourceIndex === 0}
+                  />
+                </label>
+              ))}
             </div>
             <div className="flex justify-end gap-2">
               <button
@@ -558,7 +607,8 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
               </button>
               <button
                 onClick={confirmStepUnitToggle}
-                className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg transition-colors"
+                disabled={getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.autoAddUnits === false).some((source) => Number(stepUnitPrompt.unitsByKey[source.key] || 0) <= 0)}
+                className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg transition-colors disabled:opacity-50"
               >
                 Confirmar y Completar
               </button>

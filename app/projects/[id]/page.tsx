@@ -40,6 +40,7 @@ import Image from 'next/image';
 import { belongsToAnyOrganization, getOrganizationIds } from '@/lib/organizations';
 import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
 import { notifyTaskAssignment } from '@/lib/notifications';
+import { getStaticRateCardSources } from '@/lib/rate-card-config';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
@@ -112,12 +113,6 @@ const getDynamicRateCardUnits = (source: any) =>
 
 const shouldRequestDynamicRateCardUnits = (source: any) =>
   source?.autoAddUnits === false || source?.dynamicRateCardConfig?.promptForUnits === true;
-
-const getStaticRateCardSource = (step: any) => {
-  if (step?.rateCardId) return step;
-  if (step?.form?.rateCardId) return step.form;
-  return null;
-};
 
 const normalizeEmailAddress = (value: unknown) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -480,17 +475,19 @@ export default function ProjectDetailsPage() {
                 const stepWasApproved = step.status === 'listo';
                 const stepIsApproved = isCompleted;
 
-                const stepRateCardSource = getStaticRateCardSource(step);
-                if (stepWasApproved !== stepIsApproved && stepRateCardSource?.rateCardId) {
-                  const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
-                  const stepUnits = stepRateCardSource.unitsToAdd || 1;
-                  const stepUpdateData: any = {
-                    currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
-                  };
-                  if (step.assignedTo) {
-                    stepUpdateData[`userStats.${step.assignedTo}`] = increment(stepIsApproved ? stepUnits : -stepUnits);
-                  }
-                  batch.update(stepRcRef, stepUpdateData);
+                const stepRateCardSources = getStaticRateCardSources(step);
+                if (stepWasApproved !== stepIsApproved && stepRateCardSources.length > 0) {
+                  stepRateCardSources.forEach((stepRateCardSource) => {
+                    const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
+                    const stepUnits = stepRateCardSource.unitsToAdd || 1;
+                    const stepUpdateData: any = {
+                      currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
+                    };
+                    if (step.assignedTo) {
+                      stepUpdateData[`userStats.${step.assignedTo}`] = increment(stepIsApproved ? stepUnits : -stepUnits);
+                    }
+                    batch.update(stepRcRef, stepUpdateData);
+                  });
                 }
                 return { ...step, status: stepIsApproved ? 'listo' : 'not_started' };
               });
@@ -863,17 +860,19 @@ export default function ProjectDetailsPage() {
                 const stepWasApproved = step.status === 'listo';
                 const stepIsApproved = isCompleted;
 
-                const stepRateCardSource = getStaticRateCardSource(step);
-                if (stepWasApproved !== stepIsApproved && stepRateCardSource?.rateCardId) {
-                  const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
-                  const stepUnits = stepRateCardSource.unitsToAdd || 1;
-                  const stepUpdateData: any = {
-                    currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
-                  };
-                  if (step.assignedTo) {
-                    stepUpdateData[`userStats.${step.assignedTo}`] = increment(stepIsApproved ? stepUnits : -stepUnits);
-                  }
-                  batch.update(stepRcRef, stepUpdateData);
+                const stepRateCardSources = getStaticRateCardSources(step);
+                if (stepWasApproved !== stepIsApproved && stepRateCardSources.length > 0) {
+                  stepRateCardSources.forEach((stepRateCardSource) => {
+                    const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
+                    const stepUnits = stepRateCardSource.unitsToAdd || 1;
+                    const stepUpdateData: any = {
+                      currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
+                    };
+                    if (step.assignedTo) {
+                      stepUpdateData[`userStats.${step.assignedTo}`] = increment(stepIsApproved ? stepUnits : -stepUnits);
+                    }
+                    batch.update(stepRcRef, stepUpdateData);
+                  });
                 }
                 return { ...step, status: stepIsApproved ? 'listo' : 'not_started' };
               });
@@ -1021,13 +1020,15 @@ export default function ProjectDetailsPage() {
         // Revert step-level rate cards
         if (t.type === 'workflow' && t.workflowSteps) {
           t.workflowSteps.forEach((step: any) => {
-            const stepRateCardSource = getStaticRateCardSource(step);
-            if (step.completed && stepRateCardSource?.rateCardId) {
-              const rcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
-              const units = stepRateCardSource.unitsToAdd || 1;
-              const updateData: any = { currentValue: increment(-units) };
-              if (step.assignedTo) updateData[`userStats.${step.assignedTo}`] = increment(-units);
-              batch.update(rcRef, updateData);
+            const stepRateCardSources = getStaticRateCardSources(step);
+            if (step.completed && stepRateCardSources.length > 0) {
+              stepRateCardSources.forEach((stepRateCardSource) => {
+                const rcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
+                const units = stepRateCardSource.unitsToAdd || 1;
+                const updateData: any = { currentValue: increment(-units) };
+                if (step.assignedTo) updateData[`userStats.${step.assignedTo}`] = increment(-units);
+                batch.update(rcRef, updateData);
+              });
             }
           });
         }
@@ -1571,17 +1572,19 @@ export default function ProjectDetailsPage() {
       const taskRef = doc(db, 'projects', projectId, 'tasks', task.id);
 
       (task.workflowSteps || []).forEach((step: any) => {
-        const stepRateCardSource = getStaticRateCardSource(step);
-        if (step.status === 'listo' && stepRateCardSource?.rateCardId) {
-          const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
-          const stepUnits = Number(stepRateCardSource.unitsToAdd || 1);
-          const updateData: any = {
-            currentValue: increment(-stepUnits),
-          };
-          if (step.assignedTo) {
-            updateData[`userStats.${step.assignedTo}`] = increment(-stepUnits);
-          }
-          batch.update(stepRcRef, updateData);
+        const stepRateCardSources = getStaticRateCardSources(step);
+        if (step.status === 'listo' && stepRateCardSources.length > 0) {
+          stepRateCardSources.forEach((stepRateCardSource) => {
+            const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
+            const stepUnits = Number(stepRateCardSource.unitsToAdd || 1);
+            const updateData: any = {
+              currentValue: increment(-stepUnits),
+            };
+            if (step.assignedTo) {
+              updateData[`userStats.${step.assignedTo}`] = increment(-stepUnits);
+            }
+            batch.update(stepRcRef, updateData);
+          });
         }
       });
 

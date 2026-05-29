@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, updateDoc, deleteDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
-import { WorkflowStepFormBuilderModal, CustomForm } from '@/components/projects/WorkflowStepFormBuilderModal';
+import { WorkflowStepFormBuilderModal, CustomForm, FormRateCardItem } from '@/components/projects/WorkflowStepFormBuilderModal';
 import { notifyTaskAssignment, TaskAssignmentNotificationPayload } from '@/lib/notifications';
 import {
   getWorkflowTemplateScopeData,
@@ -14,6 +14,46 @@ import {
 
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
+
+const createStepRateCardItem = (): FormRateCardItem => ({
+  id: `step_rc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  rateCardId: "",
+  unitsToAdd: 1,
+  autoAddUnits: true,
+});
+
+const getEditableStepRateCards = (step: any): FormRateCardItem[] => {
+  if (Array.isArray(step?.rateCards) && step.rateCards.length > 0) {
+    return step.rateCards.map((item: any, index: number) => ({
+      id: item.id || `step_rc_existing_${item.rateCardId || "empty"}_${index}`,
+      rateCardId: item.rateCardId || "",
+      unitsToAdd: Number(item.unitsToAdd || 1),
+      autoAddUnits: item.autoAddUnits !== false,
+    }));
+  }
+
+  if (step?.rateCardId) {
+    return [
+      {
+        id: "step_rc_legacy",
+        rateCardId: step.rateCardId,
+        unitsToAdd: Number(step.unitsToAdd || 1),
+        autoAddUnits: step.autoAddUnits !== false,
+      },
+    ];
+  }
+
+  return [];
+};
+
+const cleanStepRateCards = (step: any) =>
+  getEditableStepRateCards(step)
+    .filter((item) => item.rateCardId)
+    .map((item) => ({
+      ...item,
+      unitsToAdd: Number(item.unitsToAdd),
+      autoAddUnits: item.autoAddUnits !== false,
+    }));
 
 interface CreateTaskModalProps {
   isOpen: boolean;
@@ -95,6 +135,7 @@ export function CreateTaskModal({
         requireRateCard: boolean;
         promptForUnits?: boolean;
       } | null;
+      rateCards?: FormRateCardItem[];
       rateCardId?: string;
       unitsToAdd?: number;
       autoAddUnits?: boolean;
@@ -198,10 +239,41 @@ export function CreateTaskModal({
   const normalizeTemplateName = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
 
   const sanitizeWorkflowSteps = (steps: typeof workflowSteps) =>
-    steps.map((step, index) => ({
-      ...step,
-      isQualityGate: index === 0 ? false : step.isQualityGate,
-    }));
+    steps.map((step, index) => {
+      const staticRateCards = step.dynamicRateCard ? [] : cleanStepRateCards(step);
+      const firstRateCard = staticRateCards[0];
+
+      return {
+        ...step,
+        isQualityGate: index === 0 ? false : step.isQualityGate,
+        rateCards: staticRateCards,
+        rateCardMode: step.dynamicRateCard
+          ? ("dynamic" as const)
+          : staticRateCards.length > 0
+            ? ("static" as const)
+            : undefined,
+        dynamicRateCard: Boolean(step.dynamicRateCard),
+        dynamicRateCardConfig: step.dynamicRateCard
+          ? {
+              defaultUnits: Number(step.unitsToAdd || step.dynamicRateCardConfig?.defaultUnits || 1),
+              requirePerson: true,
+              requireRateCard: true,
+              promptForUnits: step.autoAddUnits === false,
+            }
+          : null,
+        rateCardId: firstRateCard?.rateCardId || undefined,
+        unitsToAdd: step.dynamicRateCard
+          ? Number(step.unitsToAdd || 1)
+          : firstRateCard
+            ? firstRateCard.unitsToAdd
+            : undefined,
+        autoAddUnits: step.dynamicRateCard
+          ? step.autoAddUnits !== false
+          : firstRateCard
+            ? firstRateCard.autoAddUnits !== false
+            : true,
+      };
+    });
 
   const validateWorkflowSteps = () => {
     if (newTaskType !== "workflow") return true;
@@ -218,6 +290,34 @@ export function CreateTaskModal({
 
     if (workflowSteps[0]?.isQualityGate) {
       toast.warning("El primer paso no puede ser control de calidad; debe existir un paso anterior que envíe a revisión.");
+      return false;
+    }
+
+    const hasStaticStepWithoutRateCard = workflowSteps.some(
+      (step) => step.rateCardMode === "static" && cleanStepRateCards(step).length === 0
+    );
+    if (hasStaticStepWithoutRateCard) {
+      toast.warning("Agrega al menos un Rate Card fijo en cada paso configurado.");
+      return false;
+    }
+
+    const hasDuplicatedStaticRateCards = workflowSteps.some((step) => {
+      const cards = cleanStepRateCards(step);
+      return cards.some(
+        (item, itemIndex) => cards.findIndex((candidate) => candidate.rateCardId === item.rateCardId) !== itemIndex
+      );
+    });
+    if (hasDuplicatedStaticRateCards) {
+      toast.warning("No repitas el mismo Rate Card dentro de un paso.");
+      return false;
+    }
+
+    const hasInvalidStepUnits = workflowSteps.some((step) => {
+      if (step.dynamicRateCard) return Number(step.unitsToAdd || 0) <= 0;
+      return cleanStepRateCards(step).some((item) => Number(item.unitsToAdd || 0) <= 0);
+    });
+    if (hasInvalidStepUnits) {
+      toast.warning("Define unidades mayores a cero en los Rate Cards de los pasos.");
       return false;
     }
 
@@ -321,6 +421,31 @@ export function CreateTaskModal({
       }
       toast.success("Plantilla cargada.");
     }
+  };
+
+  const updateStepStaticRateCards = (
+    index: number,
+    updater: (currentCards: FormRateCardItem[]) => FormRateCardItem[]
+  ) => {
+    setWorkflowSteps((currentSteps) =>
+      currentSteps.map((step, stepIndex) => {
+        if (stepIndex !== index) return step;
+
+        const nextCards = updater(getEditableStepRateCards(step));
+        const firstRateCard = nextCards[0];
+
+        return {
+          ...step,
+          rateCardMode: nextCards.length > 0 ? "static" : undefined,
+          dynamicRateCard: false,
+          dynamicRateCardConfig: null,
+          rateCards: nextCards,
+          rateCardId: firstRateCard?.rateCardId || undefined,
+          unitsToAdd: firstRateCard ? firstRateCard.unitsToAdd : undefined,
+          autoAddUnits: firstRateCard ? firstRateCard.autoAddUnits !== false : true,
+        };
+      })
+    );
   };
 
   const handleCreateTask = async (e: React.FormEvent) => {
@@ -835,7 +960,7 @@ export function CreateTaskModal({
                       onClick={() =>
                         setWorkflowSteps([
                           ...workflowSteps,
-                          { assignedTo: "", label: "", unitsToAdd: 1 },
+                          { assignedTo: "", label: "", unitsToAdd: 1, autoAddUnits: true, rateCards: [] },
                         ])
                       }
                       className="h-7 text-[10px] font-bold text-indigo-600 hover:bg-indigo-100"
@@ -934,7 +1059,13 @@ export function CreateTaskModal({
                           </select>
 
                           <select
-                            value={step.dynamicRateCard ? "__dynamic__" : step.rateCardId || ""}
+                            value={
+                              step.dynamicRateCard
+                                ? "__dynamic__"
+                                : step.rateCardMode === "static" || getEditableStepRateCards(step).length > 0
+                                  ? "__static__"
+                                  : ""
+                            }
                             onChange={(e) => {
                               const newSteps = [...workflowSteps];
                               if (e.target.value === "__dynamic__") {
@@ -947,25 +1078,35 @@ export function CreateTaskModal({
                                   promptForUnits: false,
                                 };
                                 newSteps[idx].rateCardId = undefined;
+                                newSteps[idx].rateCards = [];
                                 newSteps[idx].autoAddUnits = true;
-                              } else {
-                                newSteps[idx].rateCardMode = e.target.value ? "static" : undefined;
+                              } else if (e.target.value === "__static__") {
+                                const currentCards = getEditableStepRateCards(newSteps[idx]);
+                                const nextCards = currentCards.length > 0 ? currentCards : [createStepRateCardItem()];
+                                const firstRateCard = nextCards[0];
+                                newSteps[idx].rateCardMode = "static";
                                 newSteps[idx].dynamicRateCard = false;
                                 newSteps[idx].dynamicRateCardConfig = null;
-                                newSteps[idx].rateCardId =
-                                  e.target.value || undefined;
+                                newSteps[idx].rateCards = nextCards;
+                                newSteps[idx].rateCardId = firstRateCard?.rateCardId || undefined;
+                                newSteps[idx].unitsToAdd = firstRateCard?.unitsToAdd ?? 1;
+                                newSteps[idx].autoAddUnits = firstRateCard?.autoAddUnits !== false;
+                              } else {
+                                newSteps[idx].rateCardMode = undefined;
+                                newSteps[idx].dynamicRateCard = false;
+                                newSteps[idx].dynamicRateCardConfig = null;
+                                newSteps[idx].rateCards = [];
+                                newSteps[idx].rateCardId = undefined;
+                                newSteps[idx].unitsToAdd = undefined;
+                                newSteps[idx].autoAddUnits = true;
                               }
                               setWorkflowSteps(newSteps);
                             }}
                               className="h-8 w-full min-w-0 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
                           >
                             <option value="">Sin Rate Card</option>
+                            <option value="__static__">Rate Cards fijos</option>
                             <option value="__dynamic__">Rate Card dinámico</option>
-                            {rateCards.map((rc) => (
-                              <option key={rc.id} value={rc.id}>
-                                {rc.name}
-                              </option>
-                            ))}
                           </select>
 
                             {step.dynamicRateCard && (
@@ -995,7 +1136,7 @@ export function CreateTaskModal({
                                     type="number"
                                     min="0.1"
                                     step="0.1"
-                                    value={step.unitsToAdd || 1}
+                                    value={step.unitsToAdd ?? 1}
                                     onChange={(e) => {
                                       const newSteps = [...workflowSteps];
                                       const units = Number(e.target.value);
@@ -1020,46 +1161,103 @@ export function CreateTaskModal({
                               </div>
                             )}
 
-                            {step.rateCardId && !step.dynamicRateCard && (
-                              <div className="sm:col-span-2 flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-2 py-2">
-                                <div className="flex items-center gap-1">
-                                <label
-                                  className="flex items-center gap-1 text-[10px] text-slate-500 cursor-pointer"
-                                  title="Si se desmarca, se le preguntará al usuario las unidades al completar el paso."
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={step.autoAddUnits !== false}
-                                    onChange={(e) => {
-                                      const newSteps = [...workflowSteps];
-                                      newSteps[idx].autoAddUnits =
-                                        e.target.checked;
-                                      setWorkflowSteps(newSteps);
-                                    }}
-                                    className="w-3 h-3 text-indigo-600 border-slate-300 rounded focus:ring-indigo-500"
-                                  />
-                                  Sumar auto.
-                                </label>
+                            {!step.dynamicRateCard && (step.rateCardMode === "static" || getEditableStepRateCards(step).length > 0) && (
+                              <div className="sm:col-span-2 space-y-2 rounded-lg border border-slate-100 bg-slate-50 px-2 py-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                    Indicadores del paso
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateStepStaticRateCards(idx, (currentCards) => [...currentCards, createStepRateCardItem()])}
+                                    className="inline-flex h-7 items-center gap-1 rounded border border-indigo-100 bg-white px-2 text-[10px] font-bold text-indigo-600 hover:bg-indigo-50"
+                                  >
+                                    <Plus size={12} />
+                                    Agregar
+                                  </button>
+                                </div>
+                                {getEditableStepRateCards(step).map((rateCardItem) => (
+                                  <div key={rateCardItem.id} className="grid grid-cols-1 gap-2 rounded-lg border border-slate-100 bg-white p-2 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
+                                    <select
+                                      value={rateCardItem.rateCardId}
+                                      onChange={(e) =>
+                                        updateStepStaticRateCards(idx, (currentCards) =>
+                                          currentCards.map((item) =>
+                                            item.id === rateCardItem.id ? { ...item, rateCardId: e.target.value } : item
+                                          )
+                                        )
+                                      }
+                                      className="h-8 min-w-0 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-slate-50 rounded"
+                                    >
+                                      <option value="">Selecciona Rate Card</option>
+                                      {rateCards.map((rc) => (
+                                        <option key={rc.id} value={rc.id}>
+                                          {rc.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <label
+                                      className="flex h-8 items-center gap-1 rounded border border-slate-100 bg-slate-50 px-2 text-[10px] text-slate-500"
+                                      title="Si se desmarca, se le preguntará al usuario las unidades al completar el paso."
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={rateCardItem.autoAddUnits !== false}
+                                        onChange={(e) =>
+                                          updateStepStaticRateCards(idx, (currentCards) =>
+                                            currentCards.map((item) =>
+                                              item.id === rateCardItem.id
+                                                ? { ...item, autoAddUnits: e.target.checked }
+                                                : item
+                                            )
+                                          )
+                                        }
+                                        className="w-3 h-3 text-indigo-600 border-slate-300 rounded focus:ring-indigo-500"
+                                      />
+                                      Sumar auto.
+                                    </label>
+                                    {rateCardItem.autoAddUnits !== false ? (
+                                      <input
+                                        type="number"
+                                        min="0.1"
+                                        step="0.1"
+                                        value={rateCardItem.unitsToAdd ?? 1}
+                                        onChange={(e) =>
+                                          updateStepStaticRateCards(idx, (currentCards) =>
+                                            currentCards.map((item) =>
+                                              item.id === rateCardItem.id
+                                                ? { ...item, unitsToAdd: Number(e.target.value) }
+                                                : item
+                                            )
+                                          )
+                                        }
+                                        className="h-8 w-full px-2 text-[10px] border border-slate-100 focus:ring-0 bg-white rounded sm:w-20"
+                                        placeholder="Unid."
+                                      />
+                                    ) : (
+                                      <span className="text-[9px] font-medium text-slate-400">
+                                        Manual
+                                      </span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        updateStepStaticRateCards(idx, (currentCards) =>
+                                          currentCards.filter((item) => item.id !== rateCardItem.id)
+                                        )
+                                      }
+                                      className="flex h-8 w-full items-center justify-center rounded text-slate-300 hover:bg-red-50 hover:text-red-500 sm:w-8"
+                                      title="Quitar Rate Card"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </div>
+                                ))}
+                                <p className="text-[9px] text-slate-500">
+                                  Al aprobar el paso se sumarán todos los indicadores configurados.
+                                </p>
                               </div>
-                                {step.autoAddUnits !== false && (
-                                  <input
-                                  type="number"
-                                  min="0.1"
-                                  step="0.1"
-                                  value={step.unitsToAdd || 1}
-                                  onChange={(e) => {
-                                    const newSteps = [...workflowSteps];
-                                    newSteps[idx].unitsToAdd = Number(
-                                      e.target.value,
-                                    );
-                                    setWorkflowSteps(newSteps);
-                                  }}
-                                    className="h-8 w-24 px-2 text-[10px] border border-slate-100 focus:ring-0 bg-white rounded"
-                                  placeholder="Unid."
-                                />
-                              )}
-                            </div>
-                          )}
+                            )}
 
                           <label className={`sm:col-span-2 flex items-center gap-2 rounded-lg border px-2 py-2 text-[10px] font-medium ${
                             idx === 0
