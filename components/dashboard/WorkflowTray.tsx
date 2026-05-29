@@ -141,6 +141,26 @@ const getTaskTimestamp = (value: any) => {
   return date ? date.getTime() : 0;
 };
 
+const isFormDataRecord = (value: any) =>
+  Boolean(value && typeof value === 'object' && !Array.isArray(value));
+
+const getWorkflowStepFormData = (task: any, currentStep: any, stepIndex: number) => {
+  if (isFormDataRecord(currentStep?.formData) && Object.keys(currentStep.formData).length > 0) {
+    return { ...currentStep.formData };
+  }
+
+  const latestHistoryWithForm = [...(task?.workflowHistory || [])]
+    .filter((history: any) =>
+      history?.stepIndex === stepIndex &&
+      history?.action === 'approve' &&
+      isFormDataRecord(history?.formData) &&
+      Object.keys(history.formData).length > 0
+    )
+    .sort((left: any, right: any) => getTaskTimestamp(right.timestamp) - getTaskTimestamp(left.timestamp))[0];
+
+  return latestHistoryWithForm?.formData ? { ...latestHistoryWithForm.formData } : {};
+};
+
 const isAfterTaskDeadline = (task: any, date = new Date()) => {
   const endDate = getTaskDate(task?.endDate || task?.end);
   if (!endDate) return false;
@@ -873,13 +893,18 @@ export default function WorkflowTray() {
   };
 
   const openActionModal = async (task: any, type: 'approve' | 'return' | 'stop' | 'resume') => {
+    const currentIndex = task.currentStepIndex || 0;
+    const currentStep = task.workflowSteps?.[currentIndex];
+    const initialFormData = type === 'approve'
+      ? getWorkflowStepFormData(task, currentStep, currentIndex)
+      : {};
+
     setActionModal({ isOpen: true, task, type });
     setActionComment('');
-    setFormData({});
+    setFormData(initialFormData);
     setNextStepAssignee('');
     setQualityCauseId('');
     
-    const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
     const staticRateCardSource = getStaticRateCardSource(currentStep);
     setOverrideUnits(staticRateCardSource?.unitsToAdd || currentStep?.unitsToAdd || 1);
     const dynamicSource = getWorkflowDynamicRateCardSource(task, type);
