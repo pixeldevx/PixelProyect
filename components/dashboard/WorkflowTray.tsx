@@ -141,6 +141,28 @@ const getTaskTimestamp = (value: any) => {
   return date ? date.getTime() : 0;
 };
 
+const normalizeDisplayToken = (value: any) =>
+  String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+const getInboxTaskTitle = (task: any) => {
+  const externalId = String(task?.externalWorkflowId || '').trim();
+  const ownTitle = String(task?.title || task?.name || '').trim();
+  const parentTitle = String(
+    task?.parentTaskTitle ||
+    task?.parentTitle ||
+    task?.matrixTaskTitle ||
+    task?.originalTitle ||
+    ''
+  ).trim();
+  const baseTitle = parentTitle || ownTitle || externalId || 'Tarea sin nombre';
+
+  if (externalId && normalizeDisplayToken(baseTitle) !== normalizeDisplayToken(externalId)) {
+    return `[${externalId}] ${baseTitle}`;
+  }
+
+  return baseTitle;
+};
+
 const isFormDataRecord = (value: any) =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value));
 
@@ -481,7 +503,7 @@ export default function WorkflowTray() {
               );
 
               const unsubTask = onSnapshot(tasksQ, (taskSnapshot) => {
-                const projectItems = taskSnapshot.docs
+                const snapshotItems = taskSnapshot.docs
                   .map(doc => {
                     const taskData = doc.data();
                     const taskIsWorkflow = taskData.type === 'workflow' && Array.isArray(taskData.workflowSteps);
@@ -494,6 +516,17 @@ export default function WorkflowTray() {
                       organizationId: project?.organizationId || null,
                       organizationIds: project ? [project.organizationId].filter(Boolean) : [],
                       organizationName: project ? organizationNameFor(project, organizations) : 'Sin organización',
+                    };
+                  });
+                const tasksById = new Map(snapshotItems.map((task: any) => [task.id, task]));
+                const projectItems = snapshotItems
+                  .map((task: any) => {
+                    const parentTask = task.parentTaskId ? tasksById.get(task.parentTaskId) : null;
+                    const parentTaskTitle = parentTask?.title || parentTask?.name || task.originalTitle || null;
+
+                    return {
+                      ...task,
+                      parentTaskTitle,
                     };
                   })
                   .filter((task: any) => {
@@ -1183,7 +1216,7 @@ export default function WorkflowTray() {
       : `Creada ${format(getTaskDate(task.createdAt) || new Date(), 'd MMM', { locale: es })}`;
     const dueLabel = dueState === 'none' ? 'Sin fecha' : getDueLabel(dueState);
     const commentCount = Number(task.commentCount || 0);
-    const title = `${task.externalWorkflowId ? `[${task.externalWorkflowId}] ` : ''}${task.title || task.name || 'Tarea sin nombre'}`;
+    const title = getInboxTaskTitle(task);
     const description = task.initialObservation || task.description || 'Sin descripción';
     const priority = task.priority || 'medium';
 
@@ -1982,7 +2015,7 @@ export default function WorkflowTray() {
         const detailDueState = getDueState(detailTask);
         const detailUrgencyStyles = getInboxUrgencyStyles(detailDueState);
         const detailEndDate = getTaskDate(detailTask.endDate || detailTask.end);
-        const detailTitle = `${detailTask.externalWorkflowId ? `[${detailTask.externalWorkflowId}] ` : ''}${detailTask.title || detailTask.name || 'Tarea sin nombre'}`;
+        const detailTitle = getInboxTaskTitle(detailTask);
         const detailProgress = Math.min(100, Math.max(0, Number(detailTask.progress || 0)));
         const detailWorkflowSteps = detailTask.workflowSteps || [];
         const detailCurrentIndex = detailTask.currentStepIndex || 0;
@@ -2113,7 +2146,7 @@ export default function WorkflowTray() {
               <div>
                 <h2 className="text-xl font-bold text-slate-800">Historial de Interacciones</h2>
                 <p className="text-sm text-slate-500 mt-1">
-                  {historyModalTask.externalWorkflowId ? `[${historyModalTask.externalWorkflowId}] ` : ''}{historyModalTask.title}
+                  {getInboxTaskTitle(historyModalTask)}
                 </p>
               </div>
               <Button variant="ghost" size="icon" onClick={() => setHistoryModalTask(null)}>
