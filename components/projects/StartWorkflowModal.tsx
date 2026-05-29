@@ -164,6 +164,12 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         }
       }
 
+      const resolvedFirstStepAssignee = updatedSteps[0]?.assignedTo;
+      const shouldAssignTaskToFirstStep =
+        task.workflowSteps?.[0]?.assignedTo === 'DYNAMIC' &&
+        resolvedFirstStepAssignee &&
+        resolvedFirstStepAssignee !== 'DYNAMIC';
+
       await updateDoc(doc(db, 'projects', projectId, 'tasks', task.id), {
         title: cleanWorkflowId,
         name: cleanWorkflowId,
@@ -174,6 +180,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         endDate: parsedWorkflowEnd,
         start: parsedWorkflowStart,
         end: parsedWorkflowEnd,
+        assignedTo: shouldAssignTaskToFirstStep ? resolvedFirstStepAssignee : task.assignedTo || '',
         externalWorkflowId: cleanWorkflowId,
         initialObservation: observation,
         startDocumentId: documentId,

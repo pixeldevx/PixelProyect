@@ -411,6 +411,11 @@ export function BulkWorkflowIterationsModal({
 
           return cleanStep;
         });
+        const resolvedFirstStepAssignee = workflowSteps[0]?.assignedTo;
+        const iterationAssignee =
+          firstStepIsDynamic && resolvedFirstStepAssignee && resolvedFirstStepAssignee !== "DYNAMIC"
+            ? resolvedFirstStepAssignee
+            : task.assignedTo || "";
         notifications.push({
           projectId,
           taskId: iterationRef.id,
@@ -430,7 +435,7 @@ export function BulkWorkflowIterationsModal({
           endDate: iterationEndDate,
           start: iterationStartDate,
           end: iterationEndDate,
-          assignedTo: task.assignedTo || "",
+          assignedTo: iterationAssignee,
           indicator: null,
           indicatorValue: null,
           status: "in_progress",
