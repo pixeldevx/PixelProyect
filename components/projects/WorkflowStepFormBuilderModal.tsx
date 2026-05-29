@@ -210,7 +210,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
               dynamicRateCardConfig: null,
               rateCardId: formRateCardId,
               unitsToAdd: Number(formUnitsToAdd) || 1,
-              autoAddUnits: true,
+              autoAddUnits: formAutoAddUnits,
             };
 
     onSave({ title, fields: cleanedFields, ...rateCardConfig });
@@ -287,18 +287,16 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
 
               {formRateCardMode !== 'none' && (
                 <div className="flex flex-wrap items-center gap-2">
-                  {formRateCardMode === 'dynamic' && (
-                    <label className="flex h-10 items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700">
-                      <input
-                        type="checkbox"
-                        checked={formAutoAddUnits}
-                        onChange={(event) => setFormAutoAddUnits(event.target.checked)}
-                        className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
-                      />
-                      Sumar auto.
-                    </label>
-                  )}
-                  {(formRateCardMode === 'static' || formAutoAddUnits) && (
+                  <label className="flex h-10 items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700">
+                    <input
+                      type="checkbox"
+                      checked={formAutoAddUnits}
+                      onChange={(event) => setFormAutoAddUnits(event.target.checked)}
+                      className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    Sumar auto.
+                  </label>
+                  {formAutoAddUnits && (
                     <input
                       type="number"
                       min="0.1"
@@ -312,9 +310,13 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                 </div>
               )}
             </div>
-            {formRateCardMode === 'dynamic' && (
+            {formRateCardMode !== 'none' && (
               <p className="mt-2 text-[10px] text-emerald-700">
-                Al aprobar el formulario se pedirá persona y perfil; {formAutoAddUnits ? 'usará las unidades configuradas.' : 'también pedirá unidades.'}
+                {formRateCardMode === 'dynamic'
+                  ? `Al aprobar el formulario se pedirá persona y perfil; ${formAutoAddUnits ? 'usará las unidades configuradas.' : 'también pedirá unidades.'}`
+                  : formAutoAddUnits
+                    ? 'Al aprobar el formulario se sumarán automáticamente las unidades configuradas.'
+                    : 'Al aprobar el formulario se pedirá la cantidad de unidades a sumar.'}
               </p>
             )}
           </div>

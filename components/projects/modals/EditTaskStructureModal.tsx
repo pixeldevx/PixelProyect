@@ -260,7 +260,7 @@ export function EditTaskStructureModal({
       dynamicRateCard: false,
       dynamicRateCardConfig: null,
       rateCardId: value || null,
-      autoAddUnits: true,
+      autoAddUnits: value ? workflowSteps[index]?.autoAddUnits !== false : true,
       unitsToAdd: value ? workflowSteps[index]?.unitsToAdd || 1 : null,
     });
   };
@@ -370,7 +370,7 @@ export function EditTaskStructureModal({
         : null,
       rateCardId: step.dynamicRateCard ? null : step.rateCardId || null,
       unitsToAdd: step.dynamicRateCard || step.rateCardId ? Number(step.unitsToAdd || 1) : null,
-      autoAddUnits: step.dynamicRateCard ? step.autoAddUnits !== false : true,
+      autoAddUnits: step.dynamicRateCard || step.rateCardId ? step.autoAddUnits !== false : true,
     }));
 
   const getCleanTaskRateCard = () => {
@@ -410,7 +410,7 @@ export function EditTaskStructureModal({
       dynamicRateCardConfig: null,
       rateCardId: taskRateCardId || null,
       unitsToAdd: Number(taskUnitsToAdd || 1),
-      autoAddUnits: true,
+      autoAddUnits: taskAutoAddUnits,
     };
   };
 
@@ -670,7 +670,7 @@ export function EditTaskStructureModal({
               </div>
 
               {taskRateCardEnabled && (
-                <div className="mt-4 grid gap-3 md:grid-cols-[180px_1fr_120px]">
+                <div className="mt-4 grid gap-3 md:grid-cols-[160px_minmax(0,1fr)_120px_150px]">
                   <select
                     value={taskRateCardMode}
                     onChange={(event) => {
@@ -698,18 +698,22 @@ export function EditTaskStructureModal({
                       ))}
                     </select>
                   ) : (
-                    <label className="flex h-10 items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700">
-                      <input
-                        type="checkbox"
-                        checked={taskAutoAddUnits}
-                        onChange={(event) => setTaskAutoAddUnits(event.target.checked)}
-                        className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
-                      />
-                      Sumar automáticamente las unidades configuradas
-                    </label>
+                    <div className="flex h-10 items-center rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700">
+                      Dinámico al completar
+                    </div>
                   )}
 
-                  {(taskRateCardMode === "static" || taskAutoAddUnits) && (
+                  <label className="flex h-10 items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700">
+                    <input
+                      type="checkbox"
+                      checked={taskAutoAddUnits}
+                      onChange={(event) => setTaskAutoAddUnits(event.target.checked)}
+                      className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    Sumar auto.
+                  </label>
+
+                  {taskAutoAddUnits ? (
                     <input
                       type="number"
                       min="0.1"
@@ -719,6 +723,10 @@ export function EditTaskStructureModal({
                       className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                       placeholder="Unidades"
                     />
+                  ) : (
+                    <div className="h-10 rounded-lg border border-dashed border-emerald-200 bg-white px-3 py-2 text-[10px] font-medium text-emerald-700">
+                      Pedirá unidades al completar.
+                    </div>
                   )}
                 </div>
               )}
@@ -895,29 +903,29 @@ export function EditTaskStructureModal({
 
                       {(step.dynamicRateCard || step.rateCardId) && (
                         <div className="md:col-span-2 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-                          {step.dynamicRateCard && (
-                            <label className="flex items-center gap-2 text-xs font-medium text-emerald-700">
-                              <input
-                                type="checkbox"
-                                checked={step.autoAddUnits !== false}
-                                onChange={(event) => {
-                                  const autoAddUnits = event.target.checked;
-                                  updateStep(index, {
-                                    autoAddUnits,
-                                    dynamicRateCardConfig: {
-                                      defaultUnits: Number(step.unitsToAdd || 1),
-                                      requirePerson: true,
-                                      requireRateCard: true,
-                                      promptForUnits: !autoAddUnits,
-                                    },
-                                  });
-                                }}
-                                className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
-                              />
-                              Sumar auto.
-                            </label>
-                          )}
-                          {(!step.dynamicRateCard || step.autoAddUnits !== false) && (
+                          <label className="flex items-center gap-2 text-xs font-medium text-emerald-700">
+                            <input
+                              type="checkbox"
+                              checked={step.autoAddUnits !== false}
+                              onChange={(event) => {
+                                const autoAddUnits = event.target.checked;
+                                updateStep(index, {
+                                  autoAddUnits,
+                                  dynamicRateCardConfig: step.dynamicRateCard
+                                    ? {
+                                        defaultUnits: Number(step.unitsToAdd || 1),
+                                        requirePerson: true,
+                                        requireRateCard: true,
+                                        promptForUnits: !autoAddUnits,
+                                      }
+                                    : null,
+                                });
+                              }}
+                              className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                            />
+                            Sumar auto.
+                          </label>
+                          {step.autoAddUnits !== false && (
                             <input
                               type="number"
                               min="0.1"
@@ -946,7 +954,9 @@ export function EditTaskStructureModal({
                               ? step.autoAddUnits === false
                                 ? "Pedirá persona, perfil y unidades al aprobar."
                                 : "Pedirá persona y perfil; sumará estas unidades."
-                              : "Sumará estas unidades al aprobar el paso."}
+                              : step.autoAddUnits === false
+                                ? "Pedirá a la persona las unidades a sumar al aprobar el paso."
+                                : "Sumará estas unidades al aprobar el paso."}
                           </span>
                         </div>
                       )}

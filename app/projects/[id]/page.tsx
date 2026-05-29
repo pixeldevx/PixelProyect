@@ -100,6 +100,9 @@ const isWorkflowManualCompletionStatus = (status: string) =>
 const isDynamicRateCardEnabled = (source: any) =>
   Boolean(source?.dynamicRateCard || source?.rateCardMode === 'dynamic' || source?.dynamicRateCardConfig);
 
+const isManualStaticRateCardEnabled = (source: any) =>
+  Boolean(source?.isRateCardTask && source?.rateCardId && source?.autoAddUnits === false && !isDynamicRateCardEnabled(source));
+
 const getDynamicRateCardUnits = (source: any) =>
   Number(source?.dynamicRateCardConfig?.defaultUnits || source?.unitsToAdd || 1);
 
@@ -688,7 +691,7 @@ export default function ProjectDetailsPage() {
 
   const resetDynamicRateCardFields = (task: any = null) => {
     setDynamicRateCardAssignee(task?.assignedTo || '');
-    setDynamicRateCardId('');
+    setDynamicRateCardId(task?.rateCardId || '');
     setDynamicRateCardUnits(getDynamicRateCardUnits(task));
     setDynamicRateCardComment('');
   };
@@ -786,10 +789,12 @@ export default function ProjectDetailsPage() {
 
       const progress = getProgressForTaskStatus(finalStatus, task.progress);
       const taskHasDynamicRateCard = isDynamicRateCardEnabled(task);
+      const taskHasManualStaticRateCard = isManualStaticRateCardEnabled(task);
+      const taskNeedsCompletionRateCardCharge = taskHasDynamicRateCard || taskHasManualStaticRateCard;
       const wasCompleted = isCompletedTaskStatus(task.status);
       const isCompleted = isCompletedTaskStatus(finalStatus);
 
-      if (taskHasDynamicRateCard && isCompleted && !wasCompleted && !dynamicCharge) {
+      if (taskNeedsCompletionRateCardCharge && isCompleted && !wasCompleted && !dynamicCharge) {
         setDynamicRateCardStatusChange({ taskId, newStatus, task });
         resetDynamicRateCardFields(task);
         return;
@@ -802,20 +807,22 @@ export default function ProjectDetailsPage() {
       // Handle Rate Card update
       if (task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
         if (task.type !== 'workflow') {
-          // Proportional for non-workflow
-          const oldProgress = task.progress || 0;
-          const deltaProgress = progress - oldProgress;
-          const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
+          if (!taskHasManualStaticRateCard) {
+            // Proportional for non-workflow tasks with automatic units.
+            const oldProgress = task.progress || 0;
+            const deltaProgress = progress - oldProgress;
+            const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
 
-          if (unitsDelta !== 0) {
-            const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
-            const updateData: any = {
-              currentValue: increment(unitsDelta)
-            };
-            if (task.assignedTo) {
-              updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
+            if (unitsDelta !== 0) {
+              const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
+              const updateData: any = {
+                currentValue: increment(unitsDelta)
+              };
+              if (task.assignedTo) {
+                updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
+              }
+              batch.update(rcRef, updateData);
             }
-            batch.update(rcRef, updateData);
           }
         } else {
           // For workflow, only if completing the whole task
@@ -860,18 +867,18 @@ export default function ProjectDetailsPage() {
         }
       }
 
-      if (taskHasDynamicRateCard && isCompleted && !wasCompleted && dynamicCharge) {
+      if (taskNeedsCompletionRateCardCharge && isCompleted && !wasCompleted && dynamicCharge) {
         dynamicRateCardCharge = addDynamicRateCardChargeToBatch(batch, {
           task,
-          rateCardId: dynamicCharge.rateCardId,
-          assigneeId: dynamicCharge.assigneeId,
+          rateCardId: taskHasManualStaticRateCard ? task.rateCardId : dynamicCharge.rateCardId,
+          assigneeId: taskHasManualStaticRateCard ? (task.assignedTo || dynamicCharge.assigneeId) : dynamicCharge.assigneeId,
           units: dynamicCharge.units,
-          source: 'project_task_status',
+          source: taskHasManualStaticRateCard ? 'project_task_status_manual_units' : 'project_task_status',
           comment: dynamicCharge.comment || null,
         });
       }
 
-      if (taskHasDynamicRateCard && wasCompleted && !isCompleted && task.dynamicRateCardLastCharge) {
+      if (taskNeedsCompletionRateCardCharge && wasCompleted && !isCompleted && task.dynamicRateCardLastCharge) {
         const lastCharge = task.dynamicRateCardLastCharge;
         dynamicRateCardCharge = addDynamicRateCardChargeToBatch(batch, {
           task,
@@ -893,7 +900,7 @@ export default function ProjectDetailsPage() {
 
       if (dynamicRateCardCharge && !dynamicRateCardCharge.reversal && dynamicCharge) {
         taskUpdate.dynamicRateCardLastCharge = dynamicRateCardCharge;
-      } else if (taskHasDynamicRateCard && wasCompleted && !isCompleted) {
+      } else if (taskNeedsCompletionRateCardCharge && wasCompleted && !isCompleted) {
         taskUpdate.dynamicRateCardLastCharge = null;
       }
 
@@ -920,7 +927,7 @@ export default function ProjectDetailsPage() {
       !dynamicRateCardId ||
       (taskRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))
     ) {
-      toast.warning('Completa la persona, el perfil y las unidades del Rate Card dinámico.');
+      toast.warning('Completa la persona, el perfil y las unidades del Rate Card.');
       return;
     }
     if (!projectAssignableTeamMembers.some((member) => member.id === dynamicRateCardAssignee)) {
@@ -1480,6 +1487,11 @@ export default function ProjectDetailsPage() {
     !hasContract ? 'Contrato firmado' : null,
     !hasProposal ? 'Propuesta técnica/comercial' : null,
   ].filter(Boolean) as string[];
+  const pendingRateCardTask = dynamicRateCardStatusChange?.task || null;
+  const pendingManualStaticRateCard = pendingRateCardTask ? isManualStaticRateCardEnabled(pendingRateCardTask) : false;
+  const lockPendingRateCardAssignee = Boolean(pendingManualStaticRateCard && pendingRateCardTask?.assignedTo);
+  const lockPendingRateCardProfile = Boolean(pendingManualStaticRateCard && pendingRateCardTask?.rateCardId);
+  const pendingRateCardRequestsUnits = pendingRateCardTask ? shouldRequestDynamicRateCardUnits(pendingRateCardTask) : false;
 
   return (
     <DashboardLayout>
@@ -2065,7 +2077,9 @@ export default function ProjectDetailsPage() {
           <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-100 p-6">
               <div>
-                <h3 className="text-lg font-bold text-slate-900">Asignar Rate Card</h3>
+                <h3 className="text-lg font-bold text-slate-900">
+                  {pendingManualStaticRateCard ? 'Registrar unidades de Rate Card' : 'Asignar Rate Card'}
+                </h3>
                 <p className="mt-1 text-sm text-slate-500">
                   {dynamicRateCardStatusChange.task.title || dynamicRateCardStatusChange.task.name || 'Tarea'}
                 </p>
@@ -2091,7 +2105,8 @@ export default function ProjectDetailsPage() {
                   <select
                     value={dynamicRateCardAssignee}
                     onChange={(e) => setDynamicRateCardAssignee(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    disabled={lockPendingRateCardAssignee}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:bg-slate-100 disabled:text-slate-500"
                   >
                     <option value="">Seleccionar...</option>
                     {projectAssignableTeamMembers.map((member) => (
@@ -2106,7 +2121,8 @@ export default function ProjectDetailsPage() {
                   <select
                     value={dynamicRateCardId}
                     onChange={(e) => setDynamicRateCardId(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    disabled={lockPendingRateCardProfile}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:bg-slate-100 disabled:text-slate-500"
                   >
                     <option value="">Seleccionar...</option>
                     {rateCards.map((rateCard) => (
@@ -2116,7 +2132,7 @@ export default function ProjectDetailsPage() {
                 </div>
               </div>
 
-              {shouldRequestDynamicRateCardUnits(dynamicRateCardStatusChange.task) ? (
+              {pendingRateCardRequestsUnits ? (
                 <div>
                   <label className="mb-1 block text-sm font-medium text-slate-700">
                     Unidades <span className="text-red-500">*</span>
@@ -2159,7 +2175,7 @@ export default function ProjectDetailsPage() {
               </Button>
               <Button
                 onClick={confirmDynamicRateCardStatusChange}
-                disabled={!dynamicRateCardAssignee || !dynamicRateCardId || (shouldRequestDynamicRateCardUnits(dynamicRateCardStatusChange.task) && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))}
+                disabled={!dynamicRateCardAssignee || !dynamicRateCardId || (pendingRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))}
                 className="bg-emerald-600 text-white hover:bg-emerald-700"
               >
                 Guardar y finalizar
