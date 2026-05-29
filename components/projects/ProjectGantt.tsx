@@ -591,6 +591,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const commentCount = getTaskCommentCount(task);
                     const canEditThisTaskDates = Boolean(canModifyTaskDates && !task.isWorkflowStep);
                     const canEditThisTaskAssignee = Boolean(canChangeTaskAssignee && !task.isWorkflowStep && task.assignedTo !== 'DYNAMIC');
+                    const isWorkflowTask = task.type === 'workflow' && !task.isWorkflowStep;
+                    const canUseStatusSelect = Boolean(canChangeTaskStatus && (!isWorkflowTask || (task.status || 'todo') === 'todo'));
                     const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId && !task.isWorkflowStep);
                     const canResetWorkflow = Boolean(
                       canModifyTaskDetails &&
@@ -790,7 +792,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             <div className="w-28 h-full relative group/status">
                               {task.isWorkflowStep ? (
                                 <select
-                                  value={task.status}
+                                  value={task.status || 'not_started'}
                                   onChange={(e) => {
                                     // Update the specific step status in the parent task
                                     const newStatus = e.target.value;
@@ -813,16 +815,30 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 </select>
                               ) : (
                                 <select
-                                  value={task.status}
+                                  value={task.status || 'todo'}
                                   onChange={(e) => onUpdateTaskStatus?.(task.id, e.target.value, task)}
-                                  disabled={!canChangeTaskStatus}
-                                  className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 text-center focus:outline-none transition-all hover:brightness-105 ${canChangeTaskStatus ? 'cursor-pointer' : 'cursor-default'} ${getStatusColor(task.status)}`}
+                                  disabled={!canUseStatusSelect}
+                                  title={isWorkflowTask ? 'Los workflows solo se inician desde Trabajando; se finalizan por sus pasos.' : undefined}
+                                  className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 text-center focus:outline-none transition-all hover:brightness-105 ${canUseStatusSelect ? 'cursor-pointer' : 'cursor-default'} ${getStatusColor(task.status)}`}
                                 >
-                                  <option value="todo" className="bg-white text-slate-700">PENDIENTE</option>
-                                  <option value="in_progress" className="bg-white text-slate-700">TRABAJANDO</option>
-                                  <option value="stuck" className="bg-white text-slate-700">ESTANCADO</option>
-                                  <option value="completed" className="bg-white text-slate-700">LISTO</option>
-                                  {task.status === 'completed_late' && <option value="completed_late" className="bg-white text-slate-700">LISTO CON RETRASO</option>}
+                                  {isWorkflowTask ? (
+                                    <>
+                                      {task.status !== 'in_progress' && (
+                                        <option value={task.status || 'todo'} className="bg-white text-slate-700" disabled>
+                                          {getStatusLabel(task.status || 'todo')}
+                                        </option>
+                                      )}
+                                      <option value="in_progress" className="bg-white text-slate-700">TRABAJANDO</option>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <option value="todo" className="bg-white text-slate-700">PENDIENTE</option>
+                                      <option value="in_progress" className="bg-white text-slate-700">TRABAJANDO</option>
+                                      <option value="stuck" className="bg-white text-slate-700">ESTANCADO</option>
+                                      <option value="completed" className="bg-white text-slate-700">LISTO</option>
+                                      {task.status === 'completed_late' && <option value="completed_late" className="bg-white text-slate-700">LISTO CON RETRASO</option>}
+                                    </>
+                                  )}
                                 </select>
                               )}
                               <div className="absolute inset-0 pointer-events-none opacity-0 group-hover/status:opacity-100 bg-black/5 transition-opacity" />

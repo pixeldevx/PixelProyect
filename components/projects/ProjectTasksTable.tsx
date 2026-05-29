@@ -257,6 +257,8 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
     const hasSubtasks = subtasks.length > 0 || (task.type === 'workflow' && task.workflowSteps && task.workflowSteps.length > 0);
     const isExpanded = expandedTasks[task.id] !== false;
     const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId);
+    const isWorkflowTask = task.type === 'workflow';
+    const canUseStatusSelect = Boolean(canChangeTaskStatus && (!isWorkflowTask || (task.status || 'todo') === 'todo'));
 
     return (
       <React.Fragment key={task.id}>
@@ -341,14 +343,26 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
             <select
               value={task.status || 'todo'}
               onChange={(e) => onUpdateTaskStatus?.(task.id, e.target.value, task)}
-              disabled={!canChangeTaskStatus}
-              className={`absolute inset-0 w-full h-full opacity-0 ${canChangeTaskStatus ? 'cursor-pointer' : 'cursor-default'}`}
+              disabled={!canUseStatusSelect}
+              title={isWorkflowTask ? 'Los workflows solo se inician desde En curso; se finalizan por sus pasos.' : undefined}
+              className={`absolute inset-0 w-full h-full opacity-0 ${canUseStatusSelect ? 'cursor-pointer' : 'cursor-default'}`}
             >
-              <option value="todo">Pendiente</option>
-              <option value="in_progress">En curso</option>
-              <option value="stuck">Detenido</option>
-              <option value="completed">Listo</option>
-              {task.status === 'completed_late' && <option value="completed_late">Finalizado con retraso</option>}
+              {isWorkflowTask ? (
+                <>
+                  {task.status !== 'in_progress' && (
+                    <option value={task.status || 'todo'} disabled>{getStatusLabel(task.status || 'todo')}</option>
+                  )}
+                  <option value="in_progress">En curso</option>
+                </>
+              ) : (
+                <>
+                  <option value="todo">Pendiente</option>
+                  <option value="in_progress">En curso</option>
+                  <option value="stuck">Detenido</option>
+                  <option value="completed">Listo</option>
+                  {task.status === 'completed_late' && <option value="completed_late">Finalizado con retraso</option>}
+                </>
+              )}
             </select>
           </td>
 

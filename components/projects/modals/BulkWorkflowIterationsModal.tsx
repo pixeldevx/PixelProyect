@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ClipboardList, Hash, Loader2, MessageSquare, Play, X } from "lucide-react";
+import { ClipboardList, Hash, Loader2, MapPin, MessageSquare, Play, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { collection, doc, serverTimestamp, writeBatch } from "@/lib/supabase/document-store";
 import { db } from "@/lib/backend";
@@ -283,6 +283,7 @@ export function BulkWorkflowIterationsModal({
   tasks,
 }: BulkWorkflowIterationsModalProps) {
   const [rawItems, setRawItems] = useState("");
+  const [municipality, setMunicipality] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [firstStepAssignee, setFirstStepAssignee] = useState("");
@@ -292,6 +293,7 @@ export function BulkWorkflowIterationsModal({
     if (!isOpen || !task) return;
 
     setRawItems("");
+    setMunicipality(task.municipality || task.workflowMunicipality || "");
     setStartDate(toDateInputValue(task.startDate || task.start));
     setEndDate(toDateInputValue(task.endDate || task.end));
     setFirstStepAssignee("");
@@ -345,6 +347,12 @@ export function BulkWorkflowIterationsModal({
 
     if (invalidIterations.length > 0) {
       toast.warning("Corrige los IDs, fechas o rangos antes de crear las iteraciones.");
+      return;
+    }
+
+    const cleanMunicipality = municipality.trim();
+    if (!cleanMunicipality) {
+      toast.warning("Ingresa el municipio que se asociará a estas iteraciones.");
       return;
     }
 
@@ -435,6 +443,8 @@ export function BulkWorkflowIterationsModal({
           endDate: iterationEndDate,
           start: iterationStartDate,
           end: iterationEndDate,
+          municipality: cleanMunicipality,
+          workflowMunicipality: cleanMunicipality,
           assignedTo: iterationAssignee,
           indicator: null,
           indicatorValue: null,
@@ -466,6 +476,7 @@ export function BulkWorkflowIterationsModal({
               comment: cleanObservation || "Workflow iniciado por carga masiva",
               timestamp: now.toISOString(),
               workflowId: cleanWorkflowId,
+              municipality: cleanMunicipality,
               plannedStartDate: iterationStartDate.toISOString(),
               plannedEndDate: iterationEndDate.toISOString(),
               source: "bulk_iteration",
@@ -535,7 +546,20 @@ export function BulkWorkflowIterationsModal({
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto bg-slate-50 p-5">
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-3">
+            <div>
+              <label className="mb-1 flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <MapPin size={15} className="text-slate-400" />
+                Municipio
+              </label>
+              <input
+                type="text"
+                value={municipality}
+                onChange={(event) => setMunicipality(event.target.value)}
+                placeholder="Ej: Medellín"
+                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+              />
+            </div>
             <div>
               <label className="mb-1 flex items-center gap-2 text-sm font-semibold text-slate-700">
                 <Hash size={15} className="text-slate-400" />
@@ -664,7 +688,7 @@ export function BulkWorkflowIterationsModal({
             <Button
               type="button"
               onClick={handleCreateIterations}
-              disabled={isCreating || validIterations.length === 0 || invalidIterations.length > 0}
+              disabled={isCreating || !municipality.trim() || validIterations.length === 0 || invalidIterations.length > 0}
               className="bg-indigo-600 text-white hover:bg-indigo-700"
             >
               {isCreating ? (

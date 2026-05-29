@@ -94,6 +94,9 @@ const normalizeCompletedTaskStatus = (status: string, task: any) => {
   return Date.now() > endDate.getTime() ? 'completed_late' : 'completed';
 };
 
+const isWorkflowManualCompletionStatus = (status: string) =>
+  status === 'completed' || status === 'completed_late' || status === 'listo';
+
 const isDynamicRateCardEnabled = (source: any) =>
   Boolean(source?.dynamicRateCard || source?.rateCardMode === 'dynamic' || source?.dynamicRateCardConfig);
 
@@ -353,6 +356,10 @@ export default function ProjectDetailsPage() {
     if (!task) return;
     if (!canEditTaskDetails) {
       toast.error('No tienes permisos para editar los detalles de tareas.');
+      return;
+    }
+    if (task.type === 'workflow' && newProgress >= 100) {
+      toast.warning('Los workflows se finalizan aprobando sus pasos. Desde la tarea general solo se pueden iniciar en Trabajando.');
       return;
     }
     try {
@@ -706,6 +713,16 @@ export default function ProjectDetailsPage() {
     try {
       if (task.isParentTask) {
         toast.info("El estado de esta tarea madre se actualiza automáticamente según sus subtareas.");
+        return;
+      }
+
+      if (task.type === 'workflow' && isWorkflowManualCompletionStatus(newStatus)) {
+        toast.warning('Un workflow no se puede marcar como Listo manualmente. Debe completarse aprobando todos sus pasos.');
+        return;
+      }
+
+      if (task.type === 'workflow' && newStatus !== 'in_progress' && newStatus !== task.status) {
+        toast.warning('Desde el estado general solo puedes pasar el workflow a Trabajando para iniciarlo.');
         return;
       }
 

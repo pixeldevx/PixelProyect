@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, Upload, Save, FileText, MessageSquare, Hash, Calendar } from 'lucide-react';
+import { X, Upload, Save, FileText, MessageSquare, Hash, Calendar, MapPin } from 'lucide-react';
 import { doc, updateDoc, serverTimestamp, addDoc, collection } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
@@ -55,6 +55,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   teamMembers
 }) => {
   const [workflowId, setWorkflowId] = useState('');
+  const [municipality, setMunicipality] = useState('');
   const [observation, setObservation] = useState('');
   const [workflowStartDate, setWorkflowStartDate] = useState('');
   const [workflowEndDate, setWorkflowEndDate] = useState('');
@@ -65,12 +66,13 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   useEffect(() => {
     if (!isOpen || !task) return;
     setWorkflowId(task.externalWorkflowId || '');
+    setMunicipality(task.municipality || task.workflowMunicipality || parentTask?.municipality || parentTask?.workflowMunicipality || '');
     setObservation('');
     setWorkflowStartDate(toDateInputValue(task.startDate || task.start));
     setWorkflowEndDate(toDateInputValue(task.endDate || task.end));
     setFile(null);
     setFirstStepAssignee('');
-  }, [isOpen, task]);
+  }, [isOpen, task, parentTask]);
 
   if (!isOpen || !task) return null;
 
@@ -79,9 +81,15 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
 
   const handleStart = async () => {
     const cleanWorkflowId = workflowId.trim();
+    const cleanMunicipality = municipality.trim();
 
     if (!cleanWorkflowId) {
       toast.warning("Por favor ingrese un ID de Workflow.");
+      return;
+    }
+
+    if (!cleanMunicipality) {
+      toast.warning("Por favor ingrese el municipio del workflow.");
       return;
     }
 
@@ -147,6 +155,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         comment: observation || 'Workflow iniciado',
         timestamp: new Date(),
         workflowId: cleanWorkflowId,
+        municipality: cleanMunicipality,
         plannedStartDate: parsedWorkflowStart.toISOString(),
         plannedEndDate: parsedWorkflowEnd.toISOString()
       };
@@ -182,6 +191,8 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         end: parsedWorkflowEnd,
         assignedTo: shouldAssignTaskToFirstStep ? resolvedFirstStepAssignee : task.assignedTo || '',
         externalWorkflowId: cleanWorkflowId,
+        municipality: cleanMunicipality,
+        workflowMunicipality: cleanMunicipality,
         initialObservation: observation,
         startDocumentId: documentId,
         currentStepIndex: 0,
@@ -246,6 +257,23 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
               placeholder="Ej: WKF-2024-001"
               className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
+              <MapPin size={16} className="text-slate-400" />
+              Municipio
+            </label>
+            <input
+              type="text"
+              value={municipality}
+              onChange={(e) => setMunicipality(e.target.value)}
+              placeholder="Ej: Medellín"
+              className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              Se usará para segmentar reportes por ciudad o municipio.
+            </p>
           </div>
 
           <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4">
@@ -368,7 +396,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
           </button>
           <button
             onClick={handleStart}
-            disabled={isStarting}
+            disabled={isStarting || !workflowId.trim() || !municipality.trim()}
             className="flex items-center gap-2 px-6 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
           >
             <Save size={16} />
