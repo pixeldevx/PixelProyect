@@ -1456,6 +1456,7 @@ export function CreateTaskModal({
             `Paso ${currentStepIndexForForm + 1}`
           }
           initialForm={workflowSteps[currentStepIndexForForm]?.form}
+          rateCards={rateCards}
           onSave={(form) => {
             const newSteps = [...workflowSteps];
             newSteps[currentStepIndexForForm].form = form;
@@ -1470,6 +1471,8 @@ export function CreateTaskModal({
           onClose={() => setIsIncrementFormBuilderOpen(false)}
           stepName={newTaskTitle || "Incremento de contador"}
           initialForm={incrementForm}
+          rateCards={rateCards}
+          allowDynamicRateCard={false}
           onSave={(form) => setIncrementForm(form)}
         />
       )}

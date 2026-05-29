@@ -161,6 +161,12 @@ const getDynamicRateCardUnits = (source: any) =>
 const shouldRequestDynamicRateCardUnits = (source: any) =>
   source?.autoAddUnits === false || source?.dynamicRateCardConfig?.promptForUnits === true;
 
+const getStaticRateCardSource = (step: any) => {
+  if (step?.rateCardId) return step;
+  if (step?.form?.rateCardId) return step.form;
+  return null;
+};
+
 const getDateKeys = (date = new Date()) => {
   const year = date.getFullYear();
   const dateKey = date.toISOString().slice(0, 10);
@@ -180,6 +186,14 @@ const getWorkflowDynamicRateCardSource = (task: any, action: string) => {
     return {
       source: 'workflow_step',
       sourceConfig: currentStep,
+      stepIndex: currentIndex,
+    };
+  }
+
+  if ((action === 'approve' || action === 'return') && isDynamicRateCardEnabled(currentStep?.form)) {
+    return {
+      source: 'workflow_form',
+      sourceConfig: currentStep.form,
       stepIndex: currentIndex,
     };
   }
@@ -616,6 +630,7 @@ export default function WorkflowTray() {
     const currentStep = task.workflowSteps[currentIndex];
     const currentStepIsQualityGate = isQualityGateStep(currentStep);
     const selectedQualityCause = projectQualityCauses.find((cause) => cause.id === qualityCauseId);
+    const staticRateCardSource = getStaticRateCardSource(currentStep);
     const workflowDynamicRateCardSource = getWorkflowDynamicRateCardSource(task, action);
     const workflowDynamicRateCardRequestsUnits = workflowDynamicRateCardSource
       ? shouldRequestDynamicRateCardUnits(workflowDynamicRateCardSource.sourceConfig)
@@ -665,9 +680,9 @@ export default function WorkflowTray() {
       const hasBeenActedUpon = task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex && (h.action === 'approve' || h.action === 'return'));
 
       // Rate Card Update for the current step (whether approved or returned)
-      if (currentStep.rateCardId && (action === 'approve' || action === 'return')) {
-        const rcRef = doc(db, 'projects', task.projectId, 'rateCards', currentStep.rateCardId);
-        const units = (currentStep.autoAddUnits === false && overrideUnits !== '') ? Number(overrideUnits) : (currentStep.unitsToAdd || 1);
+      if (staticRateCardSource?.rateCardId && (action === 'approve' || action === 'return')) {
+        const rcRef = doc(db, 'projects', task.projectId, 'rateCards', staticRateCardSource.rateCardId);
+        const units = (staticRateCardSource.autoAddUnits === false && overrideUnits !== '') ? Number(overrideUnits) : (staticRateCardSource.unitsToAdd || 1);
         const assignedUser = currentStep.assignedTo || user?.uid;
         
         const updateData: any = {};
@@ -857,7 +872,8 @@ export default function WorkflowTray() {
     setQualityCauseId('');
     
     const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
-    setOverrideUnits(currentStep?.unitsToAdd || 1);
+    const staticRateCardSource = getStaticRateCardSource(currentStep);
+    setOverrideUnits(staticRateCardSource?.unitsToAdd || currentStep?.unitsToAdd || 1);
     const dynamicSource = getWorkflowDynamicRateCardSource(task, type);
     resetDynamicRateCardFields(dynamicSource?.sourceConfig, currentStep?.assignedTo || task.assignedTo || memberId || user?.uid || '');
 
@@ -1083,6 +1099,9 @@ export default function WorkflowTray() {
   const activeDynamicRateCardRequestsUnits = activeDynamicRateCardSource
     ? shouldRequestDynamicRateCardUnits(activeDynamicRateCardSource.sourceConfig)
     : false;
+  const activeStaticRateCardSource = actionModal.isOpen
+    ? getStaticRateCardSource(actionModal.task?.workflowSteps?.[actionModal.task.currentStepIndex || 0])
+    : null;
   const activeQualityGateStep = actionModal.isOpen
     ? actionModal.task?.workflowSteps?.[actionModal.task.currentStepIndex || 0]
     : null;
@@ -1725,8 +1744,7 @@ export default function WorkflowTray() {
                 </div>
               )}
 
-              {actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && 
-               actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && (
+              {activeStaticRateCardSource?.rateCardId && activeStaticRateCardSource?.autoAddUnits === false && (
                 <div className="mb-4">
                   <label className="block text-sm font-medium text-slate-700 mb-1">
                     Unidades a sumar para este paso <span className="text-red-500">*</span>
@@ -1767,7 +1785,7 @@ export default function WorkflowTray() {
               </Button>
               <Button
                 onClick={confirmAction}
-                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || activeQualityGateRequiresCause && !qualityCauseId || (actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.rateCardId && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.autoAddUnits === false && overrideUnits === '') || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))))}
+                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || activeQualityGateRequiresCause && !qualityCauseId || (activeStaticRateCardSource?.rateCardId && activeStaticRateCardSource?.autoAddUnits === false && overrideUnits === '') || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))))}
                 className={
                   actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 
                   actionModal.type === 'return' ? 'bg-red-600 hover:bg-red-700 text-white' :

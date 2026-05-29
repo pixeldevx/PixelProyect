@@ -32,6 +32,12 @@ const getCompletedStatus = (task: any) => {
   return endDate && Date.now() > endDate.getTime() ? "completed_late" : "completed";
 };
 
+const getStaticRateCardSource = (step: any) => {
+  if (step?.rateCardId) return step;
+  if (step?.form?.rateCardId) return step.form;
+  return null;
+};
+
 export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   isOpen,
   onClose,
@@ -198,15 +204,17 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         const wasApproved = oldStep?.status === "listo";
         const isApproved = step.status === "listo";
 
-        if (wasApproved !== isApproved && step.rateCardId) {
+        const rateCardSource = getStaticRateCardSource(step);
+
+        if (wasApproved !== isApproved && rateCardSource?.rateCardId) {
           const rcRef = doc(
             db,
             "projects",
             projectId,
             "rateCards",
-            step.rateCardId,
+            rateCardSource.rateCardId,
           );
-          const units = step.unitsToAdd || 1;
+          const units = rateCardSource.unitsToAdd || 1;
           const updateData: any = {
             currentValue: increment(isApproved ? units : -units),
           };
@@ -291,10 +299,10 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
 
     if (
       currentStatus !== "listo" &&
-      step.rateCardId &&
-      step.autoAddUnits === false
+      getStaticRateCardSource(step)?.rateCardId &&
+      getStaticRateCardSource(step)?.autoAddUnits === false
     ) {
-      setStepUnitPrompt({ index, units: step.unitsToAdd || 1 });
+      setStepUnitPrompt({ index, units: getStaticRateCardSource(step)?.unitsToAdd || 1 });
       return;
     }
 
@@ -308,9 +316,19 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   const confirmStepUnitToggle = () => {
     if (!stepUnitPrompt) return;
     const newSteps = [...workflowSteps];
+    const currentStep = newSteps[stepUnitPrompt.index];
+    const updates =
+      currentStep?.form?.rateCardId && !currentStep?.rateCardId
+        ? {
+            form: {
+              ...currentStep.form,
+              unitsToAdd: stepUnitPrompt.units,
+            },
+          }
+        : { unitsToAdd: stepUnitPrompt.units };
     newSteps[stepUnitPrompt.index] = {
-      ...newSteps[stepUnitPrompt.index],
-      unitsToAdd: stepUnitPrompt.units,
+      ...currentStep,
+      ...updates,
       status: "listo",
     };
     setWorkflowSteps(newSteps);

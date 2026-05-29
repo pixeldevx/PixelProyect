@@ -20,6 +20,14 @@ type WorkflowStepDraft = {
   assignedTo?: string;
   label: string;
   form?: CustomForm;
+  rateCardMode?: "static" | "dynamic" | null;
+  dynamicRateCard?: boolean | null;
+  dynamicRateCardConfig?: {
+    defaultUnits: number;
+    requirePerson: boolean;
+    requireRateCard: boolean;
+    promptForUnits?: boolean;
+  } | null;
   rateCardId?: string | null;
   unitsToAdd?: number | null;
   autoAddUnits?: boolean | null;
@@ -45,6 +53,7 @@ interface EditTaskStructureModalProps {
   task: any | null;
   user: any;
   teamMembers: any[];
+  rateCards?: any[];
   subtasks?: any[];
   canEditTaskStructure?: boolean;
   canManageWorkflowTemplates?: boolean;
@@ -54,6 +63,20 @@ interface EditTaskStructureModalProps {
   onSave: (updates: {
     title: string;
     workflowSteps?: WorkflowStepDraft[];
+    rateCard?: {
+      isRateCardTask: boolean;
+      rateCardMode: "static" | "dynamic" | null;
+      dynamicRateCard: boolean;
+      dynamicRateCardConfig: {
+        defaultUnits: number;
+        requirePerson: boolean;
+        requireRateCard: boolean;
+        promptForUnits?: boolean;
+      } | null;
+      rateCardId: string | null;
+      unitsToAdd: number | null;
+      autoAddUnits: boolean;
+    };
   }) => Promise<void> | void;
 }
 
@@ -93,6 +116,9 @@ const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
     label: step?.label || "",
     assignedTo: step?.assignedTo || "",
     form: step?.form,
+    rateCardMode: step?.rateCardMode ?? (step?.dynamicRateCard ? "dynamic" : step?.rateCardId ? "static" : null),
+    dynamicRateCard: step?.dynamicRateCard ?? false,
+    dynamicRateCardConfig: step?.dynamicRateCardConfig ?? null,
     rateCardId: step?.rateCardId ?? null,
     unitsToAdd: step?.unitsToAdd ?? null,
     autoAddUnits: step?.autoAddUnits ?? null,
@@ -108,6 +134,7 @@ export function EditTaskStructureModal({
   task,
   user,
   teamMembers,
+  rateCards = [],
   subtasks = [],
   canEditTaskStructure = true,
   canManageWorkflowTemplates = false,
@@ -135,6 +162,11 @@ export function EditTaskStructureModal({
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
   const [currentStepIndexForForm, setCurrentStepIndexForForm] = useState<number | null>(null);
+  const [taskRateCardEnabled, setTaskRateCardEnabled] = useState(false);
+  const [taskRateCardMode, setTaskRateCardMode] = useState<"static" | "dynamic">("static");
+  const [taskRateCardId, setTaskRateCardId] = useState("");
+  const [taskUnitsToAdd, setTaskUnitsToAdd] = useState<number>(1);
+  const [taskAutoAddUnits, setTaskAutoAddUnits] = useState(true);
   const templateScopeOrganizationKey = templateScopeOrganizationIds.join("|");
 
   const canEditWorkflow = Boolean(canEditTaskStructure && (task?.type === "workflow" || (task?.workflowSteps?.length || 0) > 0));
@@ -160,6 +192,11 @@ export function EditTaskStructureModal({
     setShowTemplateModal(false);
     setIsFormBuilderOpen(false);
     setCurrentStepIndexForForm(null);
+    setTaskRateCardEnabled(Boolean(task.isRateCardTask || task.dynamicRateCard || task.rateCardId));
+    setTaskRateCardMode(task.dynamicRateCard || task.rateCardMode === "dynamic" ? "dynamic" : "static");
+    setTaskRateCardId(task.rateCardId || "");
+    setTaskUnitsToAdd(Number(task.unitsToAdd || task.dynamicRateCardConfig?.defaultUnits || 1));
+    setTaskAutoAddUnits(task.autoAddUnits !== false);
   }, [isOpen, task]);
 
   useEffect(() => {
@@ -199,6 +236,33 @@ export function EditTaskStructureModal({
         stepIndex === index ? { ...step, ...updates } : step
       )
     );
+  };
+
+  const updateStepRateCard = (index: number, value: string) => {
+    if (value === "__dynamic__") {
+      updateStep(index, {
+        rateCardMode: "dynamic",
+        dynamicRateCard: true,
+        dynamicRateCardConfig: {
+          defaultUnits: Number(workflowSteps[index]?.unitsToAdd || 1),
+          requirePerson: true,
+          requireRateCard: true,
+          promptForUnits: workflowSteps[index]?.autoAddUnits === false,
+        },
+        rateCardId: null,
+        autoAddUnits: workflowSteps[index]?.autoAddUnits !== false,
+      });
+      return;
+    }
+
+    updateStep(index, {
+      rateCardMode: value ? "static" : null,
+      dynamicRateCard: false,
+      dynamicRateCardConfig: null,
+      rateCardId: value || null,
+      autoAddUnits: true,
+      unitsToAdd: value ? workflowSteps[index]?.unitsToAdd || 1 : null,
+    });
   };
 
   const addStep = () => {
@@ -289,12 +353,66 @@ export function EditTaskStructureModal({
     }
   };
 
-  const getCleanWorkflowSteps = () =>
+  const getCleanWorkflowSteps = (): WorkflowStepDraft[] =>
     workflowSteps.map((step, index) => ({
       ...step,
       isQualityGate: index === 0 ? false : step.isQualityGate,
       label: step.label.trim(),
+      rateCardMode: step.dynamicRateCard ? ("dynamic" as const) : step.rateCardId ? ("static" as const) : null,
+      dynamicRateCard: Boolean(step.dynamicRateCard),
+      dynamicRateCardConfig: step.dynamicRateCard
+        ? {
+            defaultUnits: Number(step.unitsToAdd || step.dynamicRateCardConfig?.defaultUnits || 1),
+            requirePerson: true,
+            requireRateCard: true,
+            promptForUnits: step.autoAddUnits === false,
+          }
+        : null,
+      rateCardId: step.dynamicRateCard ? null : step.rateCardId || null,
+      unitsToAdd: step.dynamicRateCard || step.rateCardId ? Number(step.unitsToAdd || 1) : null,
+      autoAddUnits: step.dynamicRateCard ? step.autoAddUnits !== false : true,
     }));
+
+  const getCleanTaskRateCard = () => {
+    if (!taskRateCardEnabled) {
+      return {
+        isRateCardTask: false,
+        rateCardMode: null,
+        dynamicRateCard: false,
+        dynamicRateCardConfig: null,
+        rateCardId: null,
+        unitsToAdd: null,
+        autoAddUnits: true,
+      };
+    }
+
+    if (taskRateCardMode === "dynamic") {
+      return {
+        isRateCardTask: true,
+        rateCardMode: "dynamic" as const,
+        dynamicRateCard: true,
+        dynamicRateCardConfig: {
+          defaultUnits: Number(taskUnitsToAdd || 1),
+          requirePerson: true,
+          requireRateCard: true,
+          promptForUnits: !taskAutoAddUnits,
+        },
+        rateCardId: null,
+        unitsToAdd: Number(taskUnitsToAdd || 1),
+        autoAddUnits: taskAutoAddUnits,
+      };
+    }
+
+    return {
+      isRateCardTask: true,
+      rateCardMode: "static" as const,
+      dynamicRateCard: false,
+      dynamicRateCardConfig: null,
+      rateCardId: taskRateCardId || null,
+      unitsToAdd: Number(taskUnitsToAdd || 1),
+      autoAddUnits: true,
+    };
+  };
 
   const normalizeTemplateName = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
 
@@ -311,6 +429,22 @@ export function EditTaskStructureModal({
 
     if (workflowSteps[0]?.isQualityGate) {
       toast.warning("El primer paso no puede ser control de calidad; debe existir un paso anterior que envíe a revisión.");
+      return false;
+    }
+
+    const hasStaticStepWithoutRateCard = workflowSteps.some(
+      (step) => step.rateCardMode === "static" && !step.rateCardId
+    );
+    if (hasStaticStepWithoutRateCard) {
+      toast.warning("Selecciona el Rate Card fijo de cada paso configurado.");
+      return false;
+    }
+
+    const hasInvalidStepUnits = workflowSteps.some(
+      (step) => (step.dynamicRateCard || step.rateCardId) && Number(step.unitsToAdd || 0) <= 0
+    );
+    if (hasInvalidStepUnits) {
+      toast.warning("Define unidades mayores a cero en los Rate Cards de los pasos.");
       return false;
     }
 
@@ -429,6 +563,16 @@ export function EditTaskStructureModal({
       if (!validateWorkflowSteps()) return;
     }
 
+    if (taskRateCardEnabled && taskRateCardMode === "static" && !taskRateCardId) {
+      toast.warning("Selecciona el Rate Card fijo de la tarea.");
+      return;
+    }
+
+    if (taskRateCardEnabled && Number(taskUnitsToAdd) <= 0) {
+      toast.warning("Define unidades de Rate Card mayores a cero para la tarea.");
+      return;
+    }
+
     setIsSaving(true);
     try {
       await onSave({
@@ -436,6 +580,7 @@ export function EditTaskStructureModal({
         workflowSteps: canEditWorkflow
           ? getCleanWorkflowSteps()
           : undefined,
+        rateCard: getCleanTaskRateCard(),
       });
       onClose();
     } catch (error: any) {
@@ -496,6 +641,82 @@ export function EditTaskStructureModal({
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Tarea</p>
               <p className="mt-1 text-sm font-semibold text-slate-800">{getTaskTitle(task)}</p>
+            </div>
+          )}
+
+          {canEditTaskStructure && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-800">Rate Card de la tarea</h3>
+                  <p className="text-xs text-slate-500">
+                    Define si esta tarea suma unidades a un perfil de Rate Card al completarse.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={taskRateCardEnabled}
+                    onChange={(event) => setTaskRateCardEnabled(event.target.checked)}
+                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  Tiene Rate Card
+                </label>
+              </div>
+
+              {taskRateCardEnabled && (
+                <div className="mt-4 grid gap-3 md:grid-cols-[180px_1fr_120px]">
+                  <select
+                    value={taskRateCardMode}
+                    onChange={(event) => {
+                      const mode = event.target.value as "static" | "dynamic";
+                      setTaskRateCardMode(mode);
+                      if (mode === "dynamic") setTaskRateCardId("");
+                    }}
+                    className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="static">Rate Card fijo</option>
+                    <option value="dynamic">Rate Card dinámico</option>
+                  </select>
+
+                  {taskRateCardMode === "static" ? (
+                    <select
+                      value={taskRateCardId}
+                      onChange={(event) => setTaskRateCardId(event.target.value)}
+                      className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    >
+                      <option value="">Seleccionar Rate Card...</option>
+                      {rateCards.map((rateCard) => (
+                        <option key={rateCard.id} value={rateCard.id}>
+                          {rateCard.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <label className="flex h-10 items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700">
+                      <input
+                        type="checkbox"
+                        checked={taskAutoAddUnits}
+                        onChange={(event) => setTaskAutoAddUnits(event.target.checked)}
+                        className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      Sumar automáticamente las unidades configuradas
+                    </label>
+                  )}
+
+                  {(taskRateCardMode === "static" || taskAutoAddUnits) && (
+                    <input
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      value={taskUnitsToAdd}
+                      onChange={(event) => setTaskUnitsToAdd(Number(event.target.value))}
+                      className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      placeholder="Unidades"
+                    />
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -641,6 +862,78 @@ export function EditTaskStructureModal({
                           </option>
                         ))}
                       </select>
+
+                      <select
+                        value={step.dynamicRateCard ? "__dynamic__" : step.rateCardId || ""}
+                        onChange={(event) => updateStepRateCard(index, event.target.value)}
+                        className="h-9 px-3 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                      >
+                        <option value="">Sin Rate Card</option>
+                        <option value="__dynamic__">Rate Card dinámico</option>
+                        {rateCards.map((rateCard) => (
+                          <option key={rateCard.id} value={rateCard.id}>
+                            {rateCard.name}
+                          </option>
+                        ))}
+                      </select>
+
+                      {(step.dynamicRateCard || step.rateCardId) && (
+                        <div className="md:col-span-2 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                          {step.dynamicRateCard && (
+                            <label className="flex items-center gap-2 text-xs font-medium text-emerald-700">
+                              <input
+                                type="checkbox"
+                                checked={step.autoAddUnits !== false}
+                                onChange={(event) => {
+                                  const autoAddUnits = event.target.checked;
+                                  updateStep(index, {
+                                    autoAddUnits,
+                                    dynamicRateCardConfig: {
+                                      defaultUnits: Number(step.unitsToAdd || 1),
+                                      requirePerson: true,
+                                      requireRateCard: true,
+                                      promptForUnits: !autoAddUnits,
+                                    },
+                                  });
+                                }}
+                                className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                              />
+                              Sumar auto.
+                            </label>
+                          )}
+                          {(!step.dynamicRateCard || step.autoAddUnits !== false) && (
+                            <input
+                              type="number"
+                              min="0.1"
+                              step="0.1"
+                              value={step.unitsToAdd || 1}
+                              onChange={(event) => {
+                                const unitsToAdd = Number(event.target.value);
+                                updateStep(index, {
+                                  unitsToAdd,
+                                  dynamicRateCardConfig: step.dynamicRateCard
+                                    ? {
+                                        defaultUnits: unitsToAdd || 1,
+                                        requirePerson: true,
+                                        requireRateCard: true,
+                                        promptForUnits: step.autoAddUnits === false,
+                                      }
+                                    : null,
+                                });
+                              }}
+                              className="h-8 w-24 rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                              placeholder="Unid."
+                            />
+                          )}
+                          <span className="min-w-0 flex-1 text-[10px] text-slate-500">
+                            {step.dynamicRateCard
+                              ? step.autoAddUnits === false
+                                ? "Pedirá persona, perfil y unidades al aprobar."
+                                : "Pedirá persona y perfil; sumará estas unidades."
+                              : "Sumará estas unidades al aprobar el paso."}
+                          </span>
+                        </div>
+                      )}
 
                       {index < workflowSteps.length - 1 ? (
                         <label className="h-9 px-3 flex items-center gap-2 text-xs text-slate-600 border border-slate-200 rounded-lg bg-white cursor-pointer">
@@ -875,6 +1168,7 @@ export function EditTaskStructureModal({
           }}
           stepName={workflowSteps[currentStepIndexForForm]?.label || `Paso ${currentStepIndexForForm + 1}`}
           initialForm={workflowSteps[currentStepIndexForForm]?.form}
+          rateCards={rateCards}
           onSave={(form) => {
             if (currentStepIndexForForm === null) return;
             updateStep(currentStepIndexForForm, { form });

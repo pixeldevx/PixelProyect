@@ -103,6 +103,12 @@ const getDynamicRateCardUnits = (source: any) =>
 const shouldRequestDynamicRateCardUnits = (source: any) =>
   source?.autoAddUnits === false || source?.dynamicRateCardConfig?.promptForUnits === true;
 
+const getStaticRateCardSource = (step: any) => {
+  if (step?.rateCardId) return step;
+  if (step?.form?.rateCardId) return step.form;
+  return null;
+};
+
 const getRateCardDateKeys = (date = new Date()) => {
   const year = date.getFullYear();
   const dateKey = date.toISOString().slice(0, 10);
@@ -403,9 +409,10 @@ export default function ProjectDetailsPage() {
                 const stepWasApproved = step.status === 'listo';
                 const stepIsApproved = isCompleted;
 
-                if (stepWasApproved !== stepIsApproved && step.rateCardId) {
-                  const stepRcRef = doc(db, 'projects', projectId, 'rateCards', step.rateCardId);
-                  const stepUnits = step.unitsToAdd || 1;
+                const stepRateCardSource = getStaticRateCardSource(step);
+                if (stepWasApproved !== stepIsApproved && stepRateCardSource?.rateCardId) {
+                  const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
+                  const stepUnits = stepRateCardSource.unitsToAdd || 1;
                   const stepUpdateData: any = {
                     currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
                   };
@@ -471,6 +478,18 @@ export default function ProjectDetailsPage() {
           }
           batch.update(rcRef, updateData);
         }
+      }
+
+      if (task.incrementForm?.rateCardId) {
+        const units = Number(task.incrementForm.unitsToAdd || 1);
+        const rcRef = doc(db, 'projects', projectId, 'rateCards', task.incrementForm.rateCardId);
+        const updateData: any = {
+          currentValue: increment(units),
+        };
+        if (task.assignedTo) {
+          updateData[`userStats.${task.assignedTo}`] = increment(units);
+        }
+        batch.update(rcRef, updateData);
       }
 
       batch.update(taskRef, {
@@ -759,9 +778,10 @@ export default function ProjectDetailsPage() {
                 const stepWasApproved = step.status === 'listo';
                 const stepIsApproved = isCompleted;
 
-                if (stepWasApproved !== stepIsApproved && step.rateCardId) {
-                  const stepRcRef = doc(db, 'projects', projectId, 'rateCards', step.rateCardId);
-                  const stepUnits = step.unitsToAdd || 1;
+                const stepRateCardSource = getStaticRateCardSource(step);
+                if (stepWasApproved !== stepIsApproved && stepRateCardSource?.rateCardId) {
+                  const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
+                  const stepUnits = stepRateCardSource.unitsToAdd || 1;
                   const stepUpdateData: any = {
                     currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
                   };
@@ -916,9 +936,10 @@ export default function ProjectDetailsPage() {
         // Revert step-level rate cards
         if (t.type === 'workflow' && t.workflowSteps) {
           t.workflowSteps.forEach((step: any) => {
-            if (step.completed && step.rateCardId) {
-              const rcRef = doc(db, 'projects', projectId, 'rateCards', step.rateCardId);
-              const units = step.unitsToAdd || 1;
+            const stepRateCardSource = getStaticRateCardSource(step);
+            if (step.completed && stepRateCardSource?.rateCardId) {
+              const rcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
+              const units = stepRateCardSource.unitsToAdd || 1;
               const updateData: any = { currentValue: increment(-units) };
               if (step.assignedTo) updateData[`userStats.${step.assignedTo}`] = increment(-units);
               batch.update(rcRef, updateData);
@@ -1177,7 +1198,7 @@ export default function ProjectDetailsPage() {
 
   const handleUpdateTaskStructure = async (
     task: any,
-    updates: { title: string; workflowSteps?: any[] }
+    updates: { title: string; workflowSteps?: any[]; rateCard?: any }
   ) => {
     if (!task) return;
 
@@ -1222,6 +1243,19 @@ export default function ProjectDetailsPage() {
               : 0;
         }
 
+        if (updates.rateCard) {
+          updateData.isRateCardTask = updates.rateCard.isRateCardTask;
+          updateData.rateCardMode = updates.rateCard.rateCardMode;
+          updateData.dynamicRateCard = updates.rateCard.dynamicRateCard;
+          updateData.dynamicRateCardConfig = updates.rateCard.dynamicRateCardConfig;
+          updateData.rateCardId = updates.rateCard.rateCardId;
+          updateData.unitsToAdd = updates.rateCard.unitsToAdd;
+          updateData.autoAddUnits = updates.rateCard.autoAddUnits;
+          updateData.syncExternal = updates.rateCard.rateCardId
+            ? Boolean(rateCards.find((rateCard) => rateCard.id === updates.rateCard.rateCardId)?.syncExternal)
+            : false;
+        }
+
         batch.update(doc(db, 'projects', projectId, 'tasks', taskId), updateData);
       });
 
@@ -1246,6 +1280,19 @@ export default function ProjectDetailsPage() {
               updatedSteps.length > 0
                 ? Math.min(currentTask.currentStepIndex || 0, updatedSteps.length - 1)
                 : 0;
+          }
+
+          if (updates.rateCard) {
+            updatedTask.isRateCardTask = updates.rateCard.isRateCardTask;
+            updatedTask.rateCardMode = updates.rateCard.rateCardMode;
+            updatedTask.dynamicRateCard = updates.rateCard.dynamicRateCard;
+            updatedTask.dynamicRateCardConfig = updates.rateCard.dynamicRateCardConfig;
+            updatedTask.rateCardId = updates.rateCard.rateCardId;
+            updatedTask.unitsToAdd = updates.rateCard.unitsToAdd;
+            updatedTask.autoAddUnits = updates.rateCard.autoAddUnits;
+            updatedTask.syncExternal = updates.rateCard.rateCardId
+              ? Boolean(rateCards.find((rateCard) => rateCard.id === updates.rateCard.rateCardId)?.syncExternal)
+              : false;
           }
 
           return updatedTask;
@@ -1282,9 +1329,10 @@ export default function ProjectDetailsPage() {
       const taskRef = doc(db, 'projects', projectId, 'tasks', task.id);
 
       (task.workflowSteps || []).forEach((step: any) => {
-        if (step.status === 'listo' && step.rateCardId) {
-          const stepRcRef = doc(db, 'projects', projectId, 'rateCards', step.rateCardId);
-          const stepUnits = Number(step.unitsToAdd || 1);
+        const stepRateCardSource = getStaticRateCardSource(step);
+        if (step.status === 'listo' && stepRateCardSource?.rateCardId) {
+          const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
+          const stepUnits = Number(stepRateCardSource.unitsToAdd || 1);
           const updateData: any = {
             currentValue: increment(-stepUnits),
           };
@@ -2094,6 +2142,7 @@ export default function ProjectDetailsPage() {
         task={taskForStructureEdit}
         user={user}
         teamMembers={projectAssignableTeamMembers}
+        rateCards={rateCards}
         project={project}
         subtasks={taskForStructureEdit ? tasks.filter((task) => task.parentTaskId === taskForStructureEdit.id) : []}
         canEditTaskStructure={canEditTaskStructure}

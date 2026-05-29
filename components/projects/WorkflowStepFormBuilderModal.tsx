@@ -15,6 +15,17 @@ export interface FormField {
 export interface CustomForm {
   title: string;
   fields: FormField[];
+  rateCardMode?: 'static' | 'dynamic' | null;
+  dynamicRateCard?: boolean;
+  dynamicRateCardConfig?: {
+    defaultUnits: number;
+    requirePerson: boolean;
+    requireRateCard: boolean;
+    promptForUnits?: boolean;
+  } | null;
+  rateCardId?: string | null;
+  unitsToAdd?: number | null;
+  autoAddUnits?: boolean | null;
 }
 
 interface WorkflowStepFormBuilderModalProps {
@@ -22,6 +33,8 @@ interface WorkflowStepFormBuilderModalProps {
   onClose: () => void;
   stepName: string;
   initialForm?: CustomForm;
+  rateCards?: any[];
+  allowDynamicRateCard?: boolean;
   onSave: (form: CustomForm | undefined) => void;
 }
 
@@ -30,10 +43,39 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
   onClose,
   stepName,
   initialForm,
+  rateCards = [],
+  allowDynamicRateCard = true,
   onSave
 }) => {
   const [title, setTitle] = useState(initialForm?.title || `Formulario para ${stepName}`);
   const [fields, setFields] = useState<FormField[]>(initialForm?.fields || []);
+  const [formRateCardMode, setFormRateCardMode] = useState<'none' | 'static' | 'dynamic'>(
+    allowDynamicRateCard && (initialForm?.dynamicRateCard || initialForm?.rateCardMode === 'dynamic')
+      ? 'dynamic'
+      : initialForm?.rateCardId
+        ? 'static'
+        : 'none'
+  );
+  const [formRateCardId, setFormRateCardId] = useState(initialForm?.rateCardId || '');
+  const [formUnitsToAdd, setFormUnitsToAdd] = useState<number>(Number(initialForm?.unitsToAdd || initialForm?.dynamicRateCardConfig?.defaultUnits || 1));
+  const [formAutoAddUnits, setFormAutoAddUnits] = useState(initialForm?.autoAddUnits !== false);
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+
+    setTitle(initialForm?.title || `Formulario para ${stepName}`);
+    setFields(initialForm?.fields || []);
+    setFormRateCardMode(
+      allowDynamicRateCard && (initialForm?.dynamicRateCard || initialForm?.rateCardMode === 'dynamic')
+        ? 'dynamic'
+        : initialForm?.rateCardId
+          ? 'static'
+          : 'none'
+    );
+    setFormRateCardId(initialForm?.rateCardId || '');
+    setFormUnitsToAdd(Number(initialForm?.unitsToAdd || initialForm?.dynamicRateCardConfig?.defaultUnits || 1));
+    setFormAutoAddUnits(initialForm?.autoAddUnits !== false);
+  }, [allowDynamicRateCard, initialForm, isOpen, stepName]);
 
   if (!isOpen) return null;
 
@@ -128,7 +170,50 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
       return;
     }
 
-    onSave({ title, fields: cleanedFields });
+    if (formRateCardMode === 'static' && !formRateCardId) {
+      toast.warning('Selecciona el Rate Card fijo que se vinculará al formulario.');
+      return;
+    }
+
+    if (formRateCardMode !== 'none' && Number(formUnitsToAdd) <= 0) {
+      toast.warning('Define unidades de Rate Card mayores a cero.');
+      return;
+    }
+
+    const rateCardConfig =
+      formRateCardMode === 'none'
+        ? {
+            rateCardMode: null,
+            dynamicRateCard: false,
+            dynamicRateCardConfig: null,
+            rateCardId: null,
+            unitsToAdd: null,
+            autoAddUnits: true,
+          }
+        : formRateCardMode === 'dynamic'
+          ? {
+              rateCardMode: 'dynamic' as const,
+              dynamicRateCard: true,
+              dynamicRateCardConfig: {
+                defaultUnits: Number(formUnitsToAdd) || 1,
+                requirePerson: true,
+                requireRateCard: true,
+                promptForUnits: !formAutoAddUnits,
+              },
+              rateCardId: null,
+              unitsToAdd: Number(formUnitsToAdd) || 1,
+              autoAddUnits: formAutoAddUnits,
+            }
+          : {
+              rateCardMode: 'static' as const,
+              dynamicRateCard: false,
+              dynamicRateCardConfig: null,
+              rateCardId: formRateCardId,
+              unitsToAdd: Number(formUnitsToAdd) || 1,
+              autoAddUnits: true,
+            };
+
+    onSave({ title, fields: cleanedFields, ...rateCardConfig });
     onClose();
   };
 
@@ -162,6 +247,76 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
               className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
               placeholder="Ej: Formulario de Aprobación"
             />
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="flex-1">
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Rate Card del formulario
+                </label>
+                <select
+                  value={formRateCardMode === 'dynamic' ? '__dynamic__' : formRateCardMode === 'static' ? formRateCardId : ''}
+                  onChange={(event) => {
+                    if (event.target.value === '__dynamic__') {
+                      setFormRateCardMode('dynamic');
+                      setFormRateCardId('');
+                      return;
+                    }
+
+                    if (event.target.value) {
+                      setFormRateCardMode('static');
+                      setFormRateCardId(event.target.value);
+                      return;
+                    }
+
+                    setFormRateCardMode('none');
+                    setFormRateCardId('');
+                  }}
+                  className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                >
+                  <option value="">Sin Rate Card</option>
+                  {allowDynamicRateCard && <option value="__dynamic__">Rate Card dinámico</option>}
+                  {rateCards.map((rateCard) => (
+                    <option key={rateCard.id} value={rateCard.id}>
+                      {rateCard.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {formRateCardMode !== 'none' && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {formRateCardMode === 'dynamic' && (
+                    <label className="flex h-10 items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700">
+                      <input
+                        type="checkbox"
+                        checked={formAutoAddUnits}
+                        onChange={(event) => setFormAutoAddUnits(event.target.checked)}
+                        className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      Sumar auto.
+                    </label>
+                  )}
+                  {(formRateCardMode === 'static' || formAutoAddUnits) && (
+                    <input
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      value={formUnitsToAdd}
+                      onChange={(event) => setFormUnitsToAdd(Number(event.target.value))}
+                      className="h-10 w-24 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      placeholder="Unid."
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+            {formRateCardMode === 'dynamic' && (
+              <p className="mt-2 text-[10px] text-emerald-700">
+                Al aprobar el formulario se pedirá persona y perfil; {formAutoAddUnits ? 'usará las unidades configuradas.' : 'también pedirá unidades.'}
+              </p>
+            )}
           </div>
 
           <div>

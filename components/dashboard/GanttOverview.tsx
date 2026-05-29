@@ -297,6 +297,18 @@ export const GanttOverview: React.FC = () => {
         }
       }
 
+      if (task.incrementForm?.rateCardId) {
+        const units = Number(task.incrementForm.unitsToAdd || 1);
+        const rcRef = doc(db, 'projects', selectedProjectId, 'rateCards', task.incrementForm.rateCardId);
+        const updateData: any = {
+          currentValue: increment(units),
+        };
+        if (task.assignedTo) {
+          updateData[`userStats.${task.assignedTo}`] = increment(units);
+        }
+        batch.update(rcRef, updateData);
+      }
+
       batch.update(taskRef, {
         currentValue: nextValue,
         progress,
@@ -944,6 +956,8 @@ export const GanttOverview: React.FC = () => {
           onClose={() => setIsIncrementFormBuilderOpen(false)}
           stepName={newTaskTitle || "Incremento de contador"}
           initialForm={incrementForm}
+          rateCards={rateCards}
+          allowDynamicRateCard={false}
           onSave={(form) => setIncrementForm(form)}
         />
       )}
