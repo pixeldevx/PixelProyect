@@ -3,6 +3,8 @@ export type StaticRateCardSource = {
   rateCardId: string;
   unitsToAdd: number;
   autoAddUnits: boolean;
+  assignToProfessional: boolean;
+  assignedTo: string | null;
   source: "step" | "form";
   itemIndex: number | null;
 };
@@ -13,6 +15,20 @@ const normalizeUnits = (value: any) => {
 };
 
 const normalizeAutoAddUnits = (value: any) => value !== false;
+
+const normalizeAssignee = (value: any) =>
+  typeof value === "string" && value.trim() && value !== "DYNAMIC" ? value.trim() : null;
+
+const normalizeAssignToProfessional = (item: any) =>
+  Boolean(item?.assignToProfessional && normalizeAssignee(item?.assignedTo));
+
+export const getStaticRateCardAssignee = (
+  source: Pick<StaticRateCardSource, "assignToProfessional" | "assignedTo">,
+  fallbackAssignee?: string | null,
+) => {
+  if (source.assignToProfessional && source.assignedTo) return source.assignedTo;
+  return normalizeAssignee(fallbackAssignee);
+};
 
 export const getStaticRateCardSources = (step: any): StaticRateCardSource[] => {
   const sources: StaticRateCardSource[] = [];
@@ -25,6 +41,8 @@ export const getStaticRateCardSources = (step: any): StaticRateCardSource[] => {
         rateCardId: item.rateCardId,
         unitsToAdd: normalizeUnits(item.unitsToAdd),
         autoAddUnits: normalizeAutoAddUnits(item.autoAddUnits),
+        assignToProfessional: normalizeAssignToProfessional(item),
+        assignedTo: normalizeAssignee(item.assignedTo),
         source: "step",
         itemIndex: index,
       });
@@ -35,6 +53,8 @@ export const getStaticRateCardSources = (step: any): StaticRateCardSource[] => {
       rateCardId: step.rateCardId,
       unitsToAdd: normalizeUnits(step.unitsToAdd),
       autoAddUnits: normalizeAutoAddUnits(step.autoAddUnits),
+      assignToProfessional: normalizeAssignToProfessional(step),
+      assignedTo: normalizeAssignee(step.assignedTo),
       source: "step",
       itemIndex: null,
     });
@@ -48,6 +68,8 @@ export const getStaticRateCardSources = (step: any): StaticRateCardSource[] => {
         rateCardId: item.rateCardId,
         unitsToAdd: normalizeUnits(item.unitsToAdd),
         autoAddUnits: normalizeAutoAddUnits(item.autoAddUnits),
+        assignToProfessional: normalizeAssignToProfessional(item),
+        assignedTo: normalizeAssignee(item.assignedTo),
         source: "form",
         itemIndex: index,
       });
@@ -58,6 +80,8 @@ export const getStaticRateCardSources = (step: any): StaticRateCardSource[] => {
       rateCardId: step.form.rateCardId,
       unitsToAdd: normalizeUnits(step.form.unitsToAdd),
       autoAddUnits: normalizeAutoAddUnits(step.form.autoAddUnits),
+      assignToProfessional: normalizeAssignToProfessional(step.form),
+      assignedTo: normalizeAssignee(step.form.assignedTo),
       source: "form",
       itemIndex: null,
     });

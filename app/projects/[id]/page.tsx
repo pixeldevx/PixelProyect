@@ -40,7 +40,7 @@ import Image from 'next/image';
 import { belongsToAnyOrganization, getOrganizationIds } from '@/lib/organizations';
 import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
 import { notifyTaskAssignment } from '@/lib/notifications';
-import { getStaticRateCardSources } from '@/lib/rate-card-config';
+import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
@@ -483,8 +483,9 @@ export default function ProjectDetailsPage() {
                     const stepUpdateData: any = {
                       currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
                     };
-                    if (step.assignedTo) {
-                      stepUpdateData[`userStats.${step.assignedTo}`] = increment(stepIsApproved ? stepUnits : -stepUnits);
+                    const stepAssignee = getStaticRateCardAssignee(stepRateCardSource, step.assignedTo);
+                    if (stepAssignee) {
+                      stepUpdateData[`userStats.${stepAssignee}`] = increment(stepIsApproved ? stepUnits : -stepUnits);
                     }
                     batch.update(stepRcRef, stepUpdateData);
                   });
@@ -868,8 +869,9 @@ export default function ProjectDetailsPage() {
                     const stepUpdateData: any = {
                       currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
                     };
-                    if (step.assignedTo) {
-                      stepUpdateData[`userStats.${step.assignedTo}`] = increment(stepIsApproved ? stepUnits : -stepUnits);
+                    const stepAssignee = getStaticRateCardAssignee(stepRateCardSource, step.assignedTo);
+                    if (stepAssignee) {
+                      stepUpdateData[`userStats.${stepAssignee}`] = increment(stepIsApproved ? stepUnits : -stepUnits);
                     }
                     batch.update(stepRcRef, stepUpdateData);
                   });
@@ -1026,7 +1028,8 @@ export default function ProjectDetailsPage() {
                 const rcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
                 const units = stepRateCardSource.unitsToAdd || 1;
                 const updateData: any = { currentValue: increment(-units) };
-                if (step.assignedTo) updateData[`userStats.${step.assignedTo}`] = increment(-units);
+                const stepAssignee = getStaticRateCardAssignee(stepRateCardSource, step.assignedTo);
+                if (stepAssignee) updateData[`userStats.${stepAssignee}`] = increment(-units);
                 batch.update(rcRef, updateData);
               });
             }
@@ -1580,8 +1583,9 @@ export default function ProjectDetailsPage() {
             const updateData: any = {
               currentValue: increment(-stepUnits),
             };
-            if (step.assignedTo) {
-              updateData[`userStats.${step.assignedTo}`] = increment(-stepUnits);
+            const stepAssignee = getStaticRateCardAssignee(stepRateCardSource, step.assignedTo);
+            if (stepAssignee) {
+              updateData[`userStats.${stepAssignee}`] = increment(-stepUnits);
             }
             batch.update(stepRcRef, updateData);
           });

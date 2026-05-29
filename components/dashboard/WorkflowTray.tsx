@@ -17,7 +17,7 @@ import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgr
 import { useAuth } from '@/hooks/useAuth';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
 import { notifyTaskAssignment } from '@/lib/notifications';
-import { getStaticRateCardSources } from '@/lib/rate-card-config';
+import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
 
 const hasRequiredFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -737,13 +737,15 @@ export default function WorkflowTray() {
 
       // Rate Card Update for the current step (whether approved or returned)
       if (staticRateCardSources.length > 0 && (action === 'approve' || action === 'return')) {
-        const assignedUser = currentStep.assignedTo || user?.uid;
-
         staticRateCardSources.forEach((staticRateCardSource) => {
           const rcRef = doc(db, 'projects', task.projectId, 'rateCards', staticRateCardSource.rateCardId);
           const units = staticRateCardSource.autoAddUnits === false
             ? Number(staticRateCardUnits[staticRateCardSource.key] || 0)
             : (staticRateCardSource.unitsToAdd || 1);
+          const assignedUser = getStaticRateCardAssignee(
+            staticRateCardSource,
+            currentStep.assignedTo || task.assignedTo || user?.uid
+          );
 
           if (!units) return;
 

@@ -957,6 +957,7 @@ export const GanttOverview: React.FC = () => {
           stepName={newTaskTitle || "Incremento de contador"}
           initialForm={incrementForm}
           rateCards={rateCards}
+          teamMembers={teamMembers}
           allowDynamicRateCard={false}
           onSave={(form) => setIncrementForm(form)}
         />

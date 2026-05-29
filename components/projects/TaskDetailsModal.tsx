@@ -3,7 +3,7 @@ import { X, Save, CheckCircle2, Circle, RotateCcw, BookOpen } from 'lucide-react
 import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
-import { getStaticRateCardSources } from '@/lib/rate-card-config';
+import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
 
 interface TaskDetailsModalProps {
   isOpen: boolean;
@@ -215,8 +215,9 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
               currentValue: increment(isApproved ? units : -units),
             };
 
-            if (step.assignedTo) {
-              updateData[`userStats.${step.assignedTo}`] = increment(
+            const stepAssignee = getStaticRateCardAssignee(rateCardSource, step.assignedTo);
+            if (stepAssignee) {
+              updateData[`userStats.${stepAssignee}`] = increment(
                 isApproved ? units : -units,
               );
             }

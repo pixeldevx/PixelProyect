@@ -17,6 +17,8 @@ export interface FormRateCardItem {
   rateCardId: string;
   unitsToAdd: number;
   autoAddUnits: boolean;
+  assignToProfessional?: boolean;
+  assignedTo?: string | null;
 }
 
 export interface CustomForm {
@@ -34,6 +36,8 @@ export interface CustomForm {
   rateCardId?: string | null;
   unitsToAdd?: number | null;
   autoAddUnits?: boolean | null;
+  assignToProfessional?: boolean | null;
+  assignedTo?: string | null;
 }
 
 interface WorkflowStepFormBuilderModalProps {
@@ -42,6 +46,7 @@ interface WorkflowStepFormBuilderModalProps {
   stepName: string;
   initialForm?: CustomForm;
   rateCards?: any[];
+  teamMembers?: any[];
   allowDynamicRateCard?: boolean;
   onSave: (form: CustomForm | undefined) => void;
 }
@@ -52,6 +57,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
   stepName,
   initialForm,
   rateCards = [],
+  teamMembers = [],
   allowDynamicRateCard = true,
   onSave
 }) => {
@@ -72,6 +78,8 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
           rateCardId: item.rateCardId || '',
           unitsToAdd: Number(item.unitsToAdd || 1),
           autoAddUnits: item.autoAddUnits !== false,
+          assignToProfessional: Boolean(item.assignToProfessional),
+          assignedTo: item.assignedTo || '',
         }));
       }
 
@@ -82,6 +90,8 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
             rateCardId: form.rateCardId,
             unitsToAdd: Number(form.unitsToAdd || 1),
             autoAddUnits: form.autoAddUnits !== false,
+            assignToProfessional: Boolean(form.assignToProfessional),
+            assignedTo: form.assignedTo || '',
           },
         ];
       }
@@ -164,6 +174,8 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
         rateCardId: '',
         unitsToAdd: 1,
         autoAddUnits: true,
+        assignToProfessional: false,
+        assignedTo: '',
       },
     ]);
   };
@@ -231,6 +243,8 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
         ...item,
         unitsToAdd: Number(item.unitsToAdd),
         autoAddUnits: item.autoAddUnits !== false,
+        assignToProfessional: Boolean(item.assignToProfessional),
+        assignedTo: item.assignToProfessional ? item.assignedTo || '' : '',
       }))
       .filter((item) => item.rateCardId);
 
@@ -250,6 +264,14 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
     const hasInvalidStaticUnits = cleanedStaticRateCards.some((item) => Number(item.unitsToAdd || 0) <= 0);
     if (formRateCardMode === 'static' && hasInvalidStaticUnits) {
       toast.warning('Define unidades de Rate Card mayores a cero.');
+      return;
+    }
+
+    const hasMissingStaticAssignee = cleanedStaticRateCards.some(
+      (item) => item.assignToProfessional && !item.assignedTo
+    );
+    if (formRateCardMode === 'static' && hasMissingStaticAssignee) {
+      toast.warning('Selecciona el profesional para cada Rate Card fijo asignable.');
       return;
     }
 
@@ -292,6 +314,8 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
               rateCardId: cleanedStaticRateCards[0]?.rateCardId || null,
               unitsToAdd: cleanedStaticRateCards[0]?.unitsToAdd || 1,
               autoAddUnits: cleanedStaticRateCards[0]?.autoAddUnits !== false,
+              assignToProfessional: cleanedStaticRateCards[0]?.assignToProfessional || false,
+              assignedTo: cleanedStaticRateCards[0]?.assignedTo || null,
             };
 
     onSave({ title: title.trim(), fields: cleanedFields, ...rateCardConfig });
@@ -410,45 +434,77 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                   </div>
                 ) : (
                   formRateCards.map((item) => (
-                    <div key={item.id} className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-white p-3 md:grid-cols-[minmax(0,1fr)_auto_auto_auto] md:items-center">
-                      <select
-                        value={item.rateCardId}
-                        onChange={(event) => updateFormRateCard(item.id, { rateCardId: event.target.value })}
-                        className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                      >
-                        <option value="">Selecciona Rate Card</option>
-                        {rateCards.map((rateCard) => (
-                          <option key={rateCard.id} value={rateCard.id}>
-                            {rateCard.name}
-                          </option>
-                        ))}
-                      </select>
-                      <label className="flex h-9 items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700">
+                    <div key={item.id} className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto_auto] md:items-center">
+                        <select
+                          value={item.rateCardId}
+                          onChange={(event) => updateFormRateCard(item.id, { rateCardId: event.target.value })}
+                          className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                        >
+                          <option value="">Selecciona Rate Card</option>
+                          {rateCards.map((rateCard) => (
+                            <option key={rateCard.id} value={rateCard.id}>
+                              {rateCard.name}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="flex h-9 items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700">
+                          <input
+                            type="checkbox"
+                            checked={item.autoAddUnits !== false}
+                            onChange={(event) => updateFormRateCard(item.id, { autoAddUnits: event.target.checked })}
+                            className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                          />
+                          Sumar auto.
+                        </label>
                         <input
-                          type="checkbox"
-                          checked={item.autoAddUnits !== false}
-                          onChange={(event) => updateFormRateCard(item.id, { autoAddUnits: event.target.checked })}
-                          className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                          type="number"
+                          min="0.1"
+                          step="0.1"
+                          value={item.unitsToAdd}
+                          onChange={(event) => updateFormRateCard(item.id, { unitsToAdd: Number(event.target.value) })}
+                          className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 md:w-24"
+                          placeholder="Unid."
                         />
-                        Sumar auto.
-                      </label>
-                      <input
-                        type="number"
-                        min="0.1"
-                        step="0.1"
-                        value={item.unitsToAdd}
-                        onChange={(event) => updateFormRateCard(item.id, { unitsToAdd: Number(event.target.value) })}
-                        className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 md:w-24"
-                        placeholder="Unid."
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeFormRateCard(item.id)}
-                        className="flex h-9 w-full items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 md:w-9"
-                        title="Quitar Rate Card"
-                      >
-                        <Trash2 size={15} />
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => removeFormRateCard(item.id)}
+                          className="flex h-9 w-full items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 md:w-9"
+                          title="Quitar Rate Card"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-[auto_minmax(0,1fr)] md:items-center">
+                        <label className="flex h-9 items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 text-xs font-medium text-indigo-700">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(item.assignToProfessional)}
+                            onChange={(event) =>
+                              updateFormRateCard(item.id, {
+                                assignToProfessional: event.target.checked,
+                                assignedTo: event.target.checked ? item.assignedTo || '' : '',
+                              })
+                            }
+                            className="rounded border-indigo-200 text-indigo-600 focus:ring-indigo-500"
+                          />
+                          Asignar profesional
+                        </label>
+                        {item.assignToProfessional && (
+                          <select
+                            value={item.assignedTo || ''}
+                            onChange={(event) => updateFormRateCard(item.id, { assignedTo: event.target.value })}
+                            className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                          >
+                            <option value="">Selecciona profesional</option>
+                            {teamMembers.map((member) => (
+                              <option key={member.id} value={member.id}>
+                                {member.name || member.email || 'Profesional'}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
                     </div>
                   ))
                 )}

@@ -89,6 +89,8 @@ const createStepRateCardItem = (): FormRateCardItem => ({
   rateCardId: "",
   unitsToAdd: 1,
   autoAddUnits: true,
+  assignToProfessional: false,
+  assignedTo: "",
 });
 
 const getEditableStepRateCards = (step: any): FormRateCardItem[] => {
@@ -98,6 +100,8 @@ const getEditableStepRateCards = (step: any): FormRateCardItem[] => {
       rateCardId: item.rateCardId || "",
       unitsToAdd: Number(item.unitsToAdd || 1),
       autoAddUnits: item.autoAddUnits !== false,
+      assignToProfessional: Boolean(item.assignToProfessional),
+      assignedTo: item.assignedTo || "",
     }));
   }
 
@@ -108,6 +112,8 @@ const getEditableStepRateCards = (step: any): FormRateCardItem[] => {
         rateCardId: step.rateCardId,
         unitsToAdd: Number(step.unitsToAdd || 1),
         autoAddUnits: step.autoAddUnits !== false,
+        assignToProfessional: Boolean(step.assignToProfessional),
+        assignedTo: step.assignedTo || "",
       },
     ];
   }
@@ -122,6 +128,8 @@ const cleanStepRateCards = (step: any) =>
       ...item,
       unitsToAdd: Number(item.unitsToAdd),
       autoAddUnits: item.autoAddUnits !== false,
+      assignToProfessional: Boolean(item.assignToProfessional),
+      assignedTo: item.assignToProfessional ? item.assignedTo || "" : "",
     }));
 
 const getTaskDate = (value: any) => {
@@ -565,6 +573,14 @@ export function EditTaskStructureModal({
     );
     if (hasInvalidStepUnits) {
       toast.warning("Define unidades mayores a cero en los Rate Cards de los pasos.");
+      return false;
+    }
+
+    const hasMissingStepRateCardAssignee = workflowSteps.some((step) =>
+      cleanStepRateCards(step).some((item) => item.assignToProfessional && !item.assignedTo)
+    );
+    if (hasMissingStepRateCardAssignee) {
+      toast.warning("Selecciona el profesional para cada Rate Card fijo asignable.");
       return false;
     }
 
@@ -1096,80 +1112,121 @@ export function EditTaskStructureModal({
                           </div>
 
                           {getEditableStepRateCards(step).map((rateCardItem) => (
-                            <div key={rateCardItem.id} className="grid grid-cols-1 gap-2 rounded-lg border border-slate-100 bg-slate-50 p-2 md:grid-cols-[minmax(0,1fr)_auto_auto_auto] md:items-center">
-                              <select
-                                value={rateCardItem.rateCardId}
-                                onChange={(event) =>
-                                  updateStepStaticRateCards(index, (currentCards) =>
-                                    currentCards.map((item) =>
-                                      item.id === rateCardItem.id ? { ...item, rateCardId: event.target.value } : item
-                                    )
-                                  )
-                                }
-                                className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                              >
-                                <option value="">Selecciona Rate Card</option>
-                                {rateCards.map((rateCard) => (
-                                  <option key={rateCard.id} value={rateCard.id}>
-                                    {rateCard.name}
-                                  </option>
-                                ))}
-                              </select>
-                              <label
-                                className="flex h-9 items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700"
-                                title="Si se desmarca, se le preguntará al usuario las unidades al completar el paso."
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={rateCardItem.autoAddUnits !== false}
+                            <div key={rateCardItem.id} className="space-y-2 rounded-lg border border-slate-100 bg-slate-50 p-2">
+                              <div className="grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto_auto] md:items-center">
+                                <select
+                                  value={rateCardItem.rateCardId}
                                   onChange={(event) =>
                                     updateStepStaticRateCards(index, (currentCards) =>
                                       currentCards.map((item) =>
-                                        item.id === rateCardItem.id
-                                          ? { ...item, autoAddUnits: event.target.checked }
-                                          : item
+                                        item.id === rateCardItem.id ? { ...item, rateCardId: event.target.value } : item
                                       )
                                     )
                                   }
-                                  className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
-                                />
-                                Sumar auto.
-                              </label>
-                              {rateCardItem.autoAddUnits !== false ? (
-                                <input
-                                  type="number"
-                                  min="0.1"
-                                  step="0.1"
-                                  value={rateCardItem.unitsToAdd ?? 1}
-                                  onChange={(event) =>
+                                  className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                >
+                                  <option value="">Selecciona Rate Card</option>
+                                  {rateCards.map((rateCard) => (
+                                    <option key={rateCard.id} value={rateCard.id}>
+                                      {rateCard.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <label
+                                  className="flex h-9 items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 px-3 text-xs font-medium text-emerald-700"
+                                  title="Si se desmarca, se le preguntará al usuario las unidades al completar el paso."
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={rateCardItem.autoAddUnits !== false}
+                                    onChange={(event) =>
+                                      updateStepStaticRateCards(index, (currentCards) =>
+                                        currentCards.map((item) =>
+                                          item.id === rateCardItem.id
+                                            ? { ...item, autoAddUnits: event.target.checked }
+                                            : item
+                                        )
+                                      )
+                                    }
+                                    className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                                  />
+                                  Sumar auto.
+                                </label>
+                                {rateCardItem.autoAddUnits !== false ? (
+                                  <input
+                                    type="number"
+                                    min="0.1"
+                                    step="0.1"
+                                    value={rateCardItem.unitsToAdd ?? 1}
+                                    onChange={(event) =>
+                                      updateStepStaticRateCards(index, (currentCards) =>
+                                        currentCards.map((item) =>
+                                          item.id === rateCardItem.id
+                                            ? { ...item, unitsToAdd: Number(event.target.value) }
+                                            : item
+                                        )
+                                      )
+                                    }
+                                    className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 md:w-24"
+                                    placeholder="Unid."
+                                  />
+                                ) : (
+                                  <span className="text-xs font-medium text-slate-400">
+                                    Manual
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() =>
                                     updateStepStaticRateCards(index, (currentCards) =>
-                                      currentCards.map((item) =>
-                                        item.id === rateCardItem.id
-                                          ? { ...item, unitsToAdd: Number(event.target.value) }
-                                          : item
-                                      )
+                                      currentCards.filter((item) => item.id !== rateCardItem.id)
                                     )
                                   }
-                                  className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 md:w-24"
-                                  placeholder="Unid."
-                                />
-                              ) : (
-                                <span className="text-xs font-medium text-slate-400">
-                                  Manual
-                                </span>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateStepStaticRateCards(index, (currentCards) =>
-                                    currentCards.filter((item) => item.id !== rateCardItem.id)
-                                  )
-                                }
-                                className="flex h-9 w-full items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600 md:w-9"
-                                title="Quitar Rate Card"
-                              >
-                                <Trash2 size={15} />
-                              </button>
+                                  className="flex h-9 w-full items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600 md:w-9"
+                                  title="Quitar Rate Card"
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              </div>
+                              <div className="grid grid-cols-1 gap-2 md:grid-cols-[auto_minmax(0,1fr)] md:items-center">
+                                <label className="flex h-9 items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 text-xs font-medium text-indigo-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(rateCardItem.assignToProfessional)}
+                                    onChange={(event) =>
+                                      updateStepStaticRateCards(index, (currentCards) =>
+                                        currentCards.map((item) =>
+                                          item.id === rateCardItem.id
+                                            ? { ...item, assignToProfessional: event.target.checked, assignedTo: event.target.checked ? item.assignedTo || "" : "" }
+                                            : item
+                                        )
+                                      )
+                                    }
+                                    className="rounded border-indigo-200 text-indigo-600 focus:ring-indigo-500"
+                                  />
+                                  Asignar profesional
+                                </label>
+                                {rateCardItem.assignToProfessional && (
+                                  <select
+                                    value={rateCardItem.assignedTo || ""}
+                                    onChange={(event) =>
+                                      updateStepStaticRateCards(index, (currentCards) =>
+                                        currentCards.map((item) =>
+                                          item.id === rateCardItem.id ? { ...item, assignedTo: event.target.value } : item
+                                        )
+                                      )
+                                    }
+                                    className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                  >
+                                    <option value="">Selecciona profesional</option>
+                                    {teamMembers.map((member) => (
+                                      <option key={member.id} value={member.id}>
+                                        {member.name || member.email}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
+                              </div>
                             </div>
                           ))}
                           <p className="text-[10px] text-slate-500">
@@ -1412,6 +1469,7 @@ export function EditTaskStructureModal({
           stepName={workflowSteps[currentStepIndexForForm]?.label || `Paso ${currentStepIndexForForm + 1}`}
           initialForm={workflowSteps[currentStepIndexForForm]?.form}
           rateCards={rateCards}
+          teamMembers={teamMembers}
           onSave={(form) => {
             if (currentStepIndexForForm === null) return;
             updateStep(currentStepIndexForForm, { form });
