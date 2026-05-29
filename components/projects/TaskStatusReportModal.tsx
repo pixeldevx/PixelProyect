@@ -48,7 +48,11 @@ const STATUS_COLORS = {
   low: "#94a3b8",
 };
 
+const DEFAULT_TASK_GROUP_ID = "__ungrouped__";
+const DEFAULT_TASK_GROUP_NAME = "Sin grupo";
+
 const getTaskTitle = (task: any) => task?.title || task?.name || "Tarea sin nombre";
+const getTaskGroupId = (task: any) => task?.groupId || DEFAULT_TASK_GROUP_ID;
 
 const getTaskDate = (value: any) => {
   if (!value) return null;
@@ -113,7 +117,13 @@ export function TaskStatusReportModal({
   const [searchTerm, setSearchTerm] = React.useState("");
 
   const groupById = React.useMemo(
-    () => new Map(taskGroups.map((group) => [group.id, group])),
+    () => {
+      const map = new Map(taskGroups.map((group) => [group.id, group]));
+      if (!map.has(DEFAULT_TASK_GROUP_ID)) {
+        map.set(DEFAULT_TASK_GROUP_ID, { id: DEFAULT_TASK_GROUP_ID, name: DEFAULT_TASK_GROUP_NAME });
+      }
+      return map;
+    },
     [taskGroups]
   );
 
@@ -176,7 +186,7 @@ export function TaskStatusReportModal({
   const visibleRootTasks = rootTasks.filter((task) => {
     const query = searchTerm.trim().toLowerCase();
     if (!query) return true;
-    const groupName = groupById.get(task.groupId)?.name || "";
+    const groupName = groupById.get(getTaskGroupId(task))?.name || "";
     return `${getTaskTitle(task)} ${task.description || ""} ${groupName}`.toLowerCase().includes(query);
   });
 
@@ -262,7 +272,7 @@ export function TaskStatusReportModal({
     return {
       id: rootTask.id,
       title: getTaskTitle(rootTask),
-      groupName: groupById.get(rootTask.groupId)?.name || "Sin grupo",
+      groupName: groupById.get(getTaskGroupId(rootTask))?.name || DEFAULT_TASK_GROUP_NAME,
       total,
       notStarted,
       inProgress,
@@ -393,7 +403,7 @@ export function TaskStatusReportModal({
                 visibleRootTasks.map((task) => {
                   const selected = selectedRootIds.includes(task.id);
                   const childCount = collectTaskTree(task.id).length - 1;
-                  const group = groupById.get(task.groupId);
+                  const group = groupById.get(getTaskGroupId(task));
 
                   return (
                     <label

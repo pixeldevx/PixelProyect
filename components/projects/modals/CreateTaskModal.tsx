@@ -12,6 +12,9 @@ import {
   loadWorkflowTemplatesForScope,
 } from '@/lib/workflow-templates';
 
+const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
+const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
+
 interface CreateTaskModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -155,6 +158,9 @@ export function CreateTaskModal({
     () => workflowTemplates.filter((template) => template.projectId !== projectId),
     [projectId, workflowTemplates]
   );
+  const defaultTaskGroupName =
+    taskGroups.find((group) => group.id === DEFAULT_TASK_GROUP_ID)?.name || DEFAULT_TASK_GROUP_NAME;
+  const assignableTaskGroups = taskGroups.filter((group) => group.id !== DEFAULT_TASK_GROUP_ID);
 
   if (!isOpen) return null;
 
@@ -738,7 +744,7 @@ export function CreateTaskModal({
               </div>
             </div>
 
-            {taskGroups.length > 0 && (
+            {assignableTaskGroups.length > 0 && (
               <div className="space-y-2">
                 <label className="text-sm font-bold text-slate-700">
                   Grupo visual
@@ -748,8 +754,8 @@ export function CreateTaskModal({
                   onChange={(e) => setNewTaskGroupId(e.target.value)}
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                 >
-                  <option value="">Sin grupo</option>
-                  {taskGroups.map((group) => (
+                  <option value="">{defaultTaskGroupName}</option>
+                  {assignableTaskGroups.map((group) => (
                     <option key={group.id} value={group.id}>
                       {group.name}
                     </option>

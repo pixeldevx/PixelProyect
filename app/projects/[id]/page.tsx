@@ -42,6 +42,9 @@ import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgr
 import { notifyTaskAssignment } from '@/lib/notifications';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
+const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
+const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
+const DEFAULT_TASK_GROUP_COLOR = '#94a3b8';
 
 const stripWorkflowStepRuntime = (step: any = {}) => {
   const nextStep = { ...step };
@@ -1237,16 +1240,35 @@ export default function ProjectDetailsPage() {
       return;
     }
 
-    const nextGroups = taskGroups.map((group: any) =>
-      group.id === groupId
-        ? {
-            ...group,
-            ...updates,
-            name: updates.name ? String(updates.name).trim().replace(/\s+/g, ' ') : group.name,
-            updatedAt: new Date().toISOString(),
-          }
-        : group
-    );
+    const requestedName =
+      typeof updates.name === 'string'
+        ? updates.name.trim().replace(/\s+/g, ' ')
+        : undefined;
+    const existingGroup = taskGroups.find((group: any) => group.id === groupId);
+    const now = new Date().toISOString();
+    const nextGroups = existingGroup
+      ? taskGroups.map((group: any) =>
+          group.id === groupId
+            ? {
+                ...group,
+                ...updates,
+                name: requestedName || group.name,
+                updatedAt: now,
+              }
+            : group
+        )
+      : [
+          ...taskGroups,
+          {
+            id: groupId,
+            name: requestedName || (groupId === DEFAULT_TASK_GROUP_ID ? DEFAULT_TASK_GROUP_NAME : 'Nuevo grupo'),
+            color: updates.color || (groupId === DEFAULT_TASK_GROUP_ID ? DEFAULT_TASK_GROUP_COLOR : '#579bfc'),
+            order: groupId === DEFAULT_TASK_GROUP_ID ? -1 : taskGroups.length,
+            createdAt: now,
+            createdBy: user?.uid || null,
+            updatedAt: now,
+          },
+        ];
 
     try {
       await updateDoc(doc(db, 'projects', projectId), {
@@ -1263,6 +1285,10 @@ export default function ProjectDetailsPage() {
     if (!project) return;
     if (!canEditTaskDetails) {
       toast.error('No tienes permisos para administrar grupos.');
+      return;
+    }
+    if (groupId === DEFAULT_TASK_GROUP_ID) {
+      toast.warning('El grupo predeterminado no se puede eliminar, solo renombrar o cambiar de color.');
       return;
     }
 
@@ -1302,22 +1328,23 @@ export default function ProjectDetailsPage() {
       toast.error('No tienes permisos para editar grupos de tareas.');
       return;
     }
-    if (groupId && !taskGroups.some((group: any) => group.id === groupId)) {
+    const normalizedGroupId = groupId === DEFAULT_TASK_GROUP_ID ? '' : groupId;
+    if (normalizedGroupId && !taskGroups.some((group: any) => group.id === normalizedGroupId)) {
       toast.error('El grupo seleccionado no existe.');
       return;
     }
 
     try {
       await updateDoc(doc(db, 'projects', projectId, 'tasks', taskId), {
-        groupId: groupId || null,
+        groupId: normalizedGroupId || null,
         updatedAt: serverTimestamp(),
       });
       setTasks((currentTasks) =>
         currentTasks.map((currentTask) =>
-          currentTask.id === taskId ? { ...currentTask, groupId: groupId || null } : currentTask
+          currentTask.id === taskId ? { ...currentTask, groupId: normalizedGroupId || null } : currentTask
         )
       );
-      toast.success(groupId ? 'Tarea agregada al grupo.' : 'Tarea sin grupo.');
+      toast.success(normalizedGroupId ? 'Tarea agregada al grupo.' : 'Tarea agregada al grupo predeterminado.');
     } catch (error: any) {
       console.error('Error updating task group assignment:', error);
       toast.error(error?.message || 'No se pudo actualizar el grupo de la tarea.');

@@ -60,6 +60,12 @@ interface ProjectGanttProps {
 }
 
 const UNGROUPED_GROUP_ID = '__ungrouped__';
+const DEFAULT_UNGROUPED_GROUP: TaskGroup = {
+  id: UNGROUPED_GROUP_ID,
+  name: 'Sin grupo',
+  color: '#94a3b8',
+  order: -1,
+};
 const TASK_GROUP_COLORS = ['#579bfc', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#00a9ff', '#ffcb00', '#784bd1'];
 
 const getTaskTitle = (task: any) => {
@@ -247,18 +253,31 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const canCreateSubtasks = Boolean(canAddSubtasks && onAddSubtask);
   const canRemoveTasks = Boolean(canDeleteTasks && onDeleteTask);
   const canManageTaskGroups = Boolean(canModifyTaskDetails && (onCreateTaskGroup || onUpdateTaskGroup || onUpdateTaskGroupDefinition || onDeleteTaskGroup));
-  const sortedTaskGroups = useMemo(
-    () =>
-      [...taskGroups]
-        .filter((group) => group?.id && group?.name)
-        .sort((left, right) => {
-          const leftOrder = left.order ?? 0;
-          const rightOrder = right.order ?? 0;
-          if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-          return left.name.localeCompare(right.name);
-        }),
-    [taskGroups]
-  );
+  const sortedTaskGroups = useMemo(() => {
+    const validGroups = [...taskGroups].filter((group) => group?.id && group?.name);
+    const configuredDefaultGroup = validGroups.find((group) => group.id === UNGROUPED_GROUP_ID);
+    const defaultGroup = {
+      ...DEFAULT_UNGROUPED_GROUP,
+      ...configuredDefaultGroup,
+      id: UNGROUPED_GROUP_ID,
+      name: configuredDefaultGroup?.name?.trim() || DEFAULT_UNGROUPED_GROUP.name,
+      color: configuredDefaultGroup?.color || DEFAULT_UNGROUPED_GROUP.color,
+      order: configuredDefaultGroup?.order ?? DEFAULT_UNGROUPED_GROUP.order,
+    };
+
+    const customGroups = validGroups
+      .filter((group) => group.id !== UNGROUPED_GROUP_ID)
+      .sort((left, right) => {
+        const leftOrder = left.order ?? 0;
+        const rightOrder = right.order ?? 0;
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return left.name.localeCompare(right.name);
+      });
+
+    return [defaultGroup, ...customGroups];
+  }, [taskGroups]);
+  const defaultTaskGroup = sortedTaskGroups[0] || DEFAULT_UNGROUPED_GROUP;
+  const assignableTaskGroups = sortedTaskGroups.filter((group) => group.id !== UNGROUPED_GROUP_ID);
 
   const toggleParent = (parentId: string) => {
     setExpandedParents(prev => ({
@@ -396,17 +415,16 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     const knownGroupIds = new Set(sortedTaskGroups.map((group) => group.id));
     const groupedTasks = sortedTaskGroups.map((group) => ({
       group,
-      tasks: topLevelTasks.filter((task) => getTaskGroupId(task) === group.id),
+      tasks: topLevelTasks.filter((task) => {
+        const groupId = getTaskGroupId(task);
+        if (group.id === UNGROUPED_GROUP_ID) {
+          return groupId === UNGROUPED_GROUP_ID || !knownGroupIds.has(groupId);
+        }
+        return groupId === group.id;
+      }),
     }));
-    const ungroupedTasks = topLevelTasks.filter((task) => {
-      const groupId = getTaskGroupId(task);
-      return groupId === UNGROUPED_GROUP_ID || !knownGroupIds.has(groupId);
-    });
 
-    [...groupedTasks, ...(ungroupedTasks.length > 0 ? [{
-      group: { id: UNGROUPED_GROUP_ID, name: 'Sin grupo', color: '#94a3b8', order: Number.MAX_SAFE_INTEGER },
-      tasks: ungroupedTasks,
-    }] : [])].forEach(({ group, tasks: groupTasks }) => {
+    groupedTasks.forEach(({ group, tasks: groupTasks }) => {
       rows.push({
         type: 'group',
         id: `group-${group.id}`,
@@ -796,7 +814,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   Arrastra una tarea hasta este grupo
                                 </span>
                               )}
-                              {canManageTaskGroups && row.group.id !== UNGROUPED_GROUP_ID && (
+                              {canManageTaskGroups && (
                                 <button
                                   type="button"
                                   onClick={() => setIsGroupManagerOpen(true)}
@@ -856,7 +874,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                         (canModifyTaskDetails && task.syncExternal && onSyncTask) ||
                         canCreateBulkWorkflowIterations ||
                         canResetWorkflow ||
-                        (canManageTaskGroups && onUpdateTaskGroup && sortedTaskGroups.length > 0) ||
+                        (canManageTaskGroups && onUpdateTaskGroup && assignableTaskGroups.length > 0) ||
                         canRemoveTasks
                       )
                     );
@@ -1172,7 +1190,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
                                 {openActionMenuTaskId === task.id && (
                                   <div className="absolute right-0 top-8 z-40 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl">
-                                    {canManageTaskGroups && onUpdateTaskGroup && sortedTaskGroups.length > 0 && !task.parentTaskId && !task.isWorkflowStep && (
+                                    {canManageTaskGroups && onUpdateTaskGroup && assignableTaskGroups.length > 0 && !task.parentTaskId && !task.isWorkflowStep && (
                                       <div className="border-b border-slate-100 px-3 py-2">
                                         <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">
                                           Grupo
@@ -1188,8 +1206,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                           }}
                                           className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20"
                                         >
-                                          <option value="">Sin grupo</option>
-                                          {sortedTaskGroups.map((group) => (
+                                          <option value="">{defaultTaskGroup.name}</option>
+                                          {assignableTaskGroups.map((group) => (
                                             <option key={group.id} value={group.id}>
                                               {group.name}
                                             </option>
@@ -1383,7 +1401,9 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <div>
                 <h3 className="text-base font-black text-slate-900">Grupos de tareas</h3>
-                <p className="text-xs text-slate-500">{sortedTaskGroups.length} grupo{sortedTaskGroups.length === 1 ? '' : 's'}</p>
+                <p className="text-xs text-slate-500">
+                  1 grupo predeterminado · {assignableTaskGroups.length} personalizado{assignableTaskGroups.length === 1 ? '' : 's'}
+                </p>
               </div>
               <button
                 type="button"
@@ -1440,14 +1460,17 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               )}
 
               <div className="space-y-2">
-                {sortedTaskGroups.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-slate-200 bg-white p-6 text-center">
-                    <ListTodo className="mx-auto mb-2 text-slate-300" size={26} />
-                    <p className="text-sm font-semibold text-slate-600">Sin grupos creados</p>
-                  </div>
-                ) : (
-                  sortedTaskGroups.map((group) => {
-                    const groupTaskCount = sortedTasks.filter((task) => !task.parentTaskId && getTaskGroupId(task) === group.id).length;
+                {sortedTaskGroups.map((group) => {
+                    const knownGroupIds = new Set(sortedTaskGroups.map((candidate) => candidate.id));
+                    const groupTaskCount = sortedTasks.filter((task) => {
+                      if (task.parentTaskId) return false;
+                      const groupId = getTaskGroupId(task);
+                      if (group.id === UNGROUPED_GROUP_ID) {
+                        return groupId === UNGROUPED_GROUP_ID || !knownGroupIds.has(groupId);
+                      }
+                      return groupId === group.id;
+                    }).length;
+                    const isDefaultGroup = group.id === UNGROUPED_GROUP_ID;
 
                     return (
                       <div key={group.id} className="rounded-xl border border-slate-200 bg-white p-3">
@@ -1467,10 +1490,15 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             }}
                             className="h-8 min-w-0 flex-1 rounded-md border border-transparent px-2 text-sm font-bold text-slate-800 outline-none transition-colors hover:border-slate-200 focus:border-indigo-200 focus:ring-2 focus:ring-indigo-500/10"
                           />
+                          {isDefaultGroup && (
+                            <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-600">
+                              Predeterminado
+                            </span>
+                          )}
                           <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
                             {groupTaskCount}
                           </span>
-                          {onDeleteTaskGroup && (
+                          {onDeleteTaskGroup && !isDefaultGroup && (
                             <button
                               type="button"
                               onClick={() => void onDeleteTaskGroup(group.id)}
@@ -1497,8 +1525,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                         </div>
                       </div>
                     );
-                  })
-                )}
+                  })}
               </div>
             </div>
           </div>
