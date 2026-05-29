@@ -35,6 +35,8 @@ type TaskStatusReportModalProps = {
   taskGroups?: any[];
 };
 
+type ReportView = "general" | "subtasks";
+
 const STATUS_COLORS = {
   notStarted: "#94a3b8",
   inProgress: "#f59e0b",
@@ -50,6 +52,7 @@ const STATUS_COLORS = {
 
 const DEFAULT_TASK_GROUP_ID = "__ungrouped__";
 const DEFAULT_TASK_GROUP_NAME = "Sin grupo";
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const getTaskTitle = (task: any) => task?.title || task?.name || "Tarea sin nombre";
 const getTaskGroupId = (task: any) => task?.groupId || DEFAULT_TASK_GROUP_ID;
@@ -107,6 +110,82 @@ const getTaskOrder = (task: any) => {
   return getTaskTimestamp(task?.createdAt || task?.updatedAt);
 };
 
+const isWorkflowTask = (task: any) =>
+  task?.type === "workflow" && Array.isArray(task.workflowSteps) && task.workflowSteps.length > 0;
+
+const getWorkflowStepLabel = (task: any, index: number) =>
+  task.workflowSteps?.[index]?.label || `Paso ${index + 1}`;
+
+const getCurrentWorkflowStepIndex = (task: any) => {
+  const steps = task.workflowSteps || [];
+  if (steps.length === 0) return 0;
+  if (isCompletedTaskStatus(task.status)) return steps.length - 1;
+
+  const explicitIndex = Number(task.currentStepIndex);
+  if (Number.isFinite(explicitIndex) && explicitIndex >= 0 && explicitIndex < steps.length) {
+    return explicitIndex;
+  }
+
+  const firstOpenIndex = steps.findIndex((step: any) => step.status !== "listo");
+  return firstOpenIndex >= 0 ? firstOpenIndex : steps.length - 1;
+};
+
+const getStepStatusBucket = (step: any) => {
+  const status = step?.status || "not_started";
+  if (status === "listo") return "approved";
+  if (status === "en_curso" || status === "reproceso") return "active";
+  if (status === "devuelto" || status === "detenido") return "blocked";
+  return "pending";
+};
+
+const average = (values: number[]) => {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+};
+
+const formatDuration = (milliseconds: number) => {
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "Sin datos";
+  const days = milliseconds / DAY_MS;
+  if (days < 1) return `${Math.max(1, Math.round(days * 24))} h`;
+  return `${Math.round(days * 10) / 10} días`;
+};
+
+const getWorkflowHistoryDates = (task: any, predicate?: (entry: any) => boolean): Date[] =>
+  (task.workflowHistory || [])
+    .filter((entry: any) => !predicate || predicate(entry))
+    .map((entry: any) => getTaskDate(entry.timestamp))
+    .filter((date: Date | null): date is Date => Boolean(date));
+
+const getWorkflowStartDate = (task: any) => {
+  const explicitStarts = getWorkflowHistoryDates(task, (entry) => entry.action === "start");
+  const historyDates = explicitStarts.length > 0 ? explicitStarts : getWorkflowHistoryDates(task);
+  const stepStarts = (task.workflowSteps || [])
+    .map((step: any) => getTaskDate(step.startedAt))
+    .filter((date: Date | null): date is Date => Boolean(date));
+  const candidates = [...historyDates, ...stepStarts];
+
+  if (candidates.length > 0) {
+    return new Date(Math.min(...candidates.map((date) => date.getTime())));
+  }
+
+  return getTaskDate(task.createdAt) || getTaskDate(task.startDate || task.start);
+};
+
+const getWorkflowCompletionDate = (task: any) => {
+  if (!isCompletedTaskStatus(task.status)) return null;
+  const lastStepIndex = Math.max((task.workflowSteps || []).length - 1, 0);
+  const finalApprovals = getWorkflowHistoryDates(
+    task,
+    (entry) => entry.action === "approve" && Number(entry.stepIndex || 0) === lastStepIndex
+  );
+
+  if (finalApprovals.length > 0) {
+    return new Date(Math.max(...finalApprovals.map((date) => date.getTime())));
+  }
+
+  return getTaskDate(task.completedAt) || getTaskDate(task.updatedAt);
+};
+
 export function TaskStatusReportModal({
   isOpen,
   onClose,
@@ -115,6 +194,8 @@ export function TaskStatusReportModal({
 }: TaskStatusReportModalProps) {
   const [selectedRootIds, setSelectedRootIds] = React.useState<string[]>([]);
   const [searchTerm, setSearchTerm] = React.useState("");
+  const [activeReportView, setActiveReportView] = React.useState<ReportView>("general");
+  const [reportTimestamp, setReportTimestamp] = React.useState(0);
 
   const groupById = React.useMemo(
     () => {
@@ -179,6 +260,8 @@ export function TaskStatusReportModal({
     if (!isOpen) return;
     setSelectedRootIds(rootTasks.map((task) => task.id));
     setSearchTerm("");
+    setActiveReportView("general");
+    setReportTimestamp(Date.now());
   }, [isOpen, rootTasks]);
 
   if (!isOpen) return null;
@@ -284,6 +367,196 @@ export function TaskStatusReportModal({
     };
   });
 
+  const workflowGroups = selectedRootTasks
+    .map((rootTask) => {
+      const scope = collectTaskTree(rootTask.id);
+      const childWorkflowTasks = scope.filter((task) => task.id !== rootTask.id && isWorkflowTask(task));
+      const workflowTasks = childWorkflowTasks.length > 0 ? childWorkflowTasks : isWorkflowTask(rootTask) ? [rootTask] : [];
+
+      return {
+        rootTask,
+        workflowTasks,
+      };
+    })
+    .filter((group) => group.workflowTasks.length > 0);
+
+  const workflowTasksForDetail = workflowGroups.flatMap((group) =>
+    group.workflowTasks.map((task) => ({
+      task,
+      rootTask: group.rootTask,
+    }))
+  );
+  const completedWorkflowTasks = workflowTasksForDetail.filter(({ task }) => isCompletedTaskStatus(task.status));
+  const openWorkflowTasks = workflowTasksForDetail.filter(({ task }) => !isCompletedTaskStatus(task.status));
+  const completedDurations = completedWorkflowTasks
+    .map(({ task }) => {
+      const startDate = getWorkflowStartDate(task);
+      const completionDate = getWorkflowCompletionDate(task);
+      if (!startDate || !completionDate) return 0;
+      return Math.max(0, completionDate.getTime() - startDate.getTime());
+    })
+    .filter((duration) => duration > 0);
+  const openAges = openWorkflowTasks
+    .map(({ task }) => {
+      const startDate = getWorkflowStartDate(task);
+      if (!startDate || !reportTimestamp) return 0;
+      return Math.max(0, reportTimestamp - startDate.getTime());
+    })
+    .filter((duration) => duration > 0);
+
+  const currentStepMap = new Map<string, any>();
+  openWorkflowTasks.forEach(({ task }) => {
+    const stepIndex = getCurrentWorkflowStepIndex(task);
+    const currentStep = task.workflowSteps?.[stepIndex] || {};
+    const key = `${stepIndex}-${getWorkflowStepLabel(task, stepIndex)}`;
+    const current = currentStepMap.get(key) || {
+      key,
+      index: stepIndex,
+      name: `Paso ${stepIndex + 1}`,
+      label: getWorkflowStepLabel(task, stepIndex),
+      value: 0,
+      active: 0,
+      blocked: 0,
+      pending: 0,
+      overdue: 0,
+      dueSoon: 0,
+    };
+    const statusBucket = getStepStatusBucket(currentStep);
+
+    current.value += 1;
+    if (statusBucket === "active") current.active += 1;
+    if (statusBucket === "blocked") current.blocked += 1;
+    if (statusBucket === "pending") current.pending += 1;
+    if (getScheduleState(task) === "overdue") current.overdue += 1;
+    if (getScheduleState(task) === "dueSoon") current.dueSoon += 1;
+    currentStepMap.set(key, current);
+  });
+  const currentStepDistribution = Array.from(currentStepMap.values()).sort((left, right) => left.index - right.index);
+
+  const workflowStepHealthMap = new Map<string, any>();
+  workflowTasksForDetail.forEach(({ task }) => {
+    (task.workflowSteps || []).forEach((step: any, index: number) => {
+      const key = `${index}-${step.label || `Paso ${index + 1}`}`;
+      const current = workflowStepHealthMap.get(key) || {
+        key,
+        index,
+        name: `Paso ${index + 1}`,
+        label: step.label || `Paso ${index + 1}`,
+        total: 0,
+        approved: 0,
+        active: 0,
+        blocked: 0,
+        pending: 0,
+      };
+      const statusBucket = getStepStatusBucket(step);
+
+      current.total += 1;
+      if (statusBucket === "approved") current.approved += 1;
+      if (statusBucket === "active") current.active += 1;
+      if (statusBucket === "blocked") current.blocked += 1;
+      if (statusBucket === "pending") current.pending += 1;
+      workflowStepHealthMap.set(key, current);
+    });
+  });
+  const workflowStepHealth = Array.from(workflowStepHealthMap.values())
+    .map((row) => ({
+      ...row,
+      completion: getPercent(row.approved, row.total),
+    }))
+    .sort((left, right) => left.index - right.index);
+
+  const workflowDetailBreakdown = workflowGroups.map(({ rootTask, workflowTasks }) => {
+    const total = workflowTasks.length;
+    const completed = workflowTasks.filter((task) => isCompletedTaskStatus(task.status)).length;
+    const open = total - completed;
+    const overdue = workflowTasks.filter((task) => getScheduleState(task) === "overdue").length;
+    const dueSoon = workflowTasks.filter((task) => getScheduleState(task) === "dueSoon").length;
+    const localCurrentStepMap = new Map<string, number>();
+    workflowTasks
+      .filter((task) => !isCompletedTaskStatus(task.status))
+      .forEach((task) => {
+        const index = getCurrentWorkflowStepIndex(task);
+        const label = `Paso ${index + 1}`;
+        localCurrentStepMap.set(label, (localCurrentStepMap.get(label) || 0) + 1);
+      });
+    const bottleneck = Array.from(localCurrentStepMap.entries()).sort((left, right) => right[1] - left[1])[0];
+    const localDurations = workflowTasks
+      .filter((task) => isCompletedTaskStatus(task.status))
+      .map((task) => {
+        const startDate = getWorkflowStartDate(task);
+        const completionDate = getWorkflowCompletionDate(task);
+        if (!startDate || !completionDate) return 0;
+        return Math.max(0, completionDate.getTime() - startDate.getTime());
+      })
+      .filter((duration) => duration > 0);
+
+    return {
+      id: rootTask.id,
+      title: getTaskTitle(rootTask),
+      total,
+      completed,
+      open,
+      overdue,
+      dueSoon,
+      completion: getPercent(completed, total),
+      progress: getProgressAverage(workflowTasks),
+      bottleneck: bottleneck ? `${bottleneck[0]} (${bottleneck[1]})` : "Sin bloqueos",
+      averageDuration: formatDuration(average(localDurations)),
+    };
+  });
+
+  const workflowTotal = workflowTasksForDetail.length;
+  const workflowCompletionRate = getPercent(completedWorkflowTasks.length, workflowTotal);
+  const workflowOverdueCount = workflowTasksForDetail.filter(({ task }) => getScheduleState(task) === "overdue").length;
+  const workflowDueSoonCount = workflowTasksForDetail.filter(({ task }) => getScheduleState(task) === "dueSoon").length;
+  const topCurrentStep = currentStepDistribution.length > 0
+    ? [...currentStepDistribution].sort((left, right) => right.value - left.value)[0]
+    : null;
+  const workflowDetailKpis = [
+    {
+      label: "Workflows analizados",
+      value: workflowTotal,
+      detail: `${workflowGroups.length} tarea matriz`,
+      icon: ListChecks,
+      tone: "bg-indigo-50 text-indigo-700",
+    },
+    {
+      label: "Finalizados",
+      value: completedWorkflowTasks.length,
+      detail: `${workflowCompletionRate}% completado`,
+      icon: CheckCircle2,
+      tone: "bg-emerald-50 text-emerald-700",
+    },
+    {
+      label: "Abiertos",
+      value: openWorkflowTasks.length,
+      detail: topCurrentStep ? `Mayor carga: ${topCurrentStep.name}` : "Sin pasos activos",
+      icon: Activity,
+      tone: "bg-amber-50 text-amber-700",
+    },
+    {
+      label: "Promedio finalizado",
+      value: formatDuration(average(completedDurations)),
+      detail: `${completedDurations.length} workflows con cierre`,
+      icon: Clock3,
+      tone: "bg-sky-50 text-sky-700",
+    },
+    {
+      label: "Edad promedio abiertos",
+      value: formatDuration(average(openAges)),
+      detail: `${openAges.length} workflows en curso`,
+      icon: Target,
+      tone: "bg-slate-100 text-slate-700",
+    },
+    {
+      label: "Alertas workflow",
+      value: workflowOverdueCount + workflowDueSoonCount,
+      detail: `${workflowOverdueCount} vencidos · ${workflowDueSoonCount} por vencer`,
+      icon: AlertTriangle,
+      tone: "bg-red-50 text-red-700",
+    },
+  ];
+
   const toggleRootTask = (taskId: string) => {
     setSelectedRootIds((current) =>
       current.includes(taskId)
@@ -362,6 +635,30 @@ export function TaskStatusReportModal({
             <p className="mt-1 text-sm text-slate-500">
               Estado, avance y vencimientos del alcance seleccionado.
             </p>
+            <div className="mt-3 inline-flex rounded-xl bg-slate-100 p-1">
+              <button
+                type="button"
+                onClick={() => setActiveReportView("general")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-black transition-colors ${
+                  activeReportView === "general"
+                    ? "bg-white text-indigo-700 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                Vista general
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveReportView("subtasks")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-black transition-colors ${
+                  activeReportView === "subtasks"
+                    ? "bg-white text-indigo-700 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                Detalle subtareas
+              </button>
+            </div>
           </div>
           <Button variant="ghost" size="icon" onClick={onClose} aria-label="Cerrar reporte">
             <X className="h-5 w-5" />
@@ -442,7 +739,7 @@ export function TaskStatusReportModal({
                 <BarChart3 className="mb-3 h-10 w-10 text-slate-300" />
                 <p className="text-base font-bold text-slate-700">Selecciona al menos una tarea matriz.</p>
               </div>
-            ) : (
+            ) : activeReportView === "general" ? (
               <div className="space-y-4">
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   {kpis.map((kpi) => {
@@ -577,6 +874,222 @@ export function TaskStatusReportModal({
                     </div>
                   </div>
                 </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {workflowTotal === 0 ? (
+                  <div className="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white text-center">
+                    <Activity className="mb-3 h-10 w-10 text-slate-300" />
+                    <p className="text-base font-bold text-slate-700">No hay workflows con subtareas en la selección.</p>
+                    <p className="mt-1 max-w-md text-sm text-slate-500">
+                      Selecciona una tarea matriz que tenga iteraciones de workflow para ver la estadística interna por paso.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                      {workflowDetailKpis.map((kpi) => {
+                        const Icon = kpi.icon;
+
+                        return (
+                          <div key={kpi.label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{kpi.label}</p>
+                                <p className="mt-2 text-2xl font-black text-slate-900">{kpi.value}</p>
+                                <p className="mt-1 text-xs font-medium text-slate-500">{kpi.detail}</p>
+                              </div>
+                              <span className={`rounded-xl p-2 ${kpi.tone}`}>
+                                <Icon className="h-5 w-5" />
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+                      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div>
+                            <h3 className="text-sm font-black text-slate-900">No finalizadas por paso actual</h3>
+                            <p className="text-xs text-slate-500">Dónde está represado el flujo seleccionado.</p>
+                          </div>
+                          <span className="text-xs font-bold text-slate-400">{openWorkflowTasks.length} abiertas</span>
+                        </div>
+                        <div className="h-64">
+                          {currentStepDistribution.length === 0 ? (
+                            <div className="flex h-full items-center justify-center text-sm font-semibold text-slate-400">
+                              No hay workflows abiertos.
+                            </div>
+                          ) : (
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={currentStepDistribution}>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                <XAxis dataKey="name" tickLine={false} axisLine={false} fontSize={12} />
+                                <YAxis allowDecimals={false} tickLine={false} axisLine={false} fontSize={12} />
+                                <Tooltip
+                                  cursor={{ fill: "#f8fafc" }}
+                                  formatter={(value, name) => [value, name === "value" ? "Workflows" : name]}
+                                  labelFormatter={(_, payload) => payload?.[0]?.payload?.label || "Paso"}
+                                />
+                                <Bar dataKey="value" fill="#5559df" radius={[8, 8, 0, 0]} />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div>
+                            <h3 className="text-sm font-black text-slate-900">Salud de pasos internos</h3>
+                            <p className="text-xs text-slate-500">Estado acumulado de cada paso del workflow.</p>
+                          </div>
+                          <span className="text-xs font-bold text-slate-400">{workflowStepHealth.length} pasos</span>
+                        </div>
+                        <div className="h-64">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={workflowStepHealth}>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                              <XAxis dataKey="name" tickLine={false} axisLine={false} fontSize={12} />
+                              <YAxis allowDecimals={false} tickLine={false} axisLine={false} fontSize={12} />
+                              <Tooltip
+                                cursor={{ fill: "#f8fafc" }}
+                                labelFormatter={(_, payload) => payload?.[0]?.payload?.label || "Paso"}
+                              />
+                              <Legend verticalAlign="bottom" height={34} iconType="circle" />
+                              <Bar dataKey="approved" name="Listo" stackId="steps" fill="#10b981" radius={[6, 6, 0, 0]} />
+                              <Bar dataKey="active" name="En curso" stackId="steps" fill="#f59e0b" />
+                              <Bar dataKey="blocked" name="Bloqueado" stackId="steps" fill="#dc2626" />
+                              <Bar dataKey="pending" name="Pendiente" stackId="steps" fill="#cbd5e1" />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+                      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <h3 className="mb-3 text-sm font-black text-slate-900">Carga por paso activo</h3>
+                        <div className="space-y-3">
+                          {currentStepDistribution.length === 0 ? (
+                            <p className="rounded-lg bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">
+                              Todos los workflows seleccionados están finalizados.
+                            </p>
+                          ) : (
+                            currentStepDistribution.map((row) => (
+                              <div key={row.key} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="truncate text-sm font-black text-slate-800">
+                                      {row.name}: {row.label}
+                                    </p>
+                                    <p className="mt-1 text-xs font-medium text-slate-500">
+                                      {row.active} en curso · {row.blocked} bloqueadas · {row.pending} pendientes
+                                    </p>
+                                  </div>
+                                  <span className="rounded-full bg-indigo-100 px-2 py-1 text-xs font-black text-indigo-700">
+                                    {row.value}
+                                  </span>
+                                </div>
+                                <div className="mt-3 h-2 overflow-hidden rounded-full bg-white">
+                                  <div
+                                    className="h-full rounded-full bg-indigo-500"
+                                    style={{ width: `${getPercent(row.value, openWorkflowTasks.length)}%` }}
+                                  />
+                                </div>
+                                {(row.overdue > 0 || row.dueSoon > 0) && (
+                                  <p className="mt-2 text-[11px] font-bold text-orange-600">
+                                    {row.overdue} vencidas · {row.dueSoon} por vencer
+                                  </p>
+                                )}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <h3 className="mb-3 text-sm font-black text-slate-900">Detalle por tarea matriz</h3>
+                        <div className="overflow-x-auto">
+                          <table className="w-full min-w-[760px] text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-100 text-[10px] uppercase tracking-wider text-slate-400">
+                                <th className="py-2 pr-3">Workflow matriz</th>
+                                <th className="px-3 py-2 text-right">Total</th>
+                                <th className="px-3 py-2 text-right">Finalizados</th>
+                                <th className="px-3 py-2 text-right">Abiertos</th>
+                                <th className="px-3 py-2 text-right">Mayor carga</th>
+                                <th className="px-3 py-2 text-right">Tiempo prom.</th>
+                                <th className="px-3 py-2 text-right">Avance</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {workflowDetailBreakdown.map((row) => (
+                                <tr key={row.id} className="border-b border-slate-50 last:border-0">
+                                  <td className="max-w-[260px] py-2 pr-3">
+                                    <p className="truncate font-bold text-slate-800">{row.title}</p>
+                                    <p className="truncate text-[10px] font-medium text-slate-400">
+                                      {row.overdue} vencidos · {row.dueSoon} por vencer
+                                    </p>
+                                  </td>
+                                  <td className="px-3 py-2 text-right font-bold text-slate-700">{row.total}</td>
+                                  <td className="px-3 py-2 text-right text-emerald-600">{row.completed}</td>
+                                  <td className="px-3 py-2 text-right text-amber-600">{row.open}</td>
+                                  <td className="px-3 py-2 text-right text-slate-600">{row.bottleneck}</td>
+                                  <td className="px-3 py-2 text-right text-slate-600">{row.averageDuration}</td>
+                                  <td className="px-3 py-2 text-right">
+                                    <span className="font-black text-slate-800">{row.progress}%</span>
+                                    <span className="ml-1 text-slate-400">({row.completion}% fin.)</span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <h3 className="mb-3 text-sm font-black text-slate-900">Matriz de pasos internos</h3>
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[720px] text-left text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-100 text-[10px] uppercase tracking-wider text-slate-400">
+                              <th className="py-2 pr-3">Paso</th>
+                              <th className="px-3 py-2 text-right">Instancias</th>
+                              <th className="px-3 py-2 text-right">Listo</th>
+                              <th className="px-3 py-2 text-right">En curso</th>
+                              <th className="px-3 py-2 text-right">Bloqueado</th>
+                              <th className="px-3 py-2 text-right">Pendiente</th>
+                              <th className="px-3 py-2 text-right">% listo</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {workflowStepHealth.map((row) => (
+                              <tr key={row.key} className="border-b border-slate-50 last:border-0">
+                                <td className="max-w-[320px] py-2 pr-3">
+                                  <p className="truncate font-bold text-slate-800">
+                                    {row.name}: {row.label}
+                                  </p>
+                                </td>
+                                <td className="px-3 py-2 text-right font-bold text-slate-700">{row.total}</td>
+                                <td className="px-3 py-2 text-right text-emerald-600">{row.approved}</td>
+                                <td className="px-3 py-2 text-right text-amber-600">{row.active}</td>
+                                <td className="px-3 py-2 text-right text-red-600">{row.blocked}</td>
+                                <td className="px-3 py-2 text-right text-slate-500">{row.pending}</td>
+                                <td className="px-3 py-2 text-right">
+                                  <span className="font-black text-slate-800">{row.completion}%</span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </section>
