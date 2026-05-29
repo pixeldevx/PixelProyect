@@ -20,6 +20,7 @@ interface CreateTaskModalProps {
   user: any;
   teamMembers: any[];
   rateCards: any[];
+  taskGroups?: any[];
   tasksLength: number;
   canManageWorkflowTemplates?: boolean;
   userRole?: string | null;
@@ -59,6 +60,7 @@ export function CreateTaskModal({
   user,
   teamMembers,
   rateCards,
+  taskGroups = [],
   tasksLength,
   canManageWorkflowTemplates = false,
   userRole,
@@ -112,6 +114,7 @@ export function CreateTaskModal({
   const [newTaskRateCardId, setNewTaskRateCardId] = useState("");
   const [newTaskUnitsToAdd, setNewTaskUnitsToAdd] = useState(1);
   const [newTaskPriority, setNewTaskPriority] = useState("medium");
+  const [newTaskGroupId, setNewTaskGroupId] = useState("");
   const [draftSubtasks, setDraftSubtasks] = useState<DraftSubtask[]>([]);
   const [incrementForm, setIncrementForm] = useState<CustomForm | undefined>(
     undefined,
@@ -166,6 +169,7 @@ export function CreateTaskModal({
     setNewTaskProgress(0);
     setNewTaskStatus("todo");
     setNewTaskPriority("medium");
+    setNewTaskGroupId("");
     setNewTaskType("quantitative");
     setWorkflowSteps([]);
     setWorkflowCycles(1);
@@ -395,6 +399,7 @@ export function CreateTaskModal({
             false
           : false,
         priority: newTaskPriority,
+        groupId: newTaskGroupId || null,
         currentValue: 0,
         incrementForm:
           newTaskType === "quantitative" ? incrementForm || null : null,
@@ -454,6 +459,7 @@ export function CreateTaskModal({
             unitsToAdd: null,
             syncExternal: false,
             priority: subtask.priority,
+            groupId: newTaskGroupId || null,
             currentValue: 0,
             parentTaskId,
             displayOrder: displayOrderOffset + index,
@@ -731,6 +737,26 @@ export function CreateTaskModal({
                 </select>
               </div>
             </div>
+
+            {taskGroups.length > 0 && (
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">
+                  Grupo visual
+                </label>
+                <select
+                  value={newTaskGroupId}
+                  onChange={(e) => setNewTaskGroupId(e.target.value)}
+                  className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                >
+                  <option value="">Sin grupo</option>
+                  {taskGroups.map((group) => (
+                    <option key={group.id} value={group.id}>
+                      {group.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {newTaskType === "workflow" && (
               <div className="space-y-4 p-4 bg-indigo-50/50 rounded-xl border border-indigo-100">

@@ -368,6 +368,18 @@ export default function ProjectDetailsPage() {
   const canManageWorkflowTemplates =
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
+  const taskGroups = React.useMemo(
+    () =>
+      Array.isArray(project?.taskGroups)
+        ? [...project.taskGroups].sort((left: any, right: any) => {
+            const leftOrder = left.order ?? 0;
+            const rightOrder = right.order ?? 0;
+            if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+            return String(left.name || '').localeCompare(String(right.name || ''));
+          })
+        : [],
+    [project?.taskGroups]
+  );
 
   const currentGlobalAdminAssigneeId = currentGlobalAdminAssignee?.id || '';
   const projectOrganizationIds = getOrganizationIds(project);
@@ -1178,6 +1190,137 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  const handleCreateTaskGroup = async (name: string, color: string) => {
+    if (!project) return;
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para administrar grupos.');
+      return;
+    }
+
+    const cleanName = name.trim().replace(/\s+/g, ' ');
+    if (!cleanName) {
+      toast.warning('Ingresa el nombre del grupo.');
+      return;
+    }
+
+    try {
+      const nextGroups = [
+        ...taskGroups,
+        {
+          id: `task_group_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          name: cleanName,
+          color,
+          order: taskGroups.length,
+          createdAt: new Date().toISOString(),
+          createdBy: user?.uid || null,
+        },
+      ];
+
+      await updateDoc(doc(db, 'projects', projectId), {
+        taskGroups: nextGroups,
+        updatedAt: serverTimestamp(),
+      });
+      toast.success('Grupo creado.');
+    } catch (error: any) {
+      console.error('Error creating task group:', error);
+      toast.error(error?.message || 'No se pudo crear el grupo.');
+    }
+  };
+
+  const handleUpdateTaskGroupDefinition = async (groupId: string, updates: any) => {
+    if (!project) return;
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para administrar grupos.');
+      return;
+    }
+
+    const nextGroups = taskGroups.map((group: any) =>
+      group.id === groupId
+        ? {
+            ...group,
+            ...updates,
+            name: updates.name ? String(updates.name).trim().replace(/\s+/g, ' ') : group.name,
+            updatedAt: new Date().toISOString(),
+          }
+        : group
+    );
+
+    try {
+      await updateDoc(doc(db, 'projects', projectId), {
+        taskGroups: nextGroups,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error: any) {
+      console.error('Error updating task group:', error);
+      toast.error(error?.message || 'No se pudo actualizar el grupo.');
+    }
+  };
+
+  const handleDeleteTaskGroup = async (groupId: string) => {
+    if (!project) return;
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para administrar grupos.');
+      return;
+    }
+
+    const group = taskGroups.find((candidate: any) => candidate.id === groupId);
+    if (!group) return;
+
+    const confirmed = window.confirm(`¿Eliminar el grupo "${group.name}"? Las tareas quedarán sin grupo.`);
+    if (!confirmed) return;
+
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'projects', projectId), {
+        taskGroups: taskGroups.filter((candidate: any) => candidate.id !== groupId),
+        updatedAt: serverTimestamp(),
+      });
+
+      tasks
+        .filter((task) => task.groupId === groupId)
+        .forEach((task) => {
+          batch.update(doc(db, 'projects', projectId, 'tasks', task.id), {
+            groupId: null,
+            updatedAt: serverTimestamp(),
+          });
+        });
+
+      await batch.commit();
+      toast.success('Grupo eliminado.');
+    } catch (error: any) {
+      console.error('Error deleting task group:', error);
+      toast.error(error?.message || 'No se pudo eliminar el grupo.');
+    }
+  };
+
+  const handleUpdateTaskGroup = async (taskId: string, groupId: string, task: any) => {
+    if (!task) return;
+    if (!canEditTaskDetails) {
+      toast.error('No tienes permisos para editar grupos de tareas.');
+      return;
+    }
+    if (groupId && !taskGroups.some((group: any) => group.id === groupId)) {
+      toast.error('El grupo seleccionado no existe.');
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'projects', projectId, 'tasks', taskId), {
+        groupId: groupId || null,
+        updatedAt: serverTimestamp(),
+      });
+      setTasks((currentTasks) =>
+        currentTasks.map((currentTask) =>
+          currentTask.id === taskId ? { ...currentTask, groupId: groupId || null } : currentTask
+        )
+      );
+      toast.success(groupId ? 'Tarea agregada al grupo.' : 'Tarea sin grupo.');
+    } catch (error: any) {
+      console.error('Error updating task group assignment:', error);
+      toast.error(error?.message || 'No se pudo actualizar el grupo de la tarea.');
+    }
+  };
+
   const handleCreateSubtask = async (
     parentTask: any,
     subtask: {
@@ -1237,6 +1380,7 @@ export default function ProjectDetailsPage() {
         unitsToAdd: null,
         syncExternal: false,
         priority: subtask.priority || parentTask.priority || 'medium',
+        groupId: parentTask.groupId || null,
         currentValue: 0,
         parentTaskId: parentTask.id,
         displayOrder: tasks.length + currentSubtasks.length + 1,
@@ -1797,16 +1941,21 @@ export default function ProjectDetailsPage() {
                 tasks={tasks}
                 teamMembers={teamMembersForAssignment}
                 assigneeOptions={projectAssignableTeamMembers}
+                taskGroups={taskGroups}
                 onUpdateTaskProgress={canEditTaskDetails ? handleUpdateTaskProgress : undefined}
                 onUpdateTaskValue={canEditTaskDetails ? handleUpdateTaskValue : undefined}
                 onUpdateTaskStatus={canEditTaskStatus ? handleUpdateTaskStatus : undefined}
                 onUpdateTaskPriority={canEditTaskDetails ? handleUpdateTaskPriority : undefined}
                 onUpdateTaskAssignee={canEditTaskDetails ? handleUpdateTaskAssignee : undefined}
+                onUpdateTaskGroup={canEditTaskDetails ? handleUpdateTaskGroup : undefined}
                 onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
                 onSyncTask={canEditTaskDetails ? handleSyncTaskValue : undefined}
                 onReorderTasks={canEditTaskDetails ? handleReorderTasks : undefined}
                 onUpdateTaskDates={canEditTaskDates ? handleUpdateTaskDates : undefined}
                 onUpdateTaskTitle={canEditTaskDetails ? handleUpdateTaskTitle : undefined}
+                onCreateTaskGroup={canEditTaskDetails ? handleCreateTaskGroup : undefined}
+                onUpdateTaskGroupDefinition={canEditTaskDetails ? handleUpdateTaskGroupDefinition : undefined}
+                onDeleteTaskGroup={canEditTaskDetails ? handleDeleteTaskGroup : undefined}
                 onOpenIncrementTask={canEditTaskDetails ? setSelectedTaskForIncrement : undefined}
                 canEditTaskDetails={canEditTaskDetails}
                 canEditTaskDates={canEditTaskDates}
@@ -2195,6 +2344,7 @@ export default function ProjectDetailsPage() {
           user={user}
           teamMembers={projectAssignableTeamMembers}
           rateCards={rateCards}
+          taskGroups={taskGroups}
           tasksLength={tasks.length}
           canManageWorkflowTemplates={canManageWorkflowTemplates}
           userRole={userRole}

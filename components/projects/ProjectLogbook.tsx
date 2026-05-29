@@ -578,6 +578,7 @@ export function ProjectLogbook({
           unitsToAdd: null,
           syncExternal: false,
           priority: actionForm.priority,
+          groupId: parentTask?.groupId || null,
           currentValue: 0,
           parentTaskId: actionForm.relationType === "subtask" ? actionForm.parentTaskId : null,
           originLogbook: {

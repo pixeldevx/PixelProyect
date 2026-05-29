@@ -483,6 +483,7 @@ export function BulkWorkflowIterationsModal({
           autoAddUnits: task.autoAddUnits !== false,
           syncExternal: Boolean(task.syncExternal),
           priority: task.priority || "medium",
+          groupId: task.groupId || null,
           currentValue: 0,
           parentTaskId: task.id,
           cycleNumber: childTaskCount + index + 1,

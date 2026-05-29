@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Gantt, Task, ViewMode } from 'gantt-task-react';
 import "gantt-task-react/dist/index.css";
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
-import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw, ClipboardList } from 'lucide-react';
+import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw, ClipboardList, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -13,20 +13,36 @@ import { TaskDateEditorModal } from './TaskDateEditorModal';
 
 type ScheduleFilter = 'overdue' | 'due_soon' | 'completed_late' | null;
 
+type TaskGroup = {
+  id: string;
+  name: string;
+  color?: string;
+  order?: number;
+};
+
+type VisibleTaskRow =
+  | { type: 'group'; id: string; group: TaskGroup; taskCount: number; tasks: any[] }
+  | { type: 'task'; id: string; task: any };
+
 interface ProjectGanttProps {
   tasks: any[];
   teamMembers: any[];
   assigneeOptions?: any[];
+  taskGroups?: TaskGroup[];
   onUpdateTaskProgress?: (taskId: string, progress: number, task: any) => void;
   onUpdateTaskValue?: (taskId: string, value: number, task: any) => void;
   onUpdateTaskStatus?: (taskId: string, status: string, task: any) => void;
   onUpdateTaskPriority?: (taskId: string, priority: string, task: any) => void;
   onUpdateTaskAssignee?: (taskId: string, assigneeId: string, task: any) => void;
+  onUpdateTaskGroup?: (taskId: string, groupId: string, task: any) => void | Promise<void>;
   onDeleteTask?: (taskId: string) => void;
   onSyncTask?: (taskId: string, task: any) => void;
   onReorderTasks?: (newTasks: any[]) => void;
   onUpdateTaskDates?: (taskId: string, start: Date, end: Date, task: any) => void;
   onUpdateTaskTitle?: (taskId: string, title: string, task: any) => void | Promise<void>;
+  onCreateTaskGroup?: (name: string, color: string) => void | Promise<void>;
+  onUpdateTaskGroupDefinition?: (groupId: string, updates: Partial<TaskGroup>) => void | Promise<void>;
+  onDeleteTaskGroup?: (groupId: string) => void | Promise<void>;
   onOpenIncrementTask?: (task: any) => void;
   canEditTaskDetails?: boolean;
   canEditTaskDates?: boolean;
@@ -42,6 +58,9 @@ interface ProjectGanttProps {
   onCreateBulkWorkflowIterations?: (task: any) => void;
   onCreateTask?: () => void;
 }
+
+const UNGROUPED_GROUP_ID = '__ungrouped__';
+const TASK_GROUP_COLORS = ['#579bfc', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#00a9ff', '#ffcb00', '#784bd1'];
 
 const getTaskTitle = (task: any) => {
   return task?.title || task?.name || 'Sin título';
@@ -68,6 +87,36 @@ const getTaskPriority = (task: any) => {
 
 const getTaskCommentCount = (task: any) => {
   return Number(task?.commentCount || task?.originalTask?.commentCount || 0);
+};
+
+const getTaskGroupId = (task: any) => task?.groupId || UNGROUPED_GROUP_ID;
+
+const getTaskGroupColor = (group?: TaskGroup) => group?.color || '#579bfc';
+
+const getTaskTime = (value: any) => {
+  const date = getTaskDate(value);
+  return date ? date.getTime() : null;
+};
+
+const getGroupDateRange = (tasks: any[]) => {
+  const starts = tasks
+    .map((task) => getTaskTime(task.startDate || task.start))
+    .filter((value): value is number => value !== null);
+  const ends = tasks
+    .map((task) => getTaskTime(task.endDate || task.end))
+    .filter((value): value is number => value !== null);
+  const fallback = new Date();
+
+  return {
+    start: starts.length ? new Date(Math.min(...starts)) : fallback,
+    end: ends.length ? new Date(Math.max(...ends)) : fallback,
+  };
+};
+
+const getGroupProgress = (tasks: any[]) => {
+  if (tasks.length === 0) return 0;
+  const total = tasks.reduce((sum, task) => sum + Number(task.progress || 0), 0);
+  return Math.round(total / tasks.length);
 };
 
 const getPriorityColor = (priority: string) => {
@@ -148,16 +197,21 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   tasks,
   teamMembers,
   assigneeOptions,
+  taskGroups = [],
   onUpdateTaskProgress,
   onUpdateTaskValue,
   onUpdateTaskStatus,
   onUpdateTaskPriority,
   onUpdateTaskAssignee,
+  onUpdateTaskGroup,
   onDeleteTask,
   onSyncTask,
   onReorderTasks,
   onUpdateTaskDates,
   onUpdateTaskTitle,
+  onCreateTaskGroup,
+  onUpdateTaskGroupDefinition,
+  onDeleteTaskGroup,
   onOpenIncrementTask,
   canEditTaskDetails,
   canEditTaskDates,
@@ -181,6 +235,10 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [openActionMenuTaskId, setOpenActionMenuTaskId] = useState<string | null>(null);
   const [taskForDateEdit, setTaskForDateEdit] = useState<any>(null);
   const [scheduleFilter, setScheduleFilter] = useState<ScheduleFilter>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupColor, setNewGroupColor] = useState(TASK_GROUP_COLORS[0]);
   const taskAssigneeOptions = assigneeOptions || teamMembers;
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
@@ -188,12 +246,41 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const canChangeTaskAssignee = Boolean(canModifyTaskDetails && onUpdateTaskAssignee);
   const canCreateSubtasks = Boolean(canAddSubtasks && onAddSubtask);
   const canRemoveTasks = Boolean(canDeleteTasks && onDeleteTask);
+  const canManageTaskGroups = Boolean(canModifyTaskDetails && (onCreateTaskGroup || onUpdateTaskGroup || onUpdateTaskGroupDefinition || onDeleteTaskGroup));
+  const sortedTaskGroups = useMemo(
+    () =>
+      [...taskGroups]
+        .filter((group) => group?.id && group?.name)
+        .sort((left, right) => {
+          const leftOrder = left.order ?? 0;
+          const rightOrder = right.order ?? 0;
+          if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+          return left.name.localeCompare(right.name);
+        }),
+    [taskGroups]
+  );
 
   const toggleParent = (parentId: string) => {
     setExpandedParents(prev => ({
       ...prev,
       [parentId]: !prev[parentId]
     }));
+  };
+
+  const toggleGroup = (groupId: string) => {
+    setCollapsedGroups((current) => ({
+      ...current,
+      [groupId]: !current[groupId],
+    }));
+  };
+
+  const handleCreateGroup = async () => {
+    const cleanName = newGroupName.trim().replace(/\s+/g, ' ');
+    if (!cleanName || !onCreateTaskGroup) return;
+
+    await onCreateTaskGroup(cleanName, newGroupColor);
+    setNewGroupName("");
+    setNewGroupColor(TASK_GROUP_COLORS[0]);
   };
 
   const startEditingTitle = (task: any) => {
@@ -242,24 +329,22 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     return sortedTasks.filter((task) => getTaskScheduleState(task) === scheduleFilter);
   }, [scheduleFilter, sortedTasks]);
 
-  const visibleTasks = useMemo(() => {
-    if (scheduleFilter) return filteredSortedTasks;
+  const shouldShowTaskGroups = sortedTaskGroups.length > 0 || sortedTasks.some((task) => task.groupId);
 
+  const visibleRows = useMemo<VisibleTaskRow[]>(() => {
     const sourceTasks = scheduleFilter ? filteredSortedTasks : sortedTasks;
-    const parentsAndNormal = sourceTasks.filter(t => !t.parentTaskId);
-    const result: any[] = [];
+    const rows: VisibleTaskRow[] = [];
 
-    parentsAndNormal.forEach(task => {
-      result.push(task);
+    const appendTaskTree = (task: any) => {
+      rows.push({ type: 'task', id: task.id, task });
       const subTasks = sortChildTasks(sourceTasks.filter(t => t.parentTaskId === task.id));
       if (subTasks.length > 0 && expandedParents[task.id]) {
-
         subTasks.forEach(subTask => {
-          result.push(subTask);
+          rows.push({ type: 'task', id: subTask.id, task: subTask });
           // Generate visual sub-tasks for workflow steps
           if (subTask.type === 'workflow' && subTask.workflowSteps && expandedParents[subTask.id]) {
             subTask.workflowSteps.forEach((step: any, idx: number) => {
-              result.push({
+              rows.push({ type: 'task', id: `${subTask.id}-step-${idx}`, task: {
                 id: `${subTask.id}-step-${idx}`,
                 title: `Paso ${idx + 1}: ${step.label}`,
                 name: `Paso ${idx + 1}: ${step.label}`,
@@ -274,14 +359,14 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 progress: step.status === 'listo' ? 100 : (step.status === 'en_curso' || step.status === 'reproceso' ? 50 : 0),
                 type: 'workflow_step',
                 originalTask: subTask
-              });
+              }});
             });
           }
         });
       } else if (task.type === 'workflow' && task.workflowSteps && expandedParents[task.id]) {
         // Generate visual sub-tasks for workflow steps (no cycles)
         task.workflowSteps.forEach((step: any, idx: number) => {
-          result.push({
+          rows.push({ type: 'task', id: `${task.id}-step-${idx}`, task: {
             id: `${task.id}-step-${idx}`,
             title: `Paso ${idx + 1}: ${step.label}`,
             name: `Paso ${idx + 1}: ${step.label}`,
@@ -296,20 +381,87 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             progress: step.status === 'listo' ? 100 : (step.status === 'en_curso' || step.status === 'reproceso' ? 50 : 0),
             type: 'workflow_step',
             originalTask: task
-          });
+          }});
         });
+      }
+    };
+
+    if (!shouldShowTaskGroups) {
+      const parentsAndNormal = scheduleFilter ? sourceTasks : sourceTasks.filter(t => !t.parentTaskId);
+      parentsAndNormal.forEach(appendTaskTree);
+      return rows;
+    }
+
+    const topLevelTasks = scheduleFilter ? sourceTasks : sourceTasks.filter(t => !t.parentTaskId);
+    const knownGroupIds = new Set(sortedTaskGroups.map((group) => group.id));
+    const groupedTasks = sortedTaskGroups.map((group) => ({
+      group,
+      tasks: topLevelTasks.filter((task) => getTaskGroupId(task) === group.id),
+    })).filter((groupRow) => groupRow.tasks.length > 0);
+    const ungroupedTasks = topLevelTasks.filter((task) => {
+      const groupId = getTaskGroupId(task);
+      return groupId === UNGROUPED_GROUP_ID || !knownGroupIds.has(groupId);
+    });
+
+    [...groupedTasks, ...(ungroupedTasks.length > 0 ? [{
+      group: { id: UNGROUPED_GROUP_ID, name: 'Sin grupo', color: '#94a3b8', order: Number.MAX_SAFE_INTEGER },
+      tasks: ungroupedTasks,
+    }] : [])].forEach(({ group, tasks: groupTasks }) => {
+      rows.push({
+        type: 'group',
+        id: `group-${group.id}`,
+        group,
+        taskCount: groupTasks.length,
+        tasks: groupTasks,
+      });
+
+      if (!collapsedGroups[group.id]) {
+        groupTasks.forEach(appendTaskTree);
       }
     });
 
-    return result;
-  }, [filteredSortedTasks, scheduleFilter, sortedTasks, expandedParents]);
+    return rows;
+  }, [collapsedGroups, expandedParents, filteredSortedTasks, scheduleFilter, shouldShowTaskGroups, sortedTaskGroups, sortedTasks]);
+
+  const visibleTasks = useMemo(
+    () => visibleRows.filter((row): row is Extract<VisibleTaskRow, { type: 'task' }> => row.type === 'task').map((row) => row.task),
+    [visibleRows]
+  );
+
+  const visibleTaskIndexById = useMemo(() => {
+    const indexById = new Map<string, number>();
+    visibleTasks.forEach((task, index) => indexById.set(task.id, index));
+    return indexById;
+  }, [visibleTasks]);
 
   // Map Supabase tasks to gantt-task-react tasks
   const ganttTasks: Task[] = useMemo(() => {
-    if (visibleTasks.length === 0) return [];
+    if (visibleRows.length === 0) return [];
     const visibleTaskIds = new Set(visibleTasks.map((task) => task.id));
 
-    return visibleTasks.map((t, index) => {
+    return visibleRows.map((row, index) => {
+      if (row.type === 'group') {
+        const range = getGroupDateRange(row.tasks);
+        const groupColor = getTaskGroupColor(row.group);
+
+        return {
+          id: row.id,
+          name: row.group.name,
+          start: range.start,
+          end: range.end,
+          progress: getGroupProgress(row.tasks),
+          type: 'project',
+          displayOrder: index + 1,
+          styles: {
+            backgroundColor: `${groupColor}55`,
+            backgroundSelectedColor: `${groupColor}88`,
+            progressColor: groupColor,
+            progressSelectedColor: groupColor,
+          }
+        };
+      }
+
+      const t = row.task;
       const hasChildren = visibleTasks.some(task => task.parentTaskId === t.id);
       const barColors = getScheduleBarColors(t);
 
@@ -330,7 +482,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         }
       };
     });
-  }, [visibleTasks]);
+  }, [visibleRows, visibleTasks]);
 
   const handleDragEnd = (result: DropResult) => {
     if (!canModifyTaskDetails || !onReorderTasks) return;
@@ -465,6 +617,18 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               Nueva Tarea
             </Button>
           )}
+          {canManageTaskGroups && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsGroupManagerOpen(true)}
+              className="h-8 px-3 text-[11px] font-bold border-slate-200 text-slate-600 hover:bg-slate-50"
+            >
+              <ListTodo size={14} className="mr-1.5" />
+              Grupos
+            </Button>
+          )}
           <div
             aria-hidden={isTimelineCollapsed}
             className={`flex overflow-hidden rounded-md bg-slate-100 transition-all ${
@@ -575,7 +739,46 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                       </button>
                     </div>
                   )}
-                  {visibleTasks.map((task, index) => {
+                  {visibleRows.map((row) => {
+                    if (row.type === 'group') {
+                      const groupColor = getTaskGroupColor(row.group);
+                      const isCollapsed = Boolean(collapsedGroups[row.group.id]);
+
+                      return (
+                        <div
+                          key={row.id}
+                          className="flex h-10 items-center border-b border-slate-200 bg-white px-4 shadow-[inset_0_-1px_0_rgba(226,232,240,0.55)]"
+                          style={{ borderLeft: `6px solid ${groupColor}` }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleGroup(row.group.id)}
+                            className="mr-2 flex h-5 w-5 items-center justify-center rounded bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200"
+                            title={isCollapsed ? 'Expandir grupo' : 'Contraer grupo'}
+                          >
+                            {isCollapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} className="-rotate-90" />}
+                          </button>
+                          <span className="mr-2 h-2.5 w-2.5 rounded-full" style={{ backgroundColor: groupColor }} />
+                          <span className="min-w-0 truncate text-sm font-black text-slate-800">{row.group.name}</span>
+                          <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                            {row.taskCount} tarea{row.taskCount === 1 ? '' : 's'}
+                          </span>
+                          {canManageTaskGroups && row.group.id !== UNGROUPED_GROUP_ID && (
+                            <button
+                              type="button"
+                              onClick={() => setIsGroupManagerOpen(true)}
+                              className="ml-auto rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-indigo-600"
+                              title="Editar grupos"
+                            >
+                              <Settings size={14} />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    const task = row.task;
+                    const index = visibleTaskIndexById.get(task.id) ?? 0;
                     const assignedMember = teamMembers.find(m => m.id === task.assignedTo);
                     const taskTitle = getTaskTitle(task);
                     const taskDisplayTitle = getTaskDisplayTitle(task);
@@ -618,6 +821,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                         (canModifyTaskDetails && task.syncExternal && onSyncTask) ||
                         canCreateBulkWorkflowIterations ||
                         canResetWorkflow ||
+                        (canManageTaskGroups && onUpdateTaskGroup && sortedTaskGroups.length > 0) ||
                         canRemoveTasks
                       )
                     );
@@ -933,6 +1137,31 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
                                 {openActionMenuTaskId === task.id && (
                                   <div className="absolute right-0 top-8 z-40 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl">
+                                    {canManageTaskGroups && onUpdateTaskGroup && sortedTaskGroups.length > 0 && !task.parentTaskId && !task.isWorkflowStep && (
+                                      <div className="border-b border-slate-100 px-3 py-2">
+                                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                          Grupo
+                                        </label>
+                                        <select
+                                          value={task.groupId || ''}
+                                          onMouseDown={(event) => event.stopPropagation()}
+                                          onClick={(event) => event.stopPropagation()}
+                                          onChange={(event) => {
+                                            event.stopPropagation();
+                                            void onUpdateTaskGroup(task.id, event.target.value, task);
+                                            setOpenActionMenuTaskId(null);
+                                          }}
+                                          className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                        >
+                                          <option value="">Sin grupo</option>
+                                          {sortedTaskGroups.map((group) => (
+                                            <option key={group.id} value={group.id}>
+                                              {group.name}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                    )}
                                     {canModifyTaskDetails && onUpdateTaskTitle && (
                                       <button
                                         type="button"
@@ -1096,10 +1325,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 todayColor="rgba(99, 102, 241, 0.03)"
                 onProgressChange={canModifyTaskDetails && onUpdateTaskProgress ? (task) => {
                   const originalTask = tasks.find(t => t.id === task.id);
+                  if (!originalTask) return;
                   onUpdateTaskProgress(task.id, task.progress, originalTask);
                 } : undefined}
                 onDateChange={canModifyTaskDates ? (task) => {
                   const originalTask = tasks.find(t => t.id === task.id);
+                  if (!originalTask) return;
                   onUpdateTaskDates?.(task.id, task.start, task.end, originalTask);
                 } : undefined}
               />
@@ -1111,6 +1342,133 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           </div>
         </div>
       </div>
+      {isGroupManagerOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <h3 className="text-base font-black text-slate-900">Grupos de tareas</h3>
+                <p className="text-xs text-slate-500">{sortedTaskGroups.length} grupo{sortedTaskGroups.length === 1 ? '' : 's'}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsGroupManagerOpen(false)}
+                className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Cerrar"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="max-h-[70vh] space-y-4 overflow-y-auto bg-slate-50 p-5">
+              {onCreateTaskGroup && (
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newGroupName}
+                      onChange={(event) => setNewGroupName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          void handleCreateGroup();
+                        }
+                      }}
+                      placeholder="Nombre del grupo"
+                      className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 px-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                    <Button
+                      type="button"
+                      onClick={() => void handleCreateGroup()}
+                      disabled={!newGroupName.trim()}
+                      className="h-9 bg-indigo-600 px-3 text-white hover:bg-indigo-700"
+                    >
+                      <Plus size={14} className="mr-1" />
+                      Crear
+                    </Button>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {TASK_GROUP_COLORS.map((color) => (
+                      <button
+                        key={color}
+                        type="button"
+                        onClick={() => setNewGroupColor(color)}
+                        className={`h-6 w-6 rounded-full border-2 transition-transform ${
+                          newGroupColor === color ? 'scale-110 border-slate-900' : 'border-white ring-1 ring-slate-200'
+                        }`}
+                        style={{ backgroundColor: color }}
+                        aria-label={`Color ${color}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {sortedTaskGroups.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-white p-6 text-center">
+                    <ListTodo className="mx-auto mb-2 text-slate-300" size={26} />
+                    <p className="text-sm font-semibold text-slate-600">Sin grupos creados</p>
+                  </div>
+                ) : (
+                  sortedTaskGroups.map((group) => {
+                    const groupTaskCount = sortedTasks.filter((task) => !task.parentTaskId && getTaskGroupId(task) === group.id).length;
+
+                    return (
+                      <div key={group.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                        <div className="flex items-center gap-2">
+                          <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: getTaskGroupColor(group) }} />
+                          <input
+                            defaultValue={group.name}
+                            onBlur={(event) => {
+                              const nextName = event.target.value.trim().replace(/\s+/g, ' ');
+                              if (!nextName) {
+                                event.target.value = group.name;
+                                return;
+                              }
+                              if (nextName && nextName !== group.name) {
+                                void onUpdateTaskGroupDefinition?.(group.id, { name: nextName });
+                              }
+                            }}
+                            className="h-8 min-w-0 flex-1 rounded-md border border-transparent px-2 text-sm font-bold text-slate-800 outline-none transition-colors hover:border-slate-200 focus:border-indigo-200 focus:ring-2 focus:ring-indigo-500/10"
+                          />
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                            {groupTaskCount}
+                          </span>
+                          {onDeleteTaskGroup && (
+                            <button
+                              type="button"
+                              onClick={() => void onDeleteTaskGroup(group.id)}
+                              className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600"
+                              title="Eliminar grupo"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2 pl-5">
+                          {TASK_GROUP_COLORS.map((color) => (
+                            <button
+                              key={`${group.id}-${color}`}
+                              type="button"
+                              onClick={() => void onUpdateTaskGroupDefinition?.(group.id, { color })}
+                              className={`h-5 w-5 rounded-full border-2 ${
+                                getTaskGroupColor(group) === color ? 'border-slate-900' : 'border-white ring-1 ring-slate-200'
+                              }`}
+                              style={{ backgroundColor: color }}
+                              aria-label={`Color ${color}`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <TaskDateEditorModal
         isOpen={!!taskForDateEdit}
         task={taskForDateEdit}
