@@ -1081,6 +1081,7 @@ export default function ProjectDetailsPage() {
       const promises = newTasks.map((task) => {
         return updateDoc(doc(db, 'projects', projectId, 'tasks', task.id), {
           displayOrder: task.displayOrder,
+          groupId: task.groupId || null,
           updatedAt: serverTimestamp()
         });
       });

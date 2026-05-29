@@ -397,7 +397,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     const groupedTasks = sortedTaskGroups.map((group) => ({
       group,
       tasks: topLevelTasks.filter((task) => getTaskGroupId(task) === group.id),
-    })).filter((groupRow) => groupRow.tasks.length > 0);
+    }));
     const ungroupedTasks = topLevelTasks.filter((task) => {
       const groupId = getTaskGroupId(task);
       return groupId === UNGROUPED_GROUP_ID || !knownGroupIds.has(groupId);
@@ -427,12 +427,6 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     () => visibleRows.filter((row): row is Extract<VisibleTaskRow, { type: 'task' }> => row.type === 'task').map((row) => row.task),
     [visibleRows]
   );
-
-  const visibleTaskIndexById = useMemo(() => {
-    const indexById = new Map<string, number>();
-    visibleTasks.forEach((task, index) => indexById.set(task.id, index));
-    return indexById;
-  }, [visibleTasks]);
 
   // Map Supabase tasks to gantt-task-react tasks
   const ganttTasks: Task[] = useMemo(() => {
@@ -489,26 +483,45 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     if (scheduleFilter) return;
     if (!result.destination) return;
 
+    const sourceRow = visibleRows[result.source.index];
+    const destinationRow = visibleRows[result.destination.index];
+    if (!sourceRow || sourceRow.type !== 'task') return;
+
     // We only allow dragging of top-level tasks (parents and normal)
     const parentsAndNormal = sortedTasks.filter(t => !t.parentTaskId);
-    const draggedTask = visibleTasks[result.source.index];
+    const draggedTask = sourceRow.task;
 
     if (!draggedTask || draggedTask.parentTaskId) return;
 
     const sourceIndex = parentsAndNormal.findIndex(t => t.id === draggedTask.id);
-    const destinationTask = visibleTasks[result.destination.index];
+    if (sourceIndex === -1) return;
 
     let destIndex = parentsAndNormal.length;
-    if (destinationTask) {
-      destIndex = parentsAndNormal.findIndex(t => t.id === destinationTask.id);
-      if (destIndex === -1) {
-        // Dropped on a subtask, place it after the parent
-        destIndex = parentsAndNormal.findIndex(t => t.id === destinationTask.parentTaskId) + 1;
+    let nextGroupId = draggedTask.groupId || '';
+    if (destinationRow?.type === 'group') {
+      nextGroupId = destinationRow.group.id === UNGROUPED_GROUP_ID ? '' : destinationRow.group.id;
+      const firstTaskInGroupIndex = parentsAndNormal.findIndex((task) => getTaskGroupId(task) === (nextGroupId || UNGROUPED_GROUP_ID));
+      destIndex = firstTaskInGroupIndex === -1 ? parentsAndNormal.length : firstTaskInGroupIndex;
+    } else if (destinationRow?.type === 'task') {
+      const destinationTask = destinationRow.task.parentTaskId
+        ? parentsAndNormal.find((task) => task.id === destinationRow.task.parentTaskId)
+        : destinationRow.task;
+      nextGroupId = destinationTask?.groupId || '';
+      if (destinationTask) {
+        destIndex = parentsAndNormal.findIndex(t => t.id === destinationTask.id);
+        if (destIndex === -1) {
+          // Dropped on a subtask, place it after the parent
+          destIndex = parentsAndNormal.findIndex(t => t.id === destinationTask.parentTaskId) + 1;
+        }
       }
     }
 
     const [reorderedItem] = parentsAndNormal.splice(sourceIndex, 1);
-    parentsAndNormal.splice(destIndex, 0, reorderedItem);
+    if (sourceIndex < destIndex) destIndex -= 1;
+    parentsAndNormal.splice(Math.max(0, destIndex), 0, {
+      ...reorderedItem,
+      groupId: nextGroupId || null,
+    });
 
     // Create a map of updated display orders
     const orderMap = new Map<string, number>();
@@ -519,7 +532,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     // Update displayOrder for all items, keeping subtasks intact
     const updatedItems = tasks.map(item => {
       if (orderMap.has(item.id)) {
-        return { ...item, displayOrder: orderMap.get(item.id)! };
+        const reorderedTask = parentsAndNormal.find((task) => task.id === item.id);
+        return {
+          ...item,
+          displayOrder: orderMap.get(item.id)!,
+          groupId: reorderedTask?.groupId || null,
+        };
       }
       return item;
     });
@@ -739,46 +757,63 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                       </button>
                     </div>
                   )}
-                  {visibleRows.map((row) => {
+                  {visibleRows.map((row, rowIndex) => {
                     if (row.type === 'group') {
                       const groupColor = getTaskGroupColor(row.group);
                       const isCollapsed = Boolean(collapsedGroups[row.group.id]);
 
                       return (
-                        <div
+                        <Draggable
                           key={row.id}
-                          className="flex h-10 items-center border-b border-slate-200 bg-white px-4 shadow-[inset_0_-1px_0_rgba(226,232,240,0.55)]"
-                          style={{ borderLeft: `6px solid ${groupColor}` }}
+                          draggableId={row.id}
+                          index={rowIndex}
+                          isDragDisabled
                         >
-                          <button
-                            type="button"
-                            onClick={() => toggleGroup(row.group.id)}
-                            className="mr-2 flex h-5 w-5 items-center justify-center rounded bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200"
-                            title={isCollapsed ? 'Expandir grupo' : 'Contraer grupo'}
-                          >
-                            {isCollapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} className="-rotate-90" />}
-                          </button>
-                          <span className="mr-2 h-2.5 w-2.5 rounded-full" style={{ backgroundColor: groupColor }} />
-                          <span className="min-w-0 truncate text-sm font-black text-slate-800">{row.group.name}</span>
-                          <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
-                            {row.taskCount} tarea{row.taskCount === 1 ? '' : 's'}
-                          </span>
-                          {canManageTaskGroups && row.group.id !== UNGROUPED_GROUP_ID && (
-                            <button
-                              type="button"
-                              onClick={() => setIsGroupManagerOpen(true)}
-                              className="ml-auto rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-indigo-600"
-                              title="Editar grupos"
+                          {(provided) => (
+                            <div
+                              ref={provided.innerRef}
+                              {...provided.draggableProps}
+                              className={`flex h-10 items-center border-b border-slate-200 bg-white px-4 shadow-[inset_0_-1px_0_rgba(226,232,240,0.55)] ${
+                                row.taskCount === 0 ? 'bg-slate-50/80' : ''
+                              }`}
+                              style={{ borderLeft: `6px solid ${groupColor}` }}
                             >
-                              <Settings size={14} />
-                            </button>
+                              <button
+                                type="button"
+                                onClick={() => toggleGroup(row.group.id)}
+                                className="mr-2 flex h-5 w-5 items-center justify-center rounded bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200"
+                                title={isCollapsed ? 'Expandir grupo' : 'Contraer grupo'}
+                              >
+                                {isCollapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} className="-rotate-90" />}
+                              </button>
+                              <span className="mr-2 h-2.5 w-2.5 rounded-full" style={{ backgroundColor: groupColor }} />
+                              <span className="min-w-0 truncate text-sm font-black text-slate-800">{row.group.name}</span>
+                              <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                                {row.taskCount} tarea{row.taskCount === 1 ? '' : 's'}
+                              </span>
+                              {row.taskCount === 0 && (
+                                <span className="ml-3 hidden text-[11px] font-semibold text-slate-400 md:inline">
+                                  Arrastra una tarea hasta este grupo
+                                </span>
+                              )}
+                              {canManageTaskGroups && row.group.id !== UNGROUPED_GROUP_ID && (
+                                <button
+                                  type="button"
+                                  onClick={() => setIsGroupManagerOpen(true)}
+                                  className="ml-auto rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-indigo-600"
+                                  title="Editar grupos"
+                                >
+                                  <Settings size={14} />
+                                </button>
+                              )}
+                            </div>
                           )}
-                        </div>
+                        </Draggable>
                       );
                     }
 
                     const task = row.task;
-                    const index = visibleTaskIndexById.get(task.id) ?? 0;
+                    const index = rowIndex;
                     const assignedMember = teamMembers.find(m => m.id === task.assignedTo);
                     const taskTitle = getTaskTitle(task);
                     const taskDisplayTitle = getTaskDisplayTitle(task);
