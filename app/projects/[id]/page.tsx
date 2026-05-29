@@ -6,7 +6,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen } from 'lucide-react';
+import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen, BarChart3 } from 'lucide-react';
 import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
@@ -23,6 +23,7 @@ import { ProjectQuality } from '@/components/projects/ProjectQuality';
 import { ProjectLogbook } from '@/components/projects/ProjectLogbook';
 import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
 import { TaskCommentsModal } from '@/components/projects/TaskCommentsModal';
+import { TaskStatusReportModal } from '@/components/projects/TaskStatusReportModal';
 import { StartWorkflowModal } from '@/components/projects/StartWorkflowModal';
 import { CreateTaskModal } from '@/components/projects/modals/CreateTaskModal';
 import { BulkWorkflowIterationsModal } from '@/components/projects/modals/BulkWorkflowIterationsModal';
@@ -176,6 +177,7 @@ export default function ProjectDetailsPage() {
   const [selectedTaskForIncrement, setSelectedTaskForIncrement] = useState<any>(null);
   const [selectedTaskForComments, setSelectedTaskForComments] = useState<any>(null);
   const [taskForBulkIterations, setTaskForBulkIterations] = useState<any>(null);
+  const [isTaskStatusReportOpen, setIsTaskStatusReportOpen] = useState(false);
   const [dynamicRateCardStatusChange, setDynamicRateCardStatusChange] = useState<{
     taskId: string;
     newStatus: string;
@@ -1924,15 +1926,26 @@ export default function ProjectDetailsPage() {
               </h2>
               <p className="text-sm text-slate-500 mt-1">Seguimiento y progreso de las tareas del proyecto.</p>
             </div>
-            {canCreateTasks && (
+            <div className="flex flex-wrap items-center gap-2">
               <Button
-                onClick={() => setIsCreateTaskModalOpen(true)}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                variant="outline"
+                onClick={() => setIsTaskStatusReportOpen(true)}
+                disabled={tasks.length === 0}
+                className="border-indigo-100 text-indigo-700 hover:bg-indigo-50"
               >
-                <Plus size={16} className="mr-2" />
-                Nueva Tarea
+                <BarChart3 size={16} className="mr-2" />
+                Indicadores
               </Button>
-            )}
+              {canCreateTasks && (
+                <Button
+                  onClick={() => setIsCreateTaskModalOpen(true)}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                >
+                  <Plus size={16} className="mr-2" />
+                  Nueva Tarea
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* Tasks List / Gantt */}
@@ -1999,6 +2012,13 @@ export default function ProjectDetailsPage() {
         task={selectedTaskForComments}
         currentUser={user}
         teamMembers={teamMembersForAssignment}
+      />
+
+      <TaskStatusReportModal
+        isOpen={isTaskStatusReportOpen}
+        onClose={() => setIsTaskStatusReportOpen(false)}
+        tasks={tasks}
+        taskGroups={taskGroups}
       />
 
       {/* Start Workflow Modal */}
