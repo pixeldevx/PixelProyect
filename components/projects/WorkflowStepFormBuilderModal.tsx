@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 export interface FormField {
   id: string;
   label: string;
-  type: 'text' | 'number' | 'date' | 'select' | 'checkbox';
+  type: 'text' | 'number' | 'date' | 'datetime' | 'select' | 'checkbox';
   required: boolean;
   options?: string[];
   selectionMode?: 'single' | 'multiple';
@@ -217,6 +217,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                             <option value="text">Texto corto</option>
                             <option value="number">Número</option>
                             <option value="date">Fecha</option>
+                            <option value="datetime">Fecha y hora</option>
                             <option value="select">Selección</option>
                             <option value="checkbox">Casilla de verificación</option>
                           </select>

@@ -136,6 +136,15 @@ export function IncrementTaskValueModal({
         />
       )}
 
+      {field.type === "datetime" && (
+        <input
+          type="datetime-local"
+          value={formData[field.id] || ""}
+          onChange={(event) => setFormData({ ...formData, [field.id]: event.target.value })}
+          className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+        />
+      )}
+
       {field.type === "select" && (
         <div className="rounded-lg border border-slate-200 bg-white p-3">
           {field.options?.length ? (

@@ -44,8 +44,18 @@ const formatFormValue = (value: any) => {
   return value || 'Sin respuesta';
 };
 
-const renderHistoryFormValue = (value: any) => {
-  const formattedValue = String(formatFormValue(value));
+const formatDateTimeFormValue = (value: any) => {
+  if (!value) return 'Sin respuesta';
+  const parsed = new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) return String(value).replace('T', ' ');
+  return format(parsed, "d MMM yyyy, h:mm a", { locale: es });
+};
+
+const renderHistoryFormValue = (value: any, field?: any) => {
+  const formattedValue =
+    field?.type === 'datetime'
+      ? formatDateTimeFormValue(value)
+      : String(formatFormValue(value));
   const isUrl = /^https?:\/\//i.test(formattedValue.trim());
 
   if (isUrl) {
@@ -1510,6 +1520,16 @@ export default function WorkflowTray() {
                           required={field.required}
                         />
                       )}
+
+                      {field.type === 'datetime' && (
+                        <input
+                          type="datetime-local"
+                          value={formData[field.id] || ''}
+                          onChange={(e) => setFormData({...formData, [field.id]: e.target.value})}
+                          className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                          required={field.required}
+                        />
+                      )}
                       
                       {field.type === 'select' && (
                         <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -2111,7 +2131,7 @@ export default function WorkflowTray() {
                                   <span className="min-w-0 break-words text-[11px] font-bold uppercase tracking-wide text-slate-600 [overflow-wrap:anywhere]">
                                     {field?.label || fieldId}
                                   </span>
-                                  {renderHistoryFormValue(value)}
+                                  {renderHistoryFormValue(value, field)}
                                 </div>
                               );
                             })}
