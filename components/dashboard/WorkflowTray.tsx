@@ -255,6 +255,13 @@ const getDueState = (task: any) => {
   return msUntilDue <= 2 * 24 * 60 * 60 * 1000 ? 'due_soon' : 'ok';
 };
 
+const getInboxDueSortTime = (task: any) => {
+  const endDate = getTaskDate(task?.endDate || task?.end);
+  if (!endDate) return Number.POSITIVE_INFINITY;
+
+  return endDate.getTime();
+};
+
 const getInboxUrgencyStyles = (dueState: string) => {
   switch (dueState) {
     case 'overdue':
@@ -381,6 +388,7 @@ export default function WorkflowTray() {
   const [searchTerm, setSearchTerm] = useState('');
   const [projectFilter, setProjectFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [sortFilter, setSortFilter] = useState('newest');
 
   useEffect(() => {
     const unsubscribe = onSnapshot(query(collection(db, 'organizations')), (snapshot) => {
@@ -1089,6 +1097,12 @@ export default function WorkflowTray() {
            projectName.includes(searchLower) ||
            currentStepStatus.includes(searchLower);
   }).sort((a, b) => {
+    if (sortFilter === 'due_asc') {
+      const aDueTime = getInboxDueSortTime(a);
+      const bDueTime = getInboxDueSortTime(b);
+      if (aDueTime !== bDueTime) return aDueTime < bDueTime ? -1 : 1;
+    }
+
     const bTime = getTaskTimestamp(b.createdAt) || getTaskTimestamp(b.updatedAt);
     const aTime = getTaskTimestamp(a.createdAt) || getTaskTimestamp(a.updatedAt);
     return bTime - aTime;
@@ -1432,7 +1446,7 @@ export default function WorkflowTray() {
           </div>
         </div>
 
-        <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-[1fr_220px]">
+        <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-[1fr_200px_220px]">
           <input
             type="text"
             placeholder="Buscar por ID, título, proyecto, organización o estado..."
@@ -1440,6 +1454,15 @@ export default function WorkflowTray() {
             onChange={(e) => setSearchTerm(e.target.value)}
             className="h-8 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           />
+          <select
+            value={sortFilter}
+            onChange={(event) => setSortFilter(event.target.value)}
+            className="h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            title="Ordenar tareas"
+          >
+            <option value="newest">Orden: recientes</option>
+            <option value="due_asc">Orden: próximas a vencer</option>
+          </select>
           <select
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value)}
