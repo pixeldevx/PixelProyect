@@ -313,6 +313,32 @@ const getRiskTone = (metric: MemberMetric) => {
   };
 };
 
+const getRiskLevel = (metric: MemberMetric) => {
+  if (metric.overdueTasks > 0 || metric.blockedTasks > 0) return 3;
+  if (metric.dueSoonTasks > 0 || metric.laggingTasks > 0) return 2;
+  if (metric.riskScore > 0) return 1;
+  return 0;
+};
+
+const getRiskRowClass = (metric: MemberMetric) => {
+  const level = getRiskLevel(metric);
+  if (level === 3) return 'border-l-red-500 hover:bg-red-50 focus-within:bg-red-50 hover:ring-1 hover:ring-red-100';
+  if (level === 2) return 'border-l-orange-400 hover:bg-orange-50 focus-within:bg-orange-50 hover:ring-1 hover:ring-orange-100';
+  return 'border-l-emerald-400 hover:bg-emerald-50 focus-within:bg-emerald-50 hover:ring-1 hover:ring-emerald-100';
+};
+
+const compareRiskMetrics = (left: MemberMetric, right: MemberMetric) => {
+  return (
+    getRiskLevel(right) - getRiskLevel(left) ||
+    right.overdueTasks - left.overdueTasks ||
+    right.blockedTasks - left.blockedTasks ||
+    right.dueSoonTasks - left.dueSoonTasks ||
+    right.laggingTasks - left.laggingTasks ||
+    right.riskScore - left.riskScore ||
+    right.openTasks - left.openTasks
+  );
+};
+
 function Avatar({ member, size = 'md' }: { member: any; size?: 'md' | 'lg' }) {
   const dimensions = size === 'lg' ? 'h-14 w-14 text-lg' : 'h-10 w-10 text-sm';
   const label = member?.name || member?.email || 'Usuario';
@@ -686,7 +712,7 @@ export default function TeamPage() {
       if (sortMode === 'quality') return (right.qualityScore ?? -1) - (left.qualityScore ?? -1) || right.qualityReviewed - left.qualityReviewed;
       if (sortMode === 'rates') return Math.abs(right.rateValue) - Math.abs(left.rateValue);
       if (sortMode === 'workload') return right.openTasks - left.openTasks || right.overdueTasks - left.overdueTasks;
-      return right.riskScore - left.riskScore || right.openTasks - left.openTasks;
+      return compareRiskMetrics(left, right);
     });
   }, [memberMetrics, searchTerm, sortMode]);
 
@@ -910,11 +936,26 @@ export default function TeamPage() {
               {filteredMetrics.map((metric) => {
                 const risk = getRiskTone(metric);
                 return (
-                  <div key={metric.member.id} className="grid gap-4 px-5 py-4 transition hover:bg-slate-50/70 xl:grid-cols-[minmax(260px,1.5fr)_repeat(5,minmax(120px,1fr))_auto] xl:items-center">
+                  <div
+                    key={metric.member.id}
+                    onClick={() => setSelectedMemberId(metric.member.id)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setSelectedMemberId(metric.member.id);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    className={`group grid cursor-pointer gap-4 border-l-4 px-5 py-4 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-sm focus-within:-translate-y-0.5 focus-within:shadow-sm xl:grid-cols-[minmax(260px,1.5fr)_repeat(5,minmax(120px,1fr))_auto] xl:items-center ${getRiskRowClass(metric)}`}
+                  >
                     <div className="flex min-w-0 items-center gap-3">
-                      <Avatar member={metric.member} />
+                      <div className="transition duration-200 group-hover:scale-105 group-hover:drop-shadow-sm">
+                        <Avatar member={metric.member} />
+                      </div>
                       <div className="min-w-0">
-                        <p className="truncate text-base font-black text-slate-950">{metric.member.name || metric.member.email || 'Usuario'}</p>
+                        <p className="truncate text-base font-black text-slate-950 transition-colors group-hover:text-indigo-700">{metric.member.name || metric.member.email || 'Usuario'}</p>
                         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-bold text-slate-500">
                           <span className="inline-flex items-center gap-1">
                             <Mail size={13} />
@@ -963,13 +1004,24 @@ export default function TeamPage() {
                     </div>
 
                     <div className="flex justify-end gap-2">
-                      <Button variant="outline" size="sm" onClick={() => setSelectedMemberId(metric.member.id)} className="h-9 border-slate-200 text-slate-600 hover:bg-white">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedMemberId(metric.member.id);
+                        }}
+                        className="h-9 border-slate-200 text-slate-600 transition-colors group-hover:border-indigo-200 group-hover:bg-white hover:bg-white"
+                      >
                         <Eye size={14} />
                         Detalle
                       </Button>
                       {canManagePeople && (
                         <button
-                          onClick={() => handleOpenModal(metric.member)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleOpenModal(metric.member);
+                          }}
                           className="rounded-md p-2 text-slate-400 transition hover:bg-indigo-50 hover:text-indigo-600"
                           title="Editar profesional"
                         >
