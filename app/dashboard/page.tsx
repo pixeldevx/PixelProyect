@@ -663,7 +663,7 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                    <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-3">
                       {[
                         ['Pendientes', scopeStats.pending, 'bg-slate-100 text-slate-700'],
                         ['En curso', scopeStats.active, 'bg-amber-50 text-amber-700'],
@@ -671,8 +671,10 @@ export default function DashboardPage() {
                         ['Finalizadas', scopeStats.completed, 'bg-emerald-50 text-emerald-700'],
                         ['Con retraso', scopeStats.completedLate, 'bg-orange-50 text-orange-700'],
                       ].map(([label, value, className]) => (
-                        <div key={String(label)} className={`rounded-lg p-3 ${className}`}>
-                          <p className="text-xs font-black uppercase tracking-[0.12em] opacity-75">{label}</p>
+                        <div key={String(label)} className={`min-h-[96px] rounded-lg p-3 ${className}`}>
+                          <p className="min-h-8 break-words text-[11px] font-black uppercase leading-4 tracking-[0.06em] opacity-75 [overflow-wrap:anywhere]">
+                            {label}
+                          </p>
                           <p className="mt-2 text-2xl font-black">{value}</p>
                         </div>
                       ))}
@@ -691,7 +693,15 @@ export default function DashboardPage() {
                           <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={projectBarData} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
                               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                              <XAxis dataKey="name" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} interval={0} height={44} />
+                              <XAxis
+                                dataKey="name"
+                                tick={{ fontSize: 10 }}
+                                tickFormatter={(value: string) => value.length > 13 ? `${value.slice(0, 12)}...` : value}
+                                tickLine={false}
+                                axisLine={false}
+                                interval={0}
+                                height={44}
+                              />
                               <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
                               <Tooltip />
                               <Bar dataKey="progreso" fill="#4f46e5" radius={[4, 4, 0, 0]} />
