@@ -1,10 +1,27 @@
 "use client"
 
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, Folder, Clock, CheckCircle, AlertCircle, FileText, Users, X, Trash2 } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
+import {
+  AlertTriangle,
+  ArrowRight,
+  BarChart3,
+  CheckCircle2,
+  Clock,
+  Folder,
+  FolderKanban,
+  Gauge,
+  Layers3,
+  Plus,
+  Search,
+  Sparkles,
+  Target,
+  Trash2,
+  Users,
+  X,
+} from 'lucide-react';
 import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, where, or, updateDoc, doc, deleteDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
@@ -12,6 +29,223 @@ import Link from 'next/link';
 import { toast } from 'sonner';
 import Image from 'next/image';
 import { belongsToAnyOrganization } from '@/lib/organizations';
+import { differenceInCalendarDays, format } from 'date-fns';
+import { es } from 'date-fns/locale';
+
+type ProjectTask = {
+  id: string;
+  title?: string;
+  name?: string;
+  status?: string;
+  priority?: string;
+  progress?: number;
+  type?: string;
+  parentTaskId?: string;
+  workflowSteps?: any[];
+  endDate?: any;
+  end?: any;
+  dueDate?: any;
+  updatedAt?: any;
+  createdAt?: any;
+};
+
+type ProjectStats = {
+  total: number;
+  open: number;
+  pending: number;
+  active: number;
+  blocked: number;
+  completed: number;
+  completedLate: number;
+  overdue: number;
+  dueSoon: number;
+  highPriority: number;
+  workflows: number;
+  averageProgress: number;
+  completionRate: number;
+  nextDueDate: Date | null;
+  lastActivity: number;
+};
+
+type HealthFilter = 'all' | 'risk' | 'dueSoon' | 'healthy';
+
+const COMPLETED_STATUSES = new Set(['completed', 'completed_late', 'listo']);
+const ACTIVE_STATUSES = new Set(['in_progress', 'en_curso', 'trabajando', 'reproceso']);
+const BLOCKED_STATUSES = new Set(['stuck', 'detenido', 'blocked', 'devuelto']);
+const PENDING_STATUSES = new Set(['todo', 'pending', 'not_started', 'no_iniciado']);
+
+const EMPTY_PROJECT_STATS: ProjectStats = {
+  total: 0,
+  open: 0,
+  pending: 0,
+  active: 0,
+  blocked: 0,
+  completed: 0,
+  completedLate: 0,
+  overdue: 0,
+  dueSoon: 0,
+  highPriority: 0,
+  workflows: 0,
+  averageProgress: 0,
+  completionRate: 0,
+  nextDueDate: null,
+  lastActivity: 0,
+};
+
+const compactNumber = (value: number) => new Intl.NumberFormat('es-CO').format(value);
+
+const getDate = (value: any): Date | null => {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const getTime = (value: any) => getDate(value)?.getTime() || 0;
+
+const getStatusBucket = (status?: string) => {
+  const normalized = String(status || 'todo').toLowerCase();
+  if (normalized === 'completed_late') return 'completedLate';
+  if (COMPLETED_STATUSES.has(normalized)) return 'completed';
+  if (BLOCKED_STATUSES.has(normalized)) return 'blocked';
+  if (ACTIVE_STATUSES.has(normalized)) return 'active';
+  if (PENDING_STATUSES.has(normalized)) return 'pending';
+  return 'pending';
+};
+
+const isCompletedTask = (task: ProjectTask) => COMPLETED_STATUSES.has(String(task.status || '').toLowerCase());
+
+const getScheduleState = (task: ProjectTask) => {
+  if (isCompletedTask(task)) return task.status === 'completed_late' ? 'completed_late' : 'completed';
+  const endDate = getDate(task.endDate || task.end || task.dueDate);
+  if (!endDate) return 'none';
+  const days = differenceInCalendarDays(endDate, new Date());
+  if (days < 0) return 'overdue';
+  if (days <= 3) return 'due_soon';
+  return 'ok';
+};
+
+const formatDate = (value: any) => {
+  const date = getDate(value);
+  return date ? format(date, 'd MMM yyyy', { locale: es }) : 'Reciente';
+};
+
+const formatShortDate = (date: Date | null) => {
+  if (!date) return 'Sin fecha crítica';
+  return format(date, 'd MMM', { locale: es });
+};
+
+const calculateProjectStats = (tasks: ProjectTask[]): ProjectStats => {
+  const safeTasks = tasks.filter(Boolean);
+  const total = safeTasks.length;
+  const openTasks = safeTasks.filter((task) => !isCompletedTask(task));
+  const dueDates = openTasks
+    .map((task) => getDate(task.endDate || task.end || task.dueDate))
+    .filter((date): date is Date => Boolean(date))
+    .sort((left, right) => left.getTime() - right.getTime());
+
+  return {
+    total,
+    open: openTasks.length,
+    pending: safeTasks.filter((task) => getStatusBucket(task.status) === 'pending').length,
+    active: safeTasks.filter((task) => getStatusBucket(task.status) === 'active').length,
+    blocked: safeTasks.filter((task) => getStatusBucket(task.status) === 'blocked').length,
+    completed: safeTasks.filter((task) => getStatusBucket(task.status) === 'completed').length,
+    completedLate: safeTasks.filter((task) => getStatusBucket(task.status) === 'completedLate').length,
+    overdue: openTasks.filter((task) => getScheduleState(task) === 'overdue').length,
+    dueSoon: openTasks.filter((task) => getScheduleState(task) === 'due_soon').length,
+    highPriority: openTasks.filter((task) => String(task.priority || '').toLowerCase() === 'high').length,
+    workflows: safeTasks.filter((task) => task.type === 'workflow' || Array.isArray(task.workflowSteps)).length,
+    averageProgress: total ? Math.round(safeTasks.reduce((sum, task) => sum + Number(task.progress || 0), 0) / total) : 0,
+    completionRate: total ? Math.round(((safeTasks.filter(isCompletedTask).length) / total) * 100) : 0,
+    nextDueDate: dueDates[0] || null,
+    lastActivity: Math.max(...safeTasks.map((task) => getTime(task.updatedAt || task.createdAt)), 0),
+  };
+};
+
+const getProjectHealth = (stats: ProjectStats) => {
+  if (stats.overdue > 0 || stats.blocked > 0) {
+    return {
+      key: 'risk',
+      label: 'Atención crítica',
+      hint: 'Hay tareas vencidas o bloqueadas',
+      rail: 'bg-red-500',
+      badge: 'bg-red-50 text-red-700 ring-red-100',
+      glow: 'from-red-50 to-white',
+      icon: AlertTriangle,
+    };
+  }
+
+  if (stats.dueSoon > 0 || stats.highPriority > 0) {
+    return {
+      key: 'dueSoon',
+      label: 'Vigilancia activa',
+      hint: 'Se acercan cierres importantes',
+      rail: 'bg-orange-500',
+      badge: 'bg-orange-50 text-orange-700 ring-orange-100',
+      glow: 'from-orange-50 to-white',
+      icon: Clock,
+    };
+  }
+
+  if (stats.total > 0 && stats.completionRate >= 80) {
+    return {
+      key: 'healthy',
+      label: 'Saludable',
+      hint: 'Avance sólido y controlado',
+      rail: 'bg-emerald-500',
+      badge: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
+      glow: 'from-emerald-50 to-white',
+      icon: CheckCircle2,
+    };
+  }
+
+  return {
+    key: 'steady',
+    label: 'En marcha',
+    hint: 'Plan en seguimiento',
+    rail: 'bg-indigo-500',
+    badge: 'bg-indigo-50 text-indigo-700 ring-indigo-100',
+    glow: 'from-indigo-50 to-white',
+    icon: Gauge,
+  };
+};
+
+function PortfolioMetric({
+  label,
+  value,
+  detail,
+  icon,
+  tone,
+}: {
+  label: string;
+  value: string | number;
+  detail: string;
+  icon: React.ReactNode;
+  tone: 'indigo' | 'emerald' | 'orange' | 'red';
+}) {
+  const toneClass = {
+    indigo: 'bg-indigo-50 text-indigo-700 ring-indigo-100',
+    emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
+    orange: 'bg-orange-50 text-orange-700 ring-orange-100',
+    red: 'bg-red-50 text-red-700 ring-red-100',
+  }[tone];
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">{label}</p>
+          <p className="mt-2 text-3xl font-black tracking-tight text-slate-950">{value}</p>
+          <p className="mt-1 text-sm font-medium text-slate-500">{detail}</p>
+        </div>
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ring-1 ${toneClass}`}>
+          {icon}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function ProjectsPage() {
   const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
@@ -24,22 +258,29 @@ export default function ProjectsPage() {
   const [newProjectDesc, setNewProjectDesc] = useState('');
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const [selectedProjectOrgId, setSelectedProjectOrgId] = useState('');
+  const [projectSearch, setProjectSearch] = useState('');
+  const [healthFilter, setHealthFilter] = useState<HealthFilter>('all');
+  const [tasksByProject, setTasksByProject] = useState<Record<string, ProjectTask[]>>({});
 
   // Edit Team State
   const [editingTeamProjectId, setEditingTeamProjectId] = useState<string | null>(null);
   const [editSelectedMembers, setEditSelectedMembers] = useState<string[]>([]);
   const [editSelectedOrgId, setEditSelectedOrgId] = useState<string>('');
   const [isSavingTeam, setIsSavingTeam] = useState(false);
-  const managedOrganizationIds = React.useMemo(
+  const managedOrganizationIds = useMemo(
     () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
     [userOrganizationId, userOrganizationIds]
   );
-  const visibleOrganizations = React.useMemo(
+  const visibleOrganizations = useMemo(
     () =>
       userRole === 'admin'
         ? organizations
         : organizations.filter((organization) => managedOrganizationIds.includes(organization.id)),
     [managedOrganizationIds, organizations, userRole]
+  );
+  const organizationsById = useMemo(
+    () => new Map(organizations.map((organization) => [organization.id, organization])),
+    [organizations]
   );
 
   useEffect(() => {
@@ -111,10 +352,115 @@ export default function ProjectsPage() {
   }, [user, userRole, managedOrganizationIds]);
 
   useEffect(() => {
+    if (!user) return;
+    if (projects.length === 0) {
+      setTasksByProject({});
+      return;
+    }
+
+    const projectIds = new Set(projects.map((project) => project.id));
+    setTasksByProject((current) =>
+      Object.fromEntries(Object.entries(current).filter(([projectId]) => projectIds.has(projectId)))
+    );
+
+    const unsubscribes = projects.map((project) =>
+      onSnapshot(
+        query(collection(db, 'projects', project.id, 'tasks'), orderBy('displayOrder', 'asc')),
+        (snapshot) => {
+          const tasks = snapshot.docs.map((taskDoc) => ({
+            id: taskDoc.id,
+            ...taskDoc.data(),
+          } as ProjectTask));
+
+          setTasksByProject((current) => ({ ...current, [project.id]: tasks }));
+        },
+        (error) => {
+          console.error(`Error loading tasks for project ${project.id}:`, error);
+        }
+      )
+    );
+
+    return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+  }, [projects, user]);
+
+  useEffect(() => {
     if (!isCreating) return;
     if (selectedProjectOrgId || visibleOrganizations.length === 0) return;
     setSelectedProjectOrgId(visibleOrganizations[0].id);
   }, [isCreating, selectedProjectOrgId, visibleOrganizations]);
+
+  const projectStatsById = useMemo(() => {
+    return Object.fromEntries(projects.map((project) => [project.id, calculateProjectStats(tasksByProject[project.id] || [])]));
+  }, [projects, tasksByProject]);
+
+  const portfolioStats = useMemo(() => {
+    const stats = projects.map((project) => projectStatsById[project.id] || EMPTY_PROJECT_STATS);
+    const activeProjects = projects.filter((project) => project.status !== 'completed').length;
+    const totalTasks = stats.reduce((sum, item) => sum + item.total, 0);
+    const totalOpen = stats.reduce((sum, item) => sum + item.open, 0);
+    const totalOverdue = stats.reduce((sum, item) => sum + item.overdue, 0);
+    const totalDueSoon = stats.reduce((sum, item) => sum + item.dueSoon, 0);
+    const totalWorkflows = stats.reduce((sum, item) => sum + item.workflows, 0);
+    const averageProgress = totalTasks
+      ? Math.round(stats.reduce((sum, item) => sum + item.averageProgress * item.total, 0) / totalTasks)
+      : 0;
+
+    return {
+      activeProjects,
+      totalTasks,
+      totalOpen,
+      totalOverdue,
+      totalDueSoon,
+      totalWorkflows,
+      averageProgress,
+    };
+  }, [projectStatsById, projects]);
+
+  const healthCounts = useMemo(() => {
+    return projects.reduce(
+      (counts, project) => {
+        const stats = projectStatsById[project.id] || EMPTY_PROJECT_STATS;
+        const health = getProjectHealth(stats);
+        if (health.key === 'risk') counts.risk += 1;
+        if (health.key === 'dueSoon') counts.dueSoon += 1;
+        if (health.key === 'healthy') counts.healthy += 1;
+        return counts;
+      },
+      { all: projects.length, risk: 0, dueSoon: 0, healthy: 0 }
+    );
+  }, [projectStatsById, projects]);
+
+  const filteredProjects = useMemo(() => {
+    const search = projectSearch.trim().toLowerCase();
+
+    return projects.filter((project) => {
+      const stats = projectStatsById[project.id] || EMPTY_PROJECT_STATS;
+      const health = getProjectHealth(stats);
+      const organization =
+        organizationsById.get(project.organizationId) ||
+        (project.organizationIds || [])
+          .map((organizationId: string) => organizationsById.get(organizationId))
+          .find(Boolean);
+      const teamNames = (project.assignedTeamMembers || [])
+        .map((memberId: string) => teamMembers.find((member) => member.id === memberId)?.name)
+        .filter(Boolean)
+        .join(' ');
+
+      const matchesSearch =
+        !search ||
+        [project.name, project.description, organization?.name, teamNames]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(search));
+
+      const matchesHealth =
+        healthFilter === 'all' ||
+        (healthFilter === 'risk' && health.key === 'risk') ||
+        (healthFilter === 'dueSoon' && health.key === 'dueSoon') ||
+        (healthFilter === 'healthy' && health.key === 'healthy');
+
+      return matchesSearch && matchesHealth;
+    });
+  }, [healthFilter, organizationsById, projectSearch, projectStatsById, projects, teamMembers]);
 
   const toggleMemberSelection = (memberId: string) => {
     setSelectedMembers(prev => 
@@ -214,21 +560,12 @@ export default function ProjectsPage() {
     }
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'active': return <Clock className="w-4 h-4 text-amber-500" />;
-      case 'completed': return <CheckCircle className="w-4 h-4 text-emerald-500" />;
-      case 'on-hold': return <AlertCircle className="w-4 h-4 text-red-500" />;
-      default: return <Folder className="w-4 h-4 text-slate-500" />;
-    }
-  };
-
   const getStatusBadge = (status: string) => {
     switch (status) {
-      case 'active': return <span className="bg-amber-50 text-amber-700 px-2 py-1 rounded-md text-xs font-medium">Activo</span>;
-      case 'completed': return <span className="bg-emerald-50 text-emerald-700 px-2 py-1 rounded-md text-xs font-medium">Completado</span>;
-      case 'on-hold': return <span className="bg-red-50 text-red-700 px-2 py-1 rounded-md text-xs font-medium">En Pausa</span>;
-      default: return null;
+      case 'active': return <span className="rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-amber-700 ring-1 ring-amber-100 bg-amber-50">Activo</span>;
+      case 'completed': return <span className="rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-700 ring-1 ring-emerald-100 bg-emerald-50">Completado</span>;
+      case 'on-hold': return <span className="rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-red-700 ring-1 ring-red-100 bg-red-50">En pausa</span>;
+      default: return <span className="rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-600 ring-1 ring-slate-200 bg-slate-50">Proyecto</span>;
     }
   };
 
@@ -252,26 +589,78 @@ export default function ProjectsPage() {
     }
   };
 
+  const getProjectMembers = (project: any) =>
+    (project.assignedTeamMembers || [])
+      .map((memberId: string) => teamMembers.find((member) => member.id === memberId))
+      .filter(Boolean);
+
+  const filterOptions: { id: HealthFilter; label: string; count: number }[] = [
+    { id: 'all', label: 'Todos', count: healthCounts.all },
+    { id: 'risk', label: 'Críticos', count: healthCounts.risk },
+    { id: 'dueSoon', label: 'Por vencer', count: healthCounts.dueSoon },
+    { id: 'healthy', label: 'Saludables', count: healthCounts.healthy },
+  ];
+
   return (
     <DashboardLayout>
-      <div className="flex justify-between items-center mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Proyectos</h1>
-          <p className="text-slate-500 mt-1">Gestiona tus proyectos y documentos asociados.</p>
-        </div>
-        {(userRole === 'admin' || userRole === 'org_admin' || userRole === 'manager' || userRole === 'coordinador') && (
-          <Button onClick={() => setIsCreating(!isCreating)} className="bg-indigo-600 hover:bg-indigo-700 gap-2">
-            <Plus size={16} />
-            Nuevo Proyecto
-          </Button>
-        )}
-      </div>
+      <div className="space-y-6">
+        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
+            <div className="max-w-3xl">
+              <div className="mb-3 inline-flex items-center gap-2 rounded bg-indigo-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.16em] text-indigo-700 ring-1 ring-indigo-100">
+                <Sparkles size={14} />
+                Centro de proyectos
+              </div>
+              <h1 className="text-3xl font-black tracking-tight text-slate-950">Proyectos</h1>
+              <p className="mt-2 text-base font-medium text-slate-500">
+                Prioriza, compara y entra al proyecto correcto con señales claras de avance, carga y riesgo.
+              </p>
+            </div>
+            {(userRole === 'admin' || userRole === 'org_admin' || userRole === 'manager' || userRole === 'coordinador') && (
+              <Button onClick={() => setIsCreating(!isCreating)} className="h-12 shrink-0 bg-indigo-600 px-5 font-black hover:bg-indigo-700">
+                <Plus size={18} />
+                Nuevo Proyecto
+              </Button>
+            )}
+          </div>
+        </section>
 
-      {isCreating && (
-        <Card className="mb-8 border-indigo-100 bg-indigo-50/30">
-          <CardContent className="pt-6">
-            <form onSubmit={handleCreateProject} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <PortfolioMetric
+            label="Activos"
+            value={compactNumber(portfolioStats.activeProjects)}
+            detail={`${compactNumber(projects.length)} proyectos visibles`}
+            icon={<FolderKanban size={20} />}
+            tone="indigo"
+          />
+          <PortfolioMetric
+            label="Tareas abiertas"
+            value={compactNumber(portfolioStats.totalOpen)}
+            detail={`${portfolioStats.averageProgress}% de avance promedio`}
+            icon={<Target size={20} />}
+            tone="emerald"
+          />
+          <PortfolioMetric
+            label="Riesgo"
+            value={compactNumber(portfolioStats.totalOverdue)}
+            detail={`${compactNumber(portfolioStats.totalDueSoon)} por vencer pronto`}
+            icon={<AlertTriangle size={20} />}
+            tone={portfolioStats.totalOverdue > 0 ? 'red' : 'orange'}
+          />
+          <PortfolioMetric
+            label="Workflows"
+            value={compactNumber(portfolioStats.totalWorkflows)}
+            detail={`${compactNumber(portfolioStats.totalTasks)} tareas monitoreadas`}
+            icon={<Layers3 size={20} />}
+            tone="indigo"
+          />
+        </div>
+
+        {isCreating && (
+          <Card className="border-indigo-100 bg-indigo-50/30 shadow-sm">
+            <CardContent className="pt-6">
+              <form onSubmit={handleCreateProject} className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-slate-700">Nombre del Proyecto</label>
                   <input 
@@ -352,98 +741,201 @@ export default function ProjectsPage() {
         </Card>
       )}
 
-      {loading ? (
-        <div className="text-center py-12 text-slate-500">Cargando proyectos...</div>
-      ) : projects.length === 0 ? (
-        <div className="text-center py-12 bg-white rounded-xl border border-slate-200 border-dashed">
-          <Folder className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-          <h3 className="text-lg font-medium text-slate-900">No hay proyectos</h3>
-          <p className="text-slate-500 mt-1">Crea tu primer proyecto para empezar a gestionar documentos.</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {projects.map((project) => (
-            <Card key={project.id} className="hover:shadow-md transition-shadow border-slate-200">
-              <CardHeader className="pb-3">
-                <div className="flex justify-between items-start mb-2">
-                  <div className="p-2 bg-slate-50 rounded-md border border-slate-100">
-                    <Folder className="w-5 h-5 text-indigo-500" />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {getStatusBadge(project.status)}
-                    {canDeleteProject(project) && (
-                      <button 
-                        onClick={() => handleDeleteProject(project.id)}
-                        className="text-slate-400 hover:text-red-500 transition-colors p-1"
-                        title="Eliminar proyecto"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <CardTitle className="text-lg font-semibold text-slate-900 line-clamp-1">{project.name}</CardTitle>
-                <p className="text-sm text-slate-500 line-clamp-2 mt-1 h-10">
-                  {project.description || 'Sin descripción'}
-                </p>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center gap-2 text-xs text-slate-400 mb-4">
-                  <Clock size={14} />
-                  <span>Creado: {project.createdAt?.toDate().toLocaleDateString() || 'Reciente'}</span>
-                </div>
-                
-                {project.assignedTeamMembers && project.assignedTeamMembers.length > 0 && (
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      <div className="flex -space-x-2 overflow-hidden">
-                        {project.assignedTeamMembers.slice(0, 3).map((memberId: string) => {
-                          const member = teamMembers.find(m => m.id === memberId);
-                          if (!member) return null;
-                          return (
-                            <div key={memberId} className="inline-block h-6 w-6 rounded-full ring-2 ring-white bg-indigo-100 text-indigo-700 flex items-center justify-center text-[10px] font-bold" title={member.name}>
-                              {member.name.charAt(0).toUpperCase()}
-                            </div>
-                          );
-                        })}
-                        {project.assignedTeamMembers.length > 3 && (
-                          <div className="inline-block h-6 w-6 rounded-full ring-2 ring-white bg-slate-100 text-slate-600 flex items-center justify-center text-[10px] font-medium">
-                            +{project.assignedTeamMembers.length - 3}
-                          </div>
-                        )}
-                      </div>
-                      <span className="text-xs text-slate-500">
-                        {project.assignedTeamMembers.length} miembro{project.assignedTeamMembers.length !== 1 ? 's' : ''}
-                      </span>
-                    </div>
-                    {canEditProject(project) && (
-                      <Button variant="ghost" size="sm" onClick={() => handleOpenEditTeam(project)} className="h-8 px-2 text-slate-500 hover:text-indigo-600">
-                        <Users size={14} className="mr-1" /> Editar
-                      </Button>
-                    )}
-                  </div>
-                )}
-                
-                {(!project.assignedTeamMembers || project.assignedTeamMembers.length === 0) && canEditProject(project) && (
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-xs text-slate-400">Sin equipo asignado</span>
-                    <Button variant="ghost" size="sm" onClick={() => handleOpenEditTeam(project)} className="h-8 px-2 text-slate-500 hover:text-indigo-600">
-                      <Users size={14} className="mr-1" /> Asignar
-                    </Button>
-                  </div>
-                )}
+        <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+              <h2 className="text-xl font-black tracking-tight text-slate-950">Radar de proyectos</h2>
+              <p className="mt-1 text-sm font-medium text-slate-500">Busca por nombre, organización o equipo asignado.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {filterOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setHealthFilter(option.id)}
+                  className={`inline-flex h-9 items-center gap-2 rounded border px-3 text-xs font-black uppercase tracking-[0.12em] transition ${
+                    healthFilter === option.id
+                      ? 'border-indigo-600 bg-indigo-600 text-white shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200 hover:bg-indigo-50'
+                  }`}
+                >
+                  {option.label}
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] ${healthFilter === option.id ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                    {option.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="mt-4 flex flex-col gap-3 lg:flex-row">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                value={projectSearch}
+                onChange={(event) => setProjectSearch(event.target.value)}
+                className="h-11 w-full rounded-md border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                placeholder="Buscar proyecto, organización o responsable..."
+              />
+            </div>
+          </div>
+        </section>
 
-                <Link href={`/projects/${project.id}`}>
-                  <Button className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 gap-2">
-                    <FileText size={16} />
-                    Gestionar Proyecto
-                  </Button>
-                </Link>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+        {loading ? (
+          <div className="rounded-lg border border-slate-200 bg-white py-14 text-center text-slate-500 shadow-sm">Cargando proyectos...</div>
+        ) : projects.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-white py-14 text-center shadow-sm">
+            <Folder className="mx-auto mb-3 h-12 w-12 text-slate-300" />
+            <h3 className="text-lg font-black text-slate-900">No hay proyectos</h3>
+            <p className="mt-1 text-slate-500">Crea tu primer proyecto para empezar a planificar.</p>
+          </div>
+        ) : filteredProjects.length === 0 ? (
+          <div className="rounded-lg border border-slate-200 bg-white py-14 text-center shadow-sm">
+            <Search className="mx-auto mb-3 h-12 w-12 text-slate-300" />
+            <h3 className="text-lg font-black text-slate-900">No encontramos coincidencias</h3>
+            <p className="mt-1 text-slate-500">Prueba con otro nombre, organización o filtro de salud.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+            {filteredProjects.map((project) => {
+              const stats = projectStatsById[project.id] || EMPTY_PROJECT_STATS;
+              const health = getProjectHealth(stats);
+              const HealthIcon = health.icon;
+              const projectMembers = getProjectMembers(project);
+              const organization =
+                organizationsById.get(project.organizationId) ||
+                (project.organizationIds || [])
+                  .map((organizationId: string) => organizationsById.get(organizationId))
+                  .find(Boolean);
+              const memberCount = project.assignedTeamMembers?.length || 0;
+              const lastActivityLabel = stats.lastActivity ? formatDate(stats.lastActivity) : formatDate(project.updatedAt || project.createdAt);
+
+              return (
+                <article key={project.id} className="relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                  <div className={`absolute inset-x-0 top-0 h-1 ${health.rail}`} />
+                  <div className={`absolute inset-x-0 top-0 h-28 bg-gradient-to-b ${health.glow} opacity-80`} />
+                  <div className="relative p-5">
+                    <div className="mb-4 flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-indigo-600 ring-1 ring-slate-200">
+                          <FolderKanban size={22} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="mb-1 flex flex-wrap items-center gap-2">
+                            {getStatusBadge(project.status)}
+                            <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${health.badge}`}>
+                              <HealthIcon size={12} />
+                              {health.label}
+                            </span>
+                          </div>
+                          <h3 className="truncate text-xl font-black tracking-tight text-slate-950">{project.name}</h3>
+                        </div>
+                      </div>
+                      {canDeleteProject(project) && (
+                        <button
+                          onClick={() => handleDeleteProject(project.id)}
+                          className="rounded-md p-2 text-slate-400 transition hover:bg-red-50 hover:text-red-600"
+                          title="Eliminar proyecto"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+
+                    <p className="min-h-10 text-sm font-medium leading-5 text-slate-500 line-clamp-2">
+                      {project.description || 'Sin descripción'}
+                    </p>
+
+                    <div className="mt-5">
+                      <div className="mb-2 flex items-center justify-between text-xs font-black uppercase tracking-[0.12em] text-slate-400">
+                        <span>Avance general</span>
+                        <span className="text-slate-700">{stats.averageProgress}%</span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                        <div className={`h-full rounded-full ${health.rail}`} style={{ width: `${Math.min(Math.max(stats.averageProgress, 0), 100)}%` }} />
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-3 gap-2">
+                      <div className="rounded-md bg-slate-50 p-3 ring-1 ring-slate-100">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Abiertas</p>
+                        <p className="mt-1 text-xl font-black text-slate-950">{compactNumber(stats.open)}</p>
+                      </div>
+                      <div className={`rounded-md p-3 ring-1 ${stats.overdue > 0 ? 'bg-red-50 ring-red-100' : 'bg-slate-50 ring-slate-100'}`}>
+                        <p className={`text-[10px] font-black uppercase tracking-[0.14em] ${stats.overdue > 0 ? 'text-red-500' : 'text-slate-400'}`}>Vencidas</p>
+                        <p className={`mt-1 text-xl font-black ${stats.overdue > 0 ? 'text-red-700' : 'text-slate-950'}`}>{compactNumber(stats.overdue)}</p>
+                      </div>
+                      <div className={`rounded-md p-3 ring-1 ${stats.dueSoon > 0 ? 'bg-orange-50 ring-orange-100' : 'bg-slate-50 ring-slate-100'}`}>
+                        <p className={`text-[10px] font-black uppercase tracking-[0.14em] ${stats.dueSoon > 0 ? 'text-orange-500' : 'text-slate-400'}`}>Próximas</p>
+                        <p className={`mt-1 text-xl font-black ${stats.dueSoon > 0 ? 'text-orange-700' : 'text-slate-950'}`}>{compactNumber(stats.dueSoon)}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-1 gap-2 text-xs font-bold text-slate-500 sm:grid-cols-2">
+                      <div className="flex min-w-0 items-center gap-2 rounded-md bg-white/70 px-3 py-2 ring-1 ring-slate-100">
+                        <Clock size={14} className="shrink-0 text-slate-400" />
+                        <span className="truncate">Próximo cierre: {formatShortDate(stats.nextDueDate)}</span>
+                      </div>
+                      <div className="flex min-w-0 items-center gap-2 rounded-md bg-white/70 px-3 py-2 ring-1 ring-slate-100">
+                        <BarChart3 size={14} className="shrink-0 text-slate-400" />
+                        <span className="truncate">{compactNumber(stats.workflows)} workflows · {compactNumber(stats.highPriority)} alta prioridad</span>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
+                      <div className="min-w-0">
+                        <div className="mb-2 flex items-center gap-2 text-xs font-bold text-slate-500">
+                          <Clock size={14} />
+                          <span>Actividad: {lastActivityLabel}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="flex -space-x-2 overflow-hidden">
+                            {projectMembers.slice(0, 4).map((member: any) => {
+                              const display = member.name || member.email || '?';
+                              return (
+                                <div key={member.id} className="relative inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-full bg-indigo-100 text-[10px] font-black text-indigo-700 ring-2 ring-white" title={display}>
+                                  {member.photoURL ? (
+                                    <Image src={member.photoURL} alt={display} fill className="object-cover" referrerPolicy="no-referrer" />
+                                  ) : (
+                                    display.charAt(0).toUpperCase()
+                                  )}
+                                </div>
+                              );
+                            })}
+                            {memberCount > 4 && (
+                              <div className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-[10px] font-black text-slate-600 ring-2 ring-white">
+                                +{memberCount - 4}
+                              </div>
+                            )}
+                          </div>
+                          <div className="min-w-0 text-xs font-bold text-slate-500">
+                            <p className="truncate">{memberCount} miembro{memberCount !== 1 ? 's' : ''}</p>
+                            <p className="truncate text-slate-400">{organization?.name || 'Sin organización'}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex shrink-0 flex-col gap-2">
+                        {canEditProject(project) && (
+                          <Button variant="outline" size="sm" onClick={() => handleOpenEditTeam(project)} className="h-9 justify-start border-slate-200 text-slate-600 hover:bg-slate-50">
+                            <Users size={14} />
+                            Equipo
+                          </Button>
+                        )}
+                        <Link href={`/projects/${project.id}`}>
+                          <Button className="h-10 bg-slate-950 px-4 font-black text-white hover:bg-indigo-700">
+                            Abrir
+                            <ArrowRight size={16} />
+                          </Button>
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </div>
       
       {/* Edit Team Modal */}
       {editingTeamProjectId && (
