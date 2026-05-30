@@ -150,7 +150,7 @@ export default function ProjectDetailsPage() {
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'tasks' | 'logbook' | 'quality' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
-  const [showDocumentIssueAlert, setShowDocumentIssueAlert] = useState(true);
+  const [showDocumentIssueAlert, setShowDocumentIssueAlert] = useState(false);
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');

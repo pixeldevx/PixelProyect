@@ -235,7 +235,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.Day);
   const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
-  const [isTimelineCollapsed, setIsTimelineCollapsed] = useState(false);
+  const [isTimelineCollapsed, setIsTimelineCollapsed] = useState(true);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTaskTitle, setEditingTaskTitle] = useState("");
   const [openActionMenuTaskId, setOpenActionMenuTaskId] = useState<string | null>(null);
@@ -741,7 +741,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         </div>
       </div>
 
-      <div className="flex border-b border-slate-200 bg-slate-50/30">
+      <div className="flex bg-slate-50/30">
         {/* Left side: Task List (Monday Style) */}
         <div className={`${isTimelineCollapsed ? 'w-full border-r-0' : 'w-[760px] border-r'} shrink-0 border-slate-200 flex flex-col`}>
           <div className="h-10 flex items-center px-4 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white">
@@ -760,7 +760,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 <div
                   {...provided.droppableProps}
                   ref={provided.innerRef}
-                  className="flex-1 overflow-y-auto max-h-[600px] scrollbar-thin scrollbar-thumb-slate-200"
+                  className="w-full overflow-visible"
                 >
                   {visibleTasks.length === 0 && scheduleFilter && (
                     <div className="flex min-h-[180px] flex-col items-center justify-center border-b border-slate-100 px-4 text-center">
