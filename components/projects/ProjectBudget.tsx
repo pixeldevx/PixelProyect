@@ -29,6 +29,7 @@ type BudgetPiece = {
   name: string;
   category: string;
   startMonth: number;
+  activeMonths?: number[];
   quantity: number;
   duration: number;
   multiplier: number;
@@ -66,6 +67,8 @@ type BudgetLineData = BudgetLine & {
   percentUsed: number;
   pieceCount: number;
 };
+
+type PieceViewMode = 'table' | 'timeline';
 
 const TYPE_PALETTE = [
   { tone: 'bg-violet-50 text-violet-700 ring-violet-100', pixel: 'bg-violet-500', dot: 'bg-violet-500' },
@@ -133,11 +136,75 @@ const toNumber = (value: any, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const clampMonthNumber = (value: any, fallback = 1) => Math.max(1, Math.round(toNumber(value, fallback)));
+
+const getTimelineMonthLabel = (monthNumber: number) => {
+  const safeMonth = clampMonthNumber(monthNumber);
+  const monthIndex = (safeMonth - 1) % MONTH_LABELS.length;
+  const cycle = Math.floor((safeMonth - 1) / MONTH_LABELS.length);
+  return cycle === 0 ? MONTH_LABELS[monthIndex] : `${MONTH_LABELS[monthIndex]} +${cycle}`;
+};
+
+const normalizeActiveMonths = (months: any[] = []) =>
+  Array.from(
+    new Set(
+      months
+        .map((month) => clampMonthNumber(month))
+        .filter((month) => Number.isFinite(month) && month > 0)
+    )
+  ).sort((a, b) => a - b);
+
+const buildContinuousMonths = (startMonth: number, duration: number) =>
+  Array.from({ length: Math.max(0, Math.ceil(toNumber(duration, 0))) }, (_, index) => clampMonthNumber(startMonth) + index);
+
+const getPieceActiveMonths = (piece: BudgetPiece) => {
+  if (Array.isArray(piece.activeMonths)) return normalizeActiveMonths(piece.activeMonths);
+  return buildContinuousMonths(clampMonthNumber(piece.startMonth), Math.max(1, Math.ceil(toNumber(piece.duration, 1))));
+};
+
+const applyPieceSchedule = (piece: BudgetPiece, months: number[]) => {
+  const activeMonths = normalizeActiveMonths(months);
+  return {
+    ...piece,
+    activeMonths,
+    duration: activeMonths.length,
+    startMonth: activeMonths[0] || clampMonthNumber(piece.startMonth),
+  };
+};
+
+const updatePieceField = (piece: BudgetPiece, field: keyof BudgetPiece, value: string | number): BudgetPiece => {
+  if (field === 'startMonth') {
+    const startMonth = clampMonthNumber(value);
+    const duration = Math.max(0, Math.ceil(toNumber(piece.duration, 0)));
+    return {
+      ...piece,
+      startMonth,
+      activeMonths: buildContinuousMonths(startMonth, duration),
+    };
+  }
+
+  if (field === 'duration') {
+    const duration = Math.max(0, Math.ceil(toNumber(value, 0)));
+    return {
+      ...piece,
+      duration,
+      activeMonths: buildContinuousMonths(piece.startMonth, duration),
+    };
+  }
+
+  if (['quantity', 'multiplier', 'unitCost'].includes(field)) {
+    return { ...piece, [field]: toNumber(value) };
+  }
+
+  return { ...piece, [field]: value };
+};
+
 const createBlankPiece = (overrides: Partial<BudgetPiece> = {}): BudgetPiece => ({
   id: createId(),
   name: 'Nueva pieza',
   category: 'people',
   startMonth: 1,
+  activeMonths: [1],
   quantity: 1,
   duration: 1,
   multiplier: 1,
@@ -147,18 +214,27 @@ const createBlankPiece = (overrides: Partial<BudgetPiece> = {}): BudgetPiece => 
   ...overrides,
 });
 
-const normalizePiece = (piece: any): BudgetPiece => ({
-  id: piece?.id || createId(),
-  name: piece?.name || 'Pieza de presupuesto',
-  category: piece?.category || 'other',
-  startMonth: Math.min(12, Math.max(1, Math.round(toNumber(piece?.startMonth, 1)))),
-  quantity: toNumber(piece?.quantity, 1),
-  duration: toNumber(piece?.duration, 1),
-  multiplier: toNumber(piece?.multiplier, 1),
-  unitCost: toNumber(piece?.unitCost, 0),
-  unitLabel: piece?.unitLabel || 'unidad',
-  notes: piece?.notes || '',
-});
+const normalizePiece = (piece: any): BudgetPiece => {
+  const startMonth = clampMonthNumber(piece?.startMonth);
+  const duration = Math.max(0, Math.ceil(toNumber(piece?.duration, 1)));
+  const activeMonths = Array.isArray(piece?.activeMonths)
+    ? normalizeActiveMonths(piece.activeMonths)
+    : buildContinuousMonths(startMonth, Math.max(1, duration));
+
+  return {
+    id: piece?.id || createId(),
+    name: piece?.name || 'Pieza de presupuesto',
+    category: piece?.category || 'other',
+    startMonth: activeMonths[0] || startMonth,
+    activeMonths,
+    quantity: toNumber(piece?.quantity, 1),
+    duration: activeMonths.length,
+    multiplier: toNumber(piece?.multiplier, 1),
+    unitCost: toNumber(piece?.unitCost, 0),
+    unitLabel: piece?.unitLabel || 'unidad',
+    notes: piece?.notes || '',
+  };
+};
 
 const normalizeBudgetPieces = (line: BudgetLine): BudgetPiece[] => {
   if (Array.isArray(line.components) && line.components.length > 0) {
@@ -172,6 +248,7 @@ const normalizeBudgetPieces = (line: BudgetLine): BudgetPiece[] => {
         name: 'Presupuesto base',
         category: 'other',
         startMonth: 1,
+        activeMonths: [1],
         quantity: 1,
         duration: 1,
         multiplier: 1,
@@ -184,8 +261,10 @@ const normalizeBudgetPieces = (line: BudgetLine): BudgetPiece[] => {
   return [createBlankPiece()];
 };
 
-const pieceTotal = (piece: BudgetPiece) =>
-  toNumber(piece.quantity, 0) * toNumber(piece.duration, 0) * toNumber(piece.multiplier, 0) * toNumber(piece.unitCost, 0);
+const pieceTotal = (piece: BudgetPiece) => {
+  const activeDuration = Array.isArray(piece.activeMonths) ? getPieceActiveMonths(piece).length : toNumber(piece.duration, 0);
+  return toNumber(piece.quantity, 0) * activeDuration * toNumber(piece.multiplier, 0) * toNumber(piece.unitCost, 0);
+};
 
 const piecesTotal = (pieces: BudgetPiece[]) => pieces.reduce((sum, piece) => sum + pieceTotal(piece), 0);
 
@@ -208,6 +287,8 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
   const [description, setDescription] = useState('');
   const [currency, setCurrency] = useState('COP');
   const [newLinePieces, setNewLinePieces] = useState<BudgetPiece[]>([createBlankPiece()]);
+  const [newLineViewMode, setNewLineViewMode] = useState<PieceViewMode>('table');
+  const [lineViewModes, setLineViewModes] = useState<Record<string, PieceViewMode>>({});
   const [loading, setLoading] = useState(false);
   const [budgetLineToDelete, setBudgetLineToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -266,6 +347,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
     setDescription('');
     setCurrency('COP');
     setNewLinePieces([createBlankPiece()]);
+    setNewLineViewMode('table');
   };
 
   const openCreateModal = () => {
@@ -399,13 +481,23 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
     setLineDrafts((current) => ({
       ...current,
       [lineId]: (current[lineId] || []).map((piece) =>
-        piece.id === pieceId
-          ? {
-              ...piece,
-              [field]: ['startMonth', 'quantity', 'duration', 'multiplier', 'unitCost'].includes(field) ? toNumber(value) : value,
-            }
-          : piece
+        piece.id === pieceId ? updatePieceField(piece, field, value) : piece
       ),
+    }));
+    setDirtyLines((current) => ({ ...current, [lineId]: true }));
+  };
+
+  const toggleDraftPieceMonth = (lineId: string, pieceId: string, monthNumber: number) => {
+    setLineDrafts((current) => ({
+      ...current,
+      [lineId]: (current[lineId] || []).map((piece) => {
+        if (piece.id !== pieceId) return piece;
+        const activeMonths = getPieceActiveMonths(piece);
+        const nextMonths = activeMonths.includes(monthNumber)
+          ? activeMonths.filter((month) => month !== monthNumber)
+          : [...activeMonths, monthNumber];
+        return applyPieceSchedule(piece, nextMonths);
+      }),
     }));
     setDirtyLines((current) => ({ ...current, [lineId]: true }));
   };
@@ -458,13 +550,21 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
   const updateNewPiece = (pieceId: string, field: keyof BudgetPiece, value: string | number) => {
     setNewLinePieces((current) =>
       current.map((piece) =>
-        piece.id === pieceId
-          ? {
-              ...piece,
-              [field]: ['startMonth', 'quantity', 'duration', 'multiplier', 'unitCost'].includes(field) ? toNumber(value) : value,
-            }
-          : piece
+        piece.id === pieceId ? updatePieceField(piece, field, value) : piece
       )
+    );
+  };
+
+  const toggleNewPieceMonth = (pieceId: string, monthNumber: number) => {
+    setNewLinePieces((current) =>
+      current.map((piece) => {
+        if (piece.id !== pieceId) return piece;
+        const activeMonths = getPieceActiveMonths(piece);
+        const nextMonths = activeMonths.includes(monthNumber)
+          ? activeMonths.filter((month) => month !== monthNumber)
+          : [...activeMonths, monthNumber];
+        return applyPieceSchedule(piece, nextMonths);
+      })
     );
   };
 
@@ -475,7 +575,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
   const applyTemplate = (templatePieces: BudgetPiece[]) => {
     setNewLinePieces((current) => [
       ...current.filter((piece) => piece.name !== 'Nueva pieza' || pieceTotal(piece) > 0),
-      ...templatePieces.map((piece) => ({ ...piece, id: createId() })),
+      ...templatePieces.map((piece) => normalizePiece({ ...piece, id: createId() })),
     ]);
   };
 
@@ -625,15 +725,19 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                     </span>
                   )}
                 </div>
-                <select
-                  value={Math.min(12, Math.max(1, Math.round(toNumber(piece.startMonth, 1))))}
-                  onChange={(event) => handlers.update(piece.id, 'startMonth', event.target.value)}
-                  className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
-                >
-                  {MONTH_LABELS.map((month, index) => (
-                    <option key={month} value={index + 1}>{month}</option>
-                  ))}
-                </select>
+                <div>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={piece.startMonth}
+                    onChange={(event) => handlers.update(piece.id, 'startMonth', event.target.value)}
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-right text-sm font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                  />
+                  {!options.compact && (
+                    <p className="mt-1 truncate text-[10px] font-bold text-slate-400">{getTimelineMonthLabel(piece.startMonth)}</p>
+                  )}
+                </div>
                 <input
                   type="number"
                   min="0"
@@ -646,7 +750,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                   <input
                     type="number"
                     min="0"
-                    step="0.01"
+                    step="1"
                     value={piece.duration}
                     onChange={(event) => handlers.update(piece.id, 'duration', event.target.value)}
                     className="h-9 w-full rounded-md border border-slate-200 px-2 text-right text-sm font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
@@ -707,58 +811,122 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
     </div>
   );
 
-  const renderMonthlyPixelMap = (pieces: BudgetPiece[], title = 'Mapa mensual de piezas') => (
-    <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-      <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h4 className="flex items-center gap-2 text-sm font-black text-slate-950">
-            <Timer size={15} className="text-emerald-600" />
-            {title}
-          </h4>
-          <p className="text-xs font-medium text-slate-500">Cada bloque representa un mes activo de la pieza dentro del año presupuestal.</p>
-        </div>
-        <span className="rounded bg-white px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500 ring-1 ring-slate-200">
-          {compactNumber(pieces.length)} piezas
-        </span>
-      </div>
-      <div className="overflow-x-auto">
-        <div className="min-w-[760px] space-y-1">
-          <div className="grid grid-cols-[190px_repeat(12,minmax(34px,1fr))] gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
-            <span />
-            {MONTH_LABELS.map((month) => (
-              <span key={month} className="text-center">{month}</span>
-            ))}
-          </div>
-          {pieces.map((piece) => {
-            const config = getCategoryConfig(piece.category);
-            const start = Math.min(12, Math.max(1, Math.round(toNumber(piece.startMonth, 1))));
-            const duration = Math.max(1, Math.ceil(toNumber(piece.duration, 1)));
-            const end = Math.min(12, start + duration - 1);
+  const renderMonthlyPixelMap = (
+    pieces: BudgetPiece[],
+    title = 'Mapa mensual de piezas',
+    options: { editable?: boolean; onToggleMonth?: (pieceId: string, monthNumber: number) => void } = {}
+  ) => {
+    const maxMonth = Math.max(
+      12,
+      ...pieces.flatMap((piece) => {
+        const activeMonths = getPieceActiveMonths(piece);
+        const projectedEnd = clampMonthNumber(piece.startMonth) + Math.max(0, Math.ceil(toNumber(piece.duration, 0))) - 1;
+        return [...activeMonths, projectedEnd];
+      })
+    );
+    const timelineMonths = Array.from({ length: maxMonth }, (_, index) => index + 1);
+    const gridTemplateColumns = `210px repeat(${timelineMonths.length}, minmax(34px, 1fr))`;
+    const minWidth = 210 + timelineMonths.length * 40;
 
-            return (
-              <div key={`timeline-${piece.id}`} className="grid grid-cols-[190px_repeat(12,minmax(34px,1fr))] items-center gap-1">
-                <div className="flex min-w-0 items-center gap-2 pr-2">
-                  <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${config.dot}`} />
-                  <span className="truncate text-xs font-black text-slate-700">{piece.name || 'Pieza'}</span>
+    return (
+      <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+        <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h4 className="flex items-center gap-2 text-sm font-black text-slate-950">
+              <Timer size={15} className="text-emerald-600" />
+              {title}
+            </h4>
+            <p className="text-xs font-medium text-slate-500">
+              {options.editable
+                ? 'Haz click sobre los meses para activar o quitar gasto. Los huecos descuentan tiempo y presupuesto.'
+                : 'Cada bloque representa un mes activo de la pieza dentro de la línea presupuestal.'}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <span className="rounded bg-white px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500 ring-1 ring-slate-200">
+              {compactNumber(pieces.length)} piezas
+            </span>
+            <span className="rounded bg-white px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500 ring-1 ring-slate-200">
+              {compactNumber(timelineMonths.length)} meses visibles
+            </span>
+          </div>
+        </div>
+        <div className="overflow-x-auto pb-1">
+          <div className="space-y-1" style={{ minWidth }}>
+            <div
+              className="grid gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400"
+              style={{ gridTemplateColumns }}
+            >
+              <span />
+              {timelineMonths.map((monthNumber) => (
+                <span key={`header-${monthNumber}`} className="text-center">{getTimelineMonthLabel(monthNumber)}</span>
+              ))}
+            </div>
+            {pieces.map((piece) => {
+              const config = getCategoryConfig(piece.category);
+              const activeMonths = getPieceActiveMonths(piece);
+              const activeMonthSet = new Set(activeMonths);
+              const firstMonth = activeMonths[0];
+              const lastMonth = activeMonths[activeMonths.length - 1];
+              const monthRange = activeMonths.length > 0
+                ? `${getTimelineMonthLabel(firstMonth)} - ${getTimelineMonthLabel(lastMonth)}`
+                : 'Sin meses activos';
+
+              return (
+                <div
+                  key={`timeline-${piece.id}`}
+                  className="grid items-center gap-1"
+                  style={{ gridTemplateColumns }}
+                >
+                  <div className="flex min-w-0 items-center gap-2 pr-2">
+                    <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${config.dot}`} />
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-black text-slate-700">{piece.name || 'Pieza'}</p>
+                      <p className="truncate text-[10px] font-bold text-slate-400">
+                        {compactNumber(activeMonths.length)} meses · {monthRange}
+                      </p>
+                    </div>
+                  </div>
+                  {timelineMonths.map((monthNumber) => {
+                    const isActive = activeMonthSet.has(monthNumber);
+                    const titleText = `${piece.name || 'Pieza'} · ${getTimelineMonthLabel(monthNumber)} · ${isActive ? 'activo' : 'inactivo'}`;
+                    const cellClassName = `h-7 rounded-sm transition ${
+                      isActive
+                        ? `${config.pixel} shadow-sm hover:brightness-95`
+                        : options.editable
+                          ? 'bg-white ring-1 ring-slate-200 hover:bg-slate-100 hover:ring-slate-300'
+                          : 'bg-white ring-1 ring-slate-200'
+                    }`;
+
+                    if (options.editable) {
+                      return (
+                        <button
+                          key={`${piece.id}-${monthNumber}`}
+                          type="button"
+                          aria-pressed={isActive}
+                          title={titleText}
+                          onClick={() => options.onToggleMonth?.(piece.id, monthNumber)}
+                          className={cellClassName}
+                        />
+                      );
+                    }
+
+                    return (
+                      <div
+                        key={`${piece.id}-${monthNumber}`}
+                        title={titleText}
+                        className={cellClassName}
+                      />
+                    );
+                  })}
                 </div>
-                {MONTH_LABELS.map((month, index) => {
-                  const monthNumber = index + 1;
-                  const isActive = monthNumber >= start && monthNumber <= end;
-                  return (
-                    <div
-                      key={`${piece.id}-${month}`}
-                      title={`${piece.name}: ${MONTH_LABELS[start - 1]} - ${MONTH_LABELS[end - 1]}`}
-                      className={`h-7 rounded-sm transition ${isActive ? `${config.pixel} shadow-sm` : 'bg-white ring-1 ring-slate-200'}`}
-                    />
-                  );
-                })}
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -893,6 +1061,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
             const isDirty = Boolean(dirtyLines[line.id]);
             const linePieceTypes = pieceTypes.filter((item) => line.pieces.some((piece) => piece.category === item.id)).slice(0, 4);
             const defaultPieceType = line.pieces[0]?.category || pieceTypes[0]?.id || 'people';
+            const lineViewMode = lineViewModes[line.id] || 'table';
 
             return (
               <article key={line.id} className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -961,14 +1130,37 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                   </div>
                 </div>
                 <div className="bg-white p-3">
-                  {renderPieceEditor(line.pieces, {
-                    update: (pieceId, field, value) => updateDraftPiece(line.id, pieceId, field, value),
-                    duplicate: (piece) => duplicateDraftPiece(line.id, piece),
-                    remove: (pieceId) => removeDraftPiece(line.id, pieceId),
-                  })}
-                  <div className="mt-3">
-                    {renderMonthlyPixelMap(line.pieces)}
+                  <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <p className="text-xs font-bold text-slate-500">
+                      Alterna entre edición tipo hoja de cálculo y calendario mensual editable.
+                    </p>
+                    <div className="inline-flex rounded-md bg-slate-100 p-1 ring-1 ring-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setLineViewModes((current) => ({ ...current, [line.id]: 'table' }))}
+                        className={`rounded px-3 py-1.5 text-xs font-black transition ${lineViewMode === 'table' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                      >
+                        Hoja
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLineViewModes((current) => ({ ...current, [line.id]: 'timeline' }))}
+                        className={`rounded px-3 py-1.5 text-xs font-black transition ${lineViewMode === 'timeline' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                      >
+                        Meses
+                      </button>
+                    </div>
                   </div>
+                  {lineViewMode === 'table'
+                    ? renderPieceEditor(line.pieces, {
+                        update: (pieceId, field, value) => updateDraftPiece(line.id, pieceId, field, value),
+                        duplicate: (piece) => duplicateDraftPiece(line.id, piece),
+                        remove: (pieceId) => removeDraftPiece(line.id, pieceId),
+                      })
+                    : renderMonthlyPixelMap(line.pieces, 'Calendario mensual editable', {
+                        editable: true,
+                        onToggleMonth: (pieceId, monthNumber) => toggleDraftPieceMonth(line.id, pieceId, monthNumber),
+                      })}
                 </div>
               </article>
             );
@@ -1052,22 +1244,42 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                     <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-3">
                       <div>
                         <h4 className="font-black text-slate-950">Hoja de cálculo de piezas</h4>
-                        <p className="text-xs font-medium text-slate-500">Subtotal = cantidad x tiempo x factor x valor unitario.</p>
+                        <p className="text-xs font-medium text-slate-500">Subtotal = cantidad x meses activos x factor x valor unitario.</p>
                       </div>
-                      <Button type="button" variant="outline" size="sm" onClick={() => addNewPiece()} className="border-slate-200">
-                        <Plus size={14} />
-                        Agregar pieza
-                      </Button>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <div className="inline-flex rounded-md bg-slate-100 p-1 ring-1 ring-slate-200">
+                          <button
+                            type="button"
+                            onClick={() => setNewLineViewMode('table')}
+                            className={`rounded px-3 py-1.5 text-xs font-black transition ${newLineViewMode === 'table' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                          >
+                            Hoja
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNewLineViewMode('timeline')}
+                            className={`rounded px-3 py-1.5 text-xs font-black transition ${newLineViewMode === 'timeline' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                          >
+                            Meses
+                          </button>
+                        </div>
+                        <Button type="button" variant="outline" size="sm" onClick={() => addNewPiece()} className="border-slate-200">
+                          <Plus size={14} />
+                          Agregar pieza
+                        </Button>
+                      </div>
                     </div>
                     <div className="p-3">
-                      {renderPieceEditor(newLinePieces, {
-                        update: updateNewPiece,
-                        duplicate: (piece) => setNewLinePieces((current) => [...current, { ...piece, id: createId(), name: `${piece.name} copia` }]),
-                        remove: removeNewPiece,
-                      })}
-                      <div className="mt-3">
-                        {renderMonthlyPixelMap(newLinePieces, 'Vista mensual de la nueva línea')}
-                      </div>
+                      {newLineViewMode === 'table'
+                        ? renderPieceEditor(newLinePieces, {
+                            update: updateNewPiece,
+                            duplicate: (piece) => setNewLinePieces((current) => [...current, { ...piece, id: createId(), name: `${piece.name} copia` }]),
+                            remove: removeNewPiece,
+                          })
+                        : renderMonthlyPixelMap(newLinePieces, 'Vista mensual editable de la nueva línea', {
+                            editable: true,
+                            onToggleMonth: toggleNewPieceMonth,
+                          })}
                     </div>
                   </div>
                 </div>
