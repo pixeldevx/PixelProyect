@@ -220,6 +220,7 @@ export default function BudgetsOverviewPage() {
   const [selectedProjectId, setSelectedProjectId] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [peopleFilter, setPeopleFilter] = useState<'all' | 'alerts' | 'uncovered' | 'exhausted'>('alerts');
+  const [budgetView, setBudgetView] = useState<'overview' | 'monthly'>('overview');
   const [loading, setLoading] = useState(true);
 
   const managedOrganizationIds = useMemo(
@@ -637,7 +638,27 @@ export default function BudgetsOverviewPage() {
                 </button>
               ))}
             </div>
-            <div className="flex flex-col gap-2 lg:flex-row">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+              <div className="inline-flex h-10 rounded-md bg-slate-100 p-1 ring-1 ring-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setBudgetView('overview')}
+                  className={`rounded px-3 text-sm font-black transition ${
+                    budgetView === 'overview' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Vista general
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBudgetView('monthly')}
+                  className={`rounded px-3 text-sm font-black transition ${
+                    budgetView === 'monthly' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Cobertura mensual
+                </button>
+              </div>
               <div className="relative lg:w-96">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
@@ -647,21 +668,24 @@ export default function BudgetsOverviewPage() {
                   placeholder="Buscar proyecto, persona, línea u organización..."
                 />
               </div>
-              <select
-                value={peopleFilter}
-                onChange={(event) => setPeopleFilter(event.target.value as any)}
-                className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-bold text-slate-600 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-              >
-                <option value="alerts">Solo alertas de personal</option>
-                <option value="all">Todo el personal</option>
-                <option value="uncovered">Sin presupuesto</option>
-                <option value="exhausted">Presupuesto agotado</option>
-              </select>
+              {budgetView === 'overview' && (
+                <select
+                  value={peopleFilter}
+                  onChange={(event) => setPeopleFilter(event.target.value as any)}
+                  className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-bold text-slate-600 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                >
+                  <option value="alerts">Solo alertas de personal</option>
+                  <option value="all">Todo el personal</option>
+                  <option value="uncovered">Sin presupuesto</option>
+                  <option value="exhausted">Presupuesto agotado</option>
+                </select>
+              )}
             </div>
           </div>
         </section>
 
-        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        {budgetView === 'monthly' && (
+          <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 p-4">
             <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
               <div>
@@ -783,10 +807,13 @@ export default function BudgetsOverviewPage() {
               </table>
             </div>
           )}
-        </section>
+          </section>
+        )}
 
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(420px,0.85fr)]">
-          <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        {budgetView === 'overview' && (
+          <>
+            <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(420px,0.85fr)]">
+              <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 p-4">
               <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
                 <div>
@@ -1014,7 +1041,9 @@ export default function BudgetsOverviewPage() {
               </tbody>
             </table>
           </div>
-        </section>
+            </section>
+          </>
+        )}
       </div>
     </DashboardLayout>
   );
