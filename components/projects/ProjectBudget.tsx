@@ -43,6 +43,7 @@ type BudgetLine = {
   name?: string;
   description?: string;
   category?: string;
+  color?: string;
   plannedAmount?: number;
   currency?: string;
   components?: BudgetPiece[];
@@ -91,6 +92,16 @@ const DEFAULT_PIECE_TYPES: BudgetPieceType[] = [
 
 const MONTH_LABELS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
+const BUDGET_LINE_COLORS = [
+  { value: '#4f46e5', label: 'Índigo', soft: '#eef2ff' },
+  { value: '#059669', label: 'Verde', soft: '#ecfdf5' },
+  { value: '#0891b2', label: 'Cian', soft: '#ecfeff' },
+  { value: '#f97316', label: 'Naranja', soft: '#fff7ed' },
+  { value: '#e11d48', label: 'Rosa', soft: '#fff1f2' },
+  { value: '#7c3aed', label: 'Violeta', soft: '#f5f3ff' },
+  { value: '#475569', label: 'Slate', soft: '#f8fafc' },
+];
+
 const BUDGET_TEMPLATES: { label: string; hint: string; pieces: BudgetPiece[] }[] = [
   {
     label: 'Equipo humano',
@@ -126,6 +137,20 @@ const currencyFormatter = (value: number, currency = 'COP') =>
 
 const compactNumber = (value: number) => new Intl.NumberFormat('es-CO').format(Number.isFinite(value) ? value : 0);
 
+const formatPlainNumber = (value: number) =>
+  new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(Number.isFinite(Number(value)) ? Number(value) : 0);
+
+const parseFormattedNumber = (value: string | number) => {
+  if (typeof value === 'number') return value;
+  const normalized = value
+    .replace(/\s/g, '')
+    .replace(/\$/g, '')
+    .replace(/\./g, '')
+    .replace(/,/g, '.')
+    .replace(/[^\d.-]/g, '');
+  return toNumber(normalized, 0);
+};
+
 const createId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
   return `${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -135,6 +160,11 @@ const toNumber = (value: any, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+
+const getLineColorConfig = (color?: string) =>
+  BUDGET_LINE_COLORS.find((item) => item.value === color) || BUDGET_LINE_COLORS[0];
+
+const getNotesRows = (notes = '') => Math.min(4, Math.max(1, Math.ceil(notes.length / 86), notes.split('\n').length));
 
 const clampMonthNumber = (value: any, fallback = 1) => Math.max(1, Math.round(toNumber(value, fallback)));
 
@@ -286,6 +316,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [currency, setCurrency] = useState('COP');
+  const [lineColor, setLineColor] = useState(BUDGET_LINE_COLORS[0].value);
   const [newLinePieces, setNewLinePieces] = useState<BudgetPiece[]>([createBlankPiece()]);
   const [newLineViewMode, setNewLineViewMode] = useState<PieceViewMode>('table');
   const [lineViewModes, setLineViewModes] = useState<Record<string, PieceViewMode>>({});
@@ -346,6 +377,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
     setName('');
     setDescription('');
     setCurrency('COP');
+    setLineColor(BUDGET_LINE_COLORS[0].value);
     setNewLinePieces([createBlankPiece()]);
     setNewLineViewMode('table');
   };
@@ -446,6 +478,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
         name: name.trim(),
         description: description.trim(),
         currency,
+        color: lineColor,
         plannedAmount,
         components: cleanPieces,
         createdAt: serverTimestamp(),
@@ -459,6 +492,18 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
       toast.error('Error al crear la línea de presupuesto.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleUpdateBudgetLineColor = async (lineId: string, color: string) => {
+    try {
+      await updateDoc(doc(db, 'projects', projectId, 'budgetLines', lineId), {
+        color,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      console.error('Error updating budget line color:', error);
+      toast.error('No se pudo actualizar el color de la línea.');
     }
   };
 
@@ -691,19 +736,23 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
             const CategoryIcon = categoryConfig.icon || PackagePlus;
 
             return (
-              <div key={piece.id} className="grid grid-cols-[1.5fr_140px_90px_90px_90px_90px_140px_130px_90px] gap-2 px-2 py-2">
+              <div
+                key={piece.id}
+                className="group grid grid-cols-[1.5fr_140px_90px_90px_90px_90px_140px_130px_90px] gap-2 rounded-lg border border-transparent px-2 py-2 transition hover:border-indigo-100 hover:bg-indigo-50/60 hover:shadow-sm focus-within:border-indigo-200 focus-within:bg-indigo-50/70 focus-within:shadow-sm"
+              >
                 <div className="min-w-0">
                   <input
                     value={piece.name}
                     onChange={(event) => handlers.update(piece.id, 'name', event.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 outline-none transition group-hover:border-indigo-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
                     placeholder="Ej. Analista catastral"
                   />
                   {!options.compact && (
-                    <input
+                    <textarea
                       value={piece.notes || ''}
                       onChange={(event) => handlers.update(piece.id, 'notes', event.target.value)}
-                      className="mt-1 h-8 w-full rounded-md border border-slate-100 bg-slate-50 px-3 text-xs font-medium text-slate-500 outline-none focus:border-indigo-300"
+                      rows={getNotesRows(piece.notes || '')}
+                      className="mt-1 min-h-8 w-full resize-y rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs font-medium leading-relaxed text-slate-500 outline-none transition group-hover:border-indigo-100 group-hover:bg-white focus:border-indigo-300"
                       placeholder="Nota o supuesto de cálculo"
                     />
                   )}
@@ -712,7 +761,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                   <select
                     value={piece.category}
                     onChange={(event) => handlers.update(piece.id, 'category', event.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-black text-slate-600 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-black text-slate-600 outline-none transition group-hover:border-indigo-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
                   >
                     {pieceTypes.map((item) => (
                       <option key={item.id} value={item.id}>{item.label}</option>
@@ -732,7 +781,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                     step="1"
                     value={piece.startMonth}
                     onChange={(event) => handlers.update(piece.id, 'startMonth', event.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-right text-sm font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-right text-sm font-bold text-slate-700 outline-none transition group-hover:border-indigo-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
                   />
                   {!options.compact && (
                     <p className="mt-1 truncate text-[10px] font-bold text-slate-400">{getTimelineMonthLabel(piece.startMonth)}</p>
@@ -744,7 +793,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                   step="0.01"
                   value={piece.quantity}
                   onChange={(event) => handlers.update(piece.id, 'quantity', event.target.value)}
-                  className="h-9 rounded-md border border-slate-200 px-2 text-right text-sm font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                  className="h-9 rounded-md border border-slate-200 px-2 text-right text-sm font-bold text-slate-700 outline-none transition group-hover:border-indigo-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
                 />
                 <div>
                   <input
@@ -753,13 +802,13 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                     step="1"
                     value={piece.duration}
                     onChange={(event) => handlers.update(piece.id, 'duration', event.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-200 px-2 text-right text-sm font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                    className="h-9 w-full rounded-md border border-slate-200 px-2 text-right text-sm font-bold text-slate-700 outline-none transition group-hover:border-indigo-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
                   />
                   {!options.compact && (
                     <input
                       value={piece.unitLabel}
                       onChange={(event) => handlers.update(piece.id, 'unitLabel', event.target.value)}
-                      className="mt-1 h-8 w-full rounded-md border border-slate-100 bg-slate-50 px-2 text-xs font-medium text-slate-500 outline-none focus:border-indigo-300"
+                      className="mt-1 h-8 w-full rounded-md border border-slate-100 bg-slate-50 px-2 text-xs font-medium text-slate-500 outline-none transition group-hover:border-indigo-100 group-hover:bg-white focus:border-indigo-300"
                       placeholder="mes"
                     />
                   )}
@@ -770,15 +819,15 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                   step="0.01"
                   value={piece.multiplier}
                   onChange={(event) => handlers.update(piece.id, 'multiplier', event.target.value)}
-                  className="h-9 rounded-md border border-slate-200 px-2 text-right text-sm font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                  className="h-9 rounded-md border border-slate-200 px-2 text-right text-sm font-bold text-slate-700 outline-none transition group-hover:border-indigo-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
                 />
                 <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={piece.unitCost}
-                  onChange={(event) => handlers.update(piece.id, 'unitCost', event.target.value)}
-                  className="h-9 rounded-md border border-slate-200 px-2 text-right text-sm font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                  type="text"
+                  inputMode="numeric"
+                  value={formatPlainNumber(piece.unitCost)}
+                  onChange={(event) => handlers.update(piece.id, 'unitCost', parseFormattedNumber(event.target.value))}
+                  onFocus={(event) => event.currentTarget.select()}
+                  className="h-9 rounded-md border border-slate-200 px-2 text-right text-sm font-bold text-slate-700 outline-none transition group-hover:border-indigo-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
                 />
                 <div className="flex h-9 items-center justify-end rounded-md bg-slate-50 px-2 text-sm font-black text-slate-900 ring-1 ring-slate-100">
                   {currencyFormatter(pieceTotal(piece), activeCurrency)}
@@ -875,7 +924,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
               return (
                 <div
                   key={`timeline-${piece.id}`}
-                  className="grid items-center gap-1"
+                  className="grid items-center gap-1 rounded-md px-1 py-1 transition hover:bg-indigo-50/70"
                   style={{ gridTemplateColumns }}
                 >
                   <div className="flex min-w-0 items-center gap-2 pr-2">
@@ -1062,10 +1111,18 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
             const linePieceTypes = pieceTypes.filter((item) => line.pieces.some((piece) => piece.category === item.id)).slice(0, 4);
             const defaultPieceType = line.pieces[0]?.category || pieceTypes[0]?.id || 'people';
             const lineViewMode = lineViewModes[line.id] || 'table';
+            const lineColorConfig = getLineColorConfig(line.color);
 
             return (
-              <article key={line.id} className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-                <div className="border-b border-slate-200 p-4">
+              <article
+                key={line.id}
+                className="overflow-hidden rounded-lg border border-l-4 border-slate-200 bg-white shadow-sm"
+                style={{ borderLeftColor: lineColorConfig.value }}
+              >
+                <div
+                  className="border-b border-slate-200 p-4"
+                  style={{ background: `linear-gradient(90deg, ${lineColorConfig.soft} 0%, #ffffff 48%)` }}
+                >
                   <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                     <div className="min-w-0">
                       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -1086,6 +1143,19 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                             Cambios sin guardar
                           </span>
                         )}
+                        <div className="inline-flex items-center gap-1 rounded bg-white/80 px-2 py-1 ring-1 ring-slate-200">
+                          <span className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">Color</span>
+                          {BUDGET_LINE_COLORS.map((item) => (
+                            <button
+                              key={`${line.id}-${item.value}`}
+                              type="button"
+                              onClick={() => void handleUpdateBudgetLineColor(line.id, item.value)}
+                              className={`h-4 w-4 rounded-full border transition hover:scale-110 ${lineColorConfig.value === item.value ? 'border-slate-950 ring-2 ring-slate-300' : 'border-white ring-1 ring-slate-200'}`}
+                              style={{ backgroundColor: item.value }}
+                              title={`Color ${item.label}`}
+                            />
+                          ))}
+                        </div>
                       </div>
                       <h3 className="text-xl font-black tracking-tight text-slate-950">{line.name}</h3>
                       <p className="mt-1 text-sm font-medium text-slate-500">{line.description || 'Sin descripción'}</p>
@@ -1238,6 +1308,28 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                       className="h-11 w-full rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
                       placeholder="Supuesto, alcance o criterio de esta línea"
                     />
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <label className="block text-sm font-bold text-slate-700">Color de la línea</label>
+                        <p className="text-xs font-medium text-slate-500">Ayuda a diferenciar visualmente cada línea macro del presupuesto.</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {BUDGET_LINE_COLORS.map((item) => (
+                          <button
+                            key={`new-line-${item.value}`}
+                            type="button"
+                            onClick={() => setLineColor(item.value)}
+                            className={`flex h-9 items-center gap-2 rounded-md border bg-white px-3 text-xs font-black text-slate-700 transition hover:border-slate-300 hover:shadow-sm ${lineColor === item.value ? 'border-slate-950 ring-2 ring-slate-200' : 'border-slate-200'}`}
+                            title={`Color ${item.label}`}
+                          >
+                            <span className="h-3.5 w-3.5 rounded-full" style={{ backgroundColor: item.value }} />
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
 
                   <div className="rounded-lg border border-slate-200">
