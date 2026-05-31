@@ -19,7 +19,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Inbox,
-  ShieldCheck
+  ShieldCheck,
+  WalletCards
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
@@ -41,6 +42,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [showLoadingRecovery, setShowLoadingRecovery] = useState(false);
   const isInitialAuthLoading = loading && !user;
+  const canAccessBudgetOverview = ['admin', 'org_admin', 'manager', 'coordinador'].includes(userRole || '');
 
   useEffect(() => {
     if (!isInitialAuthLoading) {
@@ -246,6 +248,9 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           <NavItem href="/projects" icon={<FolderKanban size={18} />} label="Projects" active={pathname?.startsWith('/projects')} collapsed={isCollapsed} />
           <NavItem href="/team" icon={<Users size={18} />} label="Team Performance" active={pathname?.startsWith('/team')} collapsed={isCollapsed} />
           <NavItem href="/quality" icon={<ShieldCheck size={18} />} label="Calidad global" active={pathname?.startsWith('/quality')} collapsed={isCollapsed} />
+          {canAccessBudgetOverview && (
+            <NavItem href="/budgets" icon={<WalletCards size={18} />} label="Presupuestos" active={pathname?.startsWith('/budgets')} collapsed={isCollapsed} />
+          )}
           <NavItem href="/alerts" icon={<Bell size={18} />} label="Alertas" active={pathname?.startsWith('/alerts')} collapsed={isCollapsed} />
           
           {!isCollapsed && (

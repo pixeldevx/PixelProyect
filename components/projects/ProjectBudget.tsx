@@ -30,6 +30,7 @@ type BudgetPiece = {
   category: string;
   startMonth: number;
   activeMonths?: number[];
+  assignedMemberIds?: string[];
   quantity: number;
   duration: number;
   multiplier: number;
@@ -184,6 +185,9 @@ const normalizeActiveMonths = (months: any[] = []) =>
     )
   ).sort((a, b) => a - b);
 
+const normalizeStringArray = (value: any) =>
+  Array.from(new Set((Array.isArray(value) ? value : []).map((item) => String(item || '').trim()).filter(Boolean)));
+
 const buildContinuousMonths = (startMonth: number, duration: number) =>
   Array.from({ length: Math.max(0, Math.ceil(toNumber(duration, 0))) }, (_, index) => clampMonthNumber(startMonth) + index);
 
@@ -202,7 +206,7 @@ const applyPieceSchedule = (piece: BudgetPiece, months: number[]) => {
   };
 };
 
-const updatePieceField = (piece: BudgetPiece, field: keyof BudgetPiece, value: string | number): BudgetPiece => {
+const updatePieceField = (piece: BudgetPiece, field: keyof BudgetPiece, value: string | number | string[]): BudgetPiece => {
   if (field === 'startMonth') {
     const startMonth = clampMonthNumber(value);
     const duration = Math.max(0, Math.ceil(toNumber(piece.duration, 0)));
@@ -226,6 +230,10 @@ const updatePieceField = (piece: BudgetPiece, field: keyof BudgetPiece, value: s
     return { ...piece, [field]: toNumber(value) };
   }
 
+  if (field === 'assignedMemberIds') {
+    return { ...piece, assignedMemberIds: normalizeStringArray(value) };
+  }
+
   return { ...piece, [field]: value };
 };
 
@@ -235,6 +243,7 @@ const createBlankPiece = (overrides: Partial<BudgetPiece> = {}): BudgetPiece => 
   category: 'people',
   startMonth: 1,
   activeMonths: [1],
+  assignedMemberIds: [],
   quantity: 1,
   duration: 1,
   multiplier: 1,
@@ -257,6 +266,7 @@ const normalizePiece = (piece: any): BudgetPiece => {
     category: piece?.category || 'other',
     startMonth: activeMonths[0] || startMonth,
     activeMonths,
+    assignedMemberIds: normalizeStringArray(piece?.assignedMemberIds),
     quantity: toNumber(piece?.quantity, 1),
     duration: activeMonths.length,
     multiplier: toNumber(piece?.multiplier, 1),
@@ -279,6 +289,7 @@ const normalizeBudgetPieces = (line: BudgetLine): BudgetPiece[] => {
         category: 'other',
         startMonth: 1,
         activeMonths: [1],
+        assignedMemberIds: [],
         quantity: 1,
         duration: 1,
         multiplier: 1,
@@ -308,7 +319,17 @@ const normalizePieceType = (pieceType: any, index: number): BudgetPieceType => (
   ...getPieceTypeTone(index + DEFAULT_PIECE_TYPES.length),
 });
 
-export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { projectId: string; rateCards?: any[]; tasks?: any[] }) {
+export function ProjectBudget({
+  projectId,
+  rateCards = [],
+  tasks = [],
+  teamMembers = [],
+}: {
+  projectId: string;
+  rateCards?: any[];
+  tasks?: any[];
+  teamMembers?: any[];
+}) {
   const [budgetLines, setBudgetLines] = useState<BudgetLine[]>([]);
   const [customPieceTypes, setCustomPieceTypes] = useState<BudgetPieceType[]>([]);
   const [lineDrafts, setLineDrafts] = useState<Record<string, BudgetPiece[]>>({});
@@ -522,7 +543,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
     }
   };
 
-  const updateDraftPiece = (lineId: string, pieceId: string, field: keyof BudgetPiece, value: string | number) => {
+  const updateDraftPiece = (lineId: string, pieceId: string, field: keyof BudgetPiece, value: string | number | string[]) => {
     setLineDrafts((current) => ({
       ...current,
       [lineId]: (current[lineId] || []).map((piece) =>
@@ -592,7 +613,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
     }
   };
 
-  const updateNewPiece = (pieceId: string, field: keyof BudgetPiece, value: string | number) => {
+  const updateNewPiece = (pieceId: string, field: keyof BudgetPiece, value: string | number | string[]) => {
     setNewLinePieces((current) =>
       current.map((piece) =>
         piece.id === pieceId ? updatePieceField(piece, field, value) : piece
@@ -711,17 +732,18 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
   const renderPieceEditor = (
     pieces: BudgetPiece[],
     handlers: {
-      update: (pieceId: string, field: keyof BudgetPiece, value: string | number) => void;
+      update: (pieceId: string, field: keyof BudgetPiece, value: string | number | string[]) => void;
       duplicate?: (piece: BudgetPiece) => void;
       remove: (pieceId: string) => void;
     },
     options: { compact?: boolean } = {}
   ) => (
     <div className="overflow-x-auto">
-      <div className="min-w-[1120px]">
-        <div className="grid grid-cols-[1.5fr_140px_90px_90px_90px_90px_140px_130px_90px] gap-2 border-b border-slate-200 px-2 pb-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
+      <div className="min-w-[1360px]">
+        <div className="grid grid-cols-[1.5fr_140px_220px_90px_90px_90px_90px_140px_130px_90px] gap-2 border-b border-slate-200 px-2 pb-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
           <span>Pieza</span>
           <span>Tipo</span>
+          <span>Personal</span>
           <span>Inicio</span>
           <span>Cantidad</span>
           <span>Tiempo</span>
@@ -734,11 +756,13 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
           {pieces.map((piece) => {
             const categoryConfig = getCategoryConfig(piece.category);
             const CategoryIcon = categoryConfig.icon || PackagePlus;
+            const assignedMemberIds = normalizeStringArray(piece.assignedMemberIds);
+            const selectableMembers = teamMembers.filter((member) => !assignedMemberIds.includes(member.id));
 
             return (
               <div
                 key={piece.id}
-                className="group grid grid-cols-[1.5fr_140px_90px_90px_90px_90px_140px_130px_90px] gap-2 rounded-lg border border-transparent px-2 py-2 transition hover:border-indigo-100 hover:bg-indigo-50/60 hover:shadow-sm focus-within:border-indigo-200 focus-within:bg-indigo-50/70 focus-within:shadow-sm"
+                className="group grid grid-cols-[1.5fr_140px_220px_90px_90px_90px_90px_140px_130px_90px] gap-2 rounded-lg border border-transparent px-2 py-2 transition hover:border-indigo-100 hover:bg-indigo-50/60 hover:shadow-sm focus-within:border-indigo-200 focus-within:bg-indigo-50/70 focus-within:shadow-sm"
               >
                 <div className="min-w-0">
                   <input
@@ -755,6 +779,55 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                       className="mt-1 min-h-8 w-full resize-y rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs font-medium leading-relaxed text-slate-500 outline-none transition group-hover:border-indigo-100 group-hover:bg-white focus:border-indigo-300"
                       placeholder="Nota o supuesto de cálculo"
                     />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <select
+                    value=""
+                    onChange={(event) => {
+                      const memberId = event.target.value;
+                      if (!memberId) return;
+                      handlers.update(piece.id, 'assignedMemberIds', [...assignedMemberIds, memberId]);
+                    }}
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-black text-slate-600 outline-none transition group-hover:border-indigo-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                  >
+                    <option value="">
+                      {assignedMemberIds.length > 0 ? 'Agregar persona' : 'Vincular persona'}
+                    </option>
+                    {selectableMembers.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name || member.email || 'Profesional'}
+                      </option>
+                    ))}
+                  </select>
+                  {!options.compact && (
+                    <div className="mt-1 flex min-h-8 flex-wrap gap-1">
+                      {assignedMemberIds.length === 0 ? (
+                        <span className="rounded bg-orange-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-orange-700 ring-1 ring-orange-100">
+                          Sin personal
+                        </span>
+                      ) : (
+                        assignedMemberIds.map((memberId) => {
+                          const member = teamMembers.find((item) => item.id === memberId);
+                          return (
+                            <span
+                              key={`${piece.id}-${memberId}`}
+                              className="inline-flex max-w-full items-center gap-1 rounded bg-white px-2 py-1 text-[10px] font-black text-slate-600 ring-1 ring-slate-200"
+                            >
+                              <span className="max-w-[130px] truncate">{member?.name || member?.email || 'Profesional'}</span>
+                              <button
+                                type="button"
+                                onClick={() => handlers.update(piece.id, 'assignedMemberIds', assignedMemberIds.filter((id) => id !== memberId))}
+                                className="text-slate-400 transition hover:text-red-600"
+                                title="Quitar de la pieza"
+                              >
+                                <X size={11} />
+                              </button>
+                            </span>
+                          );
+                        })
+                      )}
+                    </div>
                   )}
                 </div>
                 <div>

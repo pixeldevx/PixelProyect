@@ -2101,7 +2101,7 @@ export default function ProjectDetailsPage() {
 
       {activeTab === 'budget' && (
         <div className="mt-6">
-          <ProjectBudget projectId={projectId} rateCards={rateCards} tasks={tasks} />
+          <ProjectBudget projectId={projectId} rateCards={rateCards} tasks={tasks} teamMembers={projectAssignableTeamMembers} />
         </div>
       )}
 
