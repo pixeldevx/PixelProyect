@@ -95,6 +95,30 @@ const isOpenTask = (task: any) => {
   return status !== 'completed' && status !== 'completed_late' && status !== 'listo';
 };
 
+const normalizeActorIds = (ids: any[] = []) =>
+  Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+
+const hasWorkflowReviewForUser = (task: any, actorIds: any[]) => {
+  const ids = normalizeActorIds(actorIds);
+  if (ids.length === 0) return false;
+
+  const reviewedByIds = Array.isArray(task?.reviewedByIds) ? task.reviewedByIds : [];
+  if (reviewedByIds.some((id: string) => ids.includes(id))) return true;
+
+  const reviewReceipts = Array.isArray(task?.workflowReviewReceipts) ? task.workflowReviewReceipts : [];
+  if (
+    reviewReceipts.some((receipt: any) =>
+      ids.includes(receipt?.userId) ||
+      ids.includes(receipt?.memberId) ||
+      (Array.isArray(receipt?.userIds) && receipt.userIds.some((id: string) => ids.includes(id)))
+    )
+  ) {
+    return true;
+  }
+
+  return Boolean(task?.workflowHistory?.some((history: any) => ids.includes(history?.userId) || ids.includes(history?.memberId)));
+};
+
 const getTaskStatusLabel = (status: string) => {
   switch (status) {
     case 'completed':
@@ -518,10 +542,7 @@ export default function WorkflowTray() {
 
             projectIds.forEach(projectId => {
               const project = projectsById.get(projectId);
-              const tasksQ = query(
-                collection(db, 'projects', projectId, 'tasks'),
-                where('status', '!=', 'completed')
-              );
+              const tasksQ = query(collection(db, 'projects', projectId, 'tasks'));
 
               const unsubTask = onSnapshot(tasksQ, (taskSnapshot) => {
                 const snapshotItems = taskSnapshot.docs
@@ -558,7 +579,7 @@ export default function WorkflowTray() {
                     const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
                     const isAssigned = currentStep?.assignedTo && allMemberIds.includes(currentStep.assignedTo);
                     const isPending = currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido';
-                    const hasInteracted = task.workflowHistory?.some((h: any) => h.userId === user.uid);
+                    const hasInteracted = hasWorkflowReviewForUser(task, allMemberIds);
                     
                     return (isAssigned && isPending) || hasInteracted;
                   });
@@ -914,15 +935,33 @@ export default function WorkflowTray() {
       progress = Math.round((nextIndex / steps.length) * 100);
       if (newStatus === 'completed' || newStatus === 'completed_late') progress = 100;
 
+      const actionTimestamp = Timestamp.now();
+      const reviewActorIds = normalizeActorIds([user.uid, memberId, ...memberIds]);
+
       batch.update(taskRef, {
         workflowSteps: steps,
         currentStepIndex: nextIndex,
         status: newStatus,
         progress: progress,
         updatedAt: Timestamp.now(),
+        reviewedByIds: arrayUnion(...reviewActorIds),
+        workflowReviewReceipts: arrayUnion({
+          id: `${task.id}-${currentIndex}-${action}-${Date.now()}`,
+          stepIndex: currentIndex,
+          stepLabel: currentStep?.label || `Paso ${currentIndex + 1}`,
+          userId: user.uid,
+          memberId,
+          userIds: reviewActorIds,
+          userName: user.displayName || user.email || 'Usuario',
+          action,
+          comment: actionComment,
+          timestamp: actionTimestamp,
+        }),
         workflowHistory: arrayUnion({
           stepIndex: currentIndex,
           userId: user.uid,
+          memberId,
+          userIds: reviewActorIds,
           userName: user.displayName || user.email || 'Usuario',
           action: action,
           comment: actionComment,
@@ -930,7 +969,7 @@ export default function WorkflowTray() {
           nextStepAssignee: action === 'approve' && currentStep.assignsNextStep ? nextStepAssignee : null,
           dynamicRateCard: dynamicRateCardCharge,
           qualityEvent,
-          timestamp: Timestamp.now()
+          timestamp: actionTimestamp
         })
       });
 
@@ -1155,8 +1194,7 @@ export default function WorkflowTray() {
 
   const isReviewedTaskForMe = (task: any) => {
     if (!isWorkflowItem(task)) return false;
-    const hasInteracted = task.workflowHistory?.some((h: any) => h.userId === user?.uid);
-    return Boolean(hasInteracted && !isPendingTaskForMe(task));
+    return hasWorkflowReviewForUser(task, assignedIdsForInbox);
   };
 
   const isInActiveInboxTab = (task: any) =>
