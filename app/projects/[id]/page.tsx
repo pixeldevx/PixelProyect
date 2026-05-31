@@ -46,6 +46,7 @@ const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
 const DEFAULT_TASK_GROUP_COLOR = '#94a3b8';
+const PROJECT_BUDGET_ACCESS_ROLES = new Set(['admin', 'org_admin', 'manager', 'coordinador']);
 
 const stripWorkflowStepRuntime = (step: any = {}) => {
   const nextStep = { ...step };
@@ -151,6 +152,7 @@ export default function ProjectDetailsPage() {
 
   const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'tasks' | 'logbook' | 'quality' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
   const [showDocumentIssueAlert, setShowDocumentIssueAlert] = useState(false);
+  const canAccessProjectBudget = PROJECT_BUDGET_ACCESS_ROLES.has(userRole || '');
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');
@@ -1856,19 +1858,21 @@ export default function ProjectDetailsPage() {
               Rate Cards
             </div>
           </button>
-          <button
-            onClick={() => setActiveTab('budget')}
-            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
-              activeTab === 'budget'
-                ? 'bg-indigo-50 text-indigo-700'
-                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <DollarSign size={16} />
-              Presupuesto
-            </div>
-          </button>
+          {canAccessProjectBudget && (
+            <button
+              onClick={() => setActiveTab('budget')}
+              className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
+                activeTab === 'budget'
+                  ? 'bg-indigo-50 text-indigo-700'
+                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <DollarSign size={16} />
+                Presupuesto
+              </div>
+            </button>
+          )}
           <button
             onClick={() => setActiveTab('billing')}
             className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
@@ -2101,7 +2105,25 @@ export default function ProjectDetailsPage() {
 
       {activeTab === 'budget' && (
         <div className="mt-6">
-          <ProjectBudget projectId={projectId} rateCards={rateCards} tasks={tasks} teamMembers={projectAssignableTeamMembers} />
+          {canAccessProjectBudget ? (
+            <ProjectBudget projectId={projectId} rateCards={rateCards} tasks={tasks} teamMembers={projectAssignableTeamMembers} />
+          ) : (
+            <section className="rounded-xl border border-amber-200 bg-white p-8 text-center shadow-sm">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl bg-amber-50 text-amber-700 ring-1 ring-amber-100">
+                <ShieldCheck size={28} />
+              </div>
+              <h2 className="mt-4 text-2xl font-black tracking-tight text-slate-950">Presupuesto protegido</h2>
+              <p className="mx-auto mt-2 max-w-2xl text-sm font-medium leading-6 text-slate-500">
+                Este módulo contiene información financiera del proyecto. Solo pueden ingresar gerentes, coordinadores,
+                administradores de organización y administradores globales.
+              </p>
+              <div className="mt-5 flex justify-center">
+                <Button type="button" onClick={() => setActiveTab('tasks')} className="bg-indigo-600 font-bold text-white hover:bg-indigo-700">
+                  Volver a tareas
+                </Button>
+              </div>
+            </section>
+          )}
         </div>
       )}
 
