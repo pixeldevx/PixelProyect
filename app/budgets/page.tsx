@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ArrowRight,
   BriefcaseBusiness,
+  CalendarRange,
   CheckCircle2,
   CircleDollarSign,
   Gauge,
@@ -36,11 +37,14 @@ type BudgetPiece = {
   id?: string;
   name?: string;
   category?: string;
+  startMonth?: number;
+  activeMonths?: number[];
   assignedMemberIds?: string[];
   quantity?: number;
   duration?: number;
   multiplier?: number;
   unitCost?: number;
+  unitLabel?: string;
 };
 
 type BudgetLine = {
@@ -80,7 +84,25 @@ type PersonBudgetRow = {
   status: 'uncovered' | 'exhausted' | 'risk' | 'covered';
 };
 
+type PersonMonthlyCoverageRow = {
+  key: string;
+  memberId: string;
+  memberName: string;
+  memberEmail: string;
+  roleName: string;
+  projectId: string;
+  projectName: string;
+  organizationName: string;
+  totalAllocated: number;
+  monthlyAmounts: Record<number, number>;
+  firstCoveredMonth: number | null;
+  lastCoveredMonth: number | null;
+  firstGapMonth: number | null;
+  status: 'uncovered' | 'gap' | 'covered';
+};
+
 const ACCESS_ROLES = new Set(['admin', 'org_admin', 'manager', 'coordinador']);
+const MONTH_LABELS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
 const currencyFormatter = (value: number, currency = 'COP') =>
   new Intl.NumberFormat('es-CO', {
@@ -94,8 +116,39 @@ const compactNumber = (value: number) => new Intl.NumberFormat('es-CO').format(N
 const normalizeIds = (value: any) =>
   Array.from(new Set((Array.isArray(value) ? value : []).map((item) => String(item || '').trim()).filter(Boolean)));
 
+const clampMonthNumber = (value: any, fallback = 1) => Math.max(1, Math.round(Number.isFinite(Number(value)) ? Number(value) : fallback));
+
+const getTimelineMonthLabel = (monthNumber: number) => {
+  const safeMonth = clampMonthNumber(monthNumber);
+  const monthIndex = (safeMonth - 1) % MONTH_LABELS.length;
+  const cycle = Math.floor((safeMonth - 1) / MONTH_LABELS.length);
+  return cycle === 0 ? MONTH_LABELS[monthIndex] : `${MONTH_LABELS[monthIndex]} +${cycle}`;
+};
+
+const normalizeActiveMonths = (months: any[] = []) =>
+  Array.from(
+    new Set(
+      months
+        .map((month) => clampMonthNumber(month))
+        .filter((month) => Number.isFinite(month) && month > 0)
+    )
+  ).sort((a, b) => a - b);
+
+const buildContinuousMonths = (startMonth: number, duration: number) =>
+  Array.from({ length: Math.max(0, Math.ceil(Number(duration) || 0)) }, (_, index) => clampMonthNumber(startMonth) + index);
+
+const getPieceActiveMonths = (piece: BudgetPiece) => {
+  if (Array.isArray(piece.activeMonths) && piece.activeMonths.length > 0) {
+    return normalizeActiveMonths(piece.activeMonths);
+  }
+  return buildContinuousMonths(clampMonthNumber(piece.startMonth), Math.max(1, Math.ceil(Number(piece.duration) || 1)));
+};
+
 const pieceTotal = (piece: BudgetPiece) =>
-  Number(piece.quantity || 0) * Number(piece.duration || 0) * Number(piece.multiplier || 0) * Number(piece.unitCost || 0);
+  Number(piece.quantity || 0) * getPieceActiveMonths(piece).length * Number(piece.multiplier || 0) * Number(piece.unitCost || 0);
+
+const pieceMonthlyTotal = (piece: BudgetPiece) =>
+  Number(piece.quantity || 0) * Number(piece.multiplier || 0) * Number(piece.unitCost || 0);
 
 const rateCardTotal = (card: RateCard) => (Number(card.currentValue || 0) + Number(card.reworkValue || 0)) * Number(card.rate || 0);
 
@@ -384,6 +437,89 @@ export default function BudgetsOverviewPage() {
       });
   }, [peopleFilter, personRows, searchTerm]);
 
+  const coverageMonths = useMemo(() => {
+    const maxMonth = Math.max(
+      12,
+      ...allBudgetLines.flatMap((line) =>
+        (line.components || []).flatMap((piece) => {
+          const activeMonths = getPieceActiveMonths(piece);
+          const projectedEnd = clampMonthNumber(piece.startMonth) + Math.max(0, Math.ceil(Number(piece.duration) || 0)) - 1;
+          return [...activeMonths, projectedEnd];
+        })
+      )
+    );
+    return Array.from({ length: maxMonth }, (_, index) => index + 1);
+  }, [allBudgetLines]);
+
+  const monthlyCoverageRows = useMemo<PersonMonthlyCoverageRow[]>(() => {
+    const monthlyAllocation = new Map<string, Record<number, number>>();
+
+    allBudgetLines.forEach((line) => {
+      (line.components || []).forEach((piece) => {
+        const assignedIds = normalizeIds(piece.assignedMemberIds);
+        if (assignedIds.length === 0) return;
+
+        const monthlyAmountPerPerson = pieceMonthlyTotal(piece) / assignedIds.length;
+        getPieceActiveMonths(piece).forEach((monthNumber) => {
+          assignedIds.forEach((memberId) => {
+            const key = `${line.projectId}::${memberId}`;
+            const current = monthlyAllocation.get(key) || {};
+            current[monthNumber] = (current[monthNumber] || 0) + monthlyAmountPerPerson;
+            monthlyAllocation.set(key, current);
+          });
+        });
+      });
+    });
+
+    const search = searchTerm.trim().toLowerCase();
+
+    return visibleProjects
+      .flatMap((project) => {
+        const organizationName = organizationNameFor(project, organizations);
+        return normalizeIds(project.assignedTeamMembers).map((memberId) => {
+          const key = `${project.id}::${memberId}`;
+          const member = memberById.get(memberId);
+          const monthlyAmounts = monthlyAllocation.get(key) || {};
+          const activeMonths = coverageMonths.filter((monthNumber) => Number(monthlyAmounts[monthNumber] || 0) > 0);
+          const firstCoveredMonth = activeMonths[0] || null;
+          const lastCoveredMonth = activeMonths[activeMonths.length - 1] || null;
+          const firstGapMonth = firstCoveredMonth
+            ? coverageMonths.find((monthNumber) => monthNumber >= firstCoveredMonth && Number(monthlyAmounts[monthNumber] || 0) <= 0) || null
+            : null;
+          const totalAllocated = Object.values(monthlyAmounts).reduce((sum, value) => sum + Number(value || 0), 0);
+          const status: PersonMonthlyCoverageRow['status'] =
+            totalAllocated <= 0 ? 'uncovered' : firstGapMonth ? 'gap' : 'covered';
+
+          return {
+            key,
+            memberId,
+            memberName: member?.name || member?.displayName || member?.email || 'Profesional',
+            memberEmail: member?.email || '',
+            roleName: member?.roleName || member?.role || 'Sin rol',
+            projectId: project.id,
+            projectName: project.name || 'Proyecto',
+            organizationName,
+            totalAllocated,
+            monthlyAmounts,
+            firstCoveredMonth,
+            lastCoveredMonth,
+            firstGapMonth,
+            status,
+          };
+        });
+      })
+      .filter((row) => {
+        if (!search) return true;
+        return [row.memberName, row.memberEmail, row.projectName, row.organizationName, row.roleName]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(search));
+      })
+      .sort((left, right) => {
+        const weight = { uncovered: 0, gap: 1, covered: 2 };
+        return weight[left.status] - weight[right.status] || left.memberName.localeCompare(right.memberName) || left.projectName.localeCompare(right.projectName);
+      });
+  }, [allBudgetLines, coverageMonths, memberById, organizations, searchTerm, visibleProjects]);
+
   const filteredBudgetLines = useMemo(() => {
     const search = searchTerm.trim().toLowerCase();
     return allBudgetLines
@@ -523,6 +659,130 @@ export default function BudgetsOverviewPage() {
               </select>
             </div>
           </div>
+        </section>
+
+        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 p-4">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <h2 className="flex items-center gap-2 text-xl font-black tracking-tight text-slate-950">
+                  <CalendarRange size={20} className="text-emerald-600" />
+                  Cobertura mensual por persona
+                </h2>
+                <p className="text-sm font-medium text-slate-500">
+                  Cruza personas, proyectos y meses para anticipar cuándo alguien queda sin cobertura presupuestal.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <span className="rounded bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-slate-600">
+                  {compactNumber(monthlyCoverageRows.length)} filas
+                </span>
+                <span className="rounded bg-red-50 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-red-700 ring-1 ring-red-100">
+                  {compactNumber(monthlyCoverageRows.filter((row) => row.status === 'uncovered').length)} sin cobertura
+                </span>
+                <span className="rounded bg-orange-50 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-orange-700 ring-1 ring-orange-100">
+                  {compactNumber(monthlyCoverageRows.filter((row) => row.status === 'gap').length)} con huecos
+                </span>
+              </div>
+            </div>
+          </div>
+          {monthlyCoverageRows.length === 0 ? (
+            <div className="py-14 text-center">
+              <CalendarRange className="mx-auto h-12 w-12 text-slate-300" />
+              <h3 className="mt-3 text-lg font-black text-slate-950">Sin cobertura mensual visible</h3>
+              <p className="mt-1 text-sm font-medium text-slate-500">
+                Vincula personas a piezas presupuestales para activar el mapa mensual.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1180px] text-left">
+                <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
+                  <tr>
+                    <th className="sticky left-0 z-10 bg-slate-50 px-4 py-3">Persona / proyecto</th>
+                    <th className="px-4 py-3 text-right">Total</th>
+                    {coverageMonths.map((monthNumber) => (
+                      <th key={`coverage-head-${monthNumber}`} className="px-2 py-3 text-center">
+                        {getTimelineMonthLabel(monthNumber)}
+                      </th>
+                    ))}
+                    <th className="px-4 py-3">Estado</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {monthlyCoverageRows.map((row) => {
+                    const statusClassName =
+                      row.status === 'uncovered'
+                        ? 'bg-red-50 text-red-700 ring-red-100'
+                        : row.status === 'gap'
+                          ? 'bg-orange-50 text-orange-700 ring-orange-100'
+                          : 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+                    const statusLabel =
+                      row.status === 'uncovered'
+                        ? 'Sin cobertura'
+                        : row.status === 'gap'
+                          ? `Hueco desde ${getTimelineMonthLabel(row.firstGapMonth || 1)}`
+                          : 'Cobertura completa';
+
+                    return (
+                      <tr key={row.key} className="transition hover:bg-emerald-50/30">
+                        <td className="sticky left-0 z-10 max-w-[340px] bg-white px-4 py-3 shadow-[1px_0_0_#e2e8f0]">
+                          <Link href={`/projects/${row.projectId}?tab=budget`} className="block min-w-0">
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-xs font-black uppercase text-indigo-700 ring-1 ring-indigo-100">
+                                {(row.memberName || row.memberEmail || '?').charAt(0)}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-black text-slate-950">{row.memberName}</p>
+                                <p className="truncate text-xs font-bold text-slate-500">{row.projectName} · {row.roleName}</p>
+                                <p className="truncate text-[10px] font-black uppercase tracking-[0.1em] text-emerald-700">{row.organizationName}</p>
+                              </div>
+                            </div>
+                          </Link>
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm font-black text-slate-950">
+                          {currencyFormatter(row.totalAllocated)}
+                        </td>
+                        {coverageMonths.map((monthNumber) => {
+                          const amount = Number(row.monthlyAmounts[monthNumber] || 0);
+                          const isCovered = amount > 0;
+                          const isGap = !isCovered && Boolean(row.firstCoveredMonth) && monthNumber >= Number(row.firstCoveredMonth);
+                          const cellClassName = isCovered
+                            ? 'bg-emerald-50 text-emerald-700 ring-emerald-100'
+                            : isGap
+                              ? 'bg-red-50 text-red-700 ring-red-100'
+                              : 'bg-slate-50 text-slate-400 ring-slate-100';
+
+                          return (
+                            <td key={`${row.key}-${monthNumber}`} className="px-2 py-3">
+                              <div
+                                title={`${row.memberName} · ${row.projectName} · ${getTimelineMonthLabel(monthNumber)}: ${amount > 0 ? currencyFormatter(amount) : 'Sin cobertura'}`}
+                                className={`mx-auto flex h-9 min-w-20 items-center justify-center rounded-md px-2 text-[10px] font-black ring-1 ${cellClassName}`}
+                              >
+                                {amount > 0 ? `$${compactNumber(amount)}` : isGap ? 'Hueco' : 'Sin'}
+                              </div>
+                            </td>
+                          );
+                        })}
+                        <td className="px-4 py-3">
+                          <div className="space-y-1">
+                            <span className={`inline-flex rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${statusClassName}`}>
+                              {statusLabel}
+                            </span>
+                            <p className="text-[11px] font-bold text-slate-500">
+                              {row.lastCoveredMonth
+                                ? `Último mes cubierto: ${getTimelineMonthLabel(row.lastCoveredMonth)}`
+                                : 'No tiene meses cubiertos'}
+                            </p>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(420px,0.85fr)]">
