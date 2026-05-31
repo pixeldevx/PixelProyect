@@ -18,7 +18,8 @@ import {
   Lock,
   ChevronLeft,
   ChevronRight,
-  Inbox
+  Inbox,
+  ShieldCheck
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
@@ -244,6 +245,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           <NavItem href="/workflows" icon={<Inbox size={18} />} label="Bandeja de entrada" active={pathname?.startsWith('/workflows')} collapsed={isCollapsed} badge={inboxPendingCount} />
           <NavItem href="/projects" icon={<FolderKanban size={18} />} label="Projects" active={pathname?.startsWith('/projects')} collapsed={isCollapsed} />
           <NavItem href="/team" icon={<Users size={18} />} label="Team Performance" active={pathname?.startsWith('/team')} collapsed={isCollapsed} />
+          <NavItem href="/quality" icon={<ShieldCheck size={18} />} label="Calidad global" active={pathname?.startsWith('/quality')} collapsed={isCollapsed} />
           <NavItem href="/alerts" icon={<Bell size={18} />} label="Alertas" active={pathname?.startsWith('/alerts')} collapsed={isCollapsed} />
           
           {!isCollapsed && (

@@ -92,6 +92,7 @@ type RateCardDefinition = {
 type QualityEvent = {
   id: string;
   projectId: string;
+  projectName?: string;
   taskId?: string;
   taskTitle?: string;
   stepLabel?: string;
@@ -128,6 +129,8 @@ type MemberMetric = {
   qualityReviewed: number;
   qualityScore: number | null;
   reviewerCount: number;
+  qualityEvents: QualityEvent[];
+  reviewEvents: QualityEvent[];
   riskScore: number;
   latestActivity: number;
   rateSummaries: Array<{
@@ -204,6 +207,14 @@ const getTaskTitle = (task: TeamTask) => {
   }
   return title;
 };
+
+const getTaskDeepLink = (projectId: string, taskId?: string, focus = 'comments') =>
+  taskId ? `/projects/${projectId}?tab=tasks&taskId=${encodeURIComponent(taskId)}&focus=${focus}` : `/projects/${projectId}?tab=tasks`;
+
+const getQualityDeepLink = (event: QualityEvent) =>
+  event.taskId
+    ? getTaskDeepLink(event.projectId, event.taskId, 'comments')
+    : `/quality?projectId=${encodeURIComponent(event.projectId)}&eventId=${encodeURIComponent(event.id)}`;
 
 const getStatusLabel = (status?: string) => {
   const bucket = getStatusBucket(status);
@@ -555,6 +566,7 @@ export default function TeamPage() {
               return {
                 id: eventDoc.id,
                 projectId: getProjectIdFromSnapshot(eventDoc, data) || projectId,
+                projectName,
                 ...data,
               } as QualityEvent;
             });
@@ -692,6 +704,12 @@ export default function TeamPage() {
         qualityReviewed,
         qualityScore,
         reviewerCount: reviewerQualityEvents.length,
+        qualityEvents: professionalQualityEvents
+          .sort((left, right) => getTime(right.createdAt) - getTime(left.createdAt))
+          .slice(0, 8),
+        reviewEvents: reviewerQualityEvents
+          .sort((left, right) => getTime(right.createdAt) - getTime(left.createdAt))
+          .slice(0, 8),
         riskScore: overdueTasks * 5 + blockedTasks * 4 + laggingTasks * 2 + dueSoonTasks,
         latestActivity,
         rateSummaries: Array.from(rateSummaryMap.values()).sort((left, right) => Math.abs(right.value) - Math.abs(left.value)),
@@ -720,6 +738,20 @@ export default function TeamPage() {
     () => memberMetrics.find((metric) => metric.member.id === selectedMemberId) || null,
     [memberMetrics, selectedMemberId]
   );
+
+  const selectedQualityActivity = useMemo(() => {
+    if (!selectedMetric) return [];
+    const seen = new Set<string>();
+    return [...selectedMetric.qualityEvents, ...selectedMetric.reviewEvents]
+      .filter((event) => {
+        const key = `${event.projectId}-${event.id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((left, right) => getTime(right.createdAt) - getTime(left.createdAt))
+      .slice(0, 8);
+  }, [selectedMetric]);
 
   const portfolioStats = useMemo(() => {
     const totalOpen = memberMetrics.reduce((sum, metric) => sum + metric.openTasks, 0);
@@ -1104,7 +1136,7 @@ export default function TeamPage() {
                                 </div>
                                 <p className="mt-1 text-right text-xs font-black text-slate-500">{Number(task.progress || 0)}%</p>
                               </div>
-                              <Link href={`/projects/${task.projectId}`}>
+                              <Link href={getTaskDeepLink(task.projectId, task.id)}>
                                 <Button variant="outline" size="sm" className="h-9 border-slate-200 text-slate-600">
                                   Abrir
                                   <ArrowRight size={14} />
@@ -1125,18 +1157,57 @@ export default function TeamPage() {
                       Calidad y revisión
                     </h4>
                     <div className="mt-4 grid grid-cols-3 gap-2">
-                      <div className="rounded-md bg-emerald-50 p-3 ring-1 ring-emerald-100">
+                      <Link
+                        href={`/quality?memberId=${encodeURIComponent(selectedMetric.member.id)}&result=accepted`}
+                        className="rounded-md bg-emerald-50 p-3 ring-1 ring-emerald-100 transition hover:-translate-y-0.5 hover:shadow-sm"
+                      >
                         <p className="text-[10px] font-black uppercase tracking-[0.14em] text-emerald-700">Aceptadas</p>
                         <p className="mt-1 text-xl font-black text-emerald-700">{selectedMetric.qualityAccepted}</p>
-                      </div>
-                      <div className="rounded-md bg-red-50 p-3 ring-1 ring-red-100">
+                      </Link>
+                      <Link
+                        href={`/quality?memberId=${encodeURIComponent(selectedMetric.member.id)}&result=rejected`}
+                        className="rounded-md bg-red-50 p-3 ring-1 ring-red-100 transition hover:-translate-y-0.5 hover:shadow-sm"
+                      >
                         <p className="text-[10px] font-black uppercase tracking-[0.14em] text-red-700">Devueltas</p>
                         <p className="mt-1 text-xl font-black text-red-700">{selectedMetric.qualityRejected}</p>
-                      </div>
-                      <div className="rounded-md bg-indigo-50 p-3 ring-1 ring-indigo-100">
+                      </Link>
+                      <Link
+                        href={`/quality?reviewerId=${encodeURIComponent(selectedMetric.member.id)}`}
+                        className="rounded-md bg-indigo-50 p-3 ring-1 ring-indigo-100 transition hover:-translate-y-0.5 hover:shadow-sm"
+                      >
                         <p className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-700">Revisó</p>
                         <p className="mt-1 text-xl font-black text-indigo-700">{selectedMetric.reviewerCount}</p>
-                      </div>
+                      </Link>
+                    </div>
+                    <div className="mt-4 space-y-2">
+                      {selectedQualityActivity.length === 0 ? (
+                        <p className="rounded-md bg-slate-50 p-3 text-xs font-bold text-slate-500">Sin eventos de calidad para abrir.</p>
+                      ) : (
+                        selectedQualityActivity.map((event) => (
+                          <Link
+                            key={`${event.projectId}-${event.id}`}
+                            href={getQualityDeepLink(event)}
+                            className={`block rounded-md border p-3 transition hover:-translate-y-0.5 hover:shadow-sm ${
+                              event.result === 'accepted'
+                                ? 'border-emerald-100 bg-emerald-50/60 hover:border-emerald-200'
+                                : 'border-red-100 bg-red-50/60 hover:border-red-200'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${
+                                event.result === 'accepted' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                              }`}>
+                                {event.result === 'accepted' ? 'Tarea aceptada' : 'Devolución'}
+                              </span>
+                              <ArrowRight size={14} className={event.result === 'accepted' ? 'text-emerald-700' : 'text-red-700'} />
+                            </div>
+                            <p className="mt-2 line-clamp-1 text-xs font-black text-slate-900">{event.taskTitle || 'Tarea sin nombre'}</p>
+                            <p className="mt-1 text-[11px] font-bold text-slate-500">
+                              {event.projectName || 'Proyecto'} · {event.stepLabel || 'Control de calidad'}
+                            </p>
+                          </Link>
+                        ))
+                      )}
                     </div>
                   </section>
 

@@ -175,6 +175,7 @@ export default function ProjectDetailsPage() {
   const [selectedTaskForIncrement, setSelectedTaskForIncrement] = useState<any>(null);
   const [selectedTaskForComments, setSelectedTaskForComments] = useState<any>(null);
   const [taskForBulkIterations, setTaskForBulkIterations] = useState<any>(null);
+  const [openedTaskDeepLink, setOpenedTaskDeepLink] = useState('');
   const [isTaskStatusReportOpen, setIsTaskStatusReportOpen] = useState(false);
   const [dynamicRateCardStatusChange, setDynamicRateCardStatusChange] = useState<{
     taskId: string;
@@ -185,6 +186,28 @@ export default function ProjectDetailsPage() {
   const [dynamicRateCardId, setDynamicRateCardId] = useState('');
   const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState<number | ''>(1);
   const [dynamicRateCardComment, setDynamicRateCardComment] = useState('');
+
+  useEffect(() => {
+    const taskIdParam = searchParams.get('taskId') || searchParams.get('task');
+    if (!taskIdParam || tasks.length === 0) return;
+
+    const focusParam = searchParams.get('focus') || 'comments';
+    const deepLinkKey = `${projectId}:${taskIdParam}:${focusParam}`;
+    if (openedTaskDeepLink === deepLinkKey) return;
+
+    const linkedTask = tasks.find((task) => task.id === taskIdParam);
+    if (!linkedTask) return;
+
+    setActiveTab('tasks');
+    if (focusParam === 'docs' || focusParam === 'details') {
+      setSelectedTaskForDocs(linkedTask);
+      setIsTaskDocsModalOpen(true);
+    } else {
+      setSelectedTaskForComments(linkedTask);
+    }
+    setOpenedTaskDeepLink(deepLinkKey);
+  }, [openedTaskDeepLink, projectId, searchParams, tasks]);
+
   const managedOrganizationIds = React.useMemo(
     () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
     [userOrganizationId, userOrganizationIds]
