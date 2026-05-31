@@ -28,6 +28,7 @@ type BudgetPiece = {
   id: string;
   name: string;
   category: string;
+  startMonth: number;
   quantity: number;
   duration: number;
   multiplier: number;
@@ -47,6 +48,16 @@ type BudgetLine = {
   createdAt?: any;
 };
 
+type BudgetPieceType = {
+  id: string;
+  label: string;
+  tone: string;
+  pixel: string;
+  dot: string;
+  icon?: any;
+  isDefault?: boolean;
+};
+
 type BudgetLineData = BudgetLine & {
   pieces: BudgetPiece[];
   plannedAmount: number;
@@ -56,36 +67,49 @@ type BudgetLineData = BudgetLine & {
   pieceCount: number;
 };
 
-const PIECE_CATEGORIES = [
-  { id: 'people', label: 'Personas', icon: UserRound, tone: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
-  { id: 'licenses', label: 'Licencias', icon: Copy, tone: 'bg-cyan-50 text-cyan-700 ring-cyan-100' },
-  { id: 'operations', label: 'Operación', icon: Boxes, tone: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
-  { id: 'deliverables', label: 'Entregables', icon: Layers3, tone: 'bg-orange-50 text-orange-700 ring-orange-100' },
-  { id: 'other', label: 'Otro', icon: PackagePlus, tone: 'bg-slate-100 text-slate-700 ring-slate-200' },
+const TYPE_PALETTE = [
+  { tone: 'bg-violet-50 text-violet-700 ring-violet-100', pixel: 'bg-violet-500', dot: 'bg-violet-500' },
+  { tone: 'bg-cyan-50 text-cyan-700 ring-cyan-100', pixel: 'bg-cyan-500', dot: 'bg-cyan-500' },
+  { tone: 'bg-emerald-50 text-emerald-700 ring-emerald-100', pixel: 'bg-emerald-500', dot: 'bg-emerald-500' },
+  { tone: 'bg-orange-50 text-orange-700 ring-orange-100', pixel: 'bg-orange-500', dot: 'bg-orange-500' },
+  { tone: 'bg-rose-50 text-rose-700 ring-rose-100', pixel: 'bg-rose-500', dot: 'bg-rose-500' },
+  { tone: 'bg-sky-50 text-sky-700 ring-sky-100', pixel: 'bg-sky-500', dot: 'bg-sky-500' },
+  { tone: 'bg-amber-50 text-amber-700 ring-amber-100', pixel: 'bg-amber-500', dot: 'bg-amber-500' },
+  { tone: 'bg-slate-100 text-slate-700 ring-slate-200', pixel: 'bg-slate-500', dot: 'bg-slate-500' },
 ];
+
+const DEFAULT_PIECE_TYPES: BudgetPieceType[] = [
+  { id: 'people', label: 'Personas', icon: UserRound, isDefault: true, ...TYPE_PALETTE[0] },
+  { id: 'licenses', label: 'Licencias', icon: Copy, isDefault: true, ...TYPE_PALETTE[1] },
+  { id: 'operations', label: 'Operación', icon: Boxes, isDefault: true, ...TYPE_PALETTE[2] },
+  { id: 'deliverables', label: 'Entregables', icon: Layers3, isDefault: true, ...TYPE_PALETTE[3] },
+  { id: 'other', label: 'Otro', icon: PackagePlus, isDefault: true, ...TYPE_PALETTE[7] },
+];
+
+const MONTH_LABELS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
 const BUDGET_TEMPLATES: { label: string; hint: string; pieces: BudgetPiece[] }[] = [
   {
     label: 'Equipo humano',
     hint: 'Profesionales por tiempo y dedicación.',
     pieces: [
-      { id: 'tpl-manager', name: 'Gerente de proyecto', category: 'people', quantity: 1, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'mes' },
-      { id: 'tpl-analyst', name: 'Analistas', category: 'people', quantity: 2, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'mes' },
+      { id: 'tpl-manager', name: 'Gerente de proyecto', category: 'people', startMonth: 1, quantity: 1, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'mes' },
+      { id: 'tpl-analyst', name: 'Analistas', category: 'people', startMonth: 1, quantity: 2, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'mes' },
     ],
   },
   {
     label: 'Licencias y software',
     hint: 'Suscripciones multiplicadas por usuarios y meses.',
     pieces: [
-      { id: 'tpl-license', name: 'Licencias de software', category: 'licenses', quantity: 5, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'licencia/mes' },
+      { id: 'tpl-license', name: 'Licencias de software', category: 'licenses', startMonth: 1, quantity: 5, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'licencia/mes' },
     ],
   },
   {
     label: 'Operación de campo',
     hint: 'Jornadas, viáticos, equipos o logística.',
     pieces: [
-      { id: 'tpl-field', name: 'Jornadas operativas', category: 'operations', quantity: 10, duration: 1, multiplier: 1, unitCost: 0, unitLabel: 'jornada' },
-      { id: 'tpl-logistics', name: 'Logística y transporte', category: 'operations', quantity: 1, duration: 1, multiplier: 1, unitCost: 0, unitLabel: 'global' },
+      { id: 'tpl-field', name: 'Jornadas operativas', category: 'operations', startMonth: 1, quantity: 10, duration: 1, multiplier: 1, unitCost: 0, unitLabel: 'jornada' },
+      { id: 'tpl-logistics', name: 'Logística y transporte', category: 'operations', startMonth: 1, quantity: 1, duration: 1, multiplier: 1, unitCost: 0, unitLabel: 'global' },
     ],
   },
 ];
@@ -113,6 +137,7 @@ const createBlankPiece = (overrides: Partial<BudgetPiece> = {}): BudgetPiece => 
   id: createId(),
   name: 'Nueva pieza',
   category: 'people',
+  startMonth: 1,
   quantity: 1,
   duration: 1,
   multiplier: 1,
@@ -126,6 +151,7 @@ const normalizePiece = (piece: any): BudgetPiece => ({
   id: piece?.id || createId(),
   name: piece?.name || 'Pieza de presupuesto',
   category: piece?.category || 'other',
+  startMonth: Math.min(12, Math.max(1, Math.round(toNumber(piece?.startMonth, 1)))),
   quantity: toNumber(piece?.quantity, 1),
   duration: toNumber(piece?.duration, 1),
   multiplier: toNumber(piece?.multiplier, 1),
@@ -145,6 +171,7 @@ const normalizeBudgetPieces = (line: BudgetLine): BudgetPiece[] => {
         id: 'base-budget',
         name: 'Presupuesto base',
         category: 'other',
+        startMonth: 1,
         quantity: 1,
         duration: 1,
         multiplier: 1,
@@ -162,21 +189,37 @@ const pieceTotal = (piece: BudgetPiece) =>
 
 const piecesTotal = (pieces: BudgetPiece[]) => pieces.reduce((sum, piece) => sum + pieceTotal(piece), 0);
 
-const getCategoryConfig = (category: string) => PIECE_CATEGORIES.find((item) => item.id === category) || PIECE_CATEGORIES[PIECE_CATEGORIES.length - 1];
+const getPieceTypeTone = (index: number) => TYPE_PALETTE[index % TYPE_PALETTE.length];
+
+const normalizePieceType = (pieceType: any, index: number): BudgetPieceType => ({
+  id: pieceType?.id || createId(),
+  label: pieceType?.label || pieceType?.name || 'Tipo personalizado',
+  icon: PackagePlus,
+  isDefault: false,
+  ...getPieceTypeTone(index + DEFAULT_PIECE_TYPES.length),
+});
 
 export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { projectId: string; rateCards?: any[]; tasks?: any[] }) {
   const [budgetLines, setBudgetLines] = useState<BudgetLine[]>([]);
+  const [customPieceTypes, setCustomPieceTypes] = useState<BudgetPieceType[]>([]);
   const [lineDrafts, setLineDrafts] = useState<Record<string, BudgetPiece[]>>({});
   const [dirtyLines, setDirtyLines] = useState<Record<string, boolean>>({});
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [category, setCategory] = useState('people');
   const [currency, setCurrency] = useState('COP');
   const [newLinePieces, setNewLinePieces] = useState<BudgetPiece[]>([createBlankPiece()]);
   const [loading, setLoading] = useState(false);
   const [budgetLineToDelete, setBudgetLineToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [newPieceTypeName, setNewPieceTypeName] = useState('');
+  const [editingPieceTypeId, setEditingPieceTypeId] = useState<string | null>(null);
+  const [editingPieceTypeLabel, setEditingPieceTypeLabel] = useState('');
+
+  const pieceTypes = useMemo(() => [...DEFAULT_PIECE_TYPES, ...customPieceTypes], [customPieceTypes]);
+
+  const getCategoryConfig = (category: string) =>
+    pieceTypes.find((item) => item.id === category) || pieceTypes.find((item) => item.id === 'other') || DEFAULT_PIECE_TYPES[DEFAULT_PIECE_TYPES.length - 1];
 
   useEffect(() => {
     const budgetQuery = query(collection(db, 'projects', projectId, 'budgetLines'));
@@ -199,10 +242,28 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
     return () => unsubscribe();
   }, [projectId]);
 
+  useEffect(() => {
+    const typeQuery = query(collection(db, 'projects', projectId, 'budgetPieceTypes'));
+    const unsubscribe = onSnapshot(typeQuery, (snapshot) => {
+      const data = snapshot.docs.map((typeDoc, index) =>
+        normalizePieceType(
+          {
+            id: typeDoc.id,
+            ...typeDoc.data(),
+          },
+          index
+        )
+      );
+      data.sort((a, b) => a.label.localeCompare(b.label));
+      setCustomPieceTypes(data);
+    });
+
+    return () => unsubscribe();
+  }, [projectId]);
+
   const resetCreateForm = () => {
     setName('');
     setDescription('');
-    setCategory('people');
     setCurrency('COP');
     setNewLinePieces([createBlankPiece()]);
   };
@@ -210,6 +271,77 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
   const openCreateModal = () => {
     resetCreateForm();
     setIsCreateModalOpen(true);
+  };
+
+  const handleCreatePieceType = async () => {
+    const label = newPieceTypeName.trim();
+    if (!label) {
+      toast.warning('Escribe el nombre del nuevo tipo.');
+      return;
+    }
+
+    const exists = pieceTypes.some((item) => item.label.toLowerCase() === label.toLowerCase());
+    if (exists) {
+      toast.warning('Ya existe un tipo con ese nombre.');
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, 'projects', projectId, 'budgetPieceTypes'), {
+        label,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      setNewPieceTypeName('');
+      toast.success('Tipo de pieza creado.');
+    } catch (error) {
+      console.error('Error creating budget piece type:', error);
+      toast.error('No se pudo crear el tipo de pieza.');
+    }
+  };
+
+  const handleStartEditingPieceType = (pieceType: BudgetPieceType) => {
+    if (pieceType.isDefault) return;
+    setEditingPieceTypeId(pieceType.id);
+    setEditingPieceTypeLabel(pieceType.label);
+  };
+
+  const handleSavePieceType = async () => {
+    if (!editingPieceTypeId) return;
+    const label = editingPieceTypeLabel.trim();
+    if (!label) {
+      toast.warning('El tipo necesita un nombre.');
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'projects', projectId, 'budgetPieceTypes', editingPieceTypeId), {
+        label,
+        updatedAt: serverTimestamp(),
+      });
+      setEditingPieceTypeId(null);
+      setEditingPieceTypeLabel('');
+      toast.success('Tipo actualizado.');
+    } catch (error) {
+      console.error('Error updating budget piece type:', error);
+      toast.error('No se pudo actualizar el tipo.');
+    }
+  };
+
+  const handleDeletePieceType = async (pieceTypeId: string) => {
+    const isInUse = [...newLinePieces, ...Object.values(lineDrafts).flat()].some((piece) => piece.category === pieceTypeId);
+    if (isInUse) {
+      toast.warning('Este tipo está usado en una pieza. Cámbialo antes de eliminarlo.');
+      return;
+    }
+
+    try {
+      await deleteDoc(doc(db, 'projects', projectId, 'budgetPieceTypes', pieceTypeId));
+      toast.success('Tipo eliminado.');
+    } catch (error) {
+      console.error('Error deleting budget piece type:', error);
+      toast.error('No se pudo eliminar el tipo.');
+    }
   };
 
   const handleCreateBudgetLine = async (event: React.FormEvent) => {
@@ -231,7 +363,6 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
       await addDoc(collection(db, 'projects', projectId, 'budgetLines'), {
         name: name.trim(),
         description: description.trim(),
-        category,
         currency,
         plannedAmount,
         components: cleanPieces,
@@ -271,7 +402,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
         piece.id === pieceId
           ? {
               ...piece,
-              [field]: ['quantity', 'duration', 'multiplier', 'unitCost'].includes(field) ? toNumber(value) : value,
+              [field]: ['startMonth', 'quantity', 'duration', 'multiplier', 'unitCost'].includes(field) ? toNumber(value) : value,
             }
           : piece
       ),
@@ -330,14 +461,14 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
         piece.id === pieceId
           ? {
               ...piece,
-              [field]: ['quantity', 'duration', 'multiplier', 'unitCost'].includes(field) ? toNumber(value) : value,
+              [field]: ['startMonth', 'quantity', 'duration', 'multiplier', 'unitCost'].includes(field) ? toNumber(value) : value,
             }
           : piece
       )
     );
   };
 
-  const addNewPiece = (categoryHint = category) => {
+  const addNewPiece = (categoryHint = pieceTypes[0]?.id || 'people') => {
     setNewLinePieces((current) => [...current, createBlankPiece({ category: categoryHint })]);
   };
 
@@ -424,7 +555,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
   const totalPieces = budgetData.reduce((sum, line) => sum + line.pieceCount, 0);
   const activeCurrency = budgetData[0]?.currency || currency;
 
-  const categoryTotals = PIECE_CATEGORIES.map((item) => ({
+  const categoryTotals = pieceTypes.map((item) => ({
     ...item,
     total: budgetData.reduce(
       (sum, line) => sum + line.pieces.filter((piece) => piece.category === item.id).reduce((inner, piece) => inner + pieceTotal(piece), 0),
@@ -442,10 +573,11 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
     options: { compact?: boolean } = {}
   ) => (
     <div className="overflow-x-auto">
-      <div className="min-w-[980px]">
-        <div className="grid grid-cols-[1.5fr_130px_90px_90px_90px_140px_130px_90px] gap-2 border-b border-slate-200 px-2 pb-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
+      <div className="min-w-[1120px]">
+        <div className="grid grid-cols-[1.5fr_140px_90px_90px_90px_90px_140px_130px_90px] gap-2 border-b border-slate-200 px-2 pb-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
           <span>Pieza</span>
           <span>Tipo</span>
+          <span>Inicio</span>
           <span>Cantidad</span>
           <span>Tiempo</span>
           <span>Factor</span>
@@ -456,10 +588,10 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
         <div className="divide-y divide-slate-100">
           {pieces.map((piece) => {
             const categoryConfig = getCategoryConfig(piece.category);
-            const CategoryIcon = categoryConfig.icon;
+            const CategoryIcon = categoryConfig.icon || PackagePlus;
 
             return (
-              <div key={piece.id} className="grid grid-cols-[1.5fr_130px_90px_90px_90px_140px_130px_90px] gap-2 px-2 py-2">
+              <div key={piece.id} className="grid grid-cols-[1.5fr_140px_90px_90px_90px_90px_140px_130px_90px] gap-2 px-2 py-2">
                 <div className="min-w-0">
                   <input
                     value={piece.name}
@@ -482,7 +614,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                     onChange={(event) => handlers.update(piece.id, 'category', event.target.value)}
                     className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs font-black text-slate-600 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
                   >
-                    {PIECE_CATEGORIES.map((item) => (
+                    {pieceTypes.map((item) => (
                       <option key={item.id} value={item.id}>{item.label}</option>
                     ))}
                   </select>
@@ -493,6 +625,15 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                     </span>
                   )}
                 </div>
+                <select
+                  value={Math.min(12, Math.max(1, Math.round(toNumber(piece.startMonth, 1))))}
+                  onChange={(event) => handlers.update(piece.id, 'startMonth', event.target.value)}
+                  className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm font-bold text-slate-700 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                >
+                  {MONTH_LABELS.map((month, index) => (
+                    <option key={month} value={index + 1}>{month}</option>
+                  ))}
+                </select>
                 <input
                   type="number"
                   min="0"
@@ -558,6 +699,59 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                     <Trash2 size={15} />
                   </button>
                 </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderMonthlyPixelMap = (pieces: BudgetPiece[], title = 'Mapa mensual de piezas') => (
+    <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+      <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h4 className="flex items-center gap-2 text-sm font-black text-slate-950">
+            <Timer size={15} className="text-emerald-600" />
+            {title}
+          </h4>
+          <p className="text-xs font-medium text-slate-500">Cada bloque representa un mes activo de la pieza dentro del año presupuestal.</p>
+        </div>
+        <span className="rounded bg-white px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500 ring-1 ring-slate-200">
+          {compactNumber(pieces.length)} piezas
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[760px] space-y-1">
+          <div className="grid grid-cols-[190px_repeat(12,minmax(34px,1fr))] gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
+            <span />
+            {MONTH_LABELS.map((month) => (
+              <span key={month} className="text-center">{month}</span>
+            ))}
+          </div>
+          {pieces.map((piece) => {
+            const config = getCategoryConfig(piece.category);
+            const start = Math.min(12, Math.max(1, Math.round(toNumber(piece.startMonth, 1))));
+            const duration = Math.max(1, Math.ceil(toNumber(piece.duration, 1)));
+            const end = Math.min(12, start + duration - 1);
+
+            return (
+              <div key={`timeline-${piece.id}`} className="grid grid-cols-[190px_repeat(12,minmax(34px,1fr))] items-center gap-1">
+                <div className="flex min-w-0 items-center gap-2 pr-2">
+                  <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${config.dot}`} />
+                  <span className="truncate text-xs font-black text-slate-700">{piece.name || 'Pieza'}</span>
+                </div>
+                {MONTH_LABELS.map((month, index) => {
+                  const monthNumber = index + 1;
+                  const isActive = monthNumber >= start && monthNumber <= end;
+                  return (
+                    <div
+                      key={`${piece.id}-${month}`}
+                      title={`${piece.name}: ${MONTH_LABELS[start - 1]} - ${MONTH_LABELS[end - 1]}`}
+                      className={`h-7 rounded-sm transition ${isActive ? `${config.pixel} shadow-sm` : 'bg-white ring-1 ring-slate-200'}`}
+                    />
+                  );
+                })}
               </div>
             );
           })}
@@ -657,7 +851,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
           </div>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
             {categoryTotals.map((item) => {
-              const Icon = item.icon;
+              const Icon = item.icon || PackagePlus;
               const percent = totalPlanned > 0 ? (item.total / totalPlanned) * 100 : 0;
               return (
                 <div key={item.id} className="rounded-lg border border-slate-100 bg-slate-50/60 p-3">
@@ -696,9 +890,9 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
       ) : (
         <section className="space-y-4">
           {budgetData.map((line) => {
-            const lineCategory = getCategoryConfig(line.category || 'other');
-            const CategoryIcon = lineCategory.icon;
             const isDirty = Boolean(dirtyLines[line.id]);
+            const linePieceTypes = pieceTypes.filter((item) => line.pieces.some((piece) => piece.category === item.id)).slice(0, 4);
+            const defaultPieceType = line.pieces[0]?.category || pieceTypes[0]?.id || 'people';
 
             return (
               <article key={line.id} className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -706,10 +900,18 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                   <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                     <div className="min-w-0">
                       <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${lineCategory.tone}`}>
-                          <CategoryIcon size={12} />
-                          {lineCategory.label}
+                        <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-600 ring-1 ring-slate-200">
+                          Línea macro
                         </span>
+                        {linePieceTypes.map((pieceType) => {
+                          const Icon = pieceType.icon || PackagePlus;
+                          return (
+                            <span key={`${line.id}-${pieceType.id}`} className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${pieceType.tone}`}>
+                              <Icon size={12} />
+                              {pieceType.label}
+                            </span>
+                          );
+                        })}
                         {isDirty && (
                           <span className="rounded bg-orange-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-orange-700 ring-1 ring-orange-100">
                             Cambios sin guardar
@@ -744,7 +946,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                       <span className="text-xs font-bold text-slate-500">{compactNumber(line.pieceCount)} piezas</span>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button type="button" variant="outline" size="sm" onClick={() => addDraftPiece(line.id, line.category || 'people')} className="border-slate-200 text-slate-700 hover:bg-slate-50">
+                      <Button type="button" variant="outline" size="sm" onClick={() => addDraftPiece(line.id, defaultPieceType)} className="border-slate-200 text-slate-700 hover:bg-slate-50">
                         <Plus size={14} />
                         Agregar pieza
                       </Button>
@@ -764,6 +966,9 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                     duplicate: (piece) => duplicateDraftPiece(line.id, piece),
                     remove: (pieceId) => removeDraftPiece(line.id, pieceId),
                   })}
+                  <div className="mt-3">
+                    {renderMonthlyPixelMap(line.pieces)}
+                  </div>
                 </div>
               </article>
             );
@@ -787,7 +992,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
 
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-          <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+          <div className="flex h-[94vh] w-[96vw] max-w-[1700px] flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
             <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-600">Nueva estructura presupuestal</p>
@@ -799,11 +1004,11 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
               </button>
             </div>
 
-            <form onSubmit={handleCreateBudgetLine} className="overflow-y-auto p-5">
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_260px]">
+            <form onSubmit={handleCreateBudgetLine} className="overflow-y-auto p-6">
+              <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
                 <div className="space-y-4">
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                    <div>
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_220px_260px]">
+                    <div className="lg:col-span-1">
                       <label className="mb-1 block text-sm font-bold text-slate-700">Nombre de la línea *</label>
                       <input
                         type="text"
@@ -813,18 +1018,6 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                         placeholder="Ej. Equipo de análisis"
                         required
                       />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-sm font-bold text-slate-700">Tipo de línea</label>
-                      <select
-                        value={category}
-                        onChange={(event) => setCategory(event.target.value)}
-                        className="h-11 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                      >
-                        {PIECE_CATEGORIES.map((item) => (
-                          <option key={item.id} value={item.id}>{item.label}</option>
-                        ))}
-                      </select>
                     </div>
                     <div>
                       <label className="mb-1 block text-sm font-bold text-slate-700">Moneda</label>
@@ -846,7 +1039,7 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                     </div>
                   </div>
                   <div>
-                    <label className="mb-1 block text-sm font-bold text-slate-700">Descripción</label>
+                    <label className="mb-1 block text-sm font-bold text-slate-700">Descripción de la línea macro</label>
                     <input
                       value={description}
                       onChange={(event) => setDescription(event.target.value)}
@@ -872,6 +1065,9 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                         duplicate: (piece) => setNewLinePieces((current) => [...current, { ...piece, id: createId(), name: `${piece.name} copia` }]),
                         remove: removeNewPiece,
                       })}
+                      <div className="mt-3">
+                        {renderMonthlyPixelMap(newLinePieces, 'Vista mensual de la nueva línea')}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -896,10 +1092,71 @@ export function ProjectBudget({ projectId, rateCards = [], tasks = [] }: { proje
                       ))}
                     </div>
                   </div>
+                  <div className="rounded-lg border border-slate-200 bg-white p-4">
+                    <h4 className="flex items-center gap-2 font-black text-slate-950">
+                      <PackagePlus size={16} className="text-emerald-600" />
+                      Tipos de piezas
+                    </h4>
+                    <p className="mt-1 text-xs font-medium text-slate-500">Crea categorías propias para clasificar cada pieza del presupuesto.</p>
+                    <div className="mt-3 flex gap-2">
+                      <input
+                        value={newPieceTypeName}
+                        onChange={(event) => setNewPieceTypeName(event.target.value)}
+                        className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 px-3 text-xs font-bold text-slate-700 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                        placeholder="Ej. Vehículos"
+                      />
+                      <Button type="button" size="sm" onClick={handleCreatePieceType} className="h-9 bg-slate-950 font-black text-white hover:bg-emerald-700">
+                        <Plus size={14} />
+                      </Button>
+                    </div>
+                    <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">
+                      {pieceTypes.map((pieceType) => {
+                        const Icon = pieceType.icon || PackagePlus;
+                        const isEditing = editingPieceTypeId === pieceType.id;
+
+                        return (
+                          <div key={pieceType.id} className="rounded-md border border-slate-100 bg-slate-50 p-2">
+                            {isEditing ? (
+                              <div className="flex gap-2">
+                                <input
+                                  value={editingPieceTypeLabel}
+                                  onChange={(event) => setEditingPieceTypeLabel(event.target.value)}
+                                  className="h-8 min-w-0 flex-1 rounded-md border border-slate-200 px-2 text-xs font-bold outline-none focus:border-emerald-500"
+                                />
+                                <button type="button" onClick={handleSavePieceType} className="rounded-md p-2 text-emerald-700 transition hover:bg-emerald-50" title="Guardar tipo">
+                                  <Save size={14} />
+                                </button>
+                                <button type="button" onClick={() => setEditingPieceTypeId(null)} className="rounded-md p-2 text-slate-400 transition hover:bg-slate-100" title="Cancelar edición">
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between gap-2">
+                                <span className={`inline-flex min-w-0 items-center gap-1 rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${pieceType.tone}`}>
+                                  <Icon size={12} />
+                                  <span className="truncate">{pieceType.label}</span>
+                                </span>
+                                {!pieceType.isDefault && (
+                                  <div className="flex shrink-0 items-center gap-1">
+                                    <button type="button" onClick={() => handleStartEditingPieceType(pieceType)} className="rounded-md px-2 py-1 text-[10px] font-black text-slate-500 transition hover:bg-white hover:text-emerald-700">
+                                      Editar
+                                    </button>
+                                    <button type="button" onClick={() => handleDeletePieceType(pieceType.id)} className="rounded-md p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600" title="Eliminar tipo">
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                   <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
                     <h4 className="font-black text-emerald-900">Cómo leer la fórmula</h4>
                     <p className="mt-2 text-sm font-medium text-emerald-800">
-                      Usa cantidad para personas o licencias, tiempo para meses/días/horas y factor para dedicación, riesgo o multiplicadores especiales.
+                      La línea es el contenedor macro. Las piezas son los bloques que totalizan el valor y su calendario mensual.
                     </p>
                   </div>
                 </aside>
