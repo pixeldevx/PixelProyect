@@ -22,12 +22,14 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { addDoc, collection, deleteDoc, doc, onSnapshot, query, serverTimestamp, updateDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
+import { getOrganizationIds } from '@/lib/organizations';
 import { toast } from 'sonner';
 
 type BudgetPiece = {
   id: string;
   name: string;
   category: string;
+  categoryLabel?: string;
   startMonth: number;
   activeMonths?: number[];
   assignedMemberIds?: string[];
@@ -48,6 +50,24 @@ type BudgetLine = {
   plannedAmount?: number;
   currency?: string;
   components?: BudgetPiece[];
+  createdAt?: any;
+};
+
+type BudgetLineTemplate = {
+  id: string;
+  label: string;
+  hint?: string;
+  name?: string;
+  description?: string;
+  currency?: string;
+  color?: string;
+  pieces: BudgetPiece[];
+  projectId?: string | null;
+  projectName?: string | null;
+  organizationId?: string | null;
+  organizationIds?: string[];
+  organizationName?: string | null;
+  isSystem?: boolean;
   createdAt?: any;
 };
 
@@ -103,28 +123,46 @@ const BUDGET_LINE_COLORS = [
   { value: '#475569', label: 'Slate', soft: '#f8fafc' },
 ];
 
-const BUDGET_TEMPLATES: { label: string; hint: string; pieces: BudgetPiece[] }[] = [
+const BUDGET_TEMPLATES: BudgetLineTemplate[] = [
   {
+    id: 'system-human-team',
     label: 'Equipo humano',
     hint: 'Profesionales por tiempo y dedicación.',
+    name: 'Equipo humano',
+    description: 'Profesionales por tiempo y dedicación.',
+    currency: 'COP',
+    color: BUDGET_LINE_COLORS[0].value,
+    isSystem: true,
     pieces: [
-      { id: 'tpl-manager', name: 'Gerente de proyecto', category: 'people', startMonth: 1, quantity: 1, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'mes' },
-      { id: 'tpl-analyst', name: 'Analistas', category: 'people', startMonth: 1, quantity: 2, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'mes' },
+      { id: 'tpl-manager', name: 'Gerente de proyecto', category: 'people', categoryLabel: 'Personas', startMonth: 1, quantity: 1, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'mes' },
+      { id: 'tpl-analyst', name: 'Analistas', category: 'people', categoryLabel: 'Personas', startMonth: 1, quantity: 2, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'mes' },
     ],
   },
   {
+    id: 'system-software-licenses',
     label: 'Licencias y software',
     hint: 'Suscripciones multiplicadas por usuarios y meses.',
+    name: 'Licencias y software',
+    description: 'Suscripciones multiplicadas por usuarios y meses.',
+    currency: 'COP',
+    color: BUDGET_LINE_COLORS[2].value,
+    isSystem: true,
     pieces: [
-      { id: 'tpl-license', name: 'Licencias de software', category: 'licenses', startMonth: 1, quantity: 5, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'licencia/mes' },
+      { id: 'tpl-license', name: 'Licencias de software', category: 'licenses', categoryLabel: 'Licencias', startMonth: 1, quantity: 5, duration: 3, multiplier: 1, unitCost: 0, unitLabel: 'licencia/mes' },
     ],
   },
   {
+    id: 'system-field-operations',
     label: 'Operación de campo',
     hint: 'Jornadas, viáticos, equipos o logística.',
+    name: 'Operación de campo',
+    description: 'Jornadas, viáticos, equipos o logística.',
+    currency: 'COP',
+    color: BUDGET_LINE_COLORS[1].value,
+    isSystem: true,
     pieces: [
-      { id: 'tpl-field', name: 'Jornadas operativas', category: 'operations', startMonth: 1, quantity: 10, duration: 1, multiplier: 1, unitCost: 0, unitLabel: 'jornada' },
-      { id: 'tpl-logistics', name: 'Logística y transporte', category: 'operations', startMonth: 1, quantity: 1, duration: 1, multiplier: 1, unitCost: 0, unitLabel: 'global' },
+      { id: 'tpl-field', name: 'Jornadas operativas', category: 'operations', categoryLabel: 'Operación', startMonth: 1, quantity: 10, duration: 1, multiplier: 1, unitCost: 0, unitLabel: 'jornada' },
+      { id: 'tpl-logistics', name: 'Logística y transporte', category: 'operations', categoryLabel: 'Operación', startMonth: 1, quantity: 1, duration: 1, multiplier: 1, unitCost: 0, unitLabel: 'global' },
     ],
   },
 ];
@@ -264,6 +302,7 @@ const normalizePiece = (piece: any): BudgetPiece => {
     id: piece?.id || createId(),
     name: piece?.name || 'Pieza de presupuesto',
     category: piece?.category || 'other',
+    categoryLabel: piece?.categoryLabel || piece?.categoryName || '',
     startMonth: activeMonths[0] || startMonth,
     activeMonths,
     assignedMemberIds: normalizeStringArray(piece?.assignedMemberIds),
@@ -319,6 +358,42 @@ const normalizePieceType = (pieceType: any, index: number): BudgetPieceType => (
   ...getPieceTypeTone(index + DEFAULT_PIECE_TYPES.length),
 });
 
+const normalizeTemplateName = (value = '') => value.trim().replace(/\s+/g, ' ').toLowerCase();
+
+const normalizeBudgetLineTemplate = (template: any): BudgetLineTemplate => {
+  const pieces = Array.isArray(template?.pieces)
+    ? template.pieces.map(normalizePiece)
+    : Array.isArray(template?.components)
+      ? template.components.map(normalizePiece)
+      : [];
+
+  return {
+    id: template?.id || createId(),
+    label: template?.label || template?.name || 'Plantilla de presupuesto',
+    hint: template?.hint || template?.description || '',
+    name: template?.name || template?.label || '',
+    description: template?.description || template?.hint || '',
+    currency: template?.currency || 'COP',
+    color: template?.color || BUDGET_LINE_COLORS[0].value,
+    pieces,
+    projectId: template?.projectId || null,
+    projectName: template?.projectName || null,
+    organizationId: template?.organizationId || null,
+    organizationIds: getOrganizationIds(template),
+    organizationName: template?.organizationName || null,
+    isSystem: Boolean(template?.isSystem),
+    createdAt: template?.createdAt,
+  };
+};
+
+const getBudgetTemplateScopeLabel = (template: BudgetLineTemplate, currentProjectId: string) => {
+  if (template.isSystem) return 'Base';
+  if (template.projectId === currentProjectId) return 'Este proyecto';
+  if (template.organizationName) return template.organizationName;
+  if (template.projectName) return template.projectName;
+  return 'Organización';
+};
+
 export function ProjectBudget({
   projectId,
   rateCards = [],
@@ -331,7 +406,9 @@ export function ProjectBudget({
   teamMembers?: any[];
 }) {
   const [budgetLines, setBudgetLines] = useState<BudgetLine[]>([]);
+  const [projectContext, setProjectContext] = useState<any>(null);
   const [customPieceTypes, setCustomPieceTypes] = useState<BudgetPieceType[]>([]);
+  const [savedBudgetTemplates, setSavedBudgetTemplates] = useState<BudgetLineTemplate[]>([]);
   const [lineDrafts, setLineDrafts] = useState<Record<string, BudgetPiece[]>>({});
   const [dirtyLines, setDirtyLines] = useState<Record<string, boolean>>({});
   const [name, setName] = useState('');
@@ -348,11 +425,84 @@ export function ProjectBudget({
   const [newPieceTypeName, setNewPieceTypeName] = useState('');
   const [editingPieceTypeId, setEditingPieceTypeId] = useState<string | null>(null);
   const [editingPieceTypeLabel, setEditingPieceTypeLabel] = useState('');
+  const [templateName, setTemplateName] = useState('');
+  const [templateHint, setTemplateHint] = useState('');
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false);
 
   const pieceTypes = useMemo(() => [...DEFAULT_PIECE_TYPES, ...customPieceTypes], [customPieceTypes]);
+  const projectOrganizationIds = useMemo(() => getOrganizationIds(projectContext), [projectContext]);
 
   const getCategoryConfig = (category: string) =>
     pieceTypes.find((item) => item.id === category) || pieceTypes.find((item) => item.id === 'other') || DEFAULT_PIECE_TYPES[DEFAULT_PIECE_TYPES.length - 1];
+
+  const projectName = projectContext?.name || projectContext?.title || projectContext?.projectName || 'Proyecto';
+  const projectOrganizationName =
+    projectContext?.organizationName || projectContext?.organization || projectContext?.clientName || '';
+
+  const reusableBudgetTemplates = useMemo(() => {
+    const organizationSet = new Set(projectOrganizationIds);
+    return savedBudgetTemplates
+      .filter((template) => {
+        if (template.projectId === projectId) return true;
+        if (projectOrganizationIds.length === 0) return false;
+
+        const templateOrganizationIds = getOrganizationIds(template);
+        return templateOrganizationIds.some((organizationId) => organizationSet.has(organizationId));
+      })
+      .sort((left, right) => {
+        const scopeCompare = getBudgetTemplateScopeLabel(left, projectId).localeCompare(getBudgetTemplateScopeLabel(right, projectId));
+        if (scopeCompare !== 0) return scopeCompare;
+        return left.label.localeCompare(right.label);
+      });
+  }, [projectId, projectOrganizationIds, savedBudgetTemplates]);
+
+  const availableBudgetTemplates = useMemo(
+    () => [...BUDGET_TEMPLATES, ...reusableBudgetTemplates],
+    [reusableBudgetTemplates]
+  );
+
+  const createTemplatePiece = (piece: BudgetPiece) => {
+    const normalized = normalizePiece(piece);
+    const categoryConfig = getCategoryConfig(normalized.category);
+    return {
+      ...normalized,
+      id: createId(),
+      assignedMemberIds: [],
+      categoryLabel: categoryConfig.label,
+    };
+  };
+
+  const createPieceFromTemplate = (piece: BudgetPiece) => {
+    const normalized = normalizePiece(piece);
+    const label = normalizeTemplateName(normalized.categoryLabel || '');
+    const matchingCategory =
+      pieceTypes.find((item) => item.id === normalized.category) ||
+      pieceTypes.find((item) => normalizeTemplateName(item.label) === label) ||
+      pieceTypes.find((item) => item.id === 'other') ||
+      DEFAULT_PIECE_TYPES[DEFAULT_PIECE_TYPES.length - 1];
+
+    return {
+      ...normalized,
+      id: createId(),
+      assignedMemberIds: [],
+      category: matchingCategory.id,
+      categoryLabel: matchingCategory.label,
+    };
+  };
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      doc(db, 'projects', projectId),
+      (snapshot) => {
+        setProjectContext(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null);
+      },
+      (error) => {
+        console.error('Error loading project context for budget templates:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [projectId]);
 
   useEffect(() => {
     const budgetQuery = query(collection(db, 'projects', projectId, 'budgetLines'));
@@ -374,6 +524,27 @@ export function ProjectBudget({
 
     return () => unsubscribe();
   }, [projectId]);
+
+  useEffect(() => {
+    const templatesQuery = query(collection(db, 'budgetLineTemplates'));
+    const unsubscribe = onSnapshot(
+      templatesQuery,
+      (snapshot) => {
+        const data = snapshot.docs.map((templateDoc) =>
+          normalizeBudgetLineTemplate({
+            id: templateDoc.id,
+            ...templateDoc.data(),
+          })
+        );
+        setSavedBudgetTemplates(data);
+      },
+      (error) => {
+        console.error('Error loading budget line templates:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     const typeQuery = query(collection(db, 'projects', projectId, 'budgetPieceTypes'));
@@ -401,6 +572,8 @@ export function ProjectBudget({
     setLineColor(BUDGET_LINE_COLORS[0].value);
     setNewLinePieces([createBlankPiece()]);
     setNewLineViewMode('table');
+    setTemplateName('');
+    setTemplateHint('');
   };
 
   const openCreateModal = () => {
@@ -476,6 +649,82 @@ export function ProjectBudget({
     } catch (error) {
       console.error('Error deleting budget piece type:', error);
       toast.error('No se pudo eliminar el tipo.');
+    }
+  };
+
+  const handleSaveBudgetTemplate = async () => {
+    const cleanName = (templateName.trim() || name.trim()).replace(/\s+/g, ' ');
+    if (!cleanName) {
+      toast.warning('Escribe el nombre de la plantilla o de la línea.');
+      return;
+    }
+
+    const cleanPieces = newLinePieces.map(createTemplatePiece).filter((piece) => piece.name.trim());
+    if (cleanPieces.length === 0) {
+      toast.warning('Agrega al menos una pieza antes de guardar la plantilla.');
+      return;
+    }
+
+    const normalizedName = normalizeTemplateName(cleanName);
+    const existingTemplate = reusableBudgetTemplates.find(
+      (template) => !template.isSystem && normalizeTemplateName(template.label || template.name || '') === normalizedName
+    );
+
+    if (existingTemplate) {
+      const confirmed = window.confirm(`Ya existe la plantilla "${existingTemplate.label}". ¿Quieres reescribirla con esta línea?`);
+      if (!confirmed) return;
+    }
+
+    const cleanHint = (templateHint.trim() || description.trim()).replace(/\s+/g, ' ');
+    const templateData = {
+      label: cleanName,
+      hint: cleanHint,
+      name: name.trim() || cleanName,
+      description: description.trim() || cleanHint,
+      currency,
+      color: lineColor,
+      pieces: cleanPieces,
+      projectId,
+      projectName,
+      organizationId: projectOrganizationIds[0] || null,
+      organizationIds: projectOrganizationIds,
+      organizationName: projectOrganizationName,
+      updatedAt: serverTimestamp(),
+    };
+
+    setIsSavingTemplate(true);
+    try {
+      if (existingTemplate) {
+        await updateDoc(doc(db, 'budgetLineTemplates', existingTemplate.id), templateData);
+        toast.success('Plantilla actualizada.');
+      } else {
+        await addDoc(collection(db, 'budgetLineTemplates'), {
+          ...templateData,
+          createdAt: serverTimestamp(),
+        });
+        toast.success('Plantilla rápida creada.');
+      }
+      setTemplateName('');
+      setTemplateHint('');
+    } catch (error) {
+      console.error('Error saving budget line template:', error);
+      toast.error('No se pudo guardar la plantilla.');
+    } finally {
+      setIsSavingTemplate(false);
+    }
+  };
+
+  const handleDeleteBudgetTemplate = async (template: BudgetLineTemplate) => {
+    if (template.isSystem) return;
+    const confirmed = window.confirm(`¿Eliminar la plantilla "${template.label}"? Esta acción no se puede deshacer.`);
+    if (!confirmed) return;
+
+    try {
+      await deleteDoc(doc(db, 'budgetLineTemplates', template.id));
+      toast.success('Plantilla eliminada.');
+    } catch (error) {
+      console.error('Error deleting budget line template:', error);
+      toast.error('No se pudo eliminar la plantilla.');
     }
   };
 
@@ -638,11 +887,16 @@ export function ProjectBudget({
     setNewLinePieces((current) => [...current, createBlankPiece({ category: categoryHint })]);
   };
 
-  const applyTemplate = (templatePieces: BudgetPiece[]) => {
+  const applyTemplate = (template: BudgetLineTemplate) => {
     setNewLinePieces((current) => [
       ...current.filter((piece) => piece.name !== 'Nueva pieza' || pieceTotal(piece) > 0),
-      ...templatePieces.map((piece) => normalizePiece({ ...piece, id: createId() })),
+      ...template.pieces.map(createPieceFromTemplate),
     ]);
+    if (!name.trim() && (template.name || template.label)) setName(template.name || template.label);
+    if (!description.trim() && (template.description || template.hint)) setDescription(template.description || template.hint || '');
+    if (template.currency) setCurrency(template.currency);
+    if (template.color) setLineColor(template.color);
+    toast.success(`Plantilla "${template.label}" aplicada.`);
   };
 
   const removeNewPiece = (pieceId: string) => {
@@ -1451,22 +1705,90 @@ export function ProjectBudget({
 
                 <aside className="space-y-3">
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                    <h4 className="flex items-center gap-2 font-black text-slate-950">
-                      <Sparkles size={16} className="text-emerald-600" />
-                      Plantillas rápidas
-                    </h4>
-                    <div className="mt-3 space-y-2">
-                      {BUDGET_TEMPLATES.map((template) => (
-                        <button
-                          key={template.label}
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h4 className="flex items-center gap-2 font-black text-slate-950">
+                          <Sparkles size={16} className="text-emerald-600" />
+                          Plantillas rápidas
+                        </h4>
+                        <p className="mt-1 text-xs font-medium text-slate-500">
+                          Usa bases del sistema o tipologías guardadas por organización.
+                        </p>
+                      </div>
+                      <span className="rounded bg-white px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500 ring-1 ring-slate-200">
+                        {availableBudgetTemplates.length}
+                      </span>
+                    </div>
+                    <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+                      {availableBudgetTemplates.map((template) => {
+                        const scopeLabel = getBudgetTemplateScopeLabel(template, projectId);
+                        return (
+                          <div key={template.id} className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => applyTemplate(template)}
+                              className="min-w-0 flex-1 rounded-md border border-slate-200 bg-white p-3 text-left transition hover:border-emerald-200 hover:bg-emerald-50"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate text-sm font-black text-slate-900">{template.label}</p>
+                                <span className={`shrink-0 rounded px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.12em] ring-1 ${
+                                  template.isSystem
+                                    ? 'bg-slate-100 text-slate-500 ring-slate-200'
+                                    : template.projectId === projectId
+                                      ? 'bg-indigo-50 text-indigo-700 ring-indigo-100'
+                                      : 'bg-emerald-50 text-emerald-700 ring-emerald-100'
+                                }`}>
+                                  {scopeLabel}
+                                </span>
+                              </div>
+                              <p className="mt-1 line-clamp-2 text-xs font-medium text-slate-500">{template.hint || 'Plantilla presupuestal reutilizable.'}</p>
+                              <p className="mt-2 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
+                                {compactNumber(template.pieces.length)} piezas
+                              </p>
+                            </button>
+                            {!template.isSystem && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteBudgetTemplate(template)}
+                                className="self-stretch rounded-md border border-slate-200 bg-white px-2 text-slate-400 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                                title="Eliminar plantilla"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-4 rounded-md border border-emerald-100 bg-white p-3">
+                      <p className="text-xs font-black uppercase tracking-[0.12em] text-emerald-700">Guardar tipología</p>
+                      <p className="mt-1 text-xs font-medium text-slate-500">
+                        Convierte la línea actual en una plantilla rápida para otros proyectos de esta organización.
+                      </p>
+                      <div className="mt-3 space-y-2">
+                        <input
+                          value={templateName}
+                          onChange={(event) => setTemplateName(event.target.value)}
+                          className="h-9 w-full rounded-md border border-slate-200 px-3 text-xs font-bold text-slate-700 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                          placeholder="Nombre de la plantilla"
+                        />
+                        <textarea
+                          value={templateHint}
+                          onChange={(event) => setTemplateHint(event.target.value)}
+                          rows={2}
+                          className="w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                          placeholder="Uso sugerido o alcance"
+                        />
+                        <Button
                           type="button"
-                          onClick={() => applyTemplate(template.pieces)}
-                          className="w-full rounded-md border border-slate-200 bg-white p-3 text-left transition hover:border-emerald-200 hover:bg-emerald-50"
+                          onClick={handleSaveBudgetTemplate}
+                          disabled={isSavingTemplate}
+                          className="h-9 w-full bg-emerald-600 text-xs font-black text-white hover:bg-emerald-700 disabled:opacity-60"
                         >
-                          <p className="text-sm font-black text-slate-900">{template.label}</p>
-                          <p className="mt-1 text-xs font-medium text-slate-500">{template.hint}</p>
-                        </button>
-                      ))}
+                          <Save size={14} />
+                          {isSavingTemplate ? 'Guardando...' : 'Guardar plantilla'}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                   <div className="rounded-lg border border-slate-200 bg-white p-4">
