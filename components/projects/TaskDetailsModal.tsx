@@ -4,6 +4,7 @@ import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increm
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
+import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
 
 interface TaskDetailsModalProps {
   isOpen: boolean;
@@ -14,21 +15,12 @@ interface TaskDetailsModalProps {
   onResetWorkflowTask?: (task: any) => void | Promise<void>;
 }
 
-const getTaskTitle = (task: any) => task?.title || task?.name || "Sin título";
 const getTaskDate = (value: any) => {
   if (!value) return null;
   if (value.toDate) return value.toDate();
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
-const getTaskDisplayTitle = (task: any) => {
-  const title = getTaskTitle(task);
-  if (!task?.externalWorkflowId || title === task.externalWorkflowId) {
-    return title;
-  }
-  return `[${task.externalWorkflowId}] ${title}`;
-};
-
 const getCompletedStatus = (task: any) => {
   const endDate = getTaskDate(task?.endDate || task?.end);
   return endDate && Date.now() > endDate.getTime() ? "completed_late" : "completed";

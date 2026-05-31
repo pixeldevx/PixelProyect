@@ -37,6 +37,7 @@ import {
 } from 'recharts';
 import { differenceInCalendarDays, format } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { getTaskDisplayTitle } from '@/lib/task-title';
 
 type DashboardProject = {
   id: string;
@@ -70,6 +71,8 @@ type DashboardTask = {
   workflowSteps?: any[];
   currentStepIndex?: number;
   externalWorkflowId?: string;
+  originalTitle?: string;
+  parentTaskTitle?: string;
   endDate?: any;
   end?: any;
   dueDate?: any;
@@ -132,13 +135,7 @@ const getDate = (value: any): Date | null => {
 
 const getTime = (value: any) => getDate(value)?.getTime() || 0;
 
-const getTaskTitle = (task: DashboardTask) => {
-  const title = task.title || task.name || 'Tarea sin nombre';
-  if (task.externalWorkflowId && !String(title).includes(task.externalWorkflowId)) {
-    return `[${task.externalWorkflowId}] ${title}`;
-  }
-  return title;
-};
+const getTaskTitle = (task: DashboardTask) => getTaskDisplayTitle(task, 'Tarea sin nombre');
 
 const getStatusBucket = (status?: string) => {
   const normalized = String(status || 'todo').toLowerCase();

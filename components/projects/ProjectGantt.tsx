@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { TaskDateEditorModal } from './TaskDateEditorModal';
+import { getTaskDisplayTitle, getTaskTitle, sanitizeTaskTitleForSave } from '@/lib/task-title';
 
 type ScheduleFilter = 'overdue' | 'due_soon' | 'completed_late' | null;
 
@@ -67,18 +68,6 @@ const DEFAULT_UNGROUPED_GROUP: TaskGroup = {
   order: -1,
 };
 const TASK_GROUP_COLORS = ['#579bfc', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#00a9ff', '#ffcb00', '#784bd1'];
-
-const getTaskTitle = (task: any) => {
-  return task?.title || task?.name || 'Sin título';
-};
-
-const getTaskDisplayTitle = (task: any) => {
-  const title = getTaskTitle(task);
-  if (!task?.externalWorkflowId || title === task.externalWorkflowId) {
-    return title;
-  }
-  return `[${task.externalWorkflowId}] ${title}`;
-};
 
 const getTaskDate = (value: any) => {
   if (!value) return null;
@@ -305,14 +294,14 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const startEditingTitle = (task: any) => {
     if (!canModifyTaskDetails || !onUpdateTaskTitle || task.isWorkflowStep) return;
     setEditingTaskId(task.id);
-    setEditingTaskTitle(getTaskTitle(task));
+    setEditingTaskTitle(getTaskDisplayTitle(task));
   };
 
   const finishEditingTitle = async (task: any) => {
     if (!editingTaskId) return;
 
-    const nextTitle = editingTaskTitle.trim();
-    const currentTitle = getTaskTitle(task);
+    const nextTitle = sanitizeTaskTitleForSave(task, editingTaskTitle);
+    const currentTitle = sanitizeTaskTitleForSave(task, getTaskTitle(task));
     setEditingTaskId(null);
 
     if (!nextTitle || nextTitle === currentTitle || !onUpdateTaskTitle) {
@@ -479,7 +468,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
       return {
         id: t.id,
-        name: getTaskTitle(t),
+        name: getTaskDisplayTitle(t),
         start: getTaskDate(t.startDate) || new Date(),
         end: getTaskDate(t.endDate) || new Date(),
         progress: t.progress || 0,
@@ -935,7 +924,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                     type="button"
                                     onDoubleClick={() => startEditingTitle(task)}
                                     className={`min-w-0 flex-1 truncate text-left text-sm font-medium ${task.status === 'completed' || task.status === 'completed_late' || task.status === 'listo' ? 'text-slate-400 line-through' : isSubTask ? 'text-slate-600' : 'text-slate-700'}`}
-                                    title={taskTitle}
+                                    title={taskDisplayTitle}
                                   >
                                     {taskDisplayTitle}
                                   </button>

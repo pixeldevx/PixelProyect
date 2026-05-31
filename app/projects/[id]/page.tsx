@@ -41,6 +41,7 @@ import { belongsToAnyOrganization, getOrganizationIds } from '@/lib/organization
 import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
+import { sanitizeTaskTitleForSave } from '@/lib/task-title';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
@@ -1152,22 +1153,32 @@ export default function ProjectDetailsPage() {
       toast.error('No tienes permisos para editar el nombre de tareas.');
       return;
     }
-    const cleanTitle = title.trim();
+    const cleanTitle = sanitizeTaskTitleForSave(task, title);
     if (!cleanTitle) {
       toast.warning('El nombre de la tarea no puede estar vacío.');
       return;
     }
 
+    const titleUpdate = task.externalWorkflowId
+      ? {
+          title: task.externalWorkflowId,
+          name: task.externalWorkflowId,
+          originalTitle: cleanTitle,
+        }
+      : {
+          title: cleanTitle,
+          name: cleanTitle,
+        };
+
     try {
       await updateDoc(doc(db, 'projects', projectId, 'tasks', taskId), {
-        title: cleanTitle,
-        name: cleanTitle,
+        ...titleUpdate,
         updatedAt: serverTimestamp()
       });
       setTasks((currentTasks) =>
         currentTasks.map((currentTask) =>
           currentTask.id === taskId
-            ? { ...currentTask, title: cleanTitle, name: cleanTitle }
+            ? { ...currentTask, ...titleUpdate }
             : currentTask
         )
       );
@@ -1478,7 +1489,7 @@ export default function ProjectDetailsPage() {
       return;
     }
 
-    const cleanTitle = updates.title.trim();
+    const cleanTitle = sanitizeTaskTitleForSave(task, updates.title);
     if (!cleanTitle) {
       toast.warning('El nombre de la tarea no puede estar vacío.');
       return;
@@ -1496,12 +1507,16 @@ export default function ProjectDetailsPage() {
       dependentTaskIds.forEach((taskId) => {
         const currentTask = tasks.find((candidate) => candidate.id === taskId);
         if (!currentTask) return;
+        const isWorkflowIteration = Boolean(currentTask.externalWorkflowId);
 
         const updateData: any = {
-          title: cleanTitle,
-          name: cleanTitle,
+          title: isWorkflowIteration ? currentTask.externalWorkflowId : cleanTitle,
+          name: isWorkflowIteration ? currentTask.externalWorkflowId : cleanTitle,
           updatedAt: serverTimestamp(),
         };
+        if (isWorkflowIteration) {
+          updateData.originalTitle = cleanTitle;
+        }
 
         if (shouldUpdateWorkflow && taskReceivesWorkflowStructure(currentTask)) {
           const updatedSteps = structuralSteps.map((step, index) =>
@@ -1538,9 +1553,12 @@ export default function ProjectDetailsPage() {
 
           const updatedTask: any = {
             ...currentTask,
-            title: cleanTitle,
-            name: cleanTitle,
+            title: currentTask.externalWorkflowId ? currentTask.externalWorkflowId : cleanTitle,
+            name: currentTask.externalWorkflowId ? currentTask.externalWorkflowId : cleanTitle,
           };
+          if (currentTask.externalWorkflowId) {
+            updatedTask.originalTitle = cleanTitle;
+          }
 
           if (shouldUpdateWorkflow && taskReceivesWorkflowStructure(currentTask)) {
             const updatedSteps = structuralSteps.map((step, index) =>

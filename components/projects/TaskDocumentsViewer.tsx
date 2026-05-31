@@ -6,6 +6,7 @@ import { X, Upload, FileText, Trash2, Loader2, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import { getTaskDisplayTitle } from '@/lib/task-title';
 
 interface TaskDocumentsViewerProps {
   isOpen: boolean;
@@ -13,15 +14,6 @@ interface TaskDocumentsViewerProps {
   task: any;
   userId: string;
 }
-
-const getTaskTitle = (task: any) => task?.title || task?.name || 'Sin título';
-const getTaskDisplayTitle = (task: any) => {
-  const title = getTaskTitle(task);
-  if (!task?.externalWorkflowId || title === task.externalWorkflowId) {
-    return title;
-  }
-  return `[${task.externalWorkflowId}] ${title}`;
-};
 
 export const TaskDocumentsViewer: React.FC<TaskDocumentsViewerProps> = ({ isOpen, onClose, task, userId }) => {
   const [documents, setDocuments] = useState<any[]>([]);

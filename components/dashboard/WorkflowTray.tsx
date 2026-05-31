@@ -18,6 +18,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
+import { getTaskDisplayTitle } from '@/lib/task-title';
 
 const hasRequiredFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -142,27 +143,7 @@ const getTaskTimestamp = (value: any) => {
   return date ? date.getTime() : 0;
 };
 
-const normalizeDisplayToken = (value: any) =>
-  String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
-
-const getInboxTaskTitle = (task: any) => {
-  const externalId = String(task?.externalWorkflowId || '').trim();
-  const ownTitle = String(task?.title || task?.name || '').trim();
-  const parentTitle = String(
-    task?.parentTaskTitle ||
-    task?.parentTitle ||
-    task?.matrixTaskTitle ||
-    task?.originalTitle ||
-    ''
-  ).trim();
-  const baseTitle = parentTitle || ownTitle || externalId || 'Tarea sin nombre';
-
-  if (externalId && normalizeDisplayToken(baseTitle) !== normalizeDisplayToken(externalId)) {
-    return `[${externalId}] ${baseTitle}`;
-  }
-
-  return baseTitle;
-};
+const getInboxTaskTitle = (task: any) => getTaskDisplayTitle(task, 'Tarea sin nombre');
 
 const isFormDataRecord = (value: any) =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value));

@@ -5,6 +5,7 @@ import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
 import { toast } from 'sonner';
 import { notifyTaskAssignment } from '@/lib/notifications';
+import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
 
 interface StartWorkflowModalProps {
   isOpen: boolean;
@@ -16,7 +17,6 @@ interface StartWorkflowModalProps {
   teamMembers: any[];
 }
 
-const getTaskTitle = (task: any) => task?.title || task?.name || 'Sin título';
 const getTaskDate = (value: any) => {
   if (!value) return null;
   if (value.toDate) return value.toDate();
@@ -37,14 +37,6 @@ const endOfDate = (date: Date) => {
   next.setHours(23, 59, 59, 999);
   return next;
 };
-const getTaskDisplayTitle = (task: any) => {
-  const title = getTaskTitle(task);
-  if (!task?.externalWorkflowId || title === task.externalWorkflowId) {
-    return title;
-  }
-  return `[${task.externalWorkflowId}] ${title}`;
-};
-
 export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   isOpen,
   onClose,
