@@ -11,6 +11,7 @@ import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { TaskDateEditorModal } from './TaskDateEditorModal';
 import { getTaskDisplayTitle, getTaskTitle, sanitizeTaskTitleForSave } from '@/lib/task-title';
+import { createGoogleCalendarUrl, downloadMeetingIcs, getMeetingScheduleLabel, isMeetingTask } from '@/lib/calendar-utils';
 
 type ScheduleFilter = 'overdue' | 'due_soon' | 'completed_late' | null;
 
@@ -828,6 +829,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const endDate = getTaskDate(task.endDate);
                     const scheduleState = getTaskScheduleState(task);
                     const isQuantitative = task.type === 'quantitative';
+                    const isMeeting = isMeetingTask(task);
                     const isParent = task.isParentTask || sortedTasks.some(t => t.parentTaskId === task.id);
                     const isSubTask = !!task.parentTaskId;
                     const isExpanded = expandedParents[task.id];
@@ -859,6 +861,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                         onOpenTaskDocs ||
                         (canEditTaskStructure && onEditTaskStructure) ||
                         canAddSubtask ||
+                        isMeeting ||
                         (canModifyTaskDetails && isQuantitative) ||
                         (canModifyTaskDetails && task.syncExternal && onSyncTask) ||
                         canCreateBulkWorkflowIterations ||
@@ -920,6 +923,9 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 />
                               ) : (
                                 <>
+                                  {isMeeting && (
+                                    <Calendar size={14} className="shrink-0 text-cyan-600" />
+                                  )}
                                   <button
                                     type="button"
                                     onDoubleClick={() => startEditingTitle(task)}
@@ -945,6 +951,11 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         </span>
                                       )}
                                     </button>
+                                  )}
+                                  {isMeeting && (
+                                    <span className="shrink-0 rounded bg-cyan-50 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-cyan-700 ring-1 ring-cyan-100">
+                                      Reunion
+                                    </span>
                                   )}
                                 </>
                               )}
@@ -1255,6 +1266,34 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         <Plus size={14} />
                                         Agregar subtarea
                                       </button>
+                                    )}
+                                    {isMeeting && (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setOpenActionMenuTaskId(null);
+                                            downloadMeetingIcs(task);
+                                          }}
+                                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-cyan-700 hover:bg-cyan-50"
+                                          title={getMeetingScheduleLabel(task)}
+                                        >
+                                          <Calendar size={14} />
+                                          Descargar .ics
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setOpenActionMenuTaskId(null);
+                                            const url = createGoogleCalendarUrl(task);
+                                            if (url) window.open(url, '_blank', 'noopener,noreferrer');
+                                          }}
+                                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-cyan-700 hover:bg-cyan-50"
+                                        >
+                                          <Calendar size={14} />
+                                          Google Calendar
+                                        </button>
+                                      </>
                                     )}
                                     {canCreateBulkWorkflowIterations && (
                                       <button

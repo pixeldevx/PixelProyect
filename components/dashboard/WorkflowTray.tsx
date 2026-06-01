@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { collection, query, where, onSnapshot, doc, arrayUnion, Timestamp, writeBatch, increment, getDoc, getDocs } from '@/lib/supabase/document-store';
 import { db, auth } from '@/lib/backend';
-import { CheckCircle2, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, X, ClipboardList, Play, Pause, FolderOpen, ShieldCheck, FileText, Eye } from 'lucide-react';
+import { CheckCircle2, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, X, ClipboardList, Play, Pause, FolderOpen, ShieldCheck, FileText, Eye, CalendarDays, Download, ExternalLink, MapPin } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -19,6 +19,13 @@ import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizatio
 import { notifyTaskAssignment } from '@/lib/notifications';
 import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
 import { getTaskDisplayTitle } from '@/lib/task-title';
+import {
+  createGoogleCalendarUrl,
+  downloadMeetingIcs,
+  getMeetingRecurrenceLabel,
+  getMeetingScheduleLabel,
+  isMeetingTask,
+} from '@/lib/calendar-utils';
 
 const hasRequiredFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -1484,7 +1491,7 @@ export default function WorkflowTray() {
           <div className="min-w-0 pl-2.5">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-sky-700">
-                {task.parentTaskId ? 'Subtarea' : 'Tarea'}
+                {isMeetingTask(task) ? 'Reunion' : task.parentTaskId ? 'Subtarea' : 'Tarea'}
               </span>
               <h3 className="min-w-0 flex-1 truncate text-sm font-bold text-slate-900">{title}</h3>
               <span className={`hidden shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider sm:inline-flex ${getTaskStatusClass(status)}`}>
@@ -2347,7 +2354,7 @@ export default function WorkflowTray() {
                 <div className="min-w-0">
                   <div className="mb-2 flex flex-wrap items-center gap-1.5">
                     <span className="rounded bg-indigo-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-700">
-                      {taskIsWorkflow ? 'Workflow' : detailTask.parentTaskId ? 'Subtarea' : 'Tarea'}
+                      {taskIsWorkflow ? 'Workflow' : isMeetingTask(detailTask) ? 'Reunion' : detailTask.parentTaskId ? 'Subtarea' : 'Tarea'}
                     </span>
                     <span className={`rounded px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${detailUrgencyStyles.due}`}>
                       {detailDueState === 'ok' ? 'A tiempo' : detailDueState === 'none' ? 'Sin fecha' : getDueLabel(detailDueState)}
@@ -2372,6 +2379,52 @@ export default function WorkflowTray() {
                   <p className="text-sm text-slate-700">
                     {detailTask.initialObservation || detailTask.description || 'Sin descripción'}
                   </p>
+
+                  {isMeetingTask(detailTask) && (
+                    <div className="mt-4 rounded-xl border border-cyan-100 bg-cyan-50 p-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 text-sm font-bold text-cyan-900">
+                            <CalendarDays size={16} />
+                            {getMeetingScheduleLabel(detailTask)}
+                          </div>
+                          <p className="mt-1 text-xs font-semibold text-cyan-700">
+                            {getMeetingRecurrenceLabel(detailTask)}
+                          </p>
+                          {detailTask.meeting?.location && (
+                            <p className="mt-2 flex min-w-0 items-center gap-2 text-xs text-cyan-800">
+                              <MapPin size={13} className="shrink-0" />
+                              <span className="truncate">{detailTask.meeting.location}</span>
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => downloadMeetingIcs(detailTask)}
+                            className="h-8 border-cyan-200 bg-white text-cyan-700 hover:bg-cyan-50"
+                          >
+                            <Download className="mr-1 h-3.5 w-3.5" />
+                            .ics
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => {
+                              const url = createGoogleCalendarUrl(detailTask);
+                              if (url) window.open(url, '_blank', 'noopener,noreferrer');
+                            }}
+                            className="h-8 bg-cyan-700 text-white hover:bg-cyan-800"
+                          >
+                            <ExternalLink className="mr-1 h-3.5 w-3.5" />
+                            Google
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {taskIsWorkflow ? (
                     <div className="mt-4 space-y-2">

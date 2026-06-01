@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, ListTodo, Plus, ClipboardList, Loader2, Trash2 } from 'lucide-react';
+import { X, ListTodo, Plus, ClipboardList, Loader2, Trash2, CalendarDays } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, updateDoc, deleteDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
@@ -14,6 +14,8 @@ import {
 
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
+type TaskType = "quantitative" | "state" | "workflow" | "meeting";
+type MeetingRecurrenceFrequency = "none" | "daily" | "weekly" | "monthly";
 
 const createStepRateCardItem = (): FormRateCardItem => ({
   id: `step_rc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -132,8 +134,16 @@ export function CreateTaskModal({
   const [newTaskProgress, setNewTaskProgress] = useState(0);
   const [newTaskStatus, setNewTaskStatus] = useState("todo");
   const [newTaskType, setNewTaskType] = useState<
-    "quantitative" | "state" | "workflow"
+    TaskType
   >("workflow");
+  const [meetingStartTime, setMeetingStartTime] = useState("09:00");
+  const [meetingEndTime, setMeetingEndTime] = useState("10:00");
+  const [meetingLocation, setMeetingLocation] = useState("");
+  const [meetingAgenda, setMeetingAgenda] = useState("");
+  const [meetingRecurrence, setMeetingRecurrence] =
+    useState<MeetingRecurrenceFrequency>("none");
+  const [meetingRecurrenceInterval, setMeetingRecurrenceInterval] = useState(1);
+  const [meetingAttendeeIds, setMeetingAttendeeIds] = useState<string[]>([]);
   const [workflowSteps, setWorkflowSteps] = useState<
     {
       assignedTo: string;
@@ -214,6 +224,22 @@ export function CreateTaskModal({
   const defaultTaskGroupName =
     taskGroups.find((group) => group.id === DEFAULT_TASK_GROUP_ID)?.name || DEFAULT_TASK_GROUP_NAME;
   const assignableTaskGroups = taskGroups.filter((group) => group.id !== DEFAULT_TASK_GROUP_ID);
+  const taskTypeLabel: Record<TaskType, string> = {
+    workflow: "Workflow",
+    quantitative: "Cuantitativa",
+    state: "Estado",
+    meeting: "Reunion",
+  };
+  const projectMembers = (project?.assignedTeamMembers || [])
+    .map((memberId: string) => teamMembers.find((member) => member.id === memberId))
+    .filter(Boolean);
+  const toggleMeetingAttendee = (attendeeId: string) => {
+    setMeetingAttendeeIds((currentIds) =>
+      currentIds.includes(attendeeId)
+        ? currentIds.filter((id) => id !== attendeeId)
+        : [...currentIds, attendeeId],
+    );
+  };
 
   if (!isOpen) return null;
 
@@ -241,6 +267,13 @@ export function CreateTaskModal({
     setDraftSubtasks([]);
     setIncrementForm(undefined);
     setIsIncrementFormBuilderOpen(false);
+    setMeetingStartTime("09:00");
+    setMeetingEndTime("10:00");
+    setMeetingLocation("");
+    setMeetingAgenda("");
+    setMeetingRecurrence("none");
+    setMeetingRecurrenceInterval(1);
+    setMeetingAttendeeIds([]);
   };
 
   const handleClose = () => {
@@ -491,6 +524,32 @@ export function CreateTaskModal({
       return;
     }
 
+    if (newTaskType === "meeting") {
+      const meetingStart = new Date(`${newTaskStart}T${meetingStartTime || "00:00"}:00`);
+      const meetingEnd = new Date(`${newTaskStart}T${meetingEndTime || "00:00"}:00`);
+      const scheduleEnd = new Date(`${newTaskEnd}T23:59:59`);
+
+      if (!meetingStartTime || !meetingEndTime) {
+        toast.warning("Define hora de inicio y fin para la reunion.");
+        return;
+      }
+
+      if (Number.isNaN(meetingStart.getTime()) || Number.isNaN(meetingEnd.getTime()) || meetingEnd.getTime() <= meetingStart.getTime()) {
+        toast.warning("La hora de fin de la reunion debe ser posterior a la hora de inicio.");
+        return;
+      }
+
+      if (meetingRecurrence !== "none" && scheduleEnd.getTime() < meetingStart.getTime()) {
+        toast.warning("La fecha fin debe ser posterior o igual a la primera reunion recurrente.");
+        return;
+      }
+
+      if (meetingRecurrence !== "none" && Number(meetingRecurrenceInterval) <= 0) {
+        toast.warning("La repeticion debe tener un intervalo mayor a cero.");
+        return;
+      }
+    }
+
     if (newTaskIsRateCard && newTaskRateCardMode === "static" && !newTaskRateCardId) {
       toast.warning("Selecciona el perfil de Rate Card que se va a afectar.");
       return;
@@ -509,6 +568,20 @@ export function CreateTaskModal({
       const taskTitle = newTaskTitle.trim();
       const parentStartDate = new Date(newTaskStart + "T00:00:00");
       const parentEndDate = new Date(newTaskEnd + "T00:00:00");
+      const meetingStartAt = new Date(`${newTaskStart}T${meetingStartTime || "09:00"}:00`);
+      const meetingEndAt = new Date(`${newTaskStart}T${meetingEndTime || "10:00"}:00`);
+      const meetingAttendees = Array.from(new Set([newTaskAssignedTo, ...meetingAttendeeIds].filter(Boolean)))
+        .map((memberId) => {
+          const member = teamMembers.find((candidate) => candidate.id === memberId);
+          return member
+            ? {
+                id: member.id,
+                name: member.name || member.email || "Participante",
+                email: member.email || "",
+              }
+            : null;
+        })
+        .filter(Boolean);
       const usesStaticRateCard =
         newTaskIsRateCard && newTaskRateCardMode === "static";
       const usesDynamicRateCard =
@@ -549,6 +622,27 @@ export function CreateTaskModal({
           ? rateCards.find((rc) => rc.id === newTaskRateCardId)?.syncExternal ||
             false
           : false,
+        meeting:
+          newTaskType === "meeting"
+            ? {
+                startAt: meetingStartAt,
+                endAt: meetingEndAt,
+                startTime: meetingStartTime,
+                endTime: meetingEndTime,
+                location: meetingLocation.trim(),
+                agenda: meetingAgenda.trim(),
+                attendeeIds: meetingAttendees.map((attendee: any) => attendee.id),
+                attendees: meetingAttendees,
+                recurrence: {
+                  frequency: meetingRecurrence,
+                  interval: meetingRecurrence === "none" ? 1 : Number(meetingRecurrenceInterval),
+                  until: meetingRecurrence === "none" ? null : parentEndDate,
+                },
+              }
+            : null,
+        meetingStartAt: newTaskType === "meeting" ? meetingStartAt : null,
+        meetingEndAt: newTaskType === "meeting" ? meetingEndAt : null,
+        meetingRecurrence: newTaskType === "meeting" ? meetingRecurrence : null,
         priority: newTaskPriority,
         groupId: newTaskGroupId || null,
         currentValue: 0,
@@ -785,19 +879,24 @@ export function CreateTaskModal({
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <label className="text-sm font-bold text-slate-700">
-                  Fecha Inicio
+                  {newTaskType === "meeting" ? "Primera fecha" : "Fecha Inicio"}
                 </label>
                 <input
                   type="date"
                   value={newTaskStart}
-                  onChange={(e) => setNewTaskStart(e.target.value)}
+                  onChange={(e) => {
+                    setNewTaskStart(e.target.value);
+                    if (newTaskType === "meeting" && !newTaskEnd) {
+                      setNewTaskEnd(e.target.value);
+                    }
+                  }}
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                   required
                 />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-bold text-slate-700">
-                  Fecha Fin
+                  {newTaskType === "meeting" ? "Fin de serie" : "Fecha Fin"}
                 </label>
                 <input
                   type="date"
@@ -870,19 +969,20 @@ export function CreateTaskModal({
                     Tipo de Tarea
                   </label>
                   <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 uppercase tracking-tighter">
-                    Workflow
+                    {taskTypeLabel[newTaskType]}
                   </span>
                 </div>
                 <select
                   value={newTaskType}
                   onChange={(e) =>
                     setNewTaskType(
-                      e.target.value as "quantitative" | "state" | "workflow",
+                      e.target.value as TaskType,
                     )
                   }
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                 >
                   <option value="workflow">Workflow (Flujo)</option>
+                  <option value="meeting">Reunión</option>
                   <option value="quantitative">Cuantitativa</option>
                   <option value="state">Por Estado</option>
                 </select>
@@ -906,6 +1006,135 @@ export function CreateTaskModal({
                     </option>
                   ))}
                 </select>
+              </div>
+            )}
+
+            {newTaskType === "meeting" && (
+              <div className="space-y-4 rounded-xl border border-cyan-100 bg-cyan-50/60 p-4">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-lg bg-white p-2 text-cyan-700 shadow-sm">
+                    <CalendarDays size={18} />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-cyan-700">
+                      Configuración de reunión
+                    </label>
+                    <p className="mt-1 text-xs text-cyan-700/80">
+                      La tarea quedará visible en la planificación y podrá exportarse a calendario.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-cyan-700">
+                      Hora inicio
+                    </label>
+                    <input
+                      type="time"
+                      value={meetingStartTime}
+                      onChange={(event) => setMeetingStartTime(event.target.value)}
+                      className="h-10 w-full rounded-lg border border-cyan-100 bg-white px-3 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20"
+                      required={newTaskType === "meeting"}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-cyan-700">
+                      Hora fin
+                    </label>
+                    <input
+                      type="time"
+                      value={meetingEndTime}
+                      onChange={(event) => setMeetingEndTime(event.target.value)}
+                      className="h-10 w-full rounded-lg border border-cyan-100 bg-white px-3 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20"
+                      required={newTaskType === "meeting"}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_120px]">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-cyan-700">
+                      Recurrencia
+                    </label>
+                    <select
+                      value={meetingRecurrence}
+                      onChange={(event) => setMeetingRecurrence(event.target.value as MeetingRecurrenceFrequency)}
+                      className="h-10 w-full rounded-lg border border-cyan-100 bg-white px-3 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20"
+                    >
+                      <option value="none">Única</option>
+                      <option value="daily">Diaria</option>
+                      <option value="weekly">Semanal</option>
+                      <option value="monthly">Mensual</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-cyan-700">
+                      Cada
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={meetingRecurrenceInterval}
+                      disabled={meetingRecurrence === "none"}
+                      onChange={(event) => setMeetingRecurrenceInterval(Number(event.target.value))}
+                      className="h-10 w-full rounded-lg border border-cyan-100 bg-white px-3 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 disabled:bg-slate-50 disabled:text-slate-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-wider text-cyan-700">
+                    Lugar o enlace
+                  </label>
+                  <input
+                    type="text"
+                    value={meetingLocation}
+                    onChange={(event) => setMeetingLocation(event.target.value)}
+                    className="h-10 w-full rounded-lg border border-cyan-100 bg-white px-3 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20"
+                    placeholder="Ej. Google Meet, oficina, sala de juntas..."
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-wider text-cyan-700">
+                    Agenda
+                  </label>
+                  <textarea
+                    value={meetingAgenda}
+                    onChange={(event) => setMeetingAgenda(event.target.value)}
+                    className="min-h-[70px] w-full resize-none rounded-lg border border-cyan-100 bg-white p-3 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20"
+                    placeholder="Temas, objetivo, preparación esperada..."
+                  />
+                </div>
+
+                {projectMembers.length > 0 && (
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-cyan-700">
+                      Invitados adicionales
+                    </label>
+                    <div className="grid max-h-36 gap-2 overflow-y-auto rounded-lg border border-cyan-100 bg-white p-2 sm:grid-cols-2">
+                      {projectMembers.map((member: any) => (
+                        <label
+                          key={member.id}
+                          className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs text-slate-700 hover:bg-cyan-50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={meetingAttendeeIds.includes(member.id) || newTaskAssignedTo === member.id}
+                            disabled={newTaskAssignedTo === member.id}
+                            onChange={() => toggleMeetingAttendee(member.id)}
+                            className="h-3.5 w-3.5 rounded border-cyan-200 text-cyan-600 focus:ring-cyan-500"
+                          />
+                          <span className="truncate">
+                            {member.name || member.email}
+                            {newTaskAssignedTo === member.id ? " · responsable" : ""}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

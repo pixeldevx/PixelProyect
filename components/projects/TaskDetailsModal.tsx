@@ -1,11 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { X, Save, CheckCircle2, Circle, RotateCcw, BookOpen } from 'lucide-react';
+import { X, Save, CheckCircle2, Circle, RotateCcw, BookOpen, CalendarDays, Download, ExternalLink, MapPin, Users } from 'lucide-react';
 import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
 import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
 import { getCompletionStatusForTask } from '@/lib/taskProgress';
+import {
+  createGoogleCalendarUrl,
+  downloadMeetingIcs,
+  getMeetingRecurrenceLabel,
+  getMeetingScheduleLabel,
+  isMeetingTask,
+} from '@/lib/calendar-utils';
 
 interface TaskDetailsModalProps {
   isOpen: boolean;
@@ -399,6 +406,74 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-8">
+          {isMeetingTask(task) && (
+            <div className="rounded-xl border border-cyan-100 bg-cyan-50 p-4">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <div className="rounded-lg bg-white p-2 text-cyan-700 shadow-sm">
+                      <CalendarDays size={18} />
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wider text-cyan-700">
+                        Reunión programada
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">
+                        {getMeetingScheduleLabel(task)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
+                    <span className="inline-flex min-w-0 items-center gap-2 rounded-lg bg-white/70 px-3 py-2">
+                      <CalendarDays size={14} className="shrink-0 text-cyan-700" />
+                      {getMeetingRecurrenceLabel(task)}
+                    </span>
+                    {task.meeting?.location && (
+                      <span className="inline-flex min-w-0 items-center gap-2 rounded-lg bg-white/70 px-3 py-2">
+                        <MapPin size={14} className="shrink-0 text-cyan-700" />
+                        <span className="truncate">{task.meeting.location}</span>
+                      </span>
+                    )}
+                    {Array.isArray(task.meeting?.attendees) && task.meeting.attendees.length > 0 && (
+                      <span className="inline-flex min-w-0 items-center gap-2 rounded-lg bg-white/70 px-3 py-2 sm:col-span-2">
+                        <Users size={14} className="shrink-0 text-cyan-700" />
+                        <span className="truncate">
+                          {task.meeting.attendees.map((attendee: any) => attendee.name || attendee.email).join(", ")}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                  {task.meeting?.agenda && (
+                    <div className="mt-3 rounded-lg border border-cyan-100 bg-white/70 p-3 text-sm leading-6 text-slate-700">
+                      {task.meeting.agenda}
+                    </div>
+                  )}
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => downloadMeetingIcs(task)}
+                    className="inline-flex h-9 items-center justify-center rounded-lg border border-cyan-200 bg-white px-3 text-xs font-bold text-cyan-700 transition-colors hover:bg-cyan-50"
+                  >
+                    <Download size={14} className="mr-2" />
+                    .ics
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = createGoogleCalendarUrl(task);
+                      if (url) window.open(url, "_blank", "noopener,noreferrer");
+                    }}
+                    className="inline-flex h-9 items-center justify-center rounded-lg bg-cyan-700 px-3 text-xs font-bold text-white transition-colors hover:bg-cyan-800"
+                  >
+                    <ExternalLink size={14} className="mr-2" />
+                    Google Calendar
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {task.originLogbook && (
             <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4">
               <div className="flex items-start gap-3">
