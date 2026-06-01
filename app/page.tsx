@@ -215,11 +215,11 @@ function ProductScene() {
               ))}
             </div>
 
-            <div className="mt-7 grid gap-3 sm:grid-cols-4">
+            <div className="mt-7 grid grid-cols-2 gap-3">
               {metricTiles.map((metric) => (
-                <div key={metric.label} className={`rounded-lg border px-3 py-3 ${metric.color}`}>
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] opacity-75">{metric.label}</p>
-                  <p className="mt-2 text-2xl font-black">{metric.value}</p>
+                <div key={metric.label} className={`min-w-0 rounded-lg border px-3 py-3 ${metric.color}`}>
+                  <p className="break-words text-[9px] font-black uppercase leading-4 tracking-[0.08em] opacity-75">{metric.label}</p>
+                  <p className="mt-2 text-2xl font-black leading-none">{metric.value}</p>
                 </div>
               ))}
             </div>
@@ -260,9 +260,9 @@ function ProductScene() {
                 <div className="rounded-lg bg-indigo-600 p-2 text-white">
                   <Sparkles className="h-4 w-4" />
                 </div>
-                <div>
-                  <p className="text-sm font-black text-slate-950">Señal inteligente</p>
-                  <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                <div className="min-w-0">
+                  <p className="break-words text-sm font-black text-slate-950">Señal inteligente</p>
+                  <p className="mt-1 break-words text-sm leading-relaxed text-slate-600">
                     La bitácora detectó 4 acciones nuevas y 2 posibles riesgos de calidad para asignar hoy.
                   </p>
                 </div>
