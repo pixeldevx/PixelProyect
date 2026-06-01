@@ -119,6 +119,35 @@ const hasWorkflowReviewForUser = (task: any, actorIds: any[]) => {
   return Boolean(task?.workflowHistory?.some((history: any) => ids.includes(history?.userId) || ids.includes(history?.memberId)));
 };
 
+const hasAssignedTaskReviewForUser = (task: any, actorIds: any[]) => {
+  const ids = normalizeActorIds(actorIds);
+  if (ids.length === 0 || !isCompletedTaskStatus(task?.status)) return false;
+
+  const reviewedByIds = Array.isArray(task?.reviewedByIds) ? task.reviewedByIds : [];
+  if (reviewedByIds.some((id: string) => ids.includes(id))) return true;
+
+  const reviewReceipts = Array.isArray(task?.taskReviewReceipts) ? task.taskReviewReceipts : [];
+  if (
+    reviewReceipts.some((receipt: any) =>
+      ids.includes(receipt?.userId) ||
+      ids.includes(receipt?.memberId) ||
+      (Array.isArray(receipt?.userIds) && receipt.userIds.some((id: string) => ids.includes(id)))
+    )
+  ) {
+    return true;
+  }
+
+  const statusHistory = Array.isArray(task?.statusHistory) ? task.statusHistory : [];
+  return statusHistory.some((entry: any) =>
+    isCompletedTaskStatus(entry?.status) &&
+    (
+      ids.includes(entry?.changedBy) ||
+      ids.includes(entry?.memberId) ||
+      (Array.isArray(entry?.userIds) && entry.userIds.some((id: string) => ids.includes(id)))
+    )
+  );
+};
+
 const getTaskStatusLabel = (status: string) => {
   switch (status) {
     case 'completed':
@@ -566,7 +595,9 @@ export default function WorkflowTray() {
                   })
                   .filter((task: any) => {
                     if (!isWorkflowItem(task)) {
-                      return isOpenTask(task) && isAssignedToCurrentUser(task, allMemberIds);
+                      const isAssigned = isAssignedToCurrentUser(task, allMemberIds);
+                      const hasReviewedTask = hasAssignedTaskReviewForUser(task, allMemberIds);
+                      return (isOpenTask(task) && isAssigned) || hasReviewedTask;
                     }
 
                     const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
@@ -1103,19 +1134,42 @@ export default function WorkflowTray() {
         });
       }
 
+      const actionTimestamp = Timestamp.now();
+      const reviewActorIds = normalizeActorIds([user.uid, memberId, ...memberIds]);
       const taskUpdate: any = {
         status: finalStatus,
         progress,
-        updatedAt: Timestamp.now(),
+        updatedAt: actionTimestamp,
         statusHistory: arrayUnion({
           status: finalStatus,
+          previousStatus: task.status || null,
           changedBy: user.uid,
+          memberId,
+          userIds: reviewActorIds,
           changedByEmail: user.email || null,
-          timestamp: Timestamp.now(),
+          changedByName: user.displayName || user.email || 'Usuario',
+          timestamp: actionTimestamp,
           source: 'inbox',
+          comment: dynamicCharge?.comment || null,
           dynamicRateCard: dynamicRateCardCharge,
         }),
       };
+
+      if (isCompleted && !wasCompleted) {
+        taskUpdate.reviewedByIds = arrayUnion(...reviewActorIds);
+        taskUpdate.taskReviewReceipts = arrayUnion({
+          id: `${task.id}-status-${finalStatus}-${Date.now()}`,
+          status: finalStatus,
+          previousStatus: task.status || null,
+          userId: user.uid,
+          memberId,
+          userIds: reviewActorIds,
+          userName: user.displayName || user.email || 'Usuario',
+          comment: dynamicCharge?.comment || null,
+          timestamp: actionTimestamp,
+          source: 'inbox_status',
+        });
+      }
 
       if (dynamicRateCardCharge && !dynamicRateCardCharge.reversal && dynamicCharge) {
         taskUpdate.dynamicRateCardLastCharge = dynamicRateCardCharge;
@@ -1186,8 +1240,8 @@ export default function WorkflowTray() {
   };
 
   const isReviewedTaskForMe = (task: any) => {
-    if (!isWorkflowItem(task)) return false;
-    return hasWorkflowReviewForUser(task, assignedIdsForInbox);
+    if (isWorkflowItem(task)) return hasWorkflowReviewForUser(task, assignedIdsForInbox);
+    return hasAssignedTaskReviewForUser(task, assignedIdsForInbox as string[]);
   };
 
   const isInActiveInboxTab = (task: any) =>
@@ -1274,6 +1328,111 @@ export default function WorkflowTray() {
     ? shouldRequestDynamicRateCardUnits(dynamicRateCardModal.task)
     : false;
 
+  const getInteractionHistory = (task: any) => {
+    if (!task) return [];
+    if (isWorkflowItem(task)) {
+      return (task.workflowHistory || []).map((entry: any) => ({
+        ...entry,
+        historyType: 'workflow',
+      }));
+    }
+
+    const statusHistory = Array.isArray(task.statusHistory) ? task.statusHistory : [];
+    if (statusHistory.length > 0) {
+      return statusHistory.map((entry: any) => ({
+        ...entry,
+        action: 'status',
+        historyType: 'status',
+      }));
+    }
+
+    const reviewReceipts = Array.isArray(task.taskReviewReceipts) ? task.taskReviewReceipts : [];
+    return reviewReceipts.map((entry: any) => ({
+      ...entry,
+      action: 'status',
+      historyType: 'status',
+    }));
+  };
+
+  const getHistoryBadgeLabel = (history: any) => {
+    if (history.historyType === 'status') return getTaskStatusLabel(history.status);
+    if (history.action === 'approve') return 'Aprobado';
+    if (history.action === 'return') return 'Devuelto';
+    if (history.action === 'stop') return 'Detenido';
+    if (history.action === 'resume') return 'Reanudado';
+    return 'Comentario';
+  };
+
+  const getHistoryBadgeClass = (history: any) => {
+    if (history.historyType === 'status') return getTaskStatusClass(history.status);
+    if (history.action === 'approve') return 'bg-emerald-50 text-emerald-700';
+    if (history.action === 'return') return 'bg-red-50 text-red-700';
+    if (history.action === 'stop') return 'bg-orange-50 text-orange-700';
+    if (history.action === 'resume') return 'bg-blue-50 text-blue-700';
+    return 'bg-slate-100 text-slate-700';
+  };
+
+  const renderHistoryIcon = (history: any) => {
+    if (history.historyType === 'status' && isCompletedTaskStatus(history.status)) {
+      return (
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+          <CheckCircle2 size={16} />
+        </div>
+      );
+    }
+
+    if (history.action === 'approve') {
+      return (
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+          <CheckCircle2 size={16} />
+        </div>
+      );
+    }
+
+    if (history.action === 'return') {
+      return (
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 text-red-600">
+          <ArrowLeft size={16} />
+        </div>
+      );
+    }
+
+    if (history.action === 'stop') {
+      return (
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-100 text-orange-600">
+          <Pause size={16} />
+        </div>
+      );
+    }
+
+    if (history.action === 'resume') {
+      return (
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-100 text-blue-600">
+          <Play size={16} />
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-indigo-600">
+        <ClipboardList size={16} />
+      </div>
+    );
+  };
+
+  const getHistoryActorName = (history: any) =>
+    history.userName || history.changedByName || history.changedByEmail || 'Usuario';
+
+  const getHistoryDetailText = (history: any, task: any) => {
+    if (history.historyType === 'status') {
+      const previousStatus = history.previousStatus ? getTaskStatusLabel(history.previousStatus) : null;
+      const nextStatus = getTaskStatusLabel(history.status);
+      return previousStatus ? `${previousStatus} -> ${nextStatus}` : `Estado: ${nextStatus}`;
+    }
+
+    return `Paso ${history.stepIndex + 1}: ${task.workflowSteps?.[history.stepIndex]?.label || 'Desconocido'}`;
+  };
+
   const renderUtilityButton = (
     label: string,
     icon: React.ReactNode,
@@ -1314,6 +1473,7 @@ export default function WorkflowTray() {
     if (!taskIsWorkflow) {
       const progress = Math.min(100, Math.max(0, Number(task.progress || 0)));
       const status = task.status || 'todo';
+      const historyCount = getInteractionHistory(task).length;
 
       return (
         <article
@@ -1383,6 +1543,8 @@ export default function WorkflowTray() {
             {renderUtilityButton('Detalles', <Eye size={14} />, () => setDetailsModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-indigo-700')}
             {renderUtilityButton('Comentarios', <MessageSquare size={14} />, () => setCommentsModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-indigo-700', commentCount)}
             {renderUtilityButton('Documentos', <FileText size={14} />, () => setDocsModalTask(task), 'text-indigo-600 hover:bg-white/80 hover:text-indigo-700')}
+            {historyCount > 0 &&
+              renderUtilityButton('Historial', <ClipboardList size={14} />, () => setHistoryModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-slate-900', historyCount)}
             <Link
               href={`/projects/${task.projectId}?tab=tasks`}
               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-600 transition-colors hover:bg-white/80 hover:text-slate-900"
@@ -1403,6 +1565,7 @@ export default function WorkflowTray() {
     const isReturned = stepStatus === 'devuelto' || stepStatus === 'returned';
     const isStopped = stepStatus === 'detenido';
     const workflowUrgencyStyles = isReturned ? getInboxUrgencyStyles('overdue') : urgencyStyles;
+    const workflowHistoryCount = getInteractionHistory(task).length;
 
     return (
       <article
@@ -1505,8 +1668,8 @@ export default function WorkflowTray() {
           {renderUtilityButton('Detalles', <Eye size={14} />, () => setDetailsModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-indigo-700')}
           {renderUtilityButton('Documentos', <FileText size={14} />, () => setDocsModalTask(task), 'text-indigo-600 hover:bg-white/80 hover:text-indigo-700')}
           {renderUtilityButton('Comentarios', <MessageSquare size={14} />, () => setCommentsModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-indigo-700', commentCount)}
-          {task.workflowHistory?.length > 0 &&
-            renderUtilityButton('Interacciones', <MessageSquare size={14} />, () => setHistoryModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-slate-900', task.workflowHistory.length)}
+          {workflowHistoryCount > 0 &&
+            renderUtilityButton('Interacciones', <ClipboardList size={14} />, () => setHistoryModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-slate-900', workflowHistoryCount)}
         </div>
       </article>
     );
@@ -2312,99 +2475,83 @@ export default function WorkflowTray() {
             </div>
             
             <div className="p-6 overflow-y-auto bg-slate-50 flex-1">
-              <div className="space-y-6">
-                {historyModalTask.workflowHistory?.slice().reverse().map((history: any, index: number) => (
-                  <div key={index} className="flex min-w-0 gap-3 sm:gap-4">
-                    <div className="shrink-0 mt-1">
-                      {history.action === 'approve' ? (
-                        <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">
-                          <CheckCircle2 size={16} />
-                        </div>
-                      ) : history.action === 'return' ? (
-                        <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center text-red-600">
-                          <ArrowLeft size={16} />
-                        </div>
-                      ) : history.action === 'stop' ? (
-                        <div className="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600">
-                          <Pause size={16} />
-                        </div>
-                      ) : history.action === 'resume' ? (
-                        <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
-                          <Play size={16} />
-                        </div>
-                      ) : (
-                        <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600">
-                          <MessageSquare size={16} />
-                        </div>
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                      <div className="mb-2 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-bold text-slate-900">
-                            {history.userName || 'Usuario'}
-                          </p>
-                          <p className="break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
-                            Paso {history.stepIndex + 1}: {historyModalTask.workflowSteps[history.stepIndex]?.label || 'Desconocido'}
-                          </p>
-                        </div>
-                        <div className="shrink-0 text-left sm:text-right">
-                          <span className={`text-xs font-medium px-2 py-1 rounded-full ${
-                            history.action === 'approve' ? 'bg-emerald-50 text-emerald-700' :
-                            history.action === 'return' ? 'bg-red-50 text-red-700' :
-                            history.action === 'stop' ? 'bg-orange-50 text-orange-700' :
-                            history.action === 'resume' ? 'bg-blue-50 text-blue-700' :
-                            'bg-slate-100 text-slate-700'
-                          }`}>
-                            {history.action === 'approve' ? 'Aprobado' : 
-                             history.action === 'return' ? 'Devuelto' : 
-                             history.action === 'stop' ? 'Detenido' :
-                             history.action === 'resume' ? 'Reanudado' : 'Comentario'}
-                          </span>
-                          <p className="text-[10px] text-slate-400 mt-1">
-                            {history.timestamp?.toDate ? format(history.timestamp.toDate(), "d MMM yyyy, h:mm a", { locale: es }) : 'Fecha desconocida'}
-                          </p>
-                        </div>
-                      </div>
-                      {history.comment && (
-                        <div className="mt-3 whitespace-pre-wrap break-words text-sm text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-100 [overflow-wrap:anywhere]">
-                          {history.comment}
-                        </div>
-                      )}
-                      
-                      {history.formData && Object.keys(history.formData).length > 0 && (
-                        <div className="mt-3 p-3 bg-indigo-50 border border-indigo-100 rounded-lg">
-                          <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider mb-2">Datos del Formulario</p>
-                          <div className="space-y-2">
-                            {Object.entries(history.formData).map(([fieldId, value]: [string, any]) => {
-                              const step = historyModalTask.workflowSteps[history.stepIndex];
-                              const field = step?.form?.fields?.find((f: any) => f.id === fieldId);
-                              return (
-                                <div
-                                  key={fieldId}
-                                  className="grid min-w-0 gap-1 rounded-md border border-indigo-100/60 bg-white/55 p-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-3"
-                                >
-                                  <span className="min-w-0 break-words text-[11px] font-bold uppercase tracking-wide text-slate-600 [overflow-wrap:anywhere]">
-                                    {field?.label || fieldId}
-                                  </span>
-                                  {renderHistoryFormValue(value, field)}
+              {(() => {
+                const historyEntries = getInteractionHistory(historyModalTask)
+                  .slice()
+                  .sort((left: any, right: any) => getTaskTimestamp(right.timestamp) - getTaskTimestamp(left.timestamp));
+
+                return (
+                  <div className="space-y-6">
+                    {historyEntries.map((history: any, index: number) => {
+                      const historyDate = getTaskDate(history.timestamp);
+                      const historyKey = history.id || `${history.historyType}-${historyDate?.getTime() || 0}-${index}`;
+
+                      return (
+                        <div key={historyKey} className="flex min-w-0 gap-3 sm:gap-4">
+                          <div className="mt-1 shrink-0">
+                            {renderHistoryIcon(history)}
+                          </div>
+                          <div className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                            <div className="mb-2 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-bold text-slate-900">
+                                  {getHistoryActorName(history)}
+                                </p>
+                                <p className="break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
+                                  {getHistoryDetailText(history, historyModalTask)}
+                                </p>
+                              </div>
+                              <div className="shrink-0 text-left sm:text-right">
+                                <span className={`rounded-full px-2 py-1 text-xs font-medium ${getHistoryBadgeClass(history)}`}>
+                                  {getHistoryBadgeLabel(history)}
+                                </span>
+                                <p className="mt-1 text-[10px] text-slate-400">
+                                  {historyDate ? format(historyDate, "d MMM yyyy, h:mm a", { locale: es }) : 'Fecha desconocida'}
+                                </p>
+                              </div>
+                            </div>
+                            {(history.comment || history.dynamicRateCard?.comment) && (
+                              <div className="mt-3 whitespace-pre-wrap break-words rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm text-slate-700 [overflow-wrap:anywhere]">
+                                {history.comment || history.dynamicRateCard?.comment}
+                              </div>
+                            )}
+
+                            {history.formData && Object.keys(history.formData).length > 0 && (
+                              <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50 p-3">
+                                <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-indigo-600">Datos del Formulario</p>
+                                <div className="space-y-2">
+                                  {Object.entries(history.formData).map(([fieldId, value]: [string, any]) => {
+                                    const step = historyModalTask.workflowSteps?.[history.stepIndex];
+                                    const field = step?.form?.fields?.find((f: any) => f.id === fieldId);
+                                    return (
+                                      <div
+                                        key={fieldId}
+                                        className="grid min-w-0 gap-1 rounded-md border border-indigo-100/60 bg-white/55 p-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-3"
+                                      >
+                                        <span className="min-w-0 break-words text-[11px] font-bold uppercase tracking-wide text-slate-600 [overflow-wrap:anywhere]">
+                                          {field?.label || fieldId}
+                                        </span>
+                                        {renderHistoryFormValue(value, field)}
+                                      </div>
+                                    );
+                                  })}
                                 </div>
-                              );
-                            })}
+                              </div>
+                            )}
                           </div>
                         </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                
-                {(!historyModalTask.workflowHistory || historyModalTask.workflowHistory.length === 0) && (
+                      );
+                    })}
+
+                    {historyEntries.length === 0 && (
                   <div className="text-center py-8 text-slate-500">
                     <MessageSquare className="w-12 h-12 mx-auto text-slate-200 mb-3" />
                     <p>No hay interacciones registradas aún.</p>
                   </div>
-                )}
-              </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
