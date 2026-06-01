@@ -1,6 +1,51 @@
 export const isCompletedTaskStatus = (status?: string | null) =>
   status === "completed" || status === "completed_late" || status === "listo";
 
+const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+export const getTaskDateValue = (value: any): Date | null => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value.toDate === "function") {
+    const date = value.toDate();
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date : null;
+  }
+  if (typeof value === "string") {
+    const dateOnlyMatch = value.match(DATE_ONLY_PATTERN);
+    if (dateOnlyMatch) {
+      const [, year, month, day] = dateOnlyMatch;
+      return new Date(Number(year), Number(month) - 1, Number(day));
+    }
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const startOfLocalDay = (date: Date) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+
+export const isCompletionAfterDueDate = (dueDateValue: any, completedAt: Date = new Date()) => {
+  const dueDate = getTaskDateValue(dueDateValue);
+  if (!dueDate) return false;
+  return startOfLocalDay(completedAt) > startOfLocalDay(dueDate);
+};
+
+export const getCompletionStatusForSchedule = (
+  nextStatus: string,
+  dueDateValue: any,
+  completedAt: Date = new Date(),
+) => {
+  if (nextStatus !== "completed") return nextStatus;
+  return isCompletionAfterDueDate(dueDateValue, completedAt) ? "completed_late" : "completed";
+};
+
+export const getCompletionStatusForTask = (
+  nextStatus: string,
+  task: any,
+  completedAt: Date = new Date(),
+) => getCompletionStatusForSchedule(nextStatus, task?.endDate ?? task?.end, completedAt);
+
 export const getProgressForTaskStatus = (
   nextStatus: string,
   currentProgress: number | null | undefined = 0,

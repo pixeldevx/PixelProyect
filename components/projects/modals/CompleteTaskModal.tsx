@@ -5,6 +5,7 @@ import { db, storage } from '@/lib/backend';
 import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, getDoc } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { toast } from 'sonner';
+import { getCompletionStatusForTask } from '@/lib/taskProgress';
 
 interface CompleteTaskModalProps {
   isOpen: boolean;
@@ -14,18 +15,6 @@ interface CompleteTaskModalProps {
   task: any | null;
   user: any;
 }
-
-const getTaskDate = (value: any) => {
-  if (!value) return null;
-  if (value.toDate) return value.toDate();
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-};
-
-const getCompletionStatus = (task: any) => {
-  const endDate = getTaskDate(task?.endDate || task?.end);
-  return endDate && Date.now() > endDate.getTime() ? 'completed_late' : 'completed';
-};
 
 export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, user }: CompleteTaskModalProps) {
   const [taskDocFile, setTaskDocFile] = useState<File | null>(null);
@@ -99,7 +88,7 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
       }
 
       batch.update(taskRef, {
-        status: getCompletionStatus(taskForCompletion),
+        status: getCompletionStatusForTask('completed', taskForCompletion),
         progress: 100,
         linkedDocumentId: docRef.id,
         updatedAt: serverTimestamp()

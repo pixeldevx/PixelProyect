@@ -12,7 +12,7 @@ import { TaskDocumentsViewer } from '@/components/projects/TaskDocumentsViewer';
 import { TaskCommentsModal } from '@/components/projects/TaskCommentsModal';
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
-import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
+import { getCompletionStatusForTask, getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
 
 import { useAuth } from '@/hooks/useAuth';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
@@ -189,15 +189,8 @@ const getWorkflowStepFormData = (task: any, currentStep: any, stepIndex: number)
   return latestHistoryWithForm?.formData ? { ...latestHistoryWithForm.formData } : {};
 };
 
-const isAfterTaskDeadline = (task: any, date = new Date()) => {
-  const endDate = getTaskDate(task?.endDate || task?.end);
-  if (!endDate) return false;
-  return date.getTime() > endDate.getTime();
-};
-
 const normalizeCompletionStatus = (nextStatus: string, task: any) => {
-  if (nextStatus !== 'completed') return nextStatus;
-  return isAfterTaskDeadline(task) ? 'completed_late' : 'completed';
+  return getCompletionStatusForTask(nextStatus, task);
 };
 
 const isDynamicRateCardEnabled = (source: any) =>

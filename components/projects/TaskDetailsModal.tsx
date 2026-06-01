@@ -5,6 +5,7 @@ import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
 import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
+import { getCompletionStatusForTask } from '@/lib/taskProgress';
 
 interface TaskDetailsModalProps {
   isOpen: boolean;
@@ -14,17 +15,6 @@ interface TaskDetailsModalProps {
   teamMembers?: any[];
   onResetWorkflowTask?: (task: any) => void | Promise<void>;
 }
-
-const getTaskDate = (value: any) => {
-  if (!value) return null;
-  if (value.toDate) return value.toDate();
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-};
-const getCompletedStatus = (task: any) => {
-  const endDate = getTaskDate(task?.endDate || task?.end);
-  return endDate && Date.now() > endDate.getTime() ? "completed_late" : "completed";
-};
 
 export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   isOpen,
@@ -173,7 +163,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         newProgress = Math.round((approvedCount / workflowSteps.length) * 100);
 
         if (newProgress === 100) {
-          newStatus = getCompletedStatus(task);
+          newStatus = getCompletionStatusForTask("completed", task);
         } else if (newProgress > 0) {
           newStatus = "in_progress";
         } else {

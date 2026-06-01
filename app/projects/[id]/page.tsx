@@ -38,7 +38,7 @@ import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 import Image from 'next/image';
 import { belongsToAnyOrganization, getOrganizationIds } from '@/lib/organizations';
-import { getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
+import { getCompletionStatusForTask, getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
 import { sanitizeTaskTitleForSave } from '@/lib/task-title';
@@ -87,18 +87,8 @@ const resetWorkflowStepRuntime = (step: any = {}) => ({
   completed: false,
 });
 
-const getDateValue = (value: any) => {
-  if (!value) return null;
-  if (value.toDate) return value.toDate();
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-};
-
 const normalizeCompletedTaskStatus = (status: string, task: any) => {
-  if (status !== 'completed') return status;
-  const endDate = getDateValue(task?.endDate || task?.end);
-  if (!endDate) return status;
-  return Date.now() > endDate.getTime() ? 'completed_late' : 'completed';
+  return getCompletionStatusForTask(status, task);
 };
 
 const isWorkflowManualCompletionStatus = (status: string) =>

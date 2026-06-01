@@ -11,7 +11,7 @@ import { Plus, Calendar, Users, ListTodo, AlertCircle, X, Loader2, Search, Clipb
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { belongsToAnyOrganization } from '@/lib/organizations';
-import { getProgressForTaskStatus } from '@/lib/taskProgress';
+import { getCompletionStatusForTask, getProgressForTaskStatus } from '@/lib/taskProgress';
 
 enum OperationType {
   CREATE = 'create',
@@ -353,10 +353,7 @@ export const GanttOverview: React.FC = () => {
         return;
       }
 
-      const endDate = task?.endDate?.toDate ? task.endDate.toDate() : task?.endDate ? new Date(task.endDate) : null;
-      const finalStatus = status === 'completed' && endDate && !Number.isNaN(endDate.getTime()) && Date.now() > endDate.getTime()
-        ? 'completed_late'
-        : status;
+      const finalStatus = getCompletionStatusForTask(status, task);
 
       const progress = getProgressForTaskStatus(finalStatus, task.progress);
 
