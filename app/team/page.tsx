@@ -190,6 +190,37 @@ const getStatusBucket = (status?: string) => {
 
 const isCompletedTask = (task: TeamTask) => COMPLETED_STATUSES.has(String(task.status || '').toLowerCase());
 
+const isCompletedWorkflowStep = (step: any) => COMPLETED_STATUSES.has(String(step?.status || '').toLowerCase());
+
+const getCurrentWorkflowStepIndex = (task: TeamTask) => {
+  const steps = Array.isArray(task.workflowSteps) ? task.workflowSteps : [];
+  if (steps.length === 0) return 0;
+
+  const explicitIndex = Number(task.currentStepIndex);
+  if (Number.isFinite(explicitIndex) && explicitIndex >= 0 && explicitIndex < steps.length) {
+    return explicitIndex;
+  }
+
+  const firstOpenIndex = steps.findIndex((step) => !isCompletedWorkflowStep(step));
+  return firstOpenIndex >= 0 ? firstOpenIndex : steps.length - 1;
+};
+
+const isOpenWorkflowStepAssignedToMember = (task: TeamTask, member: any) =>
+  Array.isArray(task.workflowSteps) &&
+  task.workflowSteps.some((step) => !isCompletedWorkflowStep(step) && matchesMember(member, step?.assignedTo));
+
+const getOpenWorkflowStepsAssignedToMember = (task: TeamTask, member: any) =>
+  Array.isArray(task.workflowSteps)
+    ? task.workflowSteps.filter((step) => !isCompletedWorkflowStep(step) && matchesMember(member, step?.assignedTo))
+    : [];
+
+const getWorkflowStepProgress = (step: any) => {
+  const status = String(step?.status || 'not_started').toLowerCase();
+  if (COMPLETED_STATUSES.has(status)) return 100;
+  if (ACTIVE_STATUSES.has(status)) return 50;
+  return 0;
+};
+
 const getScheduleState = (task: TeamTask) => {
   if (isCompletedTask(task)) return task.status === 'completed_late' ? 'completedLate' : 'completed';
   const endDate = getDate(task.endDate || task.end || task.dueDate);
@@ -250,13 +281,37 @@ const matchesMember = (member: any, value?: string | null) => {
   return identifiers.has(String(value)) || identifiers.has(normalized);
 };
 
-const isTaskCurrentlyAssignedToMember = (task: TeamTask, member: any) => {
+const isTaskDirectlyAssignedToMember = (task: TeamTask, member: any) => {
   if (matchesMember(member, task.assignedTo)) return true;
   if (Array.isArray(task.assignedUsers) && task.assignedUsers.some((id) => matchesMember(member, id))) return true;
   if (Array.isArray(task.assignedTeamMembers) && task.assignedTeamMembers.some((id) => matchesMember(member, id))) return true;
+  return false;
+};
 
-  const currentStep = Array.isArray(task.workflowSteps) ? task.workflowSteps[task.currentStepIndex || 0] : null;
-  return Boolean(currentStep?.assignedTo && matchesMember(member, currentStep.assignedTo));
+const getOpenAssignmentCount = (task: TeamTask, member: any) => {
+  if (isCompletedTask(task)) return 0;
+
+  const openWorkflowSteps = getOpenWorkflowStepsAssignedToMember(task, member);
+  if (openWorkflowSteps.length > 0) return openWorkflowSteps.length;
+
+  return isTaskDirectlyAssignedToMember(task, member) ? 1 : 0;
+};
+
+const getOpenAssignmentProgressValues = (task: TeamTask, member: any) => {
+  if (isCompletedTask(task)) return [];
+
+  const openWorkflowSteps = getOpenWorkflowStepsAssignedToMember(task, member);
+  if (openWorkflowSteps.length > 0) return openWorkflowSteps.map(getWorkflowStepProgress);
+
+  return isTaskDirectlyAssignedToMember(task, member) ? [Number(task.progress || 0)] : [];
+};
+
+const isTaskCurrentlyAssignedToMember = (task: TeamTask, member: any) => {
+  if (isTaskDirectlyAssignedToMember(task, member)) return true;
+  if (isOpenWorkflowStepAssignedToMember(task, member)) return true;
+
+  const currentStep = Array.isArray(task.workflowSteps) ? task.workflowSteps[getCurrentWorkflowStepIndex(task)] : null;
+  return Boolean(currentStep?.assignedTo && !isCompletedWorkflowStep(currentStep) && matchesMember(member, currentStep.assignedTo));
 };
 
 const isTaskRelatedToMember = (task: TeamTask, member: any) => {
@@ -618,14 +673,16 @@ export default function TeamPage() {
       const currentTasks = allTasks.filter((task) => isTaskCurrentlyAssignedToMember(task, member));
       const relatedTasks = allTasks.filter((task) => isTaskRelatedToMember(task, member));
       const openTaskRows = currentTasks.filter((task) => !isCompletedTask(task));
+      const openAssignmentCount = openTaskRows.reduce((sum, task) => sum + getOpenAssignmentCount(task, member), 0);
+      const openAssignmentProgressValues = openTaskRows.flatMap((task) => getOpenAssignmentProgressValues(task, member));
       const overdueTasks = openTaskRows.filter((task) => getScheduleState(task) === 'overdue').length;
       const dueSoonTasks = openTaskRows.filter((task) => getScheduleState(task) === 'dueSoon').length;
       const laggingTasks = openTaskRows.filter(isTaskLagging).length;
       const blockedTasks = openTaskRows.filter((task) => getStatusBucket(task.status) === 'blocked').length;
       const completedTasks = relatedTasks.filter((task) => getStatusBucket(task.status) === 'completed').length;
       const completedLate = relatedTasks.filter((task) => getStatusBucket(task.status) === 'completedLate').length;
-      const averageProgress = currentTasks.length
-        ? Math.round(currentTasks.reduce((sum, task) => sum + Number(task.progress || 0), 0) / currentTasks.length)
+      const averageProgress = openAssignmentProgressValues.length
+        ? Math.round(openAssignmentProgressValues.reduce((sum, progress) => sum + progress, 0) / openAssignmentProgressValues.length)
         : 0;
 
       const memberRateEntries = allRateEntries.filter((entry) => matchesMember(member, entry.assignedTo));
@@ -687,7 +744,7 @@ export default function TeamPage() {
         currentTasks,
         relatedTasks,
         criticalTasks,
-        openTasks: openTaskRows.length,
+        openTasks: openAssignmentCount,
         completedTasks,
         completedLate,
         overdueTasks,
