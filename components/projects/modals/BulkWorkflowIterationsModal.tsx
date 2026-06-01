@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ClipboardList, Hash, Loader2, MapPin, Play, X } from "lucide-react";
+import { AlertTriangle, ClipboardList, Hash, Loader2, MapPin, Play, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { collection, doc, serverTimestamp, writeBatch } from "@/lib/supabase/document-store";
+import { collection, doc, getDocs, query, serverTimestamp, where, writeBatch } from "@/lib/supabase/document-store";
 import { db } from "@/lib/backend";
 import { toast } from "sonner";
 import { notifyTaskAssignment, TaskAssignmentNotificationPayload } from "@/lib/notifications";
@@ -25,6 +25,8 @@ type ParsedIteration = {
   startDate?: string;
   endDate?: string;
   usesCustomDates?: boolean;
+  existing?: boolean;
+  warning?: string;
   error?: string;
 };
 
@@ -278,27 +280,50 @@ const parseIterations = (
       const normalizedId = foldText(item.externalWorkflowId);
       if (!normalizedId) return item;
 
+      if (existingIds.has(normalizedId)) {
+        return { ...item, existing: true, warning: "ID existente en la carga masiva" };
+      }
+
       if (seenIds.has(normalizedId)) {
         return { ...item, error: item.error || "ID duplicado en el lote" };
       }
 
       seenIds.add(normalizedId);
 
-      if (existingIds.has(normalizedId)) {
-        return { ...item, error: item.error || "Ya existe en este flujo" };
-      }
-
       return validateIterationSchedule(item, options);
     });
+};
+
+const getWorkflowIdCandidates = (task: any) => {
+  const values = [
+    task?.externalWorkflowId,
+    task?.workflowId,
+    task?.title,
+    task?.name,
+  ].filter(Boolean);
+  const candidates = new Set<string>();
+
+  values.forEach((value) => {
+    const cleanValue = String(value).trim();
+    if (!cleanValue) return;
+    candidates.add(cleanValue);
+
+    const bracketMatch = cleanValue.match(/^\[([^\]]+)\]/);
+    if (bracketMatch?.[1]) {
+      candidates.add(bracketMatch[1].trim());
+    }
+  });
+
+  return Array.from(candidates);
 };
 
 const getExistingWorkflowIdsForTask = (tasks: any[], task: any) =>
   new Set(
     tasks
       .filter((candidate) => candidate.parentTaskId === task?.id)
-      .map((candidate) => candidate.externalWorkflowId || candidate.title || candidate.name || "")
+      .flatMap(getWorkflowIdCandidates)
       .filter(Boolean)
-      .map((value) => foldText(String(value)))
+      .map((value) => foldText(value))
   );
 
 export function BulkWorkflowIterationsModal({
@@ -341,8 +366,9 @@ export function BulkWorkflowIterationsModal({
       }),
     [rawItems, existingIds, startDate, endDate, parentStartDate, parentEndDate]
   );
-  const validIterations = parsedIterations.filter((item) => !item.error);
+  const validIterations = parsedIterations.filter((item) => !item.error && !item.existing);
   const invalidIterations = parsedIterations.filter((item) => item.error);
+  const existingIterations = parsedIterations.filter((item) => item.existing);
   const childTaskCount = useMemo(
     () => tasks.filter((candidate) => candidate.parentTaskId === task?.id).length,
     [task?.id, tasks]
@@ -367,7 +393,11 @@ export function BulkWorkflowIterationsModal({
     }
 
     if (validIterations.length === 0) {
-      toast.warning("Agrega al menos un ID válido para crear iteraciones.");
+      toast.warning(
+        existingIterations.length > 0
+          ? "Todos los IDs de esta carga ya existen. Agrega IDs nuevos para complementar la carga masiva."
+          : "Agrega al menos un ID válido para crear iteraciones."
+      );
       return;
     }
 
@@ -406,13 +436,40 @@ export function BulkWorkflowIterationsModal({
     setIsCreating(true);
 
     try {
+      const currentChildrenSnapshot = await getDocs(
+        query(collection(db, "projects", projectId, "tasks"), where("parentTaskId", "==", task.id))
+      );
+      const currentChildTasks = currentChildrenSnapshot.docs.map((taskDoc) => ({ id: taskDoc.id, ...taskDoc.data() }));
+      const latestExistingIds = getExistingWorkflowIdsForTask(currentChildTasks, { id: task.id });
+      const iterationsToCreate = validIterations.filter(
+        (iteration) => !latestExistingIds.has(foldText(iteration.externalWorkflowId))
+      );
+      const skippedExistingCount = validIterations.length - iterationsToCreate.length + existingIterations.length;
+
+      if (iterationsToCreate.length === 0) {
+        toast.warning("No se creó ninguna iteración porque todos los IDs ya existen en este workflow.");
+        return;
+      }
+
+      if (skippedExistingCount > 0) {
+        toast.warning(`${skippedExistingCount} ID(s) ya existían y no se reescribieron.`);
+      }
+
       const batch = writeBatch(db);
       const now = new Date();
       const sourceTitle = task.originalTitle || getTaskTitle(task);
-      const nextTotalSubtasks = childTaskCount + validIterations.length;
+      const existingChildCount = currentChildTasks.length;
+      const nextTotalSubtasks =
+        Math.max(Number(task.totalSubtasks || 0), Number(task.totalCycles || 0), existingChildCount) +
+        iterationsToCreate.length;
+      const displayOrderBase = Math.max(
+        tasks.length,
+        ...currentChildTasks.map((childTask: any) => Number(childTask.displayOrder || 0)),
+        0
+      );
       const notifications: TaskAssignmentNotificationPayload[] = [];
 
-      validIterations.forEach((iteration, index) => {
+      iterationsToCreate.forEach((iteration, index) => {
         const iterationRef = doc(collection(db, "projects", projectId, "tasks"));
         const cleanWorkflowId = iteration.externalWorkflowId.trim();
         const cleanObservation = iteration.observation.trim();
@@ -486,8 +543,8 @@ export function BulkWorkflowIterationsModal({
           groupId: task.groupId || null,
           currentValue: 0,
           parentTaskId: task.id,
-          cycleNumber: childTaskCount + index + 1,
-          displayOrder: tasks.length + index + 1,
+          cycleNumber: existingChildCount + index + 1,
+          displayOrder: displayOrderBase + index + 1,
           workflowSteps,
           currentStepIndex: 0,
           workflowHistory: [
@@ -532,7 +589,10 @@ export function BulkWorkflowIterationsModal({
       const { updateParentTaskStatus } = await import("@/lib/taskUtils");
       await updateParentTaskStatus(projectId, task.id);
 
-      toast.success(`${validIterations.length} iteraciones iniciadas correctamente.`);
+      toast.success(`${iterationsToCreate.length} iteraciones iniciadas correctamente.`);
+      if (skippedExistingCount > 0) {
+        toast.info("La carga se complementó sin reescribir las iteraciones existentes.");
+      }
       onClose();
     } catch (error: any) {
       console.error("Error creating bulk workflow iterations:", error);
@@ -655,13 +715,28 @@ export function BulkWorkflowIterationsModal({
                       {invalidIterations.length} por corregir
                     </span>
                   )}
+                  {existingIterations.length > 0 && (
+                    <span className="rounded-full bg-amber-50 px-2 py-1 font-bold text-amber-700">
+                      {existingIterations.length} existentes
+                    </span>
+                  )}
                 </div>
               </div>
+              {existingIterations.length > 0 && (
+                <div className="flex gap-2 border-b border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+                  <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                  <span>
+                    Los IDs marcados como existentes no se crearán ni se reescribirán. La carga agregará únicamente las iteraciones nuevas.
+                  </span>
+                </div>
+              )}
               <div className="max-h-48 overflow-y-auto">
                 {parsedIterations.map((item) => (
                   <div
                     key={`${item.lineNumber}-${item.raw}`}
-                    className="grid gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0 sm:grid-cols-[88px_minmax(0,1fr)_120px_156px]"
+                    className={`grid gap-3 border-b px-3 py-2 last:border-b-0 sm:grid-cols-[88px_minmax(0,1fr)_120px_156px] ${
+                      item.existing ? "border-amber-100 bg-amber-50/70" : "border-slate-100"
+                    }`}
                   >
                     <div className="min-w-0">
                       <p className="truncate text-xs font-bold text-slate-700">{item.externalWorkflowId || "Sin ID"}</p>
@@ -670,6 +745,9 @@ export function BulkWorkflowIterationsModal({
                     <div className="min-w-0">
                       <p className="truncate text-xs text-slate-600">{item.observation || "Sin observación"}</p>
                       {item.error && <p className="mt-0.5 text-[10px] font-semibold text-red-600">{item.error}</p>}
+                      {item.warning && (
+                        <p className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-amber-700">{item.warning}</p>
+                      )}
                     </div>
                     <div className="min-w-0">
                       <p className="truncate text-xs font-semibold text-indigo-700">
