@@ -86,7 +86,7 @@ type PersonBudgetRow = {
   status: 'uncovered' | 'exhausted' | 'risk' | 'covered';
 };
 
-type PersonMonthlyCoverageRow = {
+type PersonMonthlyProjectCoverage = {
   key: string;
   memberId: string;
   memberName: string;
@@ -101,6 +101,21 @@ type PersonMonthlyCoverageRow = {
   lastCoveredMonth: number | null;
   firstGapMonth: number | null;
   status: 'uncovered' | 'gap' | 'covered';
+};
+
+type PersonMonthlyCoverageRow = {
+  key: string;
+  memberId: string;
+  memberName: string;
+  memberEmail: string;
+  roleName: string;
+  totalAllocated: number;
+  monthlyAmounts: Record<number, number>;
+  firstCoveredMonth: number | null;
+  lastCoveredMonth: number | null;
+  firstGapMonth: number | null;
+  status: 'uncovered' | 'gap' | 'covered';
+  projects: PersonMonthlyProjectCoverage[];
 };
 
 const ACCESS_ROLES = new Set(['admin', 'org_admin', 'manager', 'coordinador']);
@@ -477,7 +492,7 @@ export default function BudgetsOverviewPage() {
 
     const search = searchTerm.trim().toLowerCase();
 
-    return visibleProjects
+    const projectRows = visibleProjects
       .flatMap((project) => {
         const organizationName = organizationNameFor(project, organizations);
         return normalizeIds(project.assignedTeamMembers).map((memberId) => {
@@ -511,16 +526,71 @@ export default function BudgetsOverviewPage() {
             status,
           };
         });
+      }) as PersonMonthlyProjectCoverage[];
+
+    const groupedByMember = new Map<string, PersonMonthlyCoverageRow>();
+
+    projectRows.forEach((projectRow) => {
+      const current = groupedByMember.get(projectRow.memberId) || {
+        key: projectRow.memberId,
+        memberId: projectRow.memberId,
+        memberName: projectRow.memberName,
+        memberEmail: projectRow.memberEmail,
+        roleName: projectRow.roleName,
+        totalAllocated: 0,
+        monthlyAmounts: {},
+        firstCoveredMonth: null,
+        lastCoveredMonth: null,
+        firstGapMonth: null,
+        status: 'uncovered' as PersonMonthlyCoverageRow['status'],
+        projects: [],
+      };
+
+      current.totalAllocated += projectRow.totalAllocated;
+      current.projects.push(projectRow);
+      coverageMonths.forEach((monthNumber) => {
+        current.monthlyAmounts[monthNumber] = (current.monthlyAmounts[monthNumber] || 0) + Number(projectRow.monthlyAmounts[monthNumber] || 0);
+      });
+
+      groupedByMember.set(projectRow.memberId, current);
+    });
+
+    return Array.from(groupedByMember.values())
+      .map((row) => {
+        const activeMonths = coverageMonths.filter((monthNumber) => Number(row.monthlyAmounts[monthNumber] || 0) > 0);
+        const firstCoveredMonth = activeMonths[0] || null;
+        const lastCoveredMonth = activeMonths[activeMonths.length - 1] || null;
+        const firstGapMonth = firstCoveredMonth
+          ? coverageMonths.find((monthNumber) => monthNumber >= firstCoveredMonth && Number(row.monthlyAmounts[monthNumber] || 0) <= 0) || null
+          : null;
+        const hasProjectCoverageAlerts = row.projects.some((projectRow) => projectRow.status !== 'covered');
+        const roleNames = Array.from(new Set(row.projects.map((projectRow) => projectRow.roleName).filter(Boolean)));
+        const status: PersonMonthlyCoverageRow['status'] =
+          row.totalAllocated <= 0 ? 'uncovered' : firstGapMonth || hasProjectCoverageAlerts ? 'gap' : 'covered';
+
+        return {
+          ...row,
+          roleName: roleNames.length === 1 ? roleNames[0] : `${roleNames.length} roles`,
+          firstCoveredMonth,
+          lastCoveredMonth,
+          firstGapMonth,
+          status,
+        };
       })
       .filter((row) => {
         if (!search) return true;
-        return [row.memberName, row.memberEmail, row.projectName, row.organizationName, row.roleName]
+        return [
+          row.memberName,
+          row.memberEmail,
+          row.roleName,
+          ...row.projects.flatMap((projectRow) => [projectRow.projectName, projectRow.organizationName]),
+        ]
           .filter(Boolean)
           .some((value) => String(value).toLowerCase().includes(search));
       })
       .sort((left, right) => {
         const weight = { uncovered: 0, gap: 1, covered: 2 };
-        return weight[left.status] - weight[right.status] || left.memberName.localeCompare(right.memberName) || left.projectName.localeCompare(right.projectName);
+        return weight[left.status] - weight[right.status] || left.memberName.localeCompare(right.memberName);
       });
   }, [allBudgetLines, coverageMonths, memberById, organizations, searchTerm, visibleProjects]);
 
@@ -533,12 +603,20 @@ export default function BudgetsOverviewPage() {
     if (!selectedCoverageRow) return null;
     const coveredMonths = coverageMonths.filter((monthNumber) => Number(selectedCoverageRow.monthlyAmounts[monthNumber] || 0) > 0);
     const uncoveredMonths = coverageMonths.filter((monthNumber) => Number(selectedCoverageRow.monthlyAmounts[monthNumber] || 0) <= 0);
+    const projectAlerts = selectedCoverageRow.projects.filter((projectRow) => projectRow.status !== 'covered');
     return {
       coveredMonths,
       uncoveredMonths,
+      projectAlerts,
       coveragePercent: coverageMonths.length > 0 ? Math.round((coveredMonths.length / coverageMonths.length) * 100) : 0,
     };
   }, [coverageMonths, selectedCoverageRow]);
+  const selectedCoverageOrganizationLabel = useMemo(() => {
+    if (!selectedCoverageRow) return '';
+    const organizationNames = Array.from(new Set(selectedCoverageRow.projects.map((projectRow) => projectRow.organizationName).filter(Boolean)));
+    if (organizationNames.length <= 2) return organizationNames.join(' · ');
+    return `${organizationNames.length} organizaciones`;
+  }, [selectedCoverageRow]);
   const coverageMonthTrackWidth = Math.max(360, coverageMonths.length * 24);
   const coverageGridTemplate = `minmax(280px, 1.2fr) 130px minmax(${coverageMonthTrackWidth}px, 2fr) 120px`;
   const coverageGridMinWidth = `${530 + coverageMonthTrackWidth}px`;
@@ -729,7 +807,7 @@ export default function BudgetsOverviewPage() {
                     Sin presupuesto
                   </span>
                   <span className="rounded bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-slate-600">
-                    {compactNumber(monthlyCoverageRows.length)} filas
+                    {compactNumber(monthlyCoverageRows.length)} profesionales
                   </span>
                 </div>
               </div>
@@ -749,7 +827,7 @@ export default function BudgetsOverviewPage() {
                     className="grid items-center gap-4 bg-slate-50 px-4 py-3 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400"
                     style={{ gridTemplateColumns: coverageGridTemplate }}
                   >
-                    <div>Persona / proyecto</div>
+                    <div>Profesional</div>
                     <div className="text-right">Total</div>
                     <div>
                       <div className="mb-1 flex items-center justify-between">
@@ -770,9 +848,15 @@ export default function BudgetsOverviewPage() {
                     {monthlyCoverageRows.map((row) => {
                       const coveredMonths = coverageMonths.filter((monthNumber) => Number(row.monthlyAmounts[monthNumber] || 0) > 0);
                       const coveragePercent = coverageMonths.length > 0 ? Math.round((coveredMonths.length / coverageMonths.length) * 100) : 0;
+                      const projectCount = row.projects.length;
+                      const projectAlertCount = row.projects.filter((projectRow) => projectRow.status !== 'covered').length;
+                      const organizationNames = Array.from(new Set(row.projects.map((projectRow) => projectRow.organizationName).filter(Boolean)));
+                      const organizationLabel = organizationNames.length === 1 ? organizationNames[0] : `${organizationNames.length} organizaciones`;
                       const statusLabel =
                         row.status === 'uncovered'
                           ? 'Sin cobertura'
+                          : projectAlertCount > 0
+                            ? `${projectAlertCount} proyecto${projectAlertCount === 1 ? '' : 's'} con alerta`
                           : row.status === 'gap'
                             ? `Hueco desde ${getTimelineMonthLabel(row.firstGapMonth || 1)}`
                             : 'Cobertura completa';
@@ -790,8 +874,10 @@ export default function BudgetsOverviewPage() {
                               </div>
                               <div className="min-w-0">
                                 <p className="truncate text-sm font-black text-slate-950">{row.memberName}</p>
-                                <p className="truncate text-xs font-bold text-slate-500">{row.projectName} · {row.roleName}</p>
-                                <p className="truncate text-[10px] font-black uppercase tracking-[0.1em] text-emerald-700">{row.organizationName}</p>
+                                <p className="truncate text-xs font-bold text-slate-500">
+                                  {projectCount} proyecto{projectCount === 1 ? '' : 's'} · {row.roleName}
+                                </p>
+                                <p className="truncate text-[10px] font-black uppercase tracking-[0.1em] text-emerald-700">{organizationLabel}</p>
                               </div>
                             </div>
                           </button>
@@ -809,7 +895,7 @@ export default function BudgetsOverviewPage() {
                                     key={`${row.key}-${monthNumber}`}
                                     type="button"
                                     onClick={() => setSelectedCoverageKey(row.key)}
-                                    title={`${row.memberName} · ${row.projectName} · ${getTimelineMonthLabel(monthNumber)}: ${amount > 0 ? currencyFormatter(amount) : 'Sin presupuesto'}`}
+                                    title={`${row.memberName} · ${projectCount} proyecto${projectCount === 1 ? '' : 's'} · ${getTimelineMonthLabel(monthNumber)}: ${amount > 0 ? currencyFormatter(amount) : 'Sin presupuesto'}`}
                                     aria-label={`${getTimelineMonthLabel(monthNumber)} ${isCovered ? 'con presupuesto' : 'sin presupuesto'}`}
                                     className={`h-5 w-5 shrink-0 rounded-[5px] ring-1 transition hover:scale-110 hover:ring-2 ${
                                       isCovered
@@ -1089,9 +1175,9 @@ export default function BudgetsOverviewPage() {
                     <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-700">Hoja de cobertura</p>
                     <h3 className="mt-1 truncate text-2xl font-black tracking-tight text-slate-950">{selectedCoverageRow.memberName}</h3>
                     <p className="mt-1 truncate text-sm font-bold text-slate-500">
-                      {selectedCoverageRow.projectName} · {selectedCoverageRow.roleName}
+                      {selectedCoverageRow.projects.length} proyecto{selectedCoverageRow.projects.length === 1 ? '' : 's'} · {selectedCoverageRow.roleName}
                     </p>
-                    <p className="mt-1 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-700">{selectedCoverageRow.organizationName}</p>
+                    <p className="mt-1 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-700">{selectedCoverageOrganizationLabel}</p>
                   </div>
                   <button
                     type="button"
@@ -1115,23 +1201,81 @@ export default function BudgetsOverviewPage() {
                     <p className="mt-2 text-xl font-black text-slate-950">{selectedCoverageSummary.coveragePercent}%</p>
                   </div>
                   <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-100">
-                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Meses sin presupuesto</p>
-                    <p className="mt-2 text-xl font-black text-slate-950">{compactNumber(selectedCoverageSummary.uncoveredMonths.length)}</p>
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Proyectos con alerta</p>
+                    <p className="mt-2 text-xl font-black text-slate-950">{compactNumber(selectedCoverageSummary.projectAlerts.length)}</p>
                   </div>
                 </div>
 
                 <section className="rounded-lg border border-slate-200 bg-white p-4">
+                  <div className="mb-4 flex flex-col gap-1">
+                    <h4 className="text-base font-black text-slate-950">Proyectos vinculados</h4>
+                    <p className="text-sm font-medium text-slate-500">
+                      Cobertura por proyecto para detectar dónde falta presupuesto sin duplicar al profesional en la vista principal.
+                    </p>
+                  </div>
+                  <div className="space-y-3">
+                    {selectedCoverageRow.projects.map((projectRow) => {
+                      const projectCoveredMonths = coverageMonths.filter((monthNumber) => Number(projectRow.monthlyAmounts[monthNumber] || 0) > 0);
+                      const projectCoveragePercent = coverageMonths.length > 0 ? Math.round((projectCoveredMonths.length / coverageMonths.length) * 100) : 0;
+                      const projectStatusLabel =
+                        projectRow.status === 'uncovered'
+                          ? 'Sin cobertura'
+                          : projectRow.status === 'gap'
+                            ? `Hueco desde ${getTimelineMonthLabel(projectRow.firstGapMonth || 1)}`
+                            : 'Cobertura completa';
+
+                      return (
+                        <div key={projectRow.key} className="rounded-lg border border-slate-100 bg-slate-50/70 p-3">
+                          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                            <div className="min-w-0">
+                              <div className="mb-1 flex flex-wrap items-center gap-2">
+                                <span className="rounded bg-emerald-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-700 ring-1 ring-emerald-100">
+                                  {projectRow.organizationName}
+                                </span>
+                                <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${
+                                  projectRow.status === 'covered'
+                                    ? 'bg-emerald-50 text-emerald-700 ring-emerald-100'
+                                    : projectRow.status === 'gap'
+                                      ? 'bg-orange-50 text-orange-700 ring-orange-100'
+                                      : 'bg-red-50 text-red-700 ring-red-100'
+                                }`}>
+                                  {projectStatusLabel}
+                                </span>
+                              </div>
+                              <Link href={`/projects/${projectRow.projectId}?tab=budget`} className="truncate text-sm font-black text-indigo-700 hover:text-indigo-900">
+                                {projectRow.projectName}
+                              </Link>
+                              <p className="mt-1 text-xs font-bold text-slate-500">
+                                {currencyFormatter(projectRow.totalAllocated)} · {projectCoveragePercent}% cubierto
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 gap-1 overflow-x-auto pb-1 lg:max-w-[280px]">
+                              {coverageMonths.map((monthNumber) => {
+                                const amount = Number(projectRow.monthlyAmounts[monthNumber] || 0);
+                                return (
+                                  <span
+                                    key={`${projectRow.key}-project-${monthNumber}`}
+                                    title={`${projectRow.projectName} · ${getTimelineMonthLabel(monthNumber)}: ${amount > 0 ? currencyFormatter(amount) : 'Sin presupuesto'}`}
+                                    className={`h-4 w-4 shrink-0 rounded-[4px] ring-1 ${
+                                      amount > 0 ? 'bg-emerald-500 ring-emerald-600/20' : 'bg-slate-200 ring-slate-300'
+                                    }`}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="rounded-lg border border-slate-200 bg-white p-4">
                   <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <h4 className="text-base font-black text-slate-950">Mapa mensual</h4>
-                      <p className="text-sm font-medium text-slate-500">Cada bloque muestra el presupuesto asignado para ese mes.</p>
+                      <h4 className="text-base font-black text-slate-950">Mapa mensual consolidado</h4>
+                      <p className="text-sm font-medium text-slate-500">Cada bloque muestra el presupuesto total de la persona sumando sus proyectos.</p>
                     </div>
-                    <Link
-                      href={`/projects/${selectedCoverageRow.projectId}?tab=budget`}
-                      className="inline-flex h-9 items-center justify-center rounded-md border border-emerald-200 bg-emerald-50 px-3 text-xs font-black text-emerald-700 transition hover:bg-emerald-100"
-                    >
-                      Abrir presupuesto
-                    </Link>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
