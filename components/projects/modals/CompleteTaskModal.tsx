@@ -6,6 +6,7 @@ import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, getDoc
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { toast } from 'sonner';
 import { getCompletionStatusForTask } from '@/lib/taskProgress';
+import { normalizeRateCardUnits } from '@/lib/rate-card-config';
 
 interface CompleteTaskModalProps {
   isOpen: boolean;
@@ -75,7 +76,7 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
           // Workflow: only if completing the whole task
           if (taskForCompletion.status !== 'completed' && taskForCompletion.status !== 'completed_late') {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', taskForCompletion.rateCardId);
-            const units = taskForCompletion.unitsToAdd || 1;
+            const units = normalizeRateCardUnits(taskForCompletion.unitsToAdd);
             const updateData: any = {
               currentValue: increment(units)
             };

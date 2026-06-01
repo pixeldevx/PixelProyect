@@ -3,7 +3,12 @@ import { X, Save, CheckCircle2, Circle, RotateCcw, BookOpen, CalendarDays, Downl
 import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
-import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
+import {
+  getStaticRateCardAssignee,
+  getStaticRateCardSources,
+  isInvalidRateCardUnits,
+  normalizeRateCardUnits,
+} from '@/lib/rate-card-config';
 import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
 import { getCompletionStatusForTask } from '@/lib/taskProgress';
 import {
@@ -202,7 +207,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
               "rateCards",
               rateCardSource.rateCardId,
             );
-            const units = rateCardSource.unitsToAdd || 1;
+            const units = normalizeRateCardUnits(rateCardSource.unitsToAdd);
             const updateData: any = {
               currentValue: increment(isApproved ? units : -units),
             };
@@ -236,7 +241,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
             "rateCards",
             task.rateCardId,
           );
-          const units = task.unitsToAdd || 1;
+          const units = normalizeRateCardUnits(task.unitsToAdd);
           const updateData: any = {
             currentValue: increment(isAllApproved ? units : -units),
           };
@@ -298,7 +303,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       setStepUnitPrompt({
         index,
         unitsByKey: Object.fromEntries(
-          manualRateCardSources.map((source) => [source.key, source.unitsToAdd || 1])
+          manualRateCardSources.map((source) => [source.key, normalizeRateCardUnits(source.unitsToAdd)])
         ),
         assigneesByKey: Object.fromEntries(
           runtimeRateCardSources.map((source) => [source.key, source.assignedTo || ""])
@@ -321,8 +326,8 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     const sources = getStaticRateCardSources(currentStep);
     const manualSources = sources.filter((source) => source.autoAddUnits === false);
     const runtimeSources = sources.filter((source) => source.assigneeMode === "runtime");
-    if (manualSources.some((source) => Number(stepUnitPrompt.unitsByKey[source.key] || 0) <= 0)) {
-      toast.warning("Define unidades mayores a cero para cada Rate Card manual.");
+    if (manualSources.some((source) => isInvalidRateCardUnits(stepUnitPrompt.unitsByKey[source.key]))) {
+      toast.warning("Define unidades de Rate Card en cero o mayores para cada indicador manual.");
       return;
     }
     if (runtimeSources.some((source) => !stepUnitPrompt.assigneesByKey[source.key])) {
@@ -335,7 +340,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       const units = Number(stepUnitPrompt.unitsByKey[source.key] || 0);
       const assignedTo = stepUnitPrompt.assigneesByKey[source.key] || "";
       const updates: any = {};
-      if (source.autoAddUnits === false && units > 0) updates.unitsToAdd = units;
+      if (source.autoAddUnits === false) updates.unitsToAdd = units;
       if (source.assigneeMode === "runtime" && assignedTo) updates.assignedTo = assignedTo;
       if (Object.keys(updates).length === 0) return;
 
@@ -655,7 +660,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                   </span>
                   <input
                     type="number"
-                    min="0.1"
+                    min="0"
                     step="0.1"
                     value={stepUnitPrompt.unitsByKey[source.key] || ''}
                     onChange={(e) =>
@@ -710,7 +715,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
               <button
                 onClick={confirmStepUnitToggle}
                 disabled={
-                  getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.autoAddUnits === false).some((source) => Number(stepUnitPrompt.unitsByKey[source.key] || 0) <= 0) ||
+                  getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.autoAddUnits === false).some((source) => isInvalidRateCardUnits(stepUnitPrompt.unitsByKey[source.key])) ||
                   getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.assigneeMode === "runtime").some((source) => !stepUnitPrompt.assigneesByKey[source.key])
                 }
                 className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg transition-colors disabled:opacity-50"

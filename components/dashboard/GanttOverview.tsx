@@ -12,6 +12,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { belongsToAnyOrganization } from '@/lib/organizations';
 import { getCompletionStatusForTask, getProgressForTaskStatus } from '@/lib/taskProgress';
+import { normalizeRateCardUnits } from '@/lib/rate-card-config';
 
 enum OperationType {
   CREATE = 'create',
@@ -298,7 +299,7 @@ export const GanttOverview: React.FC = () => {
       }
 
       if (task.incrementForm?.rateCardId) {
-        const units = Number(task.incrementForm.unitsToAdd || 1);
+        const units = normalizeRateCardUnits(task.incrementForm.unitsToAdd);
         const rcRef = doc(db, 'projects', selectedProjectId, 'rateCards', task.incrementForm.rateCardId);
         const updateData: any = {
           currentValue: increment(units),

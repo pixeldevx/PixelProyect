@@ -10,10 +10,19 @@ export type StaticRateCardSource = {
   itemIndex: number | null;
 };
 
-const normalizeUnits = (value: any) => {
-  const units = Number(value || 1);
-  return Number.isFinite(units) && units > 0 ? units : 1;
+export const normalizeRateCardUnits = (value: any, fallback = 1) => {
+  const rawValue = value === undefined || value === null || value === "" ? fallback : value;
+  const units = Number(rawValue);
+  return Number.isFinite(units) && units >= 0 ? units : fallback;
 };
+
+export const isInvalidRateCardUnits = (value: any) => {
+  if (value === undefined || value === null || value === "") return true;
+  const units = Number(value);
+  return !Number.isFinite(units) || units < 0;
+};
+
+const normalizeUnits = (value: any) => normalizeRateCardUnits(value);
 
 const normalizeAutoAddUnits = (value: any) => value !== false;
 

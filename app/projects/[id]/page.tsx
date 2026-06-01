@@ -40,7 +40,12 @@ import Image from 'next/image';
 import { belongsToAnyOrganization, getOrganizationIds } from '@/lib/organizations';
 import { getCompletionStatusForTask, getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
 import { notifyTaskAssignment } from '@/lib/notifications';
-import { getStaticRateCardAssignee, getStaticRateCardSources } from '@/lib/rate-card-config';
+import {
+  getStaticRateCardAssignee,
+  getStaticRateCardSources,
+  isInvalidRateCardUnits,
+  normalizeRateCardUnits,
+} from '@/lib/rate-card-config';
 import { sanitizeTaskTitleForSave } from '@/lib/task-title';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
@@ -101,7 +106,7 @@ const isManualStaticRateCardEnabled = (source: any) =>
   Boolean(source?.isRateCardTask && source?.rateCardId && source?.autoAddUnits === false && !isDynamicRateCardEnabled(source));
 
 const getDynamicRateCardUnits = (source: any) =>
-  Number(source?.dynamicRateCardConfig?.defaultUnits || source?.unitsToAdd || 1);
+  normalizeRateCardUnits(source?.dynamicRateCardConfig?.defaultUnits ?? source?.unitsToAdd);
 
 const shouldRequestDynamicRateCardUnits = (source: any) =>
   source?.autoAddUnits === false || source?.dynamicRateCardConfig?.promptForUnits === true;
@@ -476,7 +481,7 @@ export default function ProjectDetailsPage() {
 
           if (wasCompleted !== isCompleted) {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
-            const units = task.unitsToAdd || 1;
+            const units = normalizeRateCardUnits(task.unitsToAdd);
             const updateData: any = {
               currentValue: increment(isCompleted ? units : -units)
             };
@@ -495,7 +500,7 @@ export default function ProjectDetailsPage() {
                 if (stepWasApproved !== stepIsApproved && stepRateCardSources.length > 0) {
                   stepRateCardSources.forEach((stepRateCardSource) => {
                     const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
-                    const stepUnits = stepRateCardSource.unitsToAdd || 1;
+                    const stepUnits = normalizeRateCardUnits(stepRateCardSource.unitsToAdd);
                     const stepUpdateData: any = {
                       currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
                     };
@@ -566,7 +571,7 @@ export default function ProjectDetailsPage() {
       }
 
       if (task.incrementForm?.rateCardId) {
-        const units = Number(task.incrementForm.unitsToAdd || 1);
+        const units = normalizeRateCardUnits(task.incrementForm.unitsToAdd);
         const rcRef = doc(db, 'projects', projectId, 'rateCards', task.incrementForm.rateCardId);
         const updateData: any = {
           currentValue: increment(units),
@@ -862,7 +867,7 @@ export default function ProjectDetailsPage() {
 
           if (wasCompleted !== isCompleted) {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
-            const units = task.unitsToAdd || 1;
+            const units = normalizeRateCardUnits(task.unitsToAdd);
             const updateData: any = {
               currentValue: increment(isCompleted ? units : -units)
             };
@@ -881,7 +886,7 @@ export default function ProjectDetailsPage() {
                 if (stepWasApproved !== stepIsApproved && stepRateCardSources.length > 0) {
                   stepRateCardSources.forEach((stepRateCardSource) => {
                     const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
-                    const stepUnits = stepRateCardSource.unitsToAdd || 1;
+                    const stepUnits = normalizeRateCardUnits(stepRateCardSource.unitsToAdd);
                     const stepUpdateData: any = {
                       currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
                     };
@@ -959,7 +964,7 @@ export default function ProjectDetailsPage() {
     if (
       !dynamicRateCardAssignee ||
       !dynamicRateCardId ||
-      (taskRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))
+      (taskRequestsUnits && isInvalidRateCardUnits(dynamicRateCardUnits))
     ) {
       toast.warning('Completa la persona, el perfil y las unidades del Rate Card.');
       return;
@@ -1028,7 +1033,7 @@ export default function ProjectDetailsPage() {
               batch.update(rcRef, updateData);
             }
           } else if (t.status === 'completed' || t.status === 'completed_late') {
-            const units = t.unitsToAdd || 1;
+            const units = normalizeRateCardUnits(t.unitsToAdd);
             const updateData: any = { currentValue: increment(-units) };
             if (t.assignedTo) updateData[`userStats.${t.assignedTo}`] = increment(-units);
             batch.update(rcRef, updateData);
@@ -1042,7 +1047,7 @@ export default function ProjectDetailsPage() {
             if (step.completed && stepRateCardSources.length > 0) {
               stepRateCardSources.forEach((stepRateCardSource) => {
                 const rcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
-                const units = stepRateCardSource.unitsToAdd || 1;
+                const units = normalizeRateCardUnits(stepRateCardSource.unitsToAdd);
                 const updateData: any = { currentValue: increment(-units) };
                 const stepAssignee = getStaticRateCardAssignee(stepRateCardSource, step.assignedTo);
                 if (stepAssignee) updateData[`userStats.${stepAssignee}`] = increment(-units);
@@ -1612,7 +1617,7 @@ export default function ProjectDetailsPage() {
         if (step.status === 'listo' && stepRateCardSources.length > 0) {
           stepRateCardSources.forEach((stepRateCardSource) => {
             const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
-            const stepUnits = Number(stepRateCardSource.unitsToAdd || 1);
+            const stepUnits = normalizeRateCardUnits(stepRateCardSource.unitsToAdd);
             const updateData: any = {
               currentValue: increment(-stepUnits),
             };
@@ -1627,7 +1632,7 @@ export default function ProjectDetailsPage() {
 
       if ((task.status === 'completed' || task.status === 'completed_late') && task.isRateCardTask && task.rateCardId) {
         const taskRcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
-        const taskUnits = Number(task.unitsToAdd || 1);
+        const taskUnits = normalizeRateCardUnits(task.unitsToAdd);
         const updateData: any = {
           currentValue: increment(-taskUnits),
         };
@@ -2397,7 +2402,7 @@ export default function ProjectDetailsPage() {
                   </label>
                   <input
                     type="number"
-                    min="0.1"
+                    min="0"
                     step="0.1"
                     value={dynamicRateCardUnits}
                     onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
@@ -2433,7 +2438,7 @@ export default function ProjectDetailsPage() {
               </Button>
               <Button
                 onClick={confirmDynamicRateCardStatusChange}
-                disabled={!dynamicRateCardAssignee || !dynamicRateCardId || (pendingRateCardRequestsUnits && (dynamicRateCardUnits === '' || Number(dynamicRateCardUnits) <= 0))}
+                disabled={!dynamicRateCardAssignee || !dynamicRateCardId || (pendingRateCardRequestsUnits && isInvalidRateCardUnits(dynamicRateCardUnits))}
                 className="bg-emerald-600 text-white hover:bg-emerald-700"
               >
                 Guardar y finalizar

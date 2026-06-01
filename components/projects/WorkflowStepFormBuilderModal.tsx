@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Plus, Trash2, GripVertical, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+import { isInvalidRateCardUnits, normalizeRateCardUnits } from '@/lib/rate-card-config';
 
 export interface FormField {
   id: string;
@@ -78,7 +79,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
         return form.rateCards.map((item, index) => ({
           id: item.id || `form_rc_initial_${item.rateCardId || 'empty'}_${index}`,
           rateCardId: item.rateCardId || '',
-          unitsToAdd: Number(item.unitsToAdd || 1),
+          unitsToAdd: normalizeRateCardUnits(item.unitsToAdd),
           autoAddUnits: item.autoAddUnits !== false,
           assigneeMode: item.assigneeMode || (item.assignToProfessional ? 'fixed' : 'default'),
           assignToProfessional: Boolean(item.assignToProfessional || item.assigneeMode === 'fixed' || item.assigneeMode === 'runtime'),
@@ -91,7 +92,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
           {
             id: 'form_rc_legacy',
             rateCardId: form.rateCardId,
-            unitsToAdd: Number(form.unitsToAdd || 1),
+            unitsToAdd: normalizeRateCardUnits(form.unitsToAdd),
             autoAddUnits: form.autoAddUnits !== false,
             assigneeMode: form.assigneeMode || (form.assignToProfessional ? 'fixed' : 'default'),
             assignToProfessional: Boolean(form.assignToProfessional || form.assigneeMode === 'fixed' || form.assigneeMode === 'runtime'),
@@ -105,7 +106,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
     []
   );
   const [formRateCards, setFormRateCards] = useState<FormRateCardItem[]>(() => getInitialStaticRateCards(initialForm));
-  const [formUnitsToAdd, setFormUnitsToAdd] = useState<number>(Number(initialForm?.unitsToAdd || initialForm?.dynamicRateCardConfig?.defaultUnits || 1));
+  const [formUnitsToAdd, setFormUnitsToAdd] = useState<number>(normalizeRateCardUnits(initialForm?.unitsToAdd ?? initialForm?.dynamicRateCardConfig?.defaultUnits));
   const [formAutoAddUnits, setFormAutoAddUnits] = useState(initialForm?.autoAddUnits !== false);
 
   React.useEffect(() => {
@@ -121,7 +122,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
           : 'none'
     );
     setFormRateCards(getInitialStaticRateCards(initialForm));
-    setFormUnitsToAdd(Number(initialForm?.unitsToAdd || initialForm?.dynamicRateCardConfig?.defaultUnits || 1));
+    setFormUnitsToAdd(normalizeRateCardUnits(initialForm?.unitsToAdd ?? initialForm?.dynamicRateCardConfig?.defaultUnits));
     setFormAutoAddUnits(initialForm?.autoAddUnits !== false);
   }, [allowDynamicRateCard, getInitialStaticRateCards, initialForm, isOpen, stepName]);
 
@@ -267,9 +268,9 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
       return;
     }
 
-    const hasInvalidStaticUnits = cleanedStaticRateCards.some((item) => Number(item.unitsToAdd || 0) <= 0);
+    const hasInvalidStaticUnits = cleanedStaticRateCards.some((item) => isInvalidRateCardUnits(item.unitsToAdd));
     if (formRateCardMode === 'static' && hasInvalidStaticUnits) {
-      toast.warning('Define unidades de Rate Card mayores a cero.');
+      toast.warning('Define unidades de Rate Card en cero o mayores.');
       return;
     }
 
@@ -281,8 +282,8 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
       return;
     }
 
-    if (formRateCardMode === 'dynamic' && Number(formUnitsToAdd) <= 0) {
-      toast.warning('Define unidades de Rate Card mayores a cero.');
+    if (formRateCardMode === 'dynamic' && isInvalidRateCardUnits(formUnitsToAdd)) {
+      toast.warning('Define unidades de Rate Card en cero o mayores.');
       return;
     }
 
@@ -303,13 +304,13 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
               rateCardMode: 'dynamic' as const,
               dynamicRateCard: true,
               dynamicRateCardConfig: {
-                defaultUnits: Number(formUnitsToAdd) || 1,
+                defaultUnits: normalizeRateCardUnits(formUnitsToAdd),
                 requirePerson: true,
                 requireRateCard: true,
                 promptForUnits: !formAutoAddUnits,
               },
               rateCardId: null,
-              unitsToAdd: Number(formUnitsToAdd) || 1,
+              unitsToAdd: normalizeRateCardUnits(formUnitsToAdd),
               autoAddUnits: formAutoAddUnits,
             }
           : {
@@ -318,7 +319,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
               dynamicRateCard: false,
               dynamicRateCardConfig: null,
               rateCardId: cleanedStaticRateCards[0]?.rateCardId || null,
-              unitsToAdd: cleanedStaticRateCards[0]?.unitsToAdd || 1,
+              unitsToAdd: cleanedStaticRateCards[0]?.unitsToAdd ?? 1,
               autoAddUnits: cleanedStaticRateCards[0]?.autoAddUnits !== false,
               assigneeMode: cleanedStaticRateCards[0]?.assigneeMode || 'default',
               assignToProfessional: cleanedStaticRateCards[0]?.assignToProfessional || false,
@@ -405,7 +406,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                   {formAutoAddUnits && (
                     <input
                       type="number"
-                      min="0.1"
+                      min="0"
                       step="0.1"
                       value={formUnitsToAdd}
                       onChange={(event) => setFormUnitsToAdd(Number(event.target.value))}
@@ -466,7 +467,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                         </label>
                         <input
                           type="number"
-                          min="0.1"
+                          min="0"
                           step="0.1"
                           value={item.unitsToAdd}
                           onChange={(event) => updateFormRateCard(item.id, { unitsToAdd: Number(event.target.value) })}

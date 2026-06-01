@@ -16,6 +16,7 @@ import {
   getWorkflowTemplateScopeLabel,
   loadWorkflowTemplatesForScope,
 } from "@/lib/workflow-templates";
+import { isInvalidRateCardUnits, normalizeRateCardUnits } from "@/lib/rate-card-config";
 
 type WorkflowStepDraft = {
   assignedTo?: string;
@@ -99,7 +100,7 @@ const getEditableStepRateCards = (step: any): FormRateCardItem[] => {
     return step.rateCards.map((item: any, index: number) => ({
       id: item.id || `step_rc_existing_${item.rateCardId || "empty"}_${index}`,
       rateCardId: item.rateCardId || "",
-      unitsToAdd: Number(item.unitsToAdd || 1),
+      unitsToAdd: normalizeRateCardUnits(item.unitsToAdd),
       autoAddUnits: item.autoAddUnits !== false,
       assigneeMode: item.assigneeMode || (item.assignToProfessional ? "fixed" : "default"),
       assignToProfessional: Boolean(item.assignToProfessional || item.assigneeMode === "fixed" || item.assigneeMode === "runtime"),
@@ -112,7 +113,7 @@ const getEditableStepRateCards = (step: any): FormRateCardItem[] => {
       {
         id: "step_rc_legacy",
         rateCardId: step.rateCardId,
-        unitsToAdd: Number(step.unitsToAdd || 1),
+        unitsToAdd: normalizeRateCardUnits(step.unitsToAdd),
         autoAddUnits: step.autoAddUnits !== false,
         assigneeMode: step.assigneeMode || (step.assignToProfessional ? "fixed" : "default"),
         assignToProfessional: Boolean(step.assignToProfessional || step.assigneeMode === "fixed" || step.assigneeMode === "runtime"),
@@ -250,7 +251,7 @@ export function EditTaskStructureModal({
     setTaskRateCardEnabled(Boolean(task.isRateCardTask || task.dynamicRateCard || task.rateCardId));
     setTaskRateCardMode(task.dynamicRateCard || task.rateCardMode === "dynamic" ? "dynamic" : "static");
     setTaskRateCardId(task.rateCardId || "");
-    setTaskUnitsToAdd(Number(task.unitsToAdd || task.dynamicRateCardConfig?.defaultUnits || 1));
+    setTaskUnitsToAdd(normalizeRateCardUnits(task.unitsToAdd ?? task.dynamicRateCardConfig?.defaultUnits));
     setTaskAutoAddUnits(task.autoAddUnits !== false);
   }, [isOpen, task]);
 
@@ -299,7 +300,7 @@ export function EditTaskStructureModal({
         rateCardMode: "dynamic",
         dynamicRateCard: true,
         dynamicRateCardConfig: {
-          defaultUnits: Number(workflowSteps[index]?.unitsToAdd || 1),
+          defaultUnits: normalizeRateCardUnits(workflowSteps[index]?.unitsToAdd),
           requirePerson: true,
           requireRateCard: true,
           promptForUnits: workflowSteps[index]?.autoAddUnits === false,
@@ -471,7 +472,7 @@ export function EditTaskStructureModal({
         dynamicRateCard: Boolean(step.dynamicRateCard),
         dynamicRateCardConfig: step.dynamicRateCard
           ? {
-              defaultUnits: Number(step.unitsToAdd || step.dynamicRateCardConfig?.defaultUnits || 1),
+              defaultUnits: normalizeRateCardUnits(step.unitsToAdd ?? step.dynamicRateCardConfig?.defaultUnits),
               requirePerson: true,
               requireRateCard: true,
               promptForUnits: step.autoAddUnits === false,
@@ -479,9 +480,9 @@ export function EditTaskStructureModal({
           : null,
         rateCardId: step.dynamicRateCard ? null : firstRateCard?.rateCardId || null,
         unitsToAdd: step.dynamicRateCard
-          ? Number(step.unitsToAdd || 1)
+          ? normalizeRateCardUnits(step.unitsToAdd)
           : firstRateCard
-            ? Number(firstRateCard.unitsToAdd || 1)
+            ? normalizeRateCardUnits(firstRateCard.unitsToAdd)
             : null,
         autoAddUnits: step.dynamicRateCard
           ? step.autoAddUnits !== false
@@ -510,13 +511,13 @@ export function EditTaskStructureModal({
         rateCardMode: "dynamic" as const,
         dynamicRateCard: true,
         dynamicRateCardConfig: {
-          defaultUnits: Number(taskUnitsToAdd || 1),
+          defaultUnits: normalizeRateCardUnits(taskUnitsToAdd),
           requirePerson: true,
           requireRateCard: true,
           promptForUnits: !taskAutoAddUnits,
         },
         rateCardId: null,
-        unitsToAdd: Number(taskUnitsToAdd || 1),
+        unitsToAdd: normalizeRateCardUnits(taskUnitsToAdd),
         autoAddUnits: taskAutoAddUnits,
       };
     }
@@ -527,7 +528,7 @@ export function EditTaskStructureModal({
       dynamicRateCard: false,
       dynamicRateCardConfig: null,
       rateCardId: taskRateCardId || null,
-      unitsToAdd: Number(taskUnitsToAdd || 1),
+      unitsToAdd: normalizeRateCardUnits(taskUnitsToAdd),
       autoAddUnits: taskAutoAddUnits,
     };
   };
@@ -571,12 +572,12 @@ export function EditTaskStructureModal({
 
     const hasInvalidStepUnits = workflowSteps.some(
       (step) => {
-        if (step.dynamicRateCard) return Number(step.unitsToAdd || 0) <= 0;
-        return cleanStepRateCards(step).some((item) => Number(item.unitsToAdd || 0) <= 0);
+        if (step.dynamicRateCard) return isInvalidRateCardUnits(step.unitsToAdd);
+        return cleanStepRateCards(step).some((item) => isInvalidRateCardUnits(item.unitsToAdd));
       }
     );
     if (hasInvalidStepUnits) {
-      toast.warning("Define unidades mayores a cero en los Rate Cards de los pasos.");
+      toast.warning("Define unidades de Rate Card en cero o mayores en los pasos.");
       return false;
     }
 
@@ -708,8 +709,8 @@ export function EditTaskStructureModal({
       return;
     }
 
-    if (taskRateCardEnabled && Number(taskUnitsToAdd) <= 0) {
-      toast.warning("Define unidades de Rate Card mayores a cero para la tarea.");
+    if (taskRateCardEnabled && isInvalidRateCardUnits(taskUnitsToAdd)) {
+      toast.warning("Define unidades de Rate Card en cero o mayores para la tarea.");
       return;
     }
 
@@ -856,7 +857,7 @@ export function EditTaskStructureModal({
                   {taskAutoAddUnits ? (
                     <input
                       type="number"
-                      min="0.1"
+                      min="0"
                       step="0.1"
                       value={taskUnitsToAdd}
                       onChange={(event) => setTaskUnitsToAdd(Number(event.target.value))}
@@ -1055,7 +1056,7 @@ export function EditTaskStructureModal({
                                   autoAddUnits,
                                   dynamicRateCardConfig: step.dynamicRateCard
                                     ? {
-                                        defaultUnits: Number(step.unitsToAdd || 1),
+                                        defaultUnits: normalizeRateCardUnits(step.unitsToAdd),
                                         requirePerson: true,
                                         requireRateCard: true,
                                         promptForUnits: !autoAddUnits,
@@ -1070,7 +1071,7 @@ export function EditTaskStructureModal({
                           {step.autoAddUnits !== false && (
                             <input
                               type="number"
-                              min="0.1"
+                              min="0"
                               step="0.1"
                               value={step.unitsToAdd ?? 1}
                               onChange={(event) => {
@@ -1079,7 +1080,7 @@ export function EditTaskStructureModal({
                                   unitsToAdd,
                                   dynamicRateCardConfig: step.dynamicRateCard
                                     ? {
-                                        defaultUnits: unitsToAdd || 1,
+                                        defaultUnits: normalizeRateCardUnits(unitsToAdd),
                                         requirePerson: true,
                                         requireRateCard: true,
                                         promptForUnits: step.autoAddUnits === false,
@@ -1159,7 +1160,7 @@ export function EditTaskStructureModal({
                                 {rateCardItem.autoAddUnits !== false ? (
                                   <input
                                     type="number"
-                                    min="0.1"
+                                    min="0"
                                     step="0.1"
                                     value={rateCardItem.unitsToAdd ?? 1}
                                     onChange={(event) =>

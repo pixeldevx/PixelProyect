@@ -11,6 +11,7 @@ import {
   getWorkflowTemplateScopeLabel,
   loadWorkflowTemplatesForScope,
 } from '@/lib/workflow-templates';
+import { isInvalidRateCardUnits, normalizeRateCardUnits } from '@/lib/rate-card-config';
 
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
@@ -32,7 +33,7 @@ const getEditableStepRateCards = (step: any): FormRateCardItem[] => {
     return step.rateCards.map((item: any, index: number) => ({
       id: item.id || `step_rc_existing_${item.rateCardId || "empty"}_${index}`,
       rateCardId: item.rateCardId || "",
-      unitsToAdd: Number(item.unitsToAdd || 1),
+      unitsToAdd: normalizeRateCardUnits(item.unitsToAdd),
       autoAddUnits: item.autoAddUnits !== false,
       assigneeMode: item.assigneeMode || (item.assignToProfessional ? "fixed" : "default"),
       assignToProfessional: Boolean(item.assignToProfessional || item.assigneeMode === "fixed" || item.assigneeMode === "runtime"),
@@ -45,7 +46,7 @@ const getEditableStepRateCards = (step: any): FormRateCardItem[] => {
       {
         id: "step_rc_legacy",
         rateCardId: step.rateCardId,
-        unitsToAdd: Number(step.unitsToAdd || 1),
+        unitsToAdd: normalizeRateCardUnits(step.unitsToAdd),
         autoAddUnits: step.autoAddUnits !== false,
         assigneeMode: step.assigneeMode || (step.assignToProfessional ? "fixed" : "default"),
         assignToProfessional: Boolean(step.assignToProfessional || step.assigneeMode === "fixed" || step.assigneeMode === "runtime"),
@@ -300,7 +301,7 @@ export function CreateTaskModal({
         dynamicRateCard: Boolean(step.dynamicRateCard),
         dynamicRateCardConfig: step.dynamicRateCard
           ? {
-              defaultUnits: Number(step.unitsToAdd || step.dynamicRateCardConfig?.defaultUnits || 1),
+              defaultUnits: normalizeRateCardUnits(step.unitsToAdd ?? step.dynamicRateCardConfig?.defaultUnits),
               requirePerson: true,
               requireRateCard: true,
               promptForUnits: step.autoAddUnits === false,
@@ -308,7 +309,7 @@ export function CreateTaskModal({
           : null,
         rateCardId: firstRateCard?.rateCardId || undefined,
         unitsToAdd: step.dynamicRateCard
-          ? Number(step.unitsToAdd || 1)
+          ? normalizeRateCardUnits(step.unitsToAdd)
           : firstRateCard
             ? firstRateCard.unitsToAdd
             : undefined,
@@ -358,11 +359,11 @@ export function CreateTaskModal({
     }
 
     const hasInvalidStepUnits = workflowSteps.some((step) => {
-      if (step.dynamicRateCard) return Number(step.unitsToAdd || 0) <= 0;
-      return cleanStepRateCards(step).some((item) => Number(item.unitsToAdd || 0) <= 0);
+      if (step.dynamicRateCard) return isInvalidRateCardUnits(step.unitsToAdd);
+      return cleanStepRateCards(step).some((item) => isInvalidRateCardUnits(item.unitsToAdd));
     });
     if (hasInvalidStepUnits) {
-      toast.warning("Define unidades mayores a cero en los Rate Cards de los pasos.");
+      toast.warning("Define unidades de Rate Card en cero o mayores en los pasos.");
       return false;
     }
 
@@ -555,8 +556,8 @@ export function CreateTaskModal({
       return;
     }
 
-    if (newTaskIsRateCard && Number(newTaskUnitsToAdd) <= 0) {
-      toast.warning("Define unidades de Rate Card mayores a cero.");
+    if (newTaskIsRateCard && isInvalidRateCardUnits(newTaskUnitsToAdd)) {
+      toast.warning("Define unidades de Rate Card en cero o mayores.");
       return;
     }
 
@@ -609,7 +610,7 @@ export function CreateTaskModal({
         dynamicRateCard: usesDynamicRateCard,
         dynamicRateCardConfig: usesDynamicRateCard
           ? {
-              defaultUnits: Number(newTaskUnitsToAdd) || 1,
+              defaultUnits: normalizeRateCardUnits(newTaskUnitsToAdd),
               requirePerson: true,
               requireRateCard: true,
               promptForUnits: !newTaskDynamicAutoAddUnits,
@@ -1321,7 +1322,7 @@ export function CreateTaskModal({
                                 newSteps[idx].rateCardMode = "dynamic";
                                 newSteps[idx].dynamicRateCard = true;
                                 newSteps[idx].dynamicRateCardConfig = {
-                                  defaultUnits: newSteps[idx].unitsToAdd || 1,
+                                  defaultUnits: normalizeRateCardUnits(newSteps[idx].unitsToAdd),
                                   requirePerson: true,
                                   requireRateCard: true,
                                   promptForUnits: false,
@@ -1369,7 +1370,7 @@ export function CreateTaskModal({
                                       const autoAddUnits = e.target.checked;
                                       newSteps[idx].autoAddUnits = autoAddUnits;
                                       newSteps[idx].dynamicRateCardConfig = {
-                                        defaultUnits: newSteps[idx].unitsToAdd || 1,
+                                        defaultUnits: normalizeRateCardUnits(newSteps[idx].unitsToAdd),
                                         requirePerson: true,
                                         requireRateCard: true,
                                         promptForUnits: !autoAddUnits,
@@ -1383,7 +1384,7 @@ export function CreateTaskModal({
                                 {step.autoAddUnits !== false && (
                                   <input
                                     type="number"
-                                    min="0.1"
+                                    min="0"
                                     step="0.1"
                                     value={step.unitsToAdd ?? 1}
                                     onChange={(e) => {
@@ -1391,7 +1392,7 @@ export function CreateTaskModal({
                                       const units = Number(e.target.value);
                                       newSteps[idx].unitsToAdd = units;
                                       newSteps[idx].dynamicRateCardConfig = {
-                                        defaultUnits: units || 1,
+                                        defaultUnits: normalizeRateCardUnits(units),
                                         requirePerson: true,
                                         requireRateCard: true,
                                         promptForUnits: false,
@@ -1469,7 +1470,7 @@ export function CreateTaskModal({
                                       {rateCardItem.autoAddUnits !== false ? (
                                         <input
                                           type="number"
-                                          min="0.1"
+                                          min="0"
                                           step="0.1"
                                           value={rateCardItem.unitsToAdd ?? 1}
                                           onChange={(e) =>
@@ -1917,7 +1918,7 @@ export function CreateTaskModal({
                   <input
                     type="number"
                     step="0.1"
-                    min="0.1"
+                    min="0"
                     value={newTaskUnitsToAdd}
                     onChange={(e) =>
                       setNewTaskUnitsToAdd(Number(e.target.value))
