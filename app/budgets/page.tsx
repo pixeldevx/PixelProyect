@@ -9,12 +9,14 @@ import {
   CalendarRange,
   CheckCircle2,
   CircleDollarSign,
+  Eye,
   Gauge,
   Layers3,
   Search,
   Sparkles,
   Users,
   WalletCards,
+  X,
 } from 'lucide-react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Progress } from '@/components/ui/progress';
@@ -221,6 +223,7 @@ export default function BudgetsOverviewPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [peopleFilter, setPeopleFilter] = useState<'all' | 'alerts' | 'uncovered' | 'exhausted'>('alerts');
   const [budgetView, setBudgetView] = useState<'overview' | 'monthly'>('overview');
+  const [selectedCoverageKey, setSelectedCoverageKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const managedOrganizationIds = useMemo(
@@ -521,6 +524,25 @@ export default function BudgetsOverviewPage() {
       });
   }, [allBudgetLines, coverageMonths, memberById, organizations, searchTerm, visibleProjects]);
 
+  const selectedCoverageRow = useMemo(
+    () => monthlyCoverageRows.find((row) => row.key === selectedCoverageKey) || null,
+    [monthlyCoverageRows, selectedCoverageKey]
+  );
+
+  const selectedCoverageSummary = useMemo(() => {
+    if (!selectedCoverageRow) return null;
+    const coveredMonths = coverageMonths.filter((monthNumber) => Number(selectedCoverageRow.monthlyAmounts[monthNumber] || 0) > 0);
+    const uncoveredMonths = coverageMonths.filter((monthNumber) => Number(selectedCoverageRow.monthlyAmounts[monthNumber] || 0) <= 0);
+    return {
+      coveredMonths,
+      uncoveredMonths,
+      coveragePercent: coverageMonths.length > 0 ? Math.round((coveredMonths.length / coverageMonths.length) * 100) : 0,
+    };
+  }, [coverageMonths, selectedCoverageRow]);
+  const coverageMonthTrackWidth = Math.max(360, coverageMonths.length * 24);
+  const coverageGridTemplate = `minmax(280px, 1.2fr) 130px minmax(${coverageMonthTrackWidth}px, 2fr) 120px`;
+  const coverageGridMinWidth = `${530 + coverageMonthTrackWidth}px`;
+
   const filteredBudgetLines = useMemo(() => {
     const search = searchTerm.trim().toLowerCase();
     return allBudgetLines
@@ -686,72 +708,82 @@ export default function BudgetsOverviewPage() {
 
         {budgetView === 'monthly' && (
           <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 p-4">
-            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-              <div>
-                <h2 className="flex items-center gap-2 text-xl font-black tracking-tight text-slate-950">
-                  <CalendarRange size={20} className="text-emerald-600" />
-                  Cobertura mensual por persona
-                </h2>
-                <p className="text-sm font-medium text-slate-500">
-                  Cruza personas, proyectos y meses para anticipar cuándo alguien queda sin cobertura presupuestal.
+            <div className="border-b border-slate-200 p-4">
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <div>
+                  <h2 className="flex items-center gap-2 text-xl font-black tracking-tight text-slate-950">
+                    <CalendarRange size={20} className="text-emerald-600" />
+                    Cobertura mensual por persona
+                  </h2>
+                  <p className="text-sm font-medium text-slate-500">
+                    Cada pixel representa un mes: verde con presupuesto, gris sin presupuesto. Abre el detalle para ver valores y proyecto.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-2 rounded bg-emerald-50 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-emerald-700 ring-1 ring-emerald-100">
+                    <span className="h-3 w-3 rounded-sm bg-emerald-500" />
+                    Con presupuesto
+                  </span>
+                  <span className="inline-flex items-center gap-2 rounded bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-slate-600 ring-1 ring-slate-200">
+                    <span className="h-3 w-3 rounded-sm bg-slate-300" />
+                    Sin presupuesto
+                  </span>
+                  <span className="rounded bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-slate-600">
+                    {compactNumber(monthlyCoverageRows.length)} filas
+                  </span>
+                </div>
+              </div>
+            </div>
+            {monthlyCoverageRows.length === 0 ? (
+              <div className="py-14 text-center">
+                <CalendarRange className="mx-auto h-12 w-12 text-slate-300" />
+                <h3 className="mt-3 text-lg font-black text-slate-950">Sin cobertura mensual visible</h3>
+                <p className="mt-1 text-sm font-medium text-slate-500">
+                  Vincula personas a piezas presupuestales para activar el mapa mensual.
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                <span className="rounded bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-slate-600">
-                  {compactNumber(monthlyCoverageRows.length)} filas
-                </span>
-                <span className="rounded bg-red-50 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-red-700 ring-1 ring-red-100">
-                  {compactNumber(monthlyCoverageRows.filter((row) => row.status === 'uncovered').length)} sin cobertura
-                </span>
-                <span className="rounded bg-orange-50 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-orange-700 ring-1 ring-orange-100">
-                  {compactNumber(monthlyCoverageRows.filter((row) => row.status === 'gap').length)} con huecos
-                </span>
-              </div>
-            </div>
-          </div>
-          {monthlyCoverageRows.length === 0 ? (
-            <div className="py-14 text-center">
-              <CalendarRange className="mx-auto h-12 w-12 text-slate-300" />
-              <h3 className="mt-3 text-lg font-black text-slate-950">Sin cobertura mensual visible</h3>
-              <p className="mt-1 text-sm font-medium text-slate-500">
-                Vincula personas a piezas presupuestales para activar el mapa mensual.
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1180px] text-left">
-                <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
-                  <tr>
-                    <th className="sticky left-0 z-10 bg-slate-50 px-4 py-3">Persona / proyecto</th>
-                    <th className="px-4 py-3 text-right">Total</th>
-                    {coverageMonths.map((monthNumber) => (
-                      <th key={`coverage-head-${monthNumber}`} className="px-2 py-3 text-center">
-                        {getTimelineMonthLabel(monthNumber)}
-                      </th>
-                    ))}
-                    <th className="px-4 py-3">Estado</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {monthlyCoverageRows.map((row) => {
-                    const statusClassName =
-                      row.status === 'uncovered'
-                        ? 'bg-red-50 text-red-700 ring-red-100'
-                        : row.status === 'gap'
-                          ? 'bg-orange-50 text-orange-700 ring-orange-100'
-                          : 'bg-emerald-50 text-emerald-700 ring-emerald-100';
-                    const statusLabel =
-                      row.status === 'uncovered'
-                        ? 'Sin cobertura'
-                        : row.status === 'gap'
-                          ? `Hueco desde ${getTimelineMonthLabel(row.firstGapMonth || 1)}`
-                          : 'Cobertura completa';
+            ) : (
+              <div className="overflow-x-auto">
+                <div style={{ minWidth: coverageGridMinWidth }}>
+                  <div
+                    className="grid items-center gap-4 bg-slate-50 px-4 py-3 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400"
+                    style={{ gridTemplateColumns: coverageGridTemplate }}
+                  >
+                    <div>Persona / proyecto</div>
+                    <div className="text-right">Total</div>
+                    <div>
+                      <div className="mb-1 flex items-center justify-between">
+                        <span>Meses</span>
+                        <span>{coverageMonths.length} meses</span>
+                      </div>
+                      <div className="flex gap-1">
+                        {coverageMonths.map((monthNumber) => (
+                          <span key={`coverage-label-${monthNumber}`} className="w-5 text-center text-[9px] leading-none text-slate-400">
+                            {getTimelineMonthLabel(monthNumber)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="text-right">Detalle</div>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {monthlyCoverageRows.map((row) => {
+                      const coveredMonths = coverageMonths.filter((monthNumber) => Number(row.monthlyAmounts[monthNumber] || 0) > 0);
+                      const coveragePercent = coverageMonths.length > 0 ? Math.round((coveredMonths.length / coverageMonths.length) * 100) : 0;
+                      const statusLabel =
+                        row.status === 'uncovered'
+                          ? 'Sin cobertura'
+                          : row.status === 'gap'
+                            ? `Hueco desde ${getTimelineMonthLabel(row.firstGapMonth || 1)}`
+                            : 'Cobertura completa';
 
-                    return (
-                      <tr key={row.key} className="transition hover:bg-emerald-50/30">
-                        <td className="sticky left-0 z-10 max-w-[340px] bg-white px-4 py-3 shadow-[1px_0_0_#e2e8f0]">
-                          <Link href={`/projects/${row.projectId}?tab=budget`} className="block min-w-0">
+                      return (
+                        <div
+                          key={row.key}
+                          className="grid items-center gap-4 px-4 py-3 transition hover:bg-emerald-50/30"
+                          style={{ gridTemplateColumns: coverageGridTemplate }}
+                        >
+                          <button type="button" onClick={() => setSelectedCoverageKey(row.key)} className="min-w-0 text-left">
                             <div className="flex items-center gap-3">
                               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-xs font-black uppercase text-indigo-700 ring-1 ring-indigo-100">
                                 {(row.memberName || row.memberEmail || '?').charAt(0)}
@@ -762,51 +794,51 @@ export default function BudgetsOverviewPage() {
                                 <p className="truncate text-[10px] font-black uppercase tracking-[0.1em] text-emerald-700">{row.organizationName}</p>
                               </div>
                             </div>
-                          </Link>
-                        </td>
-                        <td className="px-4 py-3 text-right text-sm font-black text-slate-950">
-                          {currencyFormatter(row.totalAllocated)}
-                        </td>
-                        {coverageMonths.map((monthNumber) => {
-                          const amount = Number(row.monthlyAmounts[monthNumber] || 0);
-                          const isCovered = amount > 0;
-                          const isGap = !isCovered && Boolean(row.firstCoveredMonth) && monthNumber >= Number(row.firstCoveredMonth);
-                          const cellClassName = isCovered
-                            ? 'bg-emerald-50 text-emerald-700 ring-emerald-100'
-                            : isGap
-                              ? 'bg-red-50 text-red-700 ring-red-100'
-                              : 'bg-slate-50 text-slate-400 ring-slate-100';
-
-                          return (
-                            <td key={`${row.key}-${monthNumber}`} className="px-2 py-3">
-                              <div
-                                title={`${row.memberName} · ${row.projectName} · ${getTimelineMonthLabel(monthNumber)}: ${amount > 0 ? currencyFormatter(amount) : 'Sin cobertura'}`}
-                                className={`mx-auto flex h-9 min-w-20 items-center justify-center rounded-md px-2 text-[10px] font-black ring-1 ${cellClassName}`}
-                              >
-                                {amount > 0 ? `$${compactNumber(amount)}` : isGap ? 'Hueco' : 'Sin'}
-                              </div>
-                            </td>
-                          );
-                        })}
-                        <td className="px-4 py-3">
-                          <div className="space-y-1">
-                            <span className={`inline-flex rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${statusClassName}`}>
-                              {statusLabel}
-                            </span>
-                            <p className="text-[11px] font-bold text-slate-500">
-                              {row.lastCoveredMonth
-                                ? `Último mes cubierto: ${getTimelineMonthLabel(row.lastCoveredMonth)}`
-                                : 'No tiene meses cubiertos'}
-                            </p>
+                          </button>
+                          <div className="text-right">
+                            <p className="text-sm font-black text-slate-950">{currencyFormatter(row.totalAllocated)}</p>
+                            <p className="text-[11px] font-bold text-slate-400">{coveragePercent}% cubierto</p>
                           </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+                          <div>
+                            <div className="flex gap-1">
+                              {coverageMonths.map((monthNumber) => {
+                                const amount = Number(row.monthlyAmounts[monthNumber] || 0);
+                                const isCovered = amount > 0;
+                                return (
+                                  <button
+                                    key={`${row.key}-${monthNumber}`}
+                                    type="button"
+                                    onClick={() => setSelectedCoverageKey(row.key)}
+                                    title={`${row.memberName} · ${row.projectName} · ${getTimelineMonthLabel(monthNumber)}: ${amount > 0 ? currencyFormatter(amount) : 'Sin presupuesto'}`}
+                                    aria-label={`${getTimelineMonthLabel(monthNumber)} ${isCovered ? 'con presupuesto' : 'sin presupuesto'}`}
+                                    className={`h-5 w-5 shrink-0 rounded-[5px] ring-1 transition hover:scale-110 hover:ring-2 ${
+                                      isCovered
+                                        ? 'bg-emerald-500 ring-emerald-600/20 hover:ring-emerald-700/40'
+                                        : 'bg-slate-200 ring-slate-300 hover:bg-slate-300 hover:ring-slate-400'
+                                    }`}
+                                  />
+                                );
+                              })}
+                            </div>
+                            <p className="mt-1 text-[11px] font-bold text-slate-500">{statusLabel}</p>
+                          </div>
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedCoverageKey(row.key)}
+                              className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700"
+                            >
+                              <Eye size={14} />
+                              Detalle
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
           </section>
         )}
 
@@ -1043,6 +1075,93 @@ export default function BudgetsOverviewPage() {
           </div>
             </section>
           </>
+        )}
+
+        {selectedCoverageRow && selectedCoverageSummary && (
+          <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/30 backdrop-blur-sm" onClick={() => setSelectedCoverageKey(null)}>
+            <aside
+              className="flex h-full w-full max-w-2xl flex-col overflow-hidden bg-white shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="border-b border-slate-200 p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-black uppercase tracking-[0.16em] text-emerald-700">Hoja de cobertura</p>
+                    <h3 className="mt-1 truncate text-2xl font-black tracking-tight text-slate-950">{selectedCoverageRow.memberName}</h3>
+                    <p className="mt-1 truncate text-sm font-bold text-slate-500">
+                      {selectedCoverageRow.projectName} · {selectedCoverageRow.roleName}
+                    </p>
+                    <p className="mt-1 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-700">{selectedCoverageRow.organizationName}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCoverageKey(null)}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                    aria-label="Cerrar detalle"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 space-y-5 overflow-y-auto p-5">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="rounded-lg bg-emerald-50 p-4 ring-1 ring-emerald-100">
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-emerald-700">Asignado</p>
+                    <p className="mt-2 text-xl font-black text-emerald-800">{currencyFormatter(selectedCoverageRow.totalAllocated)}</p>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-100">
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Cobertura</p>
+                    <p className="mt-2 text-xl font-black text-slate-950">{selectedCoverageSummary.coveragePercent}%</p>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-100">
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Meses sin presupuesto</p>
+                    <p className="mt-2 text-xl font-black text-slate-950">{compactNumber(selectedCoverageSummary.uncoveredMonths.length)}</p>
+                  </div>
+                </div>
+
+                <section className="rounded-lg border border-slate-200 bg-white p-4">
+                  <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h4 className="text-base font-black text-slate-950">Mapa mensual</h4>
+                      <p className="text-sm font-medium text-slate-500">Cada bloque muestra el presupuesto asignado para ese mes.</p>
+                    </div>
+                    <Link
+                      href={`/projects/${selectedCoverageRow.projectId}?tab=budget`}
+                      className="inline-flex h-9 items-center justify-center rounded-md border border-emerald-200 bg-emerald-50 px-3 text-xs font-black text-emerald-700 transition hover:bg-emerald-100"
+                    >
+                      Abrir presupuesto
+                    </Link>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+                    {coverageMonths.map((monthNumber) => {
+                      const amount = Number(selectedCoverageRow.monthlyAmounts[monthNumber] || 0);
+                      const isCovered = amount > 0;
+                      return (
+                        <div
+                          key={`detail-${selectedCoverageRow.key}-${monthNumber}`}
+                          className={`rounded-lg p-3 ring-1 ${
+                            isCovered
+                              ? 'bg-emerald-50 text-emerald-800 ring-emerald-100'
+                              : 'bg-slate-50 text-slate-500 ring-slate-100'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-black uppercase tracking-[0.12em]">{getTimelineMonthLabel(monthNumber)}</span>
+                            <span className={`h-4 w-4 rounded ${isCovered ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                          </div>
+                          <p className="mt-3 text-sm font-black">
+                            {isCovered ? currencyFormatter(amount) : 'Sin presupuesto'}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+            </aside>
+          </div>
         )}
       </div>
     </DashboardLayout>
