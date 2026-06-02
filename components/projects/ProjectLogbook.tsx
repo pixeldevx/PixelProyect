@@ -289,14 +289,9 @@ export function ProjectLogbook({
   const [savingAction, setSavingAction] = useState(false);
   const initialEntrySeedRef = React.useRef<Set<string>>(new Set());
 
-  const projectMemberIds = useMemo(
-    () => new Set((project?.assignedTeamMembers || []).filter(Boolean)),
-    [project?.assignedTeamMembers]
-  );
-
   const projectMembers = useMemo(
-    () => teamMembers.filter((member) => projectMemberIds.has(member.id)),
-    [projectMemberIds, teamMembers]
+    () => teamMembers.filter((member) => member?.id),
+    [teamMembers]
   );
 
   const viewerMember = useMemo(() => {

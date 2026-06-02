@@ -231,9 +231,7 @@ export function CreateTaskModal({
     state: "Estado",
     meeting: "Reunion",
   };
-  const projectMembers = (project?.assignedTeamMembers || [])
-    .map((memberId: string) => teamMembers.find((member) => member.id === memberId))
-    .filter(Boolean);
+  const projectMembers = teamMembers.filter(Boolean);
   const toggleMeetingAttendee = (attendeeId: string) => {
     setMeetingAttendeeIds((currentIds) =>
       currentIds.includes(attendeeId)
@@ -921,15 +919,11 @@ export function CreateTaskModal({
                   required
                 >
                   <option value="">Seleccionar miembro...</option>
-                  {project?.assignedTeamMembers?.map((memberId: string) => {
-                    const member = teamMembers.find((m) => m.id === memberId);
-                    if (!member) return null;
-                    return (
-                      <option key={member.id} value={member.id}>
-                        {member.name}
-                      </option>
-                    );
-                  })}
+                  {teamMembers.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.name || member.email}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div className="space-y-2">
@@ -1293,19 +1287,11 @@ export function CreateTaskModal({
                             <option value="DYNAMIC">
                               Asignación dinámica (por paso anterior)
                             </option>
-                            {project?.assignedTeamMembers?.map(
-                              (memberId: string) => {
-                                const member = teamMembers.find(
-                                  (m) => m.id === memberId,
-                                );
-                                if (!member) return null;
-                                return (
-                                  <option key={member.id} value={member.id}>
-                                    {member.name}
-                                  </option>
-                                );
-                              },
-                            )}
+                            {teamMembers.map((member) => (
+                              <option key={member.id} value={member.id}>
+                                {member.name || member.email}
+                              </option>
+                            ))}
                           </select>
 
                           <select
@@ -1540,15 +1526,11 @@ export function CreateTaskModal({
                                           className="h-8 min-w-0 rounded border border-slate-100 bg-white px-2 text-[10px] focus:ring-0"
                                         >
                                           <option value="">Selecciona profesional</option>
-                                          {project?.assignedTeamMembers?.map((memberId: string) => {
-                                            const member = teamMembers.find((m) => m.id === memberId);
-                                            if (!member) return null;
-                                            return (
-                                              <option key={member.id} value={member.id}>
-                                                {member.name || member.email}
-                                              </option>
-                                            );
-                                          })}
+                                          {teamMembers.map((member) => (
+                                            <option key={member.id} value={member.id}>
+                                              {member.name || member.email}
+                                            </option>
+                                          ))}
                                         </select>
                                       )}
                                       {(rateCardItem.assigneeMode || (rateCardItem.assignToProfessional ? "fixed" : "default")) === "runtime" && (
@@ -1780,15 +1762,11 @@ export function CreateTaskModal({
                           className="h-9 px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
                         >
                           <option value="">Mismo responsable</option>
-                          {project?.assignedTeamMembers?.map((memberId: string) => {
-                            const member = teamMembers.find((m) => m.id === memberId);
-                            if (!member) return null;
-                            return (
-                              <option key={member.id} value={member.id}>
-                                {member.name}
-                              </option>
-                            );
-                          })}
+                          {teamMembers.map((member) => (
+                            <option key={member.id} value={member.id}>
+                              {member.name || member.email}
+                            </option>
+                          ))}
                         </select>
                         <select
                           value={subtask.priority}
@@ -1993,9 +1971,7 @@ export function CreateTaskModal({
           }
           initialForm={workflowSteps[currentStepIndexForForm]?.form}
           rateCards={rateCards}
-          teamMembers={(project?.assignedTeamMembers || [])
-            .map((memberId: string) => teamMembers.find((member) => member.id === memberId))
-            .filter(Boolean)}
+          teamMembers={teamMembers}
           onSave={(form) => {
             const newSteps = [...workflowSteps];
             newSteps[currentStepIndexForForm].form = form;
@@ -2011,9 +1987,7 @@ export function CreateTaskModal({
           stepName={newTaskTitle || "Incremento de contador"}
           initialForm={incrementForm}
           rateCards={rateCards}
-          teamMembers={(project?.assignedTeamMembers || [])
-            .map((memberId: string) => teamMembers.find((member) => member.id === memberId))
-            .filter(Boolean)}
+          teamMembers={teamMembers}
           allowDynamicRateCard={false}
           onSave={(form) => setIncrementForm(form)}
         />

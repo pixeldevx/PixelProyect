@@ -114,6 +114,23 @@ const shouldRequestDynamicRateCardUnits = (source: any) =>
 const normalizeEmailAddress = (value: unknown) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
 
+const GLOBAL_ADMIN_ASSIGNMENT_ROLES = new Set(['admin', 'org_admin', 'manager', 'coordinador']);
+const BOOTSTRAP_ADMIN_EMAILS = new Set([
+  'ing.zambranog@gmail.com',
+  'gerencia.operaciones@realtix.com.co',
+]);
+
+const isGlobalAdminMember = (member: any) => {
+  const normalizedEmail = normalizeEmailAddress(member?.email);
+  return (
+    member?.systemRole === 'admin' ||
+    member?.role === 'admin' ||
+    member?.profileRole === 'admin' ||
+    BOOTSTRAP_ADMIN_EMAILS.has(normalizedEmail) ||
+    String(member?.roleName || '').toLowerCase() === 'administrador global'
+  );
+};
+
 const getRateCardDateKeys = (date = new Date()) => {
   const year = date.getFullYear();
   const dateKey = date.toISOString().slice(0, 10);
@@ -144,6 +161,7 @@ export default function ProjectDetailsPage() {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [userProfiles, setUserProfiles] = useState<any[]>([]);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'tasks' | 'logbook' | 'quality' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
@@ -210,11 +228,78 @@ export default function ProjectDetailsPage() {
     () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
     [userOrganizationId, userOrganizationIds]
   );
+  const teamMembersWithSystemProfiles = React.useMemo(() => {
+    const profilesById = new Map<string, any>();
+    const profilesByEmail = new Map<string, any>();
+
+    userProfiles.forEach((profile) => {
+      if (profile.id) profilesById.set(profile.id, profile);
+      if (profile.uid) profilesById.set(profile.uid, profile);
+      if (profile.authUserId) profilesById.set(profile.authUserId, profile);
+      const email = normalizeEmailAddress(profile.email);
+      if (email) profilesByEmail.set(email, profile);
+    });
+
+    const enrichedMembers = teamMembers.map((member) => {
+      const profile =
+        profilesById.get(member.id) ||
+        profilesById.get(member.uid) ||
+        profilesById.get(member.authUserId) ||
+        profilesByEmail.get(normalizeEmailAddress(member.email));
+
+      if (!profile) return member;
+
+      const profileOrganizationIds = getOrganizationIds(profile);
+      const memberOrganizationIds = getOrganizationIds(member);
+
+      return {
+        ...member,
+        authUserId: member.authUserId || profile.authUserId || profile.uid || profile.id,
+        systemRole: member.systemRole || profile.role || profile.systemRole,
+        profileRole: profile.role || profile.systemRole,
+        organizationId: member.organizationId || profile.organizationId || null,
+        organizationIds: memberOrganizationIds.length > 0 ? memberOrganizationIds : profileOrganizationIds,
+        photoURL: member.photoURL || profile.photoURL || null,
+      };
+    });
+
+    const knownMemberKeys = new Set<string>();
+    enrichedMembers.forEach((member) => {
+      if (member.id) knownMemberKeys.add(`id:${member.id}`);
+      if (member.authUserId) knownMemberKeys.add(`id:${member.authUserId}`);
+      const email = normalizeEmailAddress(member.email);
+      if (email) knownMemberKeys.add(`email:${email}`);
+    });
+
+    const syntheticGlobalAdmins = userProfiles
+      .filter((profile) => isGlobalAdminMember(profile))
+      .filter((profile) => {
+        const email = normalizeEmailAddress(profile.email);
+        return !knownMemberKeys.has(`id:${profile.id}`) && !knownMemberKeys.has(`id:${profile.uid}`) && !(email && knownMemberKeys.has(`email:${email}`));
+      })
+      .map((profile) => ({
+        id: profile.id || profile.uid || profile.authUserId,
+        authUserId: profile.authUserId || profile.uid || profile.id,
+        email: profile.email || '',
+        name: profile.displayName || profile.name || profile.email?.split('@')[0] || 'Administrador Global',
+        displayName: profile.displayName || profile.name || profile.email?.split('@')[0] || 'Administrador Global',
+        photoURL: profile.photoURL || null,
+        roleName: 'Administrador Global',
+        systemRole: 'admin',
+        profileRole: 'admin',
+        organizationId: profile.organizationId || null,
+        organizationIds: getOrganizationIds(profile),
+      }))
+      .filter((member) => member.id);
+
+    return [...syntheticGlobalAdmins, ...enrichedMembers];
+  }, [teamMembers, userProfiles]);
+
   const currentGlobalAdminAssignee = React.useMemo(() => {
     if (!user || userRole !== 'admin') return null;
 
     const currentEmail = normalizeEmailAddress(user.email);
-    const existingMember = teamMembers.find((member) =>
+    const existingMember = teamMembersWithSystemProfiles.find((member) =>
       member.id === user.uid ||
       member.authUserId === user.uid ||
       normalizeEmailAddress(member.email) === currentEmail
@@ -241,13 +326,13 @@ export default function ProjectDetailsPage() {
       organizationId: null,
       organizationIds: [],
     };
-  }, [teamMembers, user, userRole]);
+  }, [teamMembersWithSystemProfiles, user, userRole]);
 
   const teamMembersForAssignment = React.useMemo(() => {
-    if (!currentGlobalAdminAssignee) return teamMembers;
-    if (teamMembers.some((member) => member.id === currentGlobalAdminAssignee.id)) return teamMembers;
-    return [currentGlobalAdminAssignee, ...teamMembers];
-  }, [currentGlobalAdminAssignee, teamMembers]);
+    if (!currentGlobalAdminAssignee) return teamMembersWithSystemProfiles;
+    if (teamMembersWithSystemProfiles.some((member) => member.id === currentGlobalAdminAssignee.id)) return teamMembersWithSystemProfiles;
+    return [currentGlobalAdminAssignee, ...teamMembersWithSystemProfiles];
+  }, [currentGlobalAdminAssignee, teamMembersWithSystemProfiles]);
 
 
   useEffect(() => {
@@ -303,6 +388,23 @@ export default function ProjectDetailsPage() {
       handleDataError(error, OperationType.LIST, 'team_members');
     });
 
+    if (!GLOBAL_ADMIN_ASSIGNMENT_ROLES.has(userRole || '')) {
+      setUserProfiles([]);
+    }
+
+    const unsubscribeUsers = GLOBAL_ADMIN_ASSIGNMENT_ROLES.has(userRole || '')
+      ? onSnapshot(query(collection(db, 'users')), (snapshot) => {
+          const profilesData = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }));
+          setUserProfiles(profilesData);
+        }, (error) => {
+          handleDataError(error, OperationType.LIST, 'users');
+          setUserProfiles([]);
+        })
+      : () => {};
+
     // Listen to rate cards
     const qRateCards = query(collection(db, 'projects', projectId, 'rateCards'));
     const unsubscribeRateCards = onSnapshot(qRateCards, (snapshot) => {
@@ -332,10 +434,11 @@ export default function ProjectDetailsPage() {
       unsubscribeDocs();
       unsubscribeTasks();
       unsubscribeTeam();
+      unsubscribeUsers();
       unsubscribeRateCards();
       unsubscribeBudgetLines();
     };
-  }, [user, projectId, router]);
+  }, [user, projectId, router, userRole]);
 
   const confirmDeleteDocument = (docId: string, storagePath: string, name: string) => {
     setDocumentToDelete({ id: docId, storagePath, name });
@@ -367,7 +470,7 @@ export default function ProjectDetailsPage() {
   const [memberToRemove, setMemberToRemove] = useState<{id: string, name: string} | null>(null);
 
   const handleRemoveMember = (memberId: string) => {
-    const member = teamMembers.find(m => m.id === memberId);
+    const member = teamMembersForAssignment.find(m => m.id === memberId);
     if (member) {
       setMemberToRemove({ id: memberId, name: member.name || member.email });
     }
@@ -403,16 +506,20 @@ export default function ProjectDetailsPage() {
   );
 
   const currentGlobalAdminAssigneeId = currentGlobalAdminAssignee?.id || '';
+  const canAssignGlobalAdmins = GLOBAL_ADMIN_ASSIGNMENT_ROLES.has(userRole || '');
   const projectOrganizationIds = getOrganizationIds(project);
+  const projectAssignedMemberIds = new Set((project?.assignedTeamMembers || []).filter(Boolean));
   const organizationTeamMembers = teamMembersForAssignment.filter((member) => {
     if (member.id === currentGlobalAdminAssigneeId) return true;
+    if (canAssignGlobalAdmins && isGlobalAdminMember(member)) return true;
     if (projectOrganizationIds.length === 0) return true;
     const memberOrganizationIds = getOrganizationIds(member);
     return memberOrganizationIds.some((organizationId) => projectOrganizationIds.includes(organizationId));
   });
   const projectAssignableTeamMembers = organizationTeamMembers.filter((member) => {
     if (member.id === currentGlobalAdminAssigneeId) return true;
-    return (project?.assignedTeamMembers || []).includes(member.id);
+    if (canAssignGlobalAdmins && isGlobalAdminMember(member)) return true;
+    return projectAssignedMemberIds.has(member.id);
   });
 
   const collectDependentTaskIds = (taskId: string) => {
@@ -2192,7 +2299,7 @@ export default function ProjectDetailsPage() {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {project.assignedTeamMembers.map((memberId: string) => {
-                  const member = teamMembers.find(m => m.id === memberId);
+                  const member = teamMembersForAssignment.find(m => m.id === memberId);
                   if (!member) return null;
 
                   return (
