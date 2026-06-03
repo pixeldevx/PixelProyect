@@ -502,12 +502,13 @@ export function CreateTaskModal({
 
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
+    const meetingParticipantIds = Array.from(new Set([newTaskAssignedTo, ...meetingAttendeeIds].filter(Boolean)));
     if (
       !user ||
       !newTaskTitle.trim() ||
       !newTaskStart ||
       !newTaskEnd ||
-      !newTaskAssignedTo
+      (newTaskType === "meeting" ? meetingParticipantIds.length === 0 : !newTaskAssignedTo)
     ) {
       toast.warning("Por favor completa todos los campos obligatorios.");
       return;
@@ -569,7 +570,7 @@ export function CreateTaskModal({
       const parentEndDate = new Date(newTaskEnd + "T00:00:00");
       const meetingStartAt = new Date(`${newTaskStart}T${meetingStartTime || "09:00"}:00`);
       const meetingEndAt = new Date(`${newTaskStart}T${meetingEndTime || "10:00"}:00`);
-      const meetingAttendees = Array.from(new Set([newTaskAssignedTo, ...meetingAttendeeIds].filter(Boolean)))
+      const meetingAttendees = meetingParticipantIds
         .map((memberId) => {
           const member = teamMembers.find((candidate) => candidate.id === memberId);
           return member
@@ -601,6 +602,8 @@ export function CreateTaskModal({
         status: newTaskType === "state" ? "pending" : newTaskStatus,
         progress: newTaskType === "state" ? 0 : Number(newTaskProgress),
         type: newTaskType,
+        assignedUsers: newTaskType === "meeting" ? meetingParticipantIds : [],
+        assignedTeamMembers: newTaskType === "meeting" ? meetingParticipantIds : [],
         requiresDocument: newTaskRequiresDoc,
         linkedDocumentId: null,
         isRateCardTask: newTaskIsRateCard,
@@ -631,6 +634,7 @@ export function CreateTaskModal({
                 location: meetingLocation.trim(),
                 agenda: meetingAgenda.trim(),
                 attendeeIds: meetingAttendees.map((attendee: any) => attendee.id),
+                participantIds: meetingAttendees.map((attendee: any) => attendee.id),
                 attendees: meetingAttendees,
                 recurrence: {
                   frequency: meetingRecurrence,
@@ -642,6 +646,9 @@ export function CreateTaskModal({
         meetingStartAt: newTaskType === "meeting" ? meetingStartAt : null,
         meetingEndAt: newTaskType === "meeting" ? meetingEndAt : null,
         meetingRecurrence: newTaskType === "meeting" ? meetingRecurrence : null,
+        meetingParticipantIds: newTaskType === "meeting" ? meetingParticipantIds : [],
+        meetingPendingParticipantIds: newTaskType === "meeting" ? meetingParticipantIds : [],
+        meetingResponses: newTaskType === "meeting" ? [] : null,
         priority: newTaskPriority,
         groupId: newTaskGroupId || null,
         currentValue: 0,
@@ -808,7 +815,13 @@ export function CreateTaskModal({
       } else {
         batch.set(taskRef, taskData);
         addManualSubtasksToBatch(taskRef.id, tasksLength + 1);
-        queueTaskNotification(taskRef.id, newTaskAssignedTo, taskData.status, "task_created");
+        if (newTaskType === "meeting") {
+          meetingParticipantIds.forEach((participantId) => {
+            queueTaskNotification(taskRef.id, participantId, taskData.status, "meeting_created");
+          });
+        } else {
+          queueTaskNotification(taskRef.id, newTaskAssignedTo, taskData.status, "task_created");
+        }
         await batch.commit();
       }
 
@@ -910,13 +923,13 @@ export function CreateTaskModal({
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <label className="text-sm font-bold text-slate-700">
-                  Asignar a
+                  {newTaskType === "meeting" ? "Responsable principal" : "Asignar a"}
                 </label>
                 <select
                   value={newTaskAssignedTo}
                   onChange={(e) => setNewTaskAssignedTo(e.target.value)}
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                  required
+                  required={newTaskType !== "meeting"}
                 >
                   <option value="">Seleccionar miembro...</option>
                   {teamMembers.map((member) => (
@@ -1106,8 +1119,11 @@ export function CreateTaskModal({
                 {projectMembers.length > 0 && (
                   <div className="space-y-2">
                     <label className="text-xs font-bold uppercase tracking-wider text-cyan-700">
-                      Invitados adicionales
+                      Responsables de la reunión
                     </label>
+                    <p className="text-[11px] font-medium text-cyan-700/80">
+                      Todos los seleccionados recibirán la reunión en su bandeja y deberán cerrar su comentario.
+                    </p>
                     <div className="grid max-h-36 gap-2 overflow-y-auto rounded-lg border border-cyan-100 bg-white p-2 sm:grid-cols-2">
                       {projectMembers.map((member: any) => (
                         <label

@@ -31,6 +31,7 @@ import {
   getMeetingScheduleLabel,
   isMeetingTask,
 } from '@/lib/calendar-utils';
+import { detectActionCandidates } from '@/lib/project-logbook/action-detection';
 
 const hasRequiredFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -109,6 +110,65 @@ const isOpenTask = (task: any) => {
 
 const normalizeActorIds = (ids: any[] = []) =>
   Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+
+const getMeetingParticipantIds = (task: any) =>
+  normalizeActorIds([
+    task?.assignedTo,
+    ...(Array.isArray(task?.assignedUsers) ? task.assignedUsers : []),
+    ...(Array.isArray(task?.assignedTeamMembers) ? task.assignedTeamMembers : []),
+    ...(Array.isArray(task?.meetingParticipantIds) ? task.meetingParticipantIds : []),
+    ...(Array.isArray(task?.meeting?.participantIds) ? task.meeting.participantIds : []),
+    ...(Array.isArray(task?.meeting?.attendeeIds) ? task.meeting.attendeeIds : []),
+  ]);
+
+const meetingResponseMatchesActor = (response: any, actorIds: any[]) => {
+  const ids = normalizeActorIds(actorIds);
+  if (ids.length === 0) return false;
+
+  return (
+    ids.includes(response?.participantId) ||
+    ids.includes(response?.userId) ||
+    ids.includes(response?.memberId) ||
+    (Array.isArray(response?.userIds) && response.userIds.some((id: string) => ids.includes(id)))
+  );
+};
+
+const hasMeetingResponseForUser = (task: any, actorIds: any[]) => {
+  const responses = Array.isArray(task?.meetingResponses) ? task.meetingResponses : [];
+  return responses.some((response: any) => meetingResponseMatchesActor(response, actorIds));
+};
+
+const getMeetingParticipantIdForActor = (task: any, actorIds: any[]) => {
+  const ids = normalizeActorIds(actorIds);
+  const participantIds = getMeetingParticipantIds(task);
+  return ids.find((id) => participantIds.includes(id)) || participantIds[0] || ids[0] || '';
+};
+
+const getMeetingParticipantName = (task: any, participantId: string, fallback = 'Participante') => {
+  const attendees = Array.isArray(task?.meeting?.attendees) ? task.meeting.attendees : [];
+  const attendee = attendees.find((candidate: any) => candidate?.id === participantId);
+  return attendee?.name || attendee?.email || fallback;
+};
+
+const buildMeetingLogbookContent = (task: any, responses: any[]) => {
+  const responseLines = responses
+    .map((response: any, index: number) => {
+      const participantName = response.participantName || response.userName || getMeetingParticipantName(task, response.participantId, `Participante ${index + 1}`);
+      return `${index + 1}. ${participantName}: ${response.comment || 'Sin comentario'}`;
+    })
+    .join('\n');
+
+  return [
+    `Se cerró la reunión "${task?.title || task?.name || 'Reunión'}".`,
+    `Proyecto: ${task?.projectName || 'Proyecto'}.`,
+    `Horario: ${getMeetingScheduleLabel(task)}.`,
+    task?.meeting?.location ? `Lugar o enlace: ${task.meeting.location}.` : '',
+    task?.meeting?.agenda ? `Agenda: ${task.meeting.agenda}` : '',
+    '',
+    'Comentarios de participantes:',
+    responseLines || 'Sin comentarios registrados.',
+  ].filter((line) => line !== '').join('\n');
+};
 
 const hasWorkflowReviewForUser = (task: any, actorIds: any[]) => {
   const ids = normalizeActorIds(actorIds);
@@ -502,6 +562,12 @@ export default function WorkflowTray() {
     nextStatus: string;
   }>({ isOpen: false, task: null, nextStatus: 'completed' });
   const [dynamicRateCardComment, setDynamicRateCardComment] = useState('');
+  const [meetingCompletionModal, setMeetingCompletionModal] = useState<{
+    isOpen: boolean;
+    task: any;
+    nextStatus: string;
+  }>({ isOpen: false, task: null, nextStatus: 'completed' });
+  const [meetingCompletionComment, setMeetingCompletionComment] = useState('');
   const [docsModalTask, setDocsModalTask] = useState<any>(null);
   const [detailsModalTask, setDetailsModalTask] = useState<any>(null);
   const [historyModalTask, setHistoryModalTask] = useState<any>(null);
@@ -608,8 +674,13 @@ export default function WorkflowTray() {
                   .filter((task: any) => {
                     if (!isWorkflowItem(task)) {
                       const isAssigned = isAssignedToCurrentUser(task, allMemberIds);
-                      const hasReviewedTask = hasAssignedTaskReviewForUser(task, allMemberIds);
-                      return (isOpenTask(task) && isAssigned) || hasReviewedTask;
+                      const hasReviewedTask = isMeetingTask(task)
+                        ? hasMeetingResponseForUser(task, allMemberIds) || hasAssignedTaskReviewForUser(task, allMemberIds)
+                        : hasAssignedTaskReviewForUser(task, allMemberIds);
+                      const isPendingMeetingForActor = isMeetingTask(task)
+                        ? !hasMeetingResponseForUser(task, allMemberIds)
+                        : true;
+                      return (isOpenTask(task) && isAssigned && isPendingMeetingForActor) || hasReviewedTask;
                     }
 
                     const currentStep = task.workflowSteps?.[task.currentStepIndex || 0];
@@ -1080,16 +1151,80 @@ export default function WorkflowTray() {
     rateCardId: string;
     units: number;
     comment?: string | null;
+  }, meetingSubmission?: {
+    comment: string;
   }) => {
     if (!user || !task?.id || isWorkflowItem(task)) return;
 
-    const finalStatus = normalizeCompletionStatus(nextStatus, task);
-    const progress = getProgressForTaskStatus(finalStatus, task.progress);
+    let finalStatus = normalizeCompletionStatus(nextStatus, task);
+    let progress = getProgressForTaskStatus(finalStatus, task.progress);
     const taskHasDynamicRateCard = isDynamicRateCardEnabled(task);
     const wasCompleted = isCompletedTaskStatus(task.status);
-    const isCompleted = isCompletedTaskStatus(finalStatus);
+    let isCompleted = isCompletedTaskStatus(finalStatus);
+    const reviewActorIds = normalizeActorIds([user.uid, memberId, ...memberIds]);
+    let meetingCompletion: {
+      response: any;
+      responses: any[];
+      completedParticipantIds: string[];
+      pendingParticipantIds: string[];
+      allParticipantsCompleted: boolean;
+      logbookContent?: string;
+    } | null = null;
 
-    if (taskHasDynamicRateCard && isCompleted && !wasCompleted && !dynamicCharge) {
+    if (isMeetingTask(task) && isCompleted && !wasCompleted) {
+      if (!meetingSubmission?.comment?.trim()) {
+        setMeetingCompletionModal({ isOpen: true, task, nextStatus });
+        setMeetingCompletionComment('');
+        return;
+      }
+
+      if (hasMeetingResponseForUser(task, reviewActorIds)) {
+        toast.info('Ya registraste tu comentario para esta reunión.');
+        return;
+      }
+
+      const participantIds = getMeetingParticipantIds(task);
+      const participantId = getMeetingParticipantIdForActor(task, reviewActorIds);
+      const existingResponses = Array.isArray(task.meetingResponses) ? task.meetingResponses : [];
+      const actionTimestamp = Timestamp.now();
+      const response = {
+        id: `${task.id}-${participantId || user.uid}-${Date.now()}`,
+        participantId,
+        userId: user.uid,
+        memberId,
+        userIds: reviewActorIds,
+        participantName: getMeetingParticipantName(task, participantId, user.displayName || user.email || 'Participante'),
+        participantEmail: user.email || null,
+        comment: meetingSubmission.comment.trim(),
+        timestamp: actionTimestamp,
+        source: 'meeting_closure',
+      };
+      const responses = [...existingResponses, response];
+      const completedParticipantIds = participantIds.filter((candidateId) =>
+        responses.some((candidateResponse: any) => meetingResponseMatchesActor(candidateResponse, [candidateId]))
+      );
+      const pendingParticipantIds = participantIds.filter((candidateId) => !completedParticipantIds.includes(candidateId));
+      const allParticipantsCompleted = pendingParticipantIds.length === 0;
+
+      meetingCompletion = {
+        response,
+        responses,
+        completedParticipantIds,
+        pendingParticipantIds,
+        allParticipantsCompleted,
+        logbookContent: allParticipantsCompleted ? buildMeetingLogbookContent(task, responses) : undefined,
+      };
+
+      if (!allParticipantsCompleted) {
+        finalStatus = task.status === 'todo' || task.status === 'pending' ? 'in_progress' : task.status || 'in_progress';
+        progress = participantIds.length > 0
+          ? Math.round((completedParticipantIds.length / participantIds.length) * 100)
+          : Math.max(50, Number(task.progress || 0));
+        isCompleted = false;
+      }
+    }
+
+    if (taskHasDynamicRateCard && isCompleted && !wasCompleted && !dynamicCharge && !meetingCompletion) {
       setDynamicRateCardModal({ isOpen: true, task, nextStatus });
       resetDynamicRateCardFields(task, task.assignedTo || memberId || user?.uid || '');
       await loadProjectRateCardContext(task.projectId);
@@ -1147,7 +1282,6 @@ export default function WorkflowTray() {
       }
 
       const actionTimestamp = Timestamp.now();
-      const reviewActorIds = normalizeActorIds([user.uid, memberId, ...memberIds]);
       const taskUpdate: any = {
         status: finalStatus,
         progress,
@@ -1162,12 +1296,18 @@ export default function WorkflowTray() {
           changedByName: user.displayName || user.email || 'Usuario',
           timestamp: actionTimestamp,
           source: 'inbox',
-          comment: dynamicCharge?.comment || null,
+          comment: meetingCompletion?.response?.comment || dynamicCharge?.comment || null,
           dynamicRateCard: dynamicRateCardCharge,
         }),
       };
 
-      if (isCompleted && !wasCompleted) {
+      if (meetingCompletion) {
+        taskUpdate.meetingResponses = arrayUnion(meetingCompletion.response);
+        taskUpdate.meetingCompletedParticipantIds = meetingCompletion.completedParticipantIds;
+        taskUpdate.meetingPendingParticipantIds = meetingCompletion.pendingParticipantIds;
+      }
+
+      if ((isCompleted && !wasCompleted) || meetingCompletion) {
         taskUpdate.reviewedByIds = arrayUnion(...reviewActorIds);
         taskUpdate.taskReviewReceipts = arrayUnion({
           id: `${task.id}-status-${finalStatus}-${Date.now()}`,
@@ -1177,9 +1317,9 @@ export default function WorkflowTray() {
           memberId,
           userIds: reviewActorIds,
           userName: user.displayName || user.email || 'Usuario',
-          comment: dynamicCharge?.comment || null,
+          comment: meetingCompletion?.response?.comment || dynamicCharge?.comment || null,
           timestamp: actionTimestamp,
-          source: 'inbox_status',
+          source: meetingCompletion ? 'meeting_closure' : 'inbox_status',
         });
       }
 
@@ -1187,6 +1327,36 @@ export default function WorkflowTray() {
         taskUpdate.dynamicRateCardLastCharge = dynamicRateCardCharge;
       } else if (taskHasDynamicRateCard && wasCompleted && !isCompleted) {
         taskUpdate.dynamicRateCardLastCharge = null;
+      }
+
+      if (meetingCompletion?.allParticipantsCompleted && !task.meetingLogbookEntryId) {
+        const logbookRef = doc(collection(db, 'projects', task.projectId, 'logbookEntries'));
+        const logbookContent = meetingCompletion.logbookContent || buildMeetingLogbookContent(task, meetingCompletion.responses);
+        batch.set(logbookRef, {
+          projectId: task.projectId,
+          title: `Reunión: ${task.title || task.name || 'Sin título'}`,
+          content: logbookContent,
+          type: 'meeting',
+          source: 'meeting_closure',
+          meetingTaskId: task.id,
+          meetingTaskTitle: task.title || task.name || 'Reunión',
+          meetingResponses: meetingCompletion.responses,
+          actionCandidates: detectActionCandidates(logbookContent),
+          derivedLinks: [
+            {
+              taskId: task.id,
+              taskTitle: task.title || task.name || 'Reunión',
+              relationType: 'meeting_closure',
+              linkedAt: actionTimestamp,
+            },
+          ],
+          createdAt: actionTimestamp,
+          updatedAt: actionTimestamp,
+          createdBy: user.uid,
+          createdByEmail: user.email || null,
+        });
+        taskUpdate.meetingLogbookEntryId = logbookRef.id;
+        taskUpdate.meetingClosedAt = actionTimestamp;
       }
 
       batch.update(taskRef, taskUpdate);
@@ -1198,7 +1368,13 @@ export default function WorkflowTray() {
         await updateParentTaskStatus(task.projectId, task.parentTaskId);
       }
 
-      toast.success(finalStatus === 'completed_late' ? 'Tarea finalizada con retraso.' : 'Estado actualizado.');
+      if (meetingCompletion?.allParticipantsCompleted) {
+        toast.success('Reunión cerrada y registrada en la bitácora.');
+      } else if (meetingCompletion) {
+        toast.success('Comentario registrado. La reunión sigue pendiente para otros participantes.');
+      } else {
+        toast.success(finalStatus === 'completed_late' ? 'Tarea finalizada con retraso.' : 'Estado actualizado.');
+      }
     } catch (error: any) {
       console.error('Error updating assigned task status:', error);
       toast.error(error?.message || 'No se pudo actualizar la tarea.');
@@ -1232,6 +1408,22 @@ export default function WorkflowTray() {
     resetDynamicRateCardFields();
   };
 
+  const confirmMeetingCompletion = async () => {
+    const task = meetingCompletionModal.task;
+    if (!task) return;
+
+    if (!meetingCompletionComment.trim()) {
+      toast.warning('Agrega tu comentario para cerrar tu participación en la reunión.');
+      return;
+    }
+
+    await updateAssignedTaskStatus(task, meetingCompletionModal.nextStatus, undefined, {
+      comment: meetingCompletionComment.trim(),
+    });
+    setMeetingCompletionModal({ isOpen: false, task: null, nextStatus: 'completed' });
+    setMeetingCompletionComment('');
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -1245,6 +1437,12 @@ export default function WorkflowTray() {
   const isPendingTaskForMe = (task: any) => {
     const taskIsWorkflow = isWorkflowItem(task);
     const currentStep = taskIsWorkflow ? task.workflowSteps?.[task.currentStepIndex || 0] : null;
+    if (!taskIsWorkflow && isMeetingTask(task)) {
+      return isOpenTask(task) &&
+        isAssignedToCurrentUser(task, assignedIdsForInbox as string[]) &&
+        !hasMeetingResponseForUser(task, assignedIdsForInbox);
+    }
+
     return taskIsWorkflow
       ? currentStep?.assignedTo && assignedIdsForInbox.includes(currentStep.assignedTo) &&
         (currentStep?.status === 'en_curso' || currentStep?.status === 'reproceso' || currentStep?.status === 'pending' || currentStep?.status === 'detenido')
@@ -1253,6 +1451,7 @@ export default function WorkflowTray() {
 
   const isReviewedTaskForMe = (task: any) => {
     if (isWorkflowItem(task)) return hasWorkflowReviewForUser(task, assignedIdsForInbox);
+    if (isMeetingTask(task)) return hasMeetingResponseForUser(task, assignedIdsForInbox) || hasAssignedTaskReviewForUser(task, assignedIdsForInbox as string[]);
     return hasAssignedTaskReviewForUser(task, assignedIdsForInbox as string[]);
   };
 
@@ -2226,6 +2425,98 @@ export default function WorkflowTray() {
         </div>
       )}
 
+      {meetingCompletionModal.isOpen && meetingCompletionModal.task && (() => {
+        const meetingTask = meetingCompletionModal.task;
+        const participantIds = getMeetingParticipantIds(meetingTask);
+        const completedParticipantIds = participantIds.filter((participantId) =>
+          (meetingTask.meetingResponses || []).some((response: any) => meetingResponseMatchesActor(response, [participantId]))
+        );
+        const pendingCount = Math.max(0, participantIds.length - completedParticipantIds.length - 1);
+
+        return (
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden">
+              <div className="p-6 border-b border-slate-100 flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-cyan-50 px-3 py-1 text-xs font-bold text-cyan-700">
+                    <CalendarDays size={14} />
+                    Cierre de reunión
+                  </div>
+                  <h2 className="truncate text-xl font-bold text-slate-900">
+                    {meetingTask.title || meetingTask.name || 'Reunión'}
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {getMeetingScheduleLabel(meetingTask)}
+                  </p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => {
+                    setMeetingCompletionModal({ isOpen: false, task: null, nextStatus: 'completed' });
+                    setMeetingCompletionComment('');
+                  }}
+                  className="shrink-0"
+                >
+                  <X className="w-5 h-5 text-slate-400" />
+                </Button>
+              </div>
+
+              <div className="space-y-4 bg-slate-50 p-6">
+                <div className="rounded-xl border border-cyan-100 bg-white p-4">
+                  <p className="text-sm font-bold text-slate-900">
+                    Tu comentario quedará unido al acta de la reunión.
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Cuando todos los responsables hayan comentado, Pixel creará una entrada única en la bitácora del proyecto.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
+                    <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-700">
+                      {completedParticipantIds.length} comentaron
+                    </span>
+                    <span className="rounded-full bg-amber-50 px-2.5 py-1 text-amber-700">
+                      {pendingCount} quedarán pendientes
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-sm font-bold text-slate-700">
+                    Comentario de la reunión <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    value={meetingCompletionComment}
+                    onChange={(e) => setMeetingCompletionComment(e.target.value)}
+                    className="h-32 w-full resize-none rounded-xl border border-slate-200 bg-white p-3 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/20"
+                    placeholder="Escribe acuerdos, decisiones, bloqueos o compromisos que aportaste a esta reunión..."
+                  />
+                </div>
+              </div>
+
+              <div className="p-6 border-t border-slate-100 flex items-center justify-end gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setMeetingCompletionModal({ isOpen: false, task: null, nextStatus: 'completed' });
+                    setMeetingCompletionComment('');
+                  }}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  onClick={confirmMeetingCompletion}
+                  disabled={processingId === meetingTask.id || !meetingCompletionComment.trim()}
+                  className="bg-cyan-700 text-white hover:bg-cyan-800"
+                >
+                  {processingId === meetingTask.id && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                  Guardar comentario
+                </Button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {dynamicRateCardModal.isOpen && dynamicRateCardModal.task && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden">
@@ -2428,6 +2719,25 @@ export default function WorkflowTray() {
                           </Button>
                         </div>
                       </div>
+                      {Array.isArray(detailTask.meetingResponses) && detailTask.meetingResponses.length > 0 && (
+                        <div className="mt-4 rounded-lg border border-cyan-100 bg-white p-3">
+                          <p className="mb-2 text-xs font-black uppercase tracking-wider text-cyan-700">
+                            Comentarios registrados
+                          </p>
+                          <div className="space-y-2">
+                            {detailTask.meetingResponses.map((response: any, index: number) => (
+                              <div key={response.id || `${response.participantId}-${index}`} className="rounded-lg bg-slate-50 p-2">
+                                <p className="text-xs font-bold text-slate-800">
+                                  {response.participantName || response.userName || getMeetingParticipantName(detailTask, response.participantId, `Participante ${index + 1}`)}
+                                </p>
+                                <p className="mt-1 whitespace-pre-wrap text-xs text-slate-600">
+                                  {response.comment || 'Sin comentario'}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
