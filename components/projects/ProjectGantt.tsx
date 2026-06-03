@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Gantt, Task, ViewMode } from 'gantt-task-react';
 import "gantt-task-react/dist/index.css";
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
-import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw, ClipboardList, X } from 'lucide-react';
+import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw, ClipboardList, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -88,6 +88,52 @@ const getTaskCommentCount = (task: any) => {
 const getTaskGroupId = (task: any) => task?.groupId || UNGROUPED_GROUP_ID;
 
 const getTaskGroupColor = (group?: TaskGroup) => group?.color || '#579bfc';
+
+const normalizeSearchValue = (value: any) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+
+const getStatusSearchTerms = (status: string) => {
+  switch (status) {
+    case 'completed':
+    case 'listo':
+      return 'completed listo finalizado finalizada terminado terminada';
+    case 'completed_late':
+      return 'completed_late listo con retraso finalizado con retraso tarde';
+    case 'in_progress':
+    case 'en_curso':
+      return 'in_progress en curso trabajando iniciado iniciada';
+    case 'stuck':
+    case 'detenido':
+      return 'stuck detenido estancado bloqueado bloqueada';
+    case 'devuelto':
+      return 'devuelto devolucion corregir correccion';
+    case 'reproceso':
+      return 'reproceso devuelto correccion';
+    case 'todo':
+    case 'pending':
+      return 'todo pending pendiente no iniciado';
+    case 'not_started':
+      return 'not_started no iniciado sin iniciar pendiente';
+    default:
+      return status || '';
+  }
+};
+
+const getPrioritySearchTerms = (priority: string) => {
+  switch (priority) {
+    case 'high':
+      return 'high alta urgente critica critico prioridad alta';
+    case 'low':
+      return 'low baja prioridad baja';
+    case 'medium':
+    default:
+      return 'medium media prioridad media';
+  }
+};
 
 const getTaskTime = (value: any) => {
   const date = getTaskDate(value);
@@ -235,6 +281,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupColor, setNewGroupColor] = useState(TASK_GROUP_COLORS[0]);
+  const [taskSearchQuery, setTaskSearchQuery] = useState("");
   const taskAssigneeOptions = assigneeOptions || teamMembers;
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
@@ -268,6 +315,31 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   }, [taskGroups]);
   const defaultTaskGroup = sortedTaskGroups[0] || DEFAULT_UNGROUPED_GROUP;
   const assignableTaskGroups = sortedTaskGroups.filter((group) => group.id !== UNGROUPED_GROUP_ID);
+  const normalizedTaskSearchQuery = useMemo(() => normalizeSearchValue(taskSearchQuery), [taskSearchQuery]);
+  const taskSearchTokens = useMemo(
+    () => normalizedTaskSearchQuery.split(/\s+/).filter(Boolean),
+    [normalizedTaskSearchQuery]
+  );
+  const hasActiveTaskSearch = taskSearchTokens.length > 0;
+  const hasActiveTaskFilter = Boolean(scheduleFilter || hasActiveTaskSearch);
+  const assigneeSearchMap = useMemo(() => {
+    const map = new Map<string, string>();
+    [...teamMembers, ...taskAssigneeOptions].forEach((member) => {
+      if (!member?.id || map.has(member.id)) return;
+      map.set(member.id, [
+        member.name,
+        member.email,
+        member.role,
+        member.systemRole,
+        member.projectRole,
+        member.projectRoleName,
+      ].filter(Boolean).join(' '));
+    });
+    return map;
+  }, [taskAssigneeOptions, teamMembers]);
+  const groupSearchMap = useMemo(() => {
+    return new Map(sortedTaskGroups.map((group) => [group.id, group.name]));
+  }, [sortedTaskGroups]);
 
   const toggleParent = (parentId: string) => {
     setExpandedParents(prev => ({
@@ -334,24 +406,114 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   }, [sortedTasks]);
 
   const filteredSortedTasks = useMemo(() => {
-    if (!scheduleFilter) return sortedTasks;
-    return sortedTasks.filter((task) => getTaskScheduleState(task) === scheduleFilter);
-  }, [scheduleFilter, sortedTasks]);
+    const scheduleFilteredTasks = scheduleFilter
+      ? sortedTasks.filter((task) => getTaskScheduleState(task) === scheduleFilter)
+      : sortedTasks;
+
+    if (taskSearchTokens.length === 0) return scheduleFilteredTasks;
+
+    const tasksById = new Map(sortedTasks.map((task) => [task.id, task]));
+    const childTasksByParentId = sortedTasks.reduce<Map<string, any[]>>((map, task) => {
+      if (!task.parentTaskId) return map;
+      const siblings = map.get(task.parentTaskId) || [];
+      siblings.push(task);
+      map.set(task.parentTaskId, siblings);
+      return map;
+    }, new Map<string, any[]>());
+    const includedIds = new Set<string>();
+
+    const getAssigneeText = (assigneeId: string) => {
+      if (!assigneeId) return '';
+      if (assigneeId === 'DYNAMIC') return 'dinamico dinamica asignacion dinamica responsable dinamico';
+      return assigneeSearchMap.get(assigneeId) || assigneeId;
+    };
+
+    const appendAncestors = (task: any) => {
+      let currentTask = task;
+      while (currentTask?.id && !includedIds.has(currentTask.id)) {
+        includedIds.add(currentTask.id);
+        currentTask = currentTask.parentTaskId ? tasksById.get(currentTask.parentTaskId) : null;
+      }
+    };
+
+    const appendDescendants = (task: any) => {
+      const children = childTasksByParentId.get(task.id) || [];
+      children.forEach((child) => {
+        if (includedIds.has(child.id)) return;
+        includedIds.add(child.id);
+        appendDescendants(child);
+      });
+    };
+
+    const taskMatchesSearch = (task: any) => {
+      const parentTask = task.parentTaskId ? tasksById.get(task.parentTaskId) : null;
+      const workflowStepsText = Array.isArray(task.workflowSteps)
+        ? task.workflowSteps.map((step: any, index: number) => [
+          `paso ${index + 1}`,
+          step.label,
+          step.name,
+          step.status,
+          getStatusSearchTerms(step.status),
+          getAssigneeText(step.assignedTo),
+        ].filter(Boolean).join(' ')).join(' ')
+        : '';
+      const text = normalizeSearchValue([
+        task.id,
+        task.title,
+        task.name,
+        getTaskTitle(task, ''),
+        getTaskDisplayTitle(task, ''),
+        task.externalWorkflowId,
+        task.description,
+        task.notes,
+        task.observation,
+        task.observacion,
+        task.type,
+        task.indicator,
+        task.municipality,
+        task.workflowMunicipality,
+        task.municipio,
+        task.city,
+        task.locality,
+        task.status,
+        getStatusSearchTerms(task.status),
+        task.priority,
+        getPrioritySearchTerms(getTaskPriority(task)),
+        groupSearchMap.get(getTaskGroupId(task)),
+        getAssigneeText(task.assignedTo),
+        parentTask ? getTaskDisplayTitle(parentTask, '') : '',
+        parentTask?.externalWorkflowId,
+        workflowStepsText,
+      ].filter(Boolean).join(' '));
+
+      return taskSearchTokens.every((token) => text.includes(token));
+    };
+
+    scheduleFilteredTasks.forEach((task) => {
+      if (!taskMatchesSearch(task)) return;
+      appendAncestors(task);
+      appendDescendants(task);
+    });
+
+    return sortedTasks.filter((task) => includedIds.has(task.id));
+  }, [assigneeSearchMap, groupSearchMap, scheduleFilter, sortedTasks, taskSearchTokens]);
 
   const shouldShowTaskGroups = sortedTaskGroups.length > 0 || sortedTasks.some((task) => task.groupId);
 
   const visibleRows = useMemo<VisibleTaskRow[]>(() => {
-    const sourceTasks = scheduleFilter ? filteredSortedTasks : sortedTasks;
+    const sourceTasks = hasActiveTaskFilter ? filteredSortedTasks : sortedTasks;
+    const sourceTaskIds = new Set(sourceTasks.map((task) => task.id));
     const rows: VisibleTaskRow[] = [];
 
     const appendTaskTree = (task: any) => {
       rows.push({ type: 'task', id: task.id, task });
       const subTasks = sortChildTasks(sourceTasks.filter(t => t.parentTaskId === task.id));
-      if (subTasks.length > 0 && expandedParents[task.id]) {
+      const shouldShowChildren = Boolean(expandedParents[task.id] || hasActiveTaskSearch);
+      if (subTasks.length > 0 && shouldShowChildren) {
         subTasks.forEach(subTask => {
           rows.push({ type: 'task', id: subTask.id, task: subTask });
           // Generate visual sub-tasks for workflow steps
-          if (subTask.type === 'workflow' && subTask.workflowSteps && expandedParents[subTask.id]) {
+          if (subTask.type === 'workflow' && subTask.workflowSteps && (expandedParents[subTask.id] || hasActiveTaskSearch)) {
             subTask.workflowSteps.forEach((step: any, idx: number) => {
               rows.push({ type: 'task', id: `${subTask.id}-step-${idx}`, task: {
                 id: `${subTask.id}-step-${idx}`,
@@ -372,7 +534,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             });
           }
         });
-      } else if (task.type === 'workflow' && task.workflowSteps && expandedParents[task.id]) {
+      } else if (task.type === 'workflow' && task.workflowSteps && shouldShowChildren) {
         // Generate visual sub-tasks for workflow steps (no cycles)
         task.workflowSteps.forEach((step: any, idx: number) => {
           rows.push({ type: 'task', id: `${task.id}-step-${idx}`, task: {
@@ -396,12 +558,16 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     };
 
     if (!shouldShowTaskGroups) {
-      const parentsAndNormal = scheduleFilter ? sourceTasks : sourceTasks.filter(t => !t.parentTaskId);
+      const parentsAndNormal = hasActiveTaskFilter
+        ? sourceTasks.filter(t => !t.parentTaskId || !sourceTaskIds.has(t.parentTaskId))
+        : sourceTasks.filter(t => !t.parentTaskId);
       parentsAndNormal.forEach(appendTaskTree);
       return rows;
     }
 
-    const topLevelTasks = scheduleFilter ? sourceTasks : sourceTasks.filter(t => !t.parentTaskId);
+    const topLevelTasks = hasActiveTaskFilter
+      ? sourceTasks.filter(t => !t.parentTaskId || !sourceTaskIds.has(t.parentTaskId))
+      : sourceTasks.filter(t => !t.parentTaskId);
     const knownGroupIds = new Set(sortedTaskGroups.map((group) => group.id));
     const groupedTasks = sortedTaskGroups.map((group) => ({
       group,
@@ -415,6 +581,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     }));
 
     groupedTasks.forEach(({ group, tasks: groupTasks }) => {
+      if (hasActiveTaskFilter && groupTasks.length === 0) return;
+
       rows.push({
         type: 'group',
         id: `group-${group.id}`,
@@ -423,13 +591,13 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         tasks: groupTasks,
       });
 
-      if (!collapsedGroups[group.id]) {
+      if (!collapsedGroups[group.id] || hasActiveTaskSearch) {
         groupTasks.forEach(appendTaskTree);
       }
     });
 
     return rows;
-  }, [collapsedGroups, expandedParents, filteredSortedTasks, scheduleFilter, shouldShowTaskGroups, sortedTaskGroups, sortedTasks]);
+  }, [collapsedGroups, expandedParents, filteredSortedTasks, hasActiveTaskFilter, hasActiveTaskSearch, shouldShowTaskGroups, sortedTaskGroups, sortedTasks]);
 
   const visibleTasks = useMemo(
     () => visibleRows.filter((row): row is Extract<VisibleTaskRow, { type: 'task' }> => row.type === 'task').map((row) => row.task),
@@ -488,7 +656,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
   const handleDragEnd = (result: DropResult) => {
     if (!canModifyTaskDetails || !onReorderTasks) return;
-    if (scheduleFilter) return;
+    if (hasActiveTaskFilter) return;
     if (!result.destination) return;
 
     const sourceRow = visibleRows[result.source.index];
@@ -593,6 +761,11 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     setScheduleFilter((current) => current === filter ? null : filter);
   };
 
+  const clearTaskFilters = () => {
+    setScheduleFilter(null);
+    setTaskSearchQuery("");
+  };
+
   const renderScheduleFilterChip = (
     filter: Exclude<ScheduleFilter, null>,
     count: number,
@@ -635,8 +808,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   return (
     <div translate="no" className="flex flex-col h-full bg-white rounded-lg overflow-hidden border border-slate-200 shadow-sm">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200 bg-white">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-slate-200 bg-white">
+        <div className="flex shrink-0 items-center gap-2">
           {onCreateTask && (
             <Button onClick={onCreateTask} size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white h-8 px-3 mr-2">
               <Plus size={14} className="mr-1.5" />
@@ -696,7 +869,28 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             {isTimelineCollapsed ? "Mostrar Gantt" : "Solo tareas"}
           </Button>
         </div>
-        <div className="flex items-center gap-2 text-[11px] font-medium text-slate-400">
+        <div className="relative min-w-[260px] flex-1">
+          <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="search"
+            value={taskSearchQuery}
+            onChange={(event) => setTaskSearchQuery(event.target.value)}
+            placeholder="Buscar tarea, ID, responsable, grupo, estado o municipio..."
+            className="h-8 w-full rounded-lg border border-slate-200 bg-slate-50/70 pl-9 pr-9 text-xs font-medium text-slate-700 outline-none transition-all placeholder:text-slate-400 focus:border-indigo-200 focus:bg-white focus:ring-2 focus:ring-indigo-500/10"
+            aria-label="Buscar tareas"
+          />
+          {taskSearchQuery && (
+            <button
+              type="button"
+              onClick={() => setTaskSearchQuery("")}
+              className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+              aria-label="Limpiar busqueda de tareas"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-2 text-[11px] font-medium text-slate-400">
           {renderScheduleFilterChip(
             'overdue',
             scheduleStats.overdue,
@@ -727,7 +921,16 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               Limpiar filtro
             </button>
           )}
-          <span>{scheduleFilter ? `${visibleTasks.length} filtradas` : `${tasks.length} tareas en total`}</span>
+          {hasActiveTaskSearch && (
+            <button
+              type="button"
+              onClick={() => setTaskSearchQuery("")}
+              className="rounded-full bg-slate-100 px-2.5 py-1 font-bold text-slate-600 transition-colors hover:bg-slate-200"
+            >
+              Limpiar busqueda
+            </button>
+          )}
+          <span>{hasActiveTaskFilter ? `${filteredSortedTasks.length} resultado${filteredSortedTasks.length === 1 ? '' : 's'}` : `${tasks.length} tareas en total`}</span>
         </div>
       </div>
 
@@ -752,20 +955,19 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                   ref={provided.innerRef}
                   className="w-full overflow-visible"
                 >
-                  {visibleTasks.length === 0 && scheduleFilter && (
+                  {visibleTasks.length === 0 && hasActiveTaskFilter ? (
                     <div className="flex min-h-[180px] flex-col items-center justify-center border-b border-slate-100 px-4 text-center">
                       <ListTodo className="mb-2 text-slate-300" size={28} />
-                      <p className="text-sm font-semibold text-slate-700">No hay tareas con este filtro.</p>
+                      <p className="text-sm font-semibold text-slate-700">No hay tareas con esta busqueda o filtro.</p>
                       <button
                         type="button"
-                        onClick={() => setScheduleFilter(null)}
+                        onClick={clearTaskFilters}
                         className="mt-2 rounded-md bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 transition-colors hover:bg-indigo-100"
                       >
                         Ver todas las tareas
                       </button>
                     </div>
-                  )}
-                  {visibleRows.map((row, rowIndex) => {
+                  ) : visibleRows.map((row, rowIndex) => {
                     if (row.type === 'group') {
                       const groupColor = getTaskGroupColor(row.group);
                       const isCollapsed = Boolean(collapsedGroups[row.group.id]);
@@ -872,7 +1074,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     );
 
                     return (
-                      <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={Boolean(scheduleFilter) || !canModifyTaskDetails || isSubTask || isEditingTitle}>
+                      <Draggable key={task.id} draggableId={task.id} index={index} isDragDisabled={hasActiveTaskFilter || !canModifyTaskDetails || isSubTask || isEditingTitle}>
                         {(provided, snapshot) => (
                           <div
                             ref={provided.innerRef}
