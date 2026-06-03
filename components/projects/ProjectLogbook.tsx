@@ -1,11 +1,11 @@
 "use client"
 
 import React, { useEffect, useMemo, useState } from "react";
-import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from "@/lib/supabase/document-store";
+import { addDoc, collection, deleteDoc, doc, increment, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from "@/lib/supabase/document-store";
 import { db } from "@/lib/backend";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { BookOpen, Calendar, CheckCircle2, Clock, MessageSquare, Sparkles, UserRound, Wand2, X } from "lucide-react";
+import { BookOpen, Calendar, CheckCircle2, Clock, MessageSquare, Sparkles, Trash2, UserRound, Wand2, X } from "lucide-react";
 import { toast } from "sonner";
 import {
   ACTION_VERBS,
@@ -22,6 +22,7 @@ type ProjectLogbookProps = {
   currentUser: any;
   canCreateTasks: boolean;
   canAddSubtasks: boolean;
+  canDeleteEntries: boolean;
 };
 
 type LogbookEntry = {
@@ -277,6 +278,7 @@ export function ProjectLogbook({
   currentUser,
   canCreateTasks,
   canAddSubtasks,
+  canDeleteEntries,
 }: ProjectLogbookProps) {
   const [entries, setEntries] = useState<LogbookEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -287,6 +289,7 @@ export function ProjectLogbook({
   const [selectedAction, setSelectedAction] = useState<{ entry: LogbookEntry; candidate: ActionCandidate } | null>(null);
   const [actionForm, setActionForm] = useState<ActionForm>(emptyActionForm());
   const [savingAction, setSavingAction] = useState(false);
+  const [deletingEntryId, setDeletingEntryId] = useState<string | null>(null);
   const initialEntrySeedRef = React.useRef<Set<string>>(new Set());
 
   const projectMembers = useMemo(
@@ -347,7 +350,7 @@ export function ProjectLogbook({
   }, [projectId]);
 
   useEffect(() => {
-    if (!projectId || !project || loading) return;
+    if (!projectId || !project || loading || project?.logbookInitialEntrySuppressed) return;
 
     const hasInitialEntry = entries.some((entry) =>
       entry.type === "project_start" ||
@@ -423,6 +426,39 @@ export function ProjectLogbook({
       toast.error(error?.message || "No se pudo guardar la bitácora.");
     } finally {
       setSavingEntry(false);
+    }
+  };
+
+  const handleDeleteEntry = async (entry: LogbookEntry) => {
+    if (!canDeleteEntries || deletingEntryId) return;
+
+    const confirmed = window.confirm(
+      `¿Eliminar la entrada "${entry.title || "Sin título"}"? Esta acción no se puede deshacer.`
+    );
+    if (!confirmed) return;
+
+    setDeletingEntryId(entry.id);
+    try {
+      const isInitialEntry =
+        entry.id === "project-start" ||
+        entry.type === "project_start" ||
+        entry.systemType === "project_start" ||
+        entry.source === "project_start";
+
+      if (isInitialEntry) {
+        await updateDoc(doc(db, "projects", projectId), {
+          logbookInitialEntrySuppressed: true,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      await deleteDoc(doc(db, "projects", projectId, "logbookEntries", entry.id));
+      toast.success("Entrada de bitácora eliminada.");
+    } catch (error: any) {
+      console.error("Error deleting logbook entry:", error);
+      toast.error(error?.message || "No se pudo eliminar la entrada de bitácora.");
+    } finally {
+      setDeletingEntryId(null);
     }
   };
 
@@ -915,13 +951,26 @@ export function ProjectLogbook({
                     <h3 className="text-lg font-bold text-slate-900">{entry.title}</h3>
                     <p className="mt-1 text-xs text-slate-500">{entry.createdByEmail || "Usuario"}</p>
                   </div>
-                  <div className="flex shrink-0 gap-2 text-xs">
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 text-xs">
                     <span className="rounded-full bg-amber-50 px-2 py-1 font-bold text-amber-700">
                       {candidates.length} acciones
                     </span>
                     <span className="rounded-full bg-emerald-50 px-2 py-1 font-bold text-emerald-700">
                       {links.length} vinculadas
                     </span>
+                    {canDeleteEntries && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteEntry(entry)}
+                        disabled={deletingEntryId === entry.id}
+                        className="inline-flex items-center gap-1 rounded-full border border-red-100 bg-red-50 px-2 py-1 font-bold text-red-600 transition hover:border-red-200 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        title="Eliminar entrada"
+                        aria-label={`Eliminar entrada ${entry.title || ""}`}
+                      >
+                        <Trash2 size={13} />
+                        {deletingEntryId === entry.id ? "Eliminando..." : "Eliminar"}
+                      </button>
+                    )}
                   </div>
                 </div>
 

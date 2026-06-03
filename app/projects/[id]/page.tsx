@@ -489,6 +489,10 @@ export default function ProjectDetailsPage() {
   const canManageDriveRepositories =
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
+  const canDeleteLogbookEntries =
+    userRole === 'admin' ||
+    userRole === 'manager' ||
+    (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
   const canManageWorkflowTemplates =
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
@@ -2085,6 +2089,7 @@ export default function ProjectDetailsPage() {
           currentUser={user}
           canCreateTasks={canCreateTasks}
           canAddSubtasks={canAddSubtasks}
+          canDeleteEntries={canDeleteLogbookEntries}
         />
       )}
 
