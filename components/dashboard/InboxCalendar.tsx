@@ -25,7 +25,8 @@ import {
 import { collection, doc, getDoc, getDocs, onSnapshot, query, setDoc, where } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
-import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
+import { organizationNameFor } from '@/lib/organizations';
+import { canLoadProjectForUser } from '@/lib/project-access';
 import { getTaskDisplayTitle } from '@/lib/task-title';
 import { getTaskDateValue, isCompletedTaskStatus } from '@/lib/taskProgress';
 import {
@@ -529,8 +530,12 @@ export default function InboxCalendar() {
         const projectDocs = projectSnapshot.docs
           .map((projectDoc) => ({ id: projectDoc.id, ...projectDoc.data() }))
           .filter((project) => {
-            if (userRole !== 'org_admin') return true;
-            return managedOrganizationIds.length === 0 || belongsToAnyOrganization(project, managedOrganizationIds);
+            return canLoadProjectForUser(project, {
+              assignedIds: memberIds,
+              managedOrganizationIds,
+              userId: user.uid,
+              userRole,
+            });
           });
 
         if (projectDocs.length === 0) {
@@ -538,6 +543,9 @@ export default function InboxCalendar() {
           setLoading(false);
           return;
         }
+
+        const activeProjectIds = new Set(projectDocs.map((project) => project.id));
+        setTasks((current) => current.filter((task) => activeProjectIds.has(task.projectId)));
 
         let loadedProjects = 0;
         projectDocs.forEach((project: any) => {

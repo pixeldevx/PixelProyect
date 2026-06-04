@@ -15,7 +15,8 @@ import { toast } from 'sonner';
 import { getCompletionStatusForTask, getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
 
 import { useAuth } from '@/hooks/useAuth';
-import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
+import { organizationNameFor } from '@/lib/organizations';
+import { canLoadProjectForUser } from '@/lib/project-access';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import {
   getStaticRateCardAssignee,
@@ -844,11 +845,17 @@ export default function WorkflowTray() {
             const projectDocs = snapshot.docs
               .map(doc => ({ id: doc.id, ...doc.data() }))
               .filter((project) => {
-                if (userRole !== 'org_admin') return true;
-                return managedOrganizationIds.length === 0 || belongsToAnyOrganization(project, managedOrganizationIds);
+                return canLoadProjectForUser(project, {
+                  assignedIds: allMemberIds,
+                  managedOrganizationIds,
+                  userId: user.uid,
+                  userRole,
+                });
               });
             const projectsById = new Map(projectDocs.map((project) => [project.id, project]));
             const projectIds = projectDocs.map(project => project.id);
+            const activeProjectIds = new Set(projectIds);
+            setWorkflows((current) => current.filter((item) => activeProjectIds.has(item.projectId)));
             
             let projectsProcessed = 0;
 
@@ -857,6 +864,7 @@ export default function WorkflowTray() {
             taskUnsubscribes = [];
 
             if (projectIds.length === 0) {
+              setWorkflows([]);
               setLoading(false);
               return;
             }

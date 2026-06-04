@@ -35,6 +35,7 @@ type OrConstraint = {
 type QueryConstraint = WhereConstraint | OrderConstraint | OrConstraint;
 
 const SERVER_TIMESTAMP = Symbol('serverTimestamp');
+const LOCAL_DOCUMENT_CHANGE_EVENT = 'pixel-project:document-store-change';
 
 class IncrementTransform {
   constructor(public by: number) {}
@@ -113,6 +114,71 @@ const randomId = () => {
     return crypto.randomUUID();
   }
   return `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+};
+
+type LocalDocumentChangeDetail = {
+  collectionPath: string;
+  docId: string;
+};
+
+const emitLocalDocumentChange = (ref: DocumentReference) => {
+  if (typeof window === 'undefined') return;
+
+  window.dispatchEvent(new CustomEvent<LocalDocumentChangeDetail>(LOCAL_DOCUMENT_CHANGE_EVENT, {
+    detail: {
+      collectionPath: ref.collectionPath,
+      docId: ref.id,
+    },
+  }));
+};
+
+const getQuerySource = (source: CollectionReference | SupabaseQuery) =>
+  (source as SupabaseQuery).kind === 'query'
+    ? (source as SupabaseQuery).source
+    : (source as CollectionReference);
+
+const getWatchedCollection = (source: DocumentReference | CollectionReference | SupabaseQuery) => {
+  if ((source as DocumentReference).kind === 'doc') {
+    return {
+      collectionPath: (source as DocumentReference).collectionPath,
+      docId: (source as DocumentReference).id,
+      isCollectionGroup: false,
+      collectionGroupId: null as string | null,
+    };
+  }
+
+  const collectionRef = getQuerySource(source as CollectionReference | SupabaseQuery);
+  return {
+    collectionPath: collectionRef.collectionPath,
+    docId: null as string | null,
+    isCollectionGroup: Boolean(collectionRef.isCollectionGroup),
+    collectionGroupId: collectionRef.isCollectionGroup ? collectionRef.id : null,
+  };
+};
+
+const rowBelongsToCollectionGroup = (collectionPath: string, collectionGroupId: string) =>
+  collectionPath === collectionGroupId || collectionPath.endsWith(`/${collectionGroupId}`);
+
+const changeMatchesSource = (
+  source: DocumentReference | CollectionReference | SupabaseQuery,
+  change: { collectionPath?: string | null; docId?: string | null }
+) => {
+  const watched = getWatchedCollection(source);
+  if (!change.collectionPath) return true;
+
+  if (watched.isCollectionGroup && watched.collectionGroupId) {
+    return rowBelongsToCollectionGroup(change.collectionPath, watched.collectionGroupId);
+  }
+
+  if (change.collectionPath !== watched.collectionPath) return false;
+  if (watched.docId) return change.docId === watched.docId;
+  return true;
+};
+
+const getRealtimeFilter = (source: DocumentReference | CollectionReference | SupabaseQuery) => {
+  const watched = getWatchedCollection(source);
+  if (watched.isCollectionGroup) return undefined;
+  return `collection_path=eq.${watched.collectionPath}`;
 };
 
 const parentDocForCollectionPath = (collectionPath: string): DocumentReference | null => {
@@ -470,6 +536,7 @@ export const setDoc = async (
   const existing = options?.merge ? (await fetchDocRow(ref))?.data || {} : {};
   const next = options?.merge ? applyUpdate(existing, data) : normalizeData(data);
   await saveDocData(ref, next);
+  emitLocalDocumentChange(ref);
 };
 
 export const updateDoc = async (ref: DocumentReference, data: Record<string, any>) => {
@@ -478,6 +545,7 @@ export const updateDoc = async (ref: DocumentReference, data: Record<string, any
     throw new Error(`Document does not exist: ${ref.path}`);
   }
   await saveDocData(ref, applyUpdate(existing.data, data));
+  emitLocalDocumentChange(ref);
 };
 
 export const addDoc = async (collectionRef: CollectionReference, data: Record<string, any>) => {
@@ -493,6 +561,7 @@ export const deleteDoc = async (ref: DocumentReference) => {
     .eq('collection_path', ref.collectionPath)
     .eq('doc_id', ref.id);
   if (error) throw error;
+  emitLocalDocumentChange(ref);
 };
 
 class WriteBatch {
@@ -535,6 +604,8 @@ export function onSnapshot(
   onError?: (error: any) => void
 ) {
   let active = true;
+  let emitting = false;
+  let pendingEmit = false;
 
   const emit = async () => {
     try {
@@ -549,19 +620,71 @@ export function onSnapshot(
     }
   };
 
-  void emit();
+  const requestEmit = () => {
+    if (!active) return;
+
+    if (emitting) {
+      pendingEmit = true;
+      return;
+    }
+
+    emitting = true;
+    void (async () => {
+      do {
+        pendingEmit = false;
+        await emit();
+      } while (active && pendingEmit);
+      emitting = false;
+    })();
+  };
+
+  const handleLocalChange = (event: Event) => {
+    const detail = (event as CustomEvent<LocalDocumentChangeDetail>).detail;
+    if (changeMatchesSource(source, detail)) {
+      requestEmit();
+    }
+  };
+
+  const handleRemoteChange = (payload: any) => {
+    const row = payload?.new || payload?.old || null;
+    const change = {
+      collectionPath: row?.collection_path,
+      docId: row?.doc_id,
+    };
+
+    if (changeMatchesSource(source, change)) {
+      requestEmit();
+    }
+  };
+
+  requestEmit();
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener(LOCAL_DOCUMENT_CHANGE_EVENT, handleLocalChange);
+  }
+
+  const realtimeFilter = getRealtimeFilter(source);
+  const postgresChangesConfig = {
+    event: '*' as const,
+    schema: 'public',
+    table: SUPABASE_DOCUMENTS_TABLE,
+    ...(realtimeFilter ? { filter: realtimeFilter } : {}),
+  };
 
   const channel = supabase
     .channel(`app_documents_${Math.random().toString(36).slice(2)}`)
     .on(
       'postgres_changes',
-      { event: '*', schema: 'public', table: SUPABASE_DOCUMENTS_TABLE },
-      () => void emit()
+      postgresChangesConfig,
+      handleRemoteChange
     )
     .subscribe();
 
   return () => {
     active = false;
+    if (typeof window !== 'undefined') {
+      window.removeEventListener(LOCAL_DOCUMENT_CHANGE_EVENT, handleLocalChange);
+    }
     void supabase.removeChannel(channel);
   };
 }

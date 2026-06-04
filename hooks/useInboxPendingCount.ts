@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { collection, getDocs, onSnapshot, query, where } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
-import { belongsToAnyOrganization } from '@/lib/organizations';
+import { canLoadProjectForUser } from '@/lib/project-access';
 
 const terminalStatuses = new Set(['completed', 'completed_late', 'listo']);
 
@@ -90,8 +90,12 @@ export function useInboxPendingCount() {
         const projects = projectSnapshot.docs
           .map((projectDoc) => ({ id: projectDoc.id, ...projectDoc.data() }))
           .filter((project) => {
-            if (userRole !== 'org_admin') return true;
-            return managedOrganizationIds.length === 0 || belongsToAnyOrganization(project, managedOrganizationIds);
+            return canLoadProjectForUser(project, {
+              assignedIds: memberIds,
+              managedOrganizationIds,
+              userId: user.uid,
+              userRole,
+            });
           });
 
         if (projects.length === 0) {
