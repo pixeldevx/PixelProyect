@@ -274,6 +274,18 @@ const getTaskDate = (value: any) => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+const toDateInputValue = (value: any) => {
+  const date = getTaskDate(value);
+  if (!date) return '';
+  return format(date, 'yyyy-MM-dd');
+};
+
+const parseDateInputValue = (value: string) => {
+  if (!value) return null;
+  const parsed = new Date(`${value}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 const toHistoryDateValue = (value: any) => {
   const date = getTaskDate(value);
   return date ? format(date, 'yyyy-MM-dd') : null;
@@ -815,6 +827,12 @@ export default function WorkflowTray() {
     nextStatus: string;
   }>({ isOpen: false, task: null, nextStatus: 'completed' });
   const [meetingCompletionComment, setMeetingCompletionComment] = useState('');
+  const [pauseTaskModal, setPauseTaskModal] = useState<{ isOpen: boolean; task: any }>({ isOpen: false, task: null });
+  const [pauseReason, setPauseReason] = useState('');
+  const [rescheduleTaskModal, setRescheduleTaskModal] = useState<{ isOpen: boolean; task: any }>({ isOpen: false, task: null });
+  const [rescheduleStartDate, setRescheduleStartDate] = useState('');
+  const [rescheduleEndDate, setRescheduleEndDate] = useState('');
+  const [rescheduleReason, setRescheduleReason] = useState('');
   const [docsModalTask, setDocsModalTask] = useState<any>(null);
   const [detailsModalTask, setDetailsModalTask] = useState<any>(null);
   const [historyModalTask, setHistoryModalTask] = useState<any>(null);
@@ -1479,20 +1497,35 @@ export default function WorkflowTray() {
     comment: string;
   }, statusAction?: {
     comment?: string | null;
+    reschedule?: {
+      start: Date;
+      end: Date;
+    };
   }) => {
     if (!user || !task?.id || isWorkflowItem(task)) return;
 
     let statusComment = statusAction?.comment?.trim() || null;
     if (nextStatus === 'stuck' && task.status !== 'stuck' && !statusComment) {
-      const pauseReason = window.prompt('Describe por qué se estanca la tarea. Este argumento quedará en interacciones.');
-      statusComment = pauseReason?.trim() || null;
-      if (!statusComment) {
-        toast.warning('Para estancar una tarea debes registrar el motivo.');
-        return;
-      }
+      setPauseTaskModal({ isOpen: true, task });
+      setPauseReason('');
+      return;
     }
 
-    let finalStatus = normalizeCompletionStatus(nextStatus, task);
+    if (nextStatus === 'rescheduled' && !statusAction?.reschedule) {
+      setRescheduleTaskModal({ isOpen: true, task });
+      setRescheduleStartDate(toDateInputValue(task.startDate || task.start || new Date()));
+      setRescheduleEndDate(toDateInputValue(task.endDate || task.end || new Date()));
+      setRescheduleReason('');
+      return;
+    }
+
+    if (nextStatus === 'rescheduled' && !statusComment) {
+      toast.warning('Agrega el argumento de la reprogramación.');
+      return;
+    }
+
+    const isRescheduleAction = nextStatus === 'rescheduled';
+    let finalStatus = isRescheduleAction ? 'in_progress' : normalizeCompletionStatus(nextStatus, task);
     let progress = getProgressForTaskStatus(finalStatus, task.progress);
     const taskHasDynamicRateCard = isDynamicRateCardEnabled(task);
     const wasCompleted = isCompletedTaskStatus(task.status);
@@ -1623,10 +1656,11 @@ export default function WorkflowTray() {
       const isPausingSchedule = finalStatus === 'stuck' && previousStatus !== 'stuck';
       const isResumingSchedule = previousStatus === 'stuck' && finalStatus === 'in_progress';
       const statusHistoryEntry: any = {
-        id: `${task.id}-status-${finalStatus}-${Date.now()}`,
-        status: finalStatus,
+        id: `${task.id}-status-${isRescheduleAction ? 'rescheduled' : finalStatus}-${Date.now()}`,
+        status: isRescheduleAction ? 'rescheduled' : finalStatus,
+        effectiveStatus: finalStatus,
         previousStatus,
-        action: isPausingSchedule ? 'pause' : isResumingSchedule ? 'resume' : 'status',
+        action: isRescheduleAction ? 'reschedule' : isPausingSchedule ? 'pause' : isResumingSchedule ? 'resume' : 'status',
         changedBy: user.uid,
         memberId,
         userIds: reviewActorIds,
@@ -1654,6 +1688,19 @@ export default function WorkflowTray() {
         updatedAt: actionTimestamp,
         statusHistory: arrayUnion(statusHistoryEntry),
       };
+
+      if (isRescheduleAction && statusAction?.reschedule) {
+        const { start, end } = statusAction.reschedule;
+        taskUpdate.startDate = start;
+        taskUpdate.endDate = end;
+        taskUpdate.start = start;
+        taskUpdate.end = end;
+        taskUpdate.schedulePause = null;
+        statusHistoryEntry.previousStartDate = toHistoryDateValue(task.startDate || task.start);
+        statusHistoryEntry.previousEndDate = toHistoryDateValue(task.endDate || task.end);
+        statusHistoryEntry.newStartDate = toHistoryDateValue(start);
+        statusHistoryEntry.newEndDate = toHistoryDateValue(end);
+      }
 
       if (isPausingSchedule) {
         const remainingDays = getRemainingScheduleDays(task.endDate || task.end, actionDate);
@@ -1828,6 +1875,53 @@ export default function WorkflowTray() {
     setMeetingCompletionComment('');
   };
 
+  const confirmPauseAssignedTask = async () => {
+    const task = pauseTaskModal.task;
+    const cleanReason = pauseReason.trim();
+
+    if (!task) return;
+    if (!cleanReason) {
+      toast.warning('Describe por qué se estanca la tarea.');
+      return;
+    }
+
+    await updateAssignedTaskStatus(task, 'stuck', undefined, undefined, {
+      comment: cleanReason,
+    });
+    setPauseTaskModal({ isOpen: false, task: null });
+    setPauseReason('');
+  };
+
+  const confirmRescheduleAssignedTask = async () => {
+    const task = rescheduleTaskModal.task;
+    const start = parseDateInputValue(rescheduleStartDate);
+    const end = parseDateInputValue(rescheduleEndDate);
+    const cleanReason = rescheduleReason.trim();
+
+    if (!task) return;
+    if (!start || !end) {
+      toast.warning('Selecciona fecha de inicio y fecha fin.');
+      return;
+    }
+    if (start.getTime() > end.getTime()) {
+      toast.warning('La fecha de inicio no puede ser posterior a la fecha fin.');
+      return;
+    }
+    if (!cleanReason) {
+      toast.warning('Agrega el argumento de la reprogramación.');
+      return;
+    }
+
+    await updateAssignedTaskStatus(task, 'rescheduled', undefined, undefined, {
+      comment: cleanReason,
+      reschedule: { start, end },
+    });
+    setRescheduleTaskModal({ isOpen: false, task: null });
+    setRescheduleStartDate('');
+    setRescheduleEndDate('');
+    setRescheduleReason('');
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -1886,6 +1980,7 @@ export default function WorkflowTray() {
     const currentStepStatus = taskIsWorkflow
       ? (task.workflowSteps?.[task.currentStepIndex]?.status || '').toLowerCase()
       : (task.status || 'todo').toLowerCase();
+    const hasRescheduleHistory = Array.isArray(task.statusHistory) && task.statusHistory.some((entry: any) => entry?.action === 'reschedule' || entry?.status === 'rescheduled');
     
     if (!isInActiveInboxTab(task)) return false;
 
@@ -1897,7 +1992,8 @@ export default function WorkflowTray() {
       if (statusFilter === 'assigned_task' && taskIsWorkflow) return false;
       if (statusFilter === 'overdue' && dueState !== 'overdue') return false;
       if (statusFilter === 'due_soon' && dueState !== 'due_soon') return false;
-      if (!['workflow', 'assigned_task', 'overdue', 'due_soon'].includes(statusFilter) && currentStepStatus !== statusFilter) return false;
+      if (statusFilter === 'rescheduled' && !hasRescheduleHistory && currentStepStatus !== 'rescheduled') return false;
+      if (!['workflow', 'assigned_task', 'overdue', 'due_soon', 'rescheduled'].includes(statusFilter) && currentStepStatus !== statusFilter) return false;
     }
 
     return externalId.includes(searchLower) || 
@@ -2235,6 +2331,7 @@ export default function WorkflowTray() {
                 <option value="todo">Pendiente</option>
                 <option value="in_progress">Trabajando</option>
                 <option value="stuck">Estancada</option>
+                <option value="rescheduled">Reprogramar</option>
                 <option value="completed">Finalizar</option>
                 {status === 'completed_late' && <option value="completed_late">Finalizada con retraso</option>}
               </select>
@@ -2487,6 +2584,7 @@ export default function WorkflowTray() {
             <option value="todo">Pendiente</option>
             <option value="in_progress">Trabajando</option>
             <option value="stuck">Estancada</option>
+            <option value="rescheduled">Reprogramadas</option>
             <option value="en_curso">Workflow en curso</option>
             <option value="detenido">Workflow detenido</option>
             <option value="overdue">Vencidas</option>
@@ -3008,6 +3106,174 @@ export default function WorkflowTray() {
           </div>
         );
       })()}
+
+      {pauseTaskModal.isOpen && pauseTaskModal.task && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-6">
+              <div>
+                <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-orange-50 px-3 py-1 text-xs font-bold uppercase tracking-wider text-orange-700">
+                  <Pause size={14} />
+                  Estancar tarea
+                </div>
+                <h2 className="text-xl font-bold text-slate-900">
+                  {pauseTaskModal.task.title || pauseTaskModal.task.name || 'Tarea'}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  El vencimiento quedará pausado y el motivo se guardará en interacciones.
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  setPauseTaskModal({ isOpen: false, task: null });
+                  setPauseReason('');
+                }}
+                className="shrink-0"
+              >
+                <X className="h-5 w-5 text-slate-400" />
+              </Button>
+            </div>
+
+            <div className="space-y-4 bg-slate-50 p-6">
+              <div className="rounded-xl border border-orange-100 bg-orange-50 p-4 text-sm text-orange-800">
+                Describe el bloqueo con suficiente contexto para que el equipo entienda qué se debe resolver antes de reanudar.
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-700">
+                  Motivo del estancamiento <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={pauseReason}
+                  onChange={(event) => setPauseReason(event.target.value)}
+                  className="h-32 w-full resize-none rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-orange-500/20"
+                  placeholder="Ej: Se pausa porque falta aprobación del cliente, insumo externo o definición técnica..."
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 border-t border-slate-100 p-6">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setPauseTaskModal({ isOpen: false, task: null });
+                  setPauseReason('');
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={confirmPauseAssignedTask}
+                disabled={processingId === pauseTaskModal.task.id || !pauseReason.trim()}
+                className="bg-orange-600 text-white hover:bg-orange-700"
+              >
+                {processingId === pauseTaskModal.task.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Guardar pausa
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rescheduleTaskModal.isOpen && rescheduleTaskModal.task && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-6">
+              <div>
+                <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold uppercase tracking-wider text-indigo-700">
+                  <CalendarDays size={14} />
+                  Reprogramación
+                </div>
+                <h2 className="text-xl font-bold text-slate-900">
+                  {rescheduleTaskModal.task.title || rescheduleTaskModal.task.name || 'Tarea'}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Cambia el cronograma y deja la tarea nuevamente en estado trabajando.
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  setRescheduleTaskModal({ isOpen: false, task: null });
+                  setRescheduleStartDate('');
+                  setRescheduleEndDate('');
+                  setRescheduleReason('');
+                }}
+                className="shrink-0"
+              >
+                <X className="h-5 w-5 text-slate-400" />
+              </Button>
+            </div>
+
+            <div className="space-y-4 bg-slate-50 p-6">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm font-bold text-slate-700">
+                    Nueva fecha de inicio <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={rescheduleStartDate}
+                    onChange={(event) => setRescheduleStartDate(event.target.value)}
+                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-bold text-slate-700">
+                    Nueva fecha fin <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={rescheduleEndDate}
+                    onChange={(event) => setRescheduleEndDate(event.target.value)}
+                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-700">
+                  Argumento de la reprogramación <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={rescheduleReason}
+                  onChange={(event) => setRescheduleReason(event.target.value)}
+                  className="h-32 w-full resize-none rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  placeholder="Explica por qué cambia el cronograma y qué se espera resolver con la nueva fecha..."
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 border-t border-slate-100 p-6">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setRescheduleTaskModal({ isOpen: false, task: null });
+                  setRescheduleStartDate('');
+                  setRescheduleEndDate('');
+                  setRescheduleReason('');
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={confirmRescheduleAssignedTask}
+                disabled={
+                  processingId === rescheduleTaskModal.task.id ||
+                  !rescheduleStartDate ||
+                  !rescheduleEndDate ||
+                  !rescheduleReason.trim()
+                }
+                className="bg-indigo-600 text-white hover:bg-indigo-700"
+              >
+                {processingId === rescheduleTaskModal.task.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Reprogramar tarea
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {dynamicRateCardModal.isOpen && dynamicRateCardModal.task && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
