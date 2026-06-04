@@ -3,7 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
-import WorkflowTray from '@/components/dashboard/WorkflowTray';
+import InboxHub from '@/components/dashboard/InboxHub';
 import { Inbox, ChevronLeft } from 'lucide-react';
 
 export default function WorkflowsPage() {
@@ -25,7 +25,7 @@ export default function WorkflowsPage() {
           </div>
         </div>
 
-        <WorkflowTray />
+        <InboxHub />
       </div>
     </DashboardLayout>
   );
