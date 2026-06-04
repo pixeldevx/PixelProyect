@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { collection, query, where, onSnapshot, doc, arrayUnion, Timestamp, writeBatch, increment, getDoc, getDocs } from '@/lib/supabase/document-store';
 import { db, auth } from '@/lib/backend';
-import { CheckCircle2, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, X, ClipboardList, Play, Pause, FolderOpen, ShieldCheck, FileText, Eye, CalendarDays, Download, ExternalLink, MapPin } from 'lucide-react';
+import { CheckCircle2, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, X, ClipboardList, Play, Pause, FolderOpen, ShieldCheck, FileText, Eye, CalendarDays, Download, ExternalLink, MapPin, GitBranch, CornerDownRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -654,6 +654,68 @@ const getPriorityClass = (priority: string) => {
   if (priority === 'high') return 'bg-red-600 text-white shadow-sm ring-1 ring-red-700/20';
   if (priority === 'low') return 'bg-slate-100 text-slate-600';
   return 'bg-amber-100 text-amber-800';
+};
+
+const getInboxTaskTypeMeta = (task: any, forceWorkflow = false) => {
+  if (forceWorkflow || isWorkflowItem(task)) {
+    return {
+      label: 'Workflow',
+      Icon: GitBranch,
+      className: 'border-indigo-200 bg-indigo-50 text-indigo-700 shadow-indigo-100',
+    };
+  }
+
+  if (isMeetingTask(task)) {
+    return {
+      label: 'Reunión',
+      Icon: CalendarDays,
+      className: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 shadow-fuchsia-100',
+    };
+  }
+
+  if (task?.parentTaskId) {
+    return {
+      label: 'Subtarea',
+      Icon: CornerDownRight,
+      className: 'border-amber-200 bg-amber-50 text-amber-700 shadow-amber-100',
+    };
+  }
+
+  return {
+    label: 'Tarea',
+    Icon: ClipboardList,
+    className: 'border-sky-200 bg-sky-50 text-sky-700 shadow-sky-100',
+  };
+};
+
+const getWorkflowAttentionBadge = (status: string) => {
+  if (status === 'detenido') {
+    return {
+      label: 'Detenido',
+      className: 'border-orange-200 bg-orange-50 text-orange-700',
+    };
+  }
+
+  if (status === 'devuelto' || status === 'returned') {
+    return {
+      label: 'Devuelto',
+      className: 'border-red-200 bg-red-50 text-red-700',
+    };
+  }
+
+  return null;
+};
+
+const renderInboxTaskTypeBadge = (task: any, forceWorkflow = false) => {
+  const meta = getInboxTaskTypeMeta(task, forceWorkflow);
+  const Icon = meta.Icon;
+
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider shadow-sm ${meta.className}`}>
+      <Icon size={11} strokeWidth={2.5} />
+      {meta.label}
+    </span>
+  );
 };
 
 const getWorkflowStepStatusLabel = (status: string) => {
@@ -1947,9 +2009,7 @@ export default function WorkflowTray() {
           <span className={`absolute bottom-0 left-0 top-0 w-1 ${urgencyStyles.rail}`} />
           <div className="min-w-0 pl-2.5">
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <span className="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-sky-700">
-                {isMeetingTask(task) ? 'Reunion' : task.parentTaskId ? 'Subtarea' : 'Tarea'}
-              </span>
+              {renderInboxTaskTypeBadge(task)}
               <h3 className="min-w-0 flex-[1_1_100%] truncate text-sm font-bold text-slate-900 sm:flex-1">{title}</h3>
               <span className={`hidden shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider sm:inline-flex ${getTaskStatusClass(status)}`}>
                 {getTaskStatusLabel(status)}
@@ -2030,6 +2090,7 @@ export default function WorkflowTray() {
     const isStopped = stepStatus === 'detenido';
     const workflowUrgencyStyles = isReturned ? getInboxUrgencyStyles('overdue') : urgencyStyles;
     const workflowHistoryCount = getInteractionHistory(task).length;
+    const attentionBadge = getWorkflowAttentionBadge(stepStatus);
 
     return (
       <article
@@ -2039,9 +2100,12 @@ export default function WorkflowTray() {
         <span className={`absolute bottom-0 left-0 top-0 w-1 ${workflowUrgencyStyles.rail}`} />
         <div className="min-w-0 pl-2.5">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${isReturned || isStopped ? 'bg-red-600 text-white' : 'bg-indigo-100 text-indigo-700'}`}>
-              {isStopped ? 'Detenido' : isReturned ? 'Devuelto' : 'Workflow'}
-            </span>
+            {renderInboxTaskTypeBadge(task, true)}
+            {attentionBadge && (
+              <span className={`inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${attentionBadge.className}`}>
+                {attentionBadge.label}
+              </span>
+            )}
             <h3 className="min-w-0 flex-[1_1_100%] truncate text-sm font-bold text-slate-900 sm:flex-1">{title}</h3>
             <span className="hidden shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 sm:inline-flex">
               Paso {currentIndex + 1}/{workflowSteps.length || 1}
@@ -2895,6 +2959,8 @@ export default function WorkflowTray() {
         const detailProgress = Math.min(100, Math.max(0, Number(detailTask.progress || 0)));
         const detailWorkflowSteps = detailTask.workflowSteps || [];
         const detailCurrentIndex = detailTask.currentStepIndex || 0;
+        const detailCurrentStep = detailWorkflowSteps[detailCurrentIndex] || {};
+        const detailAttentionBadge = taskIsWorkflow ? getWorkflowAttentionBadge(detailCurrentStep?.status) : null;
 
         return (
           <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -2902,9 +2968,12 @@ export default function WorkflowTray() {
               <div className="p-5 border-b border-slate-100 flex items-start justify-between gap-4 shrink-0">
                 <div className="min-w-0">
                   <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                    <span className="rounded bg-indigo-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-700">
-                      {taskIsWorkflow ? 'Workflow' : isMeetingTask(detailTask) ? 'Reunion' : detailTask.parentTaskId ? 'Subtarea' : 'Tarea'}
-                    </span>
+                    {renderInboxTaskTypeBadge(detailTask, taskIsWorkflow)}
+                    {detailAttentionBadge && (
+                      <span className={`inline-flex shrink-0 items-center rounded-md border px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${detailAttentionBadge.className}`}>
+                        {detailAttentionBadge.label}
+                      </span>
+                    )}
                     <span className={`rounded px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${detailUrgencyStyles.due}`}>
                       {detailDueState === 'ok' ? 'A tiempo' : detailDueState === 'none' ? 'Sin fecha' : getDueLabel(detailDueState)}
                     </span>

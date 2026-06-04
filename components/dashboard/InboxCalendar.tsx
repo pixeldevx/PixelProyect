@@ -10,9 +10,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  ClipboardList,
+  CornerDownRight,
   ExternalLink,
   Eye,
   EyeOff,
+  GitBranch,
   Loader2,
   MapPin,
   RotateCcw,
@@ -339,10 +342,48 @@ const eventSort = (left: CalendarEvent, right: CalendarEvent) => {
   return left.title.localeCompare(right.title);
 };
 
-const getTaskTypeLabel = (event: CalendarEvent) => {
-  if (event.type === 'workflow') return 'Workflow';
-  if (event.type === 'meeting') return 'Reunión';
-  return event.task.parentTaskId ? 'Subtarea' : 'Tarea';
+const getCalendarTaskTypeMeta = (event: CalendarEvent) => {
+  if (event.type === 'workflow') {
+    return {
+      label: 'Workflow',
+      Icon: GitBranch,
+      className: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+    };
+  }
+
+  if (event.type === 'meeting') {
+    return {
+      label: 'Reunión',
+      Icon: CalendarDays,
+      className: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700',
+    };
+  }
+
+  if (event.task.parentTaskId) {
+    return {
+      label: 'Subtarea',
+      Icon: CornerDownRight,
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
+    };
+  }
+
+  return {
+    label: 'Tarea',
+    Icon: ClipboardList,
+    className: 'border-sky-200 bg-sky-50 text-sky-700',
+  };
+};
+
+const renderCalendarTaskTypeBadge = (event: CalendarEvent) => {
+  const meta = getCalendarTaskTypeMeta(event);
+  const Icon = meta.Icon;
+
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${meta.className}`}>
+      <Icon size={11} strokeWidth={2.5} />
+      {meta.label}
+    </span>
+  );
 };
 
 const getVisibilityStorageKey = (uid?: string | null) =>
@@ -851,9 +892,7 @@ export default function InboxCalendar() {
                       <div className="min-w-0 pl-2">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-md bg-white/80 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-indigo-700">
-                            {getTaskTypeLabel(event)}
-                          </span>
+                          {renderCalendarTaskTypeBadge(event)}
                           <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.08em] ${dueStyles.badge}`}>
                             {getDueText(event)}
                           </span>
