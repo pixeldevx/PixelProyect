@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen, BarChart3, Package } from 'lucide-react';
-import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment } from '@/lib/supabase/document-store';
+import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment, Timestamp } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
@@ -39,7 +39,14 @@ import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 import Image from 'next/image';
 import { belongsToAnyOrganization, getOrganizationIds } from '@/lib/organizations';
-import { getCompletionStatusForTask, getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
+import {
+  getCompletionStatusForTask,
+  getProgressForTaskStatus,
+  getRemainingScheduleDays,
+  getResumedDueDate,
+  getTaskDateValue,
+  isCompletedTaskStatus,
+} from '@/lib/taskProgress';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import {
   getStaticRateCardAssignee,
@@ -54,6 +61,26 @@ const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
 const DEFAULT_TASK_GROUP_COLOR = '#94a3b8';
 const PROJECT_BUDGET_ACCESS_ROLES = new Set(['admin', 'org_admin', 'manager', 'coordinador']);
+
+const toDateInputValue = (value: any) => {
+  const date = getTaskDateValue(value);
+  if (!date) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const parseDateInputValue = (value: string) => {
+  if (!value) return null;
+  const parsed = new Date(`${value}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const toTraceableDate = (value: any) => {
+  const date = getTaskDateValue(value);
+  return date ? date.toISOString().slice(0, 10) : null;
+};
 
 const stripWorkflowStepRuntime = (step: any = {}) => {
   const nextStep = { ...step };
@@ -194,6 +221,12 @@ export default function ProjectDetailsPage() {
   const [taskForBulkIterations, setTaskForBulkIterations] = useState<any>(null);
   const [openedTaskDeepLink, setOpenedTaskDeepLink] = useState('');
   const [isTaskStatusReportOpen, setIsTaskStatusReportOpen] = useState(false);
+  const [taskForPause, setTaskForPause] = useState<any>(null);
+  const [pauseReason, setPauseReason] = useState('');
+  const [taskForReschedule, setTaskForReschedule] = useState<any>(null);
+  const [rescheduleStartDate, setRescheduleStartDate] = useState('');
+  const [rescheduleEndDate, setRescheduleEndDate] = useState('');
+  const [rescheduleReason, setRescheduleReason] = useState('');
   const [dynamicRateCardStatusChange, setDynamicRateCardStatusChange] = useState<{
     taskId: string;
     newStatus: string;
@@ -903,6 +936,12 @@ export default function ProjectDetailsPage() {
     rateCardId: string;
     units: number;
     comment?: string | null;
+  }, statusAction?: {
+    comment?: string | null;
+    reschedule?: {
+      start: Date;
+      end: Date;
+    };
   }) => {
     if (!task) return;
     if (!canEditTaskStatus) {
@@ -915,13 +954,39 @@ export default function ProjectDetailsPage() {
         return;
       }
 
+      if (newStatus === 'rescheduled') {
+        if (!canEditTaskDates) {
+          toast.error('Necesitas permiso para editar fechas antes de reprogramar tareas.');
+          return;
+        }
+
+        if (!statusAction?.reschedule) {
+          setTaskForReschedule(task);
+          setRescheduleStartDate(toDateInputValue(task.startDate || task.start || new Date()));
+          setRescheduleEndDate(toDateInputValue(task.endDate || task.end || new Date()));
+          setRescheduleReason('');
+          return;
+        }
+
+        if (!statusAction.comment?.trim()) {
+          toast.warning('Agrega el argumento de la reprogramación.');
+          return;
+        }
+      }
+
+      if (newStatus === 'stuck' && task.status !== 'stuck' && !statusAction?.comment?.trim()) {
+        setTaskForPause(task);
+        setPauseReason('');
+        return;
+      }
+
       if (task.type === 'workflow' && isWorkflowManualCompletionStatus(newStatus)) {
         toast.warning('Un workflow no se puede marcar como Listo manualmente. Debe completarse aprobando todos sus pasos.');
         return;
       }
 
-      if (task.type === 'workflow' && newStatus !== 'in_progress' && newStatus !== task.status) {
-        toast.warning('Desde el estado general solo puedes pasar el workflow a Trabajando para iniciarlo.');
+      if (task.type === 'workflow' && !['in_progress', 'stuck', 'rescheduled'].includes(newStatus) && newStatus !== task.status) {
+        toast.warning('Desde el estado general solo puedes iniciar, estancar o reprogramar el workflow.');
         return;
       }
 
@@ -930,10 +995,11 @@ export default function ProjectDetailsPage() {
         return;
       }
 
-      const finalStatus = normalizeCompletedTaskStatus(newStatus, task);
+      const isRescheduleAction = newStatus === 'rescheduled';
+      const finalStatus = isRescheduleAction ? 'in_progress' : normalizeCompletedTaskStatus(newStatus, task);
 
       // If it's a workflow and moving to in-progress, show the start modal
-      if (task.type === 'workflow' && finalStatus === 'in_progress' && task.status === 'todo') {
+      if (!isRescheduleAction && task.type === 'workflow' && finalStatus === 'in_progress' && task.status === 'todo') {
         setSelectedTaskForStartWorkflow(task);
         setIsStartWorkflowModalOpen(true);
         return;
@@ -945,6 +1011,23 @@ export default function ProjectDetailsPage() {
       const taskNeedsCompletionRateCardCharge = taskHasDynamicRateCard || taskHasManualStaticRateCard;
       const wasCompleted = isCompletedTaskStatus(task.status);
       const isCompleted = isCompletedTaskStatus(finalStatus);
+      const actionDate = new Date();
+      const actionTimestamp = Timestamp.fromDate(actionDate);
+      const actorName = user?.displayName || user?.email || 'Usuario';
+      const previousStatus = task.status || null;
+      const statusHistoryEntry: any = {
+        id: `${taskId}-status-${isRescheduleAction ? 'rescheduled' : finalStatus}-${Date.now()}`,
+        status: isRescheduleAction ? 'rescheduled' : finalStatus,
+        effectiveStatus: finalStatus,
+        previousStatus,
+        action: isRescheduleAction ? 'reschedule' : finalStatus === 'stuck' ? 'pause' : previousStatus === 'stuck' && finalStatus === 'in_progress' ? 'resume' : 'status',
+        changedBy: user?.uid || null,
+        changedByEmail: user?.email || null,
+        changedByName: actorName,
+        timestamp: actionTimestamp,
+        source: 'project_tasks',
+        comment: statusAction?.comment?.trim() || null,
+      };
 
       if (taskNeedsCompletionRateCardCharge && isCompleted && !wasCompleted && !dynamicCharge) {
         setDynamicRateCardStatusChange({ taskId, newStatus, task });
@@ -1050,8 +1133,60 @@ export default function ProjectDetailsPage() {
         status: finalStatus,
         progress: progress,
         priority: task.priority || 'medium',
-        updatedAt: serverTimestamp()
+        updatedAt: actionTimestamp,
+        statusHistory: arrayUnion(statusHistoryEntry),
       };
+
+      if (isRescheduleAction && statusAction?.reschedule) {
+        const { start, end } = statusAction.reschedule;
+        taskUpdate.startDate = start;
+        taskUpdate.endDate = end;
+        taskUpdate.start = start;
+        taskUpdate.end = end;
+        taskUpdate.schedulePause = null;
+        statusHistoryEntry.previousStartDate = toTraceableDate(task.startDate || task.start);
+        statusHistoryEntry.previousEndDate = toTraceableDate(task.endDate || task.end);
+        statusHistoryEntry.newStartDate = toTraceableDate(start);
+        statusHistoryEntry.newEndDate = toTraceableDate(end);
+      }
+
+      if (finalStatus === 'stuck' && task.status !== 'stuck') {
+        const remainingDays = getRemainingScheduleDays(task.endDate || task.end, actionDate);
+        taskUpdate.schedulePause = {
+          pausedAt: actionTimestamp,
+          pausedBy: user?.uid || null,
+          pausedByEmail: user?.email || null,
+          pausedByName: actorName,
+          reason: statusAction?.comment?.trim() || null,
+          previousStatus,
+          remainingDays,
+          originalStartDate: toTraceableDate(task.startDate || task.start),
+          originalEndDate: toTraceableDate(task.endDate || task.end),
+        };
+        statusHistoryEntry.remainingDaysAtPause = remainingDays;
+      }
+
+      if (task.status === 'stuck' && finalStatus === 'in_progress') {
+        const remainingDays = task.schedulePause?.remainingDays;
+        const resumedEndDate =
+          remainingDays === null || remainingDays === undefined
+            ? getTaskDateValue(task.endDate || task.end) || actionDate
+            : getResumedDueDate(remainingDays, actionDate);
+        taskUpdate.endDate = resumedEndDate;
+        taskUpdate.end = resumedEndDate;
+        taskUpdate.schedulePauseHistory = arrayUnion({
+          ...(task.schedulePause || {}),
+          resumedAt: actionTimestamp,
+          resumedBy: user?.uid || null,
+          resumedByEmail: user?.email || null,
+          resumedByName: actorName,
+          resumedEndDate: toTraceableDate(resumedEndDate),
+        });
+        taskUpdate.schedulePause = null;
+        statusHistoryEntry.remainingDaysRestored = remainingDays ?? null;
+        statusHistoryEntry.previousEndDate = toTraceableDate(task.endDate || task.end);
+        statusHistoryEntry.newEndDate = toTraceableDate(resumedEndDate);
+      }
 
       if (dynamicRateCardCharge && !dynamicRateCardCharge.reversal && dynamicCharge) {
         taskUpdate.dynamicRateCardLastCharge = dynamicRateCardCharge;
@@ -1104,8 +1239,54 @@ export default function ProjectDetailsPage() {
       },
     );
 
-    setDynamicRateCardStatusChange(null);
-    resetDynamicRateCardFields();
+      setDynamicRateCardStatusChange(null);
+      resetDynamicRateCardFields();
+  };
+
+  const confirmPauseTask = async () => {
+    if (!taskForPause) return;
+    const cleanReason = pauseReason.trim();
+    if (!cleanReason) {
+      toast.warning('Describe por qué se estanca la tarea.');
+      return;
+    }
+
+    await handleUpdateTaskStatus(taskForPause.id, 'stuck', taskForPause, undefined, {
+      comment: cleanReason,
+    });
+    setTaskForPause(null);
+    setPauseReason('');
+  };
+
+  const confirmRescheduleTask = async () => {
+    if (!taskForReschedule) return;
+    const start = parseDateInputValue(rescheduleStartDate);
+    const end = parseDateInputValue(rescheduleEndDate);
+    const cleanReason = rescheduleReason.trim();
+
+    if (!start || !end) {
+      toast.warning('Selecciona fecha de inicio y fecha fin.');
+      return;
+    }
+
+    if (start.getTime() > end.getTime()) {
+      toast.warning('La fecha de inicio no puede ser posterior a la fecha fin.');
+      return;
+    }
+
+    if (!cleanReason) {
+      toast.warning('Agrega el argumento de la reprogramación.');
+      return;
+    }
+
+    await handleUpdateTaskStatus(taskForReschedule.id, 'rescheduled', taskForReschedule, undefined, {
+      comment: cleanReason,
+      reschedule: { start, end },
+    });
+    setTaskForReschedule(null);
+    setRescheduleStartDate('');
+    setRescheduleEndDate('');
+    setRescheduleReason('');
   };
 
 
@@ -2582,6 +2763,164 @@ export default function ProjectDetailsPage() {
                 className="bg-emerald-600 text-white hover:bg-emerald-700"
               >
                 Guardar y finalizar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {taskForPause && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-100 p-6">
+              <div className="min-w-0">
+                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-orange-600">Pausa de vencimiento</p>
+                <h3 className="mt-1 text-xl font-black text-slate-950">Estancar tarea</h3>
+                <p className="mt-1 truncate text-sm font-semibold text-slate-500">
+                  {getTaskTitle(taskForPause)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setTaskForPause(null);
+                  setPauseReason('');
+                }}
+                className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Cerrar"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4 bg-slate-50 p-6">
+              <div className="rounded-xl border border-orange-100 bg-orange-50 p-4 text-sm font-medium leading-6 text-orange-800">
+                Al estancar esta tarea se congela su vencimiento. Cuando vuelva a Trabajando, se recalculará la fecha fin con los mismos días que quedaban al momento de la pausa.
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-bold text-slate-700">
+                  Motivo de la pausa <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={pauseReason}
+                  onChange={(event) => setPauseReason(event.target.value)}
+                  className="h-28 w-full resize-none rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-400/20"
+                  placeholder="Ej. Esperamos información externa, bloqueo operativo, dependencia pendiente..."
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 border-t border-slate-100 p-6">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setTaskForPause(null);
+                  setPauseReason('');
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={confirmPauseTask}
+                disabled={!pauseReason.trim()}
+                className="bg-orange-600 text-white hover:bg-orange-700"
+              >
+                <Clock size={16} className="mr-2" />
+                Pausar vencimiento
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {taskForReschedule && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-100 p-6">
+              <div className="min-w-0">
+                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-indigo-600">Reprogramación de tarea</p>
+                <h3 className="mt-1 text-xl font-black text-slate-950">Cambiar cronograma</h3>
+                <p className="mt-1 truncate text-sm font-semibold text-slate-500">
+                  {getTaskTitle(taskForReschedule)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setTaskForReschedule(null);
+                  setRescheduleStartDate('');
+                  setRescheduleEndDate('');
+                  setRescheduleReason('');
+                }}
+                className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Cerrar"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4 bg-slate-50 p-6">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-slate-700">
+                    Nueva fecha inicio <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={rescheduleStartDate}
+                    onChange={(event) => setRescheduleStartDate(event.target.value)}
+                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-slate-700">
+                    Nueva fecha fin <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={rescheduleEndDate}
+                    onChange={(event) => setRescheduleEndDate(event.target.value)}
+                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-bold text-slate-700">
+                  Argumento de la reprogramación <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={rescheduleReason}
+                  onChange={(event) => setRescheduleReason(event.target.value)}
+                  className="h-28 w-full resize-none rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                  placeholder="Explica quién o qué originó el cambio, el acuerdo y el nuevo compromiso..."
+                />
+              </div>
+
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-4 text-sm font-medium leading-6 text-indigo-800">
+                La tarea quedará nuevamente en Trabajando y esta acción quedará registrada en interacciones con las fechas anteriores, las nuevas fechas y el responsable del cambio.
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 border-t border-slate-100 p-6">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setTaskForReschedule(null);
+                  setRescheduleStartDate('');
+                  setRescheduleEndDate('');
+                  setRescheduleReason('');
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={confirmRescheduleTask}
+                disabled={!rescheduleStartDate || !rescheduleEndDate || !rescheduleReason.trim()}
+                className="bg-indigo-600 text-white hover:bg-indigo-700"
+              >
+                <Calendar size={16} className="mr-2" />
+                Reprogramar
               </Button>
             </div>
           </div>

@@ -147,6 +147,7 @@ const formatShortDate = (value: any) => {
 const getDueState = (task: any) => {
   const status = task?.status || "todo";
   if (status === "completed" || status === "completed_late" || status === "listo") return "closed";
+  if (status === "stuck" || status === "detenido") return "paused";
 
   const endDate = getTaskDate(task?.endDate || task?.end);
   if (!endDate) return "none";
@@ -164,6 +165,7 @@ const getDueState = (task: any) => {
 const getDueLabel = (dueState: string) => {
   if (dueState === "overdue") return "Vencida";
   if (dueState === "due_soon") return "Por vencer";
+  if (dueState === "paused") return "Pausada";
   if (dueState === "closed") return "Cerrada";
   if (dueState === "none") return "Sin fecha";
   return "A tiempo";
@@ -194,6 +196,14 @@ const getInboxUrgencyStyles = (dueState: string) => {
         due: "bg-emerald-100 text-emerald-700",
         text: "text-emerald-700",
         progress: "bg-emerald-500",
+      };
+    case "paused":
+      return {
+        row: "border-red-200 bg-red-50/70",
+        rail: "bg-red-600",
+        due: "bg-red-100 text-red-700",
+        text: "text-red-700",
+        progress: "bg-red-600",
       };
     default:
       return {

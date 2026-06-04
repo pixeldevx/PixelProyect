@@ -151,6 +151,7 @@ const isCompletedTask = (task: DashboardTask) => COMPLETED_STATUSES.has(String(t
 
 const getScheduleState = (task: DashboardTask) => {
   if (isCompletedTask(task)) return task.status === 'completed_late' ? 'completed_late' : 'completed';
+  if (BLOCKED_STATUSES.has(String(task.status || '').toLowerCase())) return 'paused';
   const endDate = getDate(task.endDate || task.end || task.dueDate);
   if (!endDate) return 'none';
   const days = differenceInCalendarDays(endDate, new Date());
@@ -175,6 +176,7 @@ const getDueClass = (task: DashboardTask) => {
   if (state === 'due_soon') return 'bg-orange-50 text-orange-700 ring-orange-100';
   if (state === 'completed_late') return 'bg-orange-50 text-orange-700 ring-orange-100';
   if (state === 'completed') return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+  if (state === 'paused') return 'bg-red-50 text-red-700 ring-red-100';
   return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
 };
 

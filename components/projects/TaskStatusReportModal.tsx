@@ -80,6 +80,7 @@ const getScheduleState = (task: any) => {
   const status = task?.status || "todo";
   if (status === "completed_late") return "completedLate";
   if (isCompletedTaskStatus(status)) return "done";
+  if (status === "stuck" || status === "detenido") return "paused";
 
   const endDate = getTaskDate(task?.endDate || task?.end);
   if (!endDate) return "noDate";

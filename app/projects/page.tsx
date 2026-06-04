@@ -117,6 +117,7 @@ const isCompletedTask = (task: ProjectTask) => COMPLETED_STATUSES.has(String(tas
 
 const getScheduleState = (task: ProjectTask) => {
   if (isCompletedTask(task)) return task.status === 'completed_late' ? 'completed_late' : 'completed';
+  if (['stuck', 'detenido', 'blocked'].includes(String(task.status || '').toLowerCase())) return 'paused';
   const endDate = getDate(task.endDate || task.end || task.dueDate);
   if (!endDate) return 'none';
   const days = differenceInCalendarDays(endDate, new Date());

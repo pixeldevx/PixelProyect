@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, CheckCircle2, History, MessageSquare, Pause, Play, Send, X } from 'lucide-react';
+import { ArrowLeft, CalendarClock, CheckCircle2, History, MessageSquare, Pause, Play, Send, X } from 'lucide-react';
 import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, updateDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { Button } from '@/components/ui/button';
@@ -40,6 +40,12 @@ const formatCommentDate = (value: any) => {
 
 const getHistoryActionLabel = (action: string) => {
   switch (action) {
+    case 'reschedule':
+      return 'Reprogramada';
+    case 'pause':
+      return 'Estancada';
+    case 'status':
+      return 'Cambio de estado';
     case 'start':
       return 'Iniciado';
     case 'approve':
@@ -59,6 +65,12 @@ const getHistoryActionLabel = (action: string) => {
 
 const getHistoryActionClass = (action: string) => {
   switch (action) {
+    case 'reschedule':
+      return 'bg-indigo-50 text-indigo-700';
+    case 'pause':
+      return 'bg-orange-50 text-orange-700';
+    case 'status':
+      return 'bg-slate-100 text-slate-700';
     case 'start':
       return 'bg-indigo-50 text-indigo-700';
     case 'approve':
@@ -77,6 +89,14 @@ const getHistoryActionClass = (action: string) => {
 };
 
 const renderHistoryIcon = (action: string) => {
+  if (action === 'reschedule') {
+    return (
+      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-indigo-600">
+        <CalendarClock size={16} />
+      </div>
+    );
+  }
+
   if (action === 'approve') {
     return (
       <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
@@ -93,7 +113,7 @@ const renderHistoryIcon = (action: string) => {
     );
   }
 
-  if (action === 'stop') {
+  if (action === 'stop' || action === 'pause') {
     return (
       <div className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-100 text-orange-600">
         <Pause size={16} />
@@ -145,6 +165,54 @@ const renderHistoryFormValue = (value: any) => {
       {formattedValue}
     </span>
   );
+};
+
+const getStatusLabel = (status: string) => {
+  switch (status) {
+    case 'completed':
+    case 'listo':
+      return 'Listo';
+    case 'completed_late':
+      return 'Listo con retraso';
+    case 'in_progress':
+    case 'en_curso':
+      return 'Trabajando';
+    case 'stuck':
+    case 'detenido':
+      return 'Estancado';
+    case 'rescheduled':
+      return 'Reprogramada';
+    case 'todo':
+    case 'pending':
+    case 'not_started':
+      return 'Pendiente';
+    default:
+      return status || 'Sin estado';
+  }
+};
+
+const getStatusHistoryDetail = (history: any) => {
+  if (history.action === 'reschedule') {
+    const fromRange = [history.previousStartDate, history.previousEndDate].filter(Boolean).join(' - ') || 'sin fecha previa';
+    const toRange = [history.newStartDate, history.newEndDate].filter(Boolean).join(' - ') || 'sin nueva fecha';
+    return `Reprogramación: ${fromRange} -> ${toRange}`;
+  }
+
+  if (history.action === 'pause') {
+    const remaining = history.remainingDaysAtPause ?? history.schedulePause?.remainingDays;
+    return remaining === null || remaining === undefined
+      ? 'Vencimiento pausado'
+      : `Vencimiento pausado con ${remaining} día${Number(remaining) === 1 ? '' : 's'} restante${Number(remaining) === 1 ? '' : 's'}`;
+  }
+
+  if (history.action === 'resume') {
+    const nextEnd = history.newEndDate || history.resumedEndDate;
+    return nextEnd ? `Vencimiento reanudado hasta ${nextEnd}` : 'Vencimiento reanudado';
+  }
+
+  const previousStatus = history.previousStatus ? getStatusLabel(history.previousStatus) : null;
+  const nextStatus = getStatusLabel(history.effectiveStatus || history.status);
+  return previousStatus ? `${previousStatus} -> ${nextStatus}` : `Estado: ${nextStatus}`;
 };
 
 export function TaskCommentsModal({
@@ -208,16 +276,36 @@ export function TaskCommentsModal({
       member.id === history.userId ||
       member.authUserId === history.userId ||
       member.uid === history.userId ||
-      (history.userEmail && member.email?.toLowerCase() === String(history.userEmail).toLowerCase())
+      member.id === history.changedBy ||
+      member.authUserId === history.changedBy ||
+      member.uid === history.changedBy ||
+      (history.userEmail && member.email?.toLowerCase() === String(history.userEmail).toLowerCase()) ||
+      (history.changedByEmail && member.email?.toLowerCase() === String(history.changedByEmail).toLowerCase())
     );
 
     if (author?.name) return author.name;
+    if (history.changedByName) return history.changedByName;
     if (history.userName) return history.userName;
-    if (history.userId === currentUser?.uid) return currentUser?.displayName || currentUser?.email || 'Usuario';
-    return history.userEmail || 'Usuario';
+    if (history.userId === currentUser?.uid || history.changedBy === currentUser?.uid) return currentUser?.displayName || currentUser?.email || 'Usuario';
+    return history.changedByEmail || history.userEmail || 'Usuario';
   };
 
-  const workflowHistory = [...(task.workflowHistory || [])].sort((left: any, right: any) => getHistoryTime(right) - getHistoryTime(left));
+  const interactionHistory = [
+    ...(task.workflowHistory || []).map((entry: any) => ({
+      ...entry,
+      historyType: 'workflow',
+    })),
+    ...(Array.isArray(task.statusHistory) ? task.statusHistory : []).map((entry: any) => ({
+      ...entry,
+      action: entry.action || 'status',
+      historyType: 'status',
+    })),
+    ...(Array.isArray(task.taskReviewReceipts) ? task.taskReviewReceipts : []).map((entry: any) => ({
+      ...entry,
+      action: entry.action || 'status',
+      historyType: 'status',
+    })),
+  ].sort((left: any, right: any) => getHistoryTime(right) - getHistoryTime(left));
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -296,7 +384,7 @@ export function TaskCommentsModal({
               <History size={15} />
               Interacciones
               <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] text-slate-600">
-                {workflowHistory.length}
+                {interactionHistory.length}
               </span>
             </button>
           </div>
@@ -327,12 +415,12 @@ export function TaskCommentsModal({
             </div>
           ) : (
             <div className="space-y-4">
-              {workflowHistory.length === 0 ? (
+              {interactionHistory.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
                   No hay interacciones registradas en esta tarea.
                 </div>
               ) : (
-                workflowHistory.map((history: any, index: number) => {
+                interactionHistory.map((history: any, index: number) => {
                   const stepIndex = Number(history.stepIndex || 0);
                   const step = task.workflowSteps?.[stepIndex];
                   return (
@@ -347,7 +435,9 @@ export function TaskCommentsModal({
                               {getHistoryAuthorName(history)}
                             </p>
                             <p className="break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
-                              Paso {stepIndex + 1}: {step?.label || history.stepLabel || 'Desconocido'}
+                              {history.historyType === 'status'
+                                ? getStatusHistoryDetail(history)
+                                : `Paso ${stepIndex + 1}: ${step?.label || history.stepLabel || 'Desconocido'}`}
                             </p>
                           </div>
                           <div className="shrink-0 text-left sm:text-right">

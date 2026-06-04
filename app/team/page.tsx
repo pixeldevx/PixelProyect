@@ -269,6 +269,7 @@ const getWorkflowStepProgress = (step: any) => {
 
 const getScheduleState = (task: TeamTask) => {
   if (isCompletedTask(task)) return task.status === 'completed_late' ? 'completedLate' : 'completed';
+  if (['stuck', 'detenido', 'blocked'].includes(String(task.status || '').toLowerCase())) return 'paused';
   const endDate = getDate(task.endDate || task.end || task.dueDate);
   if (!endDate) return 'noDate';
   const days = differenceInCalendarDays(endDate, new Date());

@@ -103,6 +103,8 @@ const getStatusSearchTerms = (status: string) => {
       return 'completed listo finalizado finalizada terminado terminada';
     case 'completed_late':
       return 'completed_late listo con retraso finalizado con retraso tarde';
+    case 'rescheduled':
+      return 'rescheduled reprogramacion reprogramada reprogramado cambio cronograma fechas';
     case 'in_progress':
     case 'en_curso':
       return 'in_progress en curso trabajando iniciado iniciada';
@@ -178,6 +180,7 @@ const getTaskScheduleState = (task: any) => {
   const status = task?.status || 'todo';
   if (status === 'completed_late') return 'completed_late';
   if (status === 'completed' || status === 'listo') return 'completed';
+  if (status === 'stuck' || status === 'detenido') return 'paused';
 
   const endDate = getTaskDate(task?.endDate || task?.end);
   if (!endDate) return 'none';
@@ -200,8 +203,8 @@ const getScheduleRailColor = (task: any) => {
   if (scheduleState === 'due_soon') return 'bg-orange-500';
   if (scheduleState === 'completed_late') return 'bg-orange-600';
   if (scheduleState === 'completed') return 'bg-[#00c875]';
+  if (scheduleState === 'paused') return 'bg-[#e2445c]';
   if (task.status === 'in_progress') return 'bg-[#fdab3d]';
-  if (task.status === 'stuck') return 'bg-[#e2445c]';
   return 'bg-slate-300';
 };
 
@@ -211,6 +214,7 @@ const getScheduleDateClass = (task: any) => {
   if (scheduleState === 'due_soon') return 'bg-orange-50 border-orange-200 text-orange-700';
   if (scheduleState === 'completed_late') return 'bg-orange-50 border-orange-200 text-orange-700';
   if (scheduleState === 'completed') return 'bg-[#00c875]/10 border-[#00c875]/20 text-[#00a35f]';
+  if (scheduleState === 'paused') return 'bg-red-50 border-red-100 text-red-700';
   if (task.status === 'in_progress') return 'bg-[#fdab3d]/10 border-[#fdab3d]/20 text-[#d97706]';
   return 'bg-slate-50 border-slate-200 text-slate-500';
 };
@@ -221,8 +225,8 @@ const getScheduleBarColors = (task: any) => {
   if (scheduleState === 'due_soon') return { backgroundColor: '#f97316', backgroundSelectedColor: '#ea580c' };
   if (scheduleState === 'completed_late') return { backgroundColor: '#f97316', backgroundSelectedColor: '#ea580c' };
   if (scheduleState === 'completed') return { backgroundColor: '#00c875', backgroundSelectedColor: '#00a35f' };
+  if (scheduleState === 'paused') return { backgroundColor: '#e2445c', backgroundSelectedColor: '#c8374d' };
   if (task.status === 'in_progress') return { backgroundColor: '#fdab3d', backgroundSelectedColor: '#e69a35' };
-  if (task.status === 'stuck') return { backgroundColor: '#e2445c', backgroundSelectedColor: '#c8374d' };
   return { backgroundColor: '#c4c4c4', backgroundSelectedColor: '#b0b0b0' };
 };
 
@@ -728,6 +732,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       case 'completed_late': return 'bg-orange-500 text-white';
       case 'in_progress':
       case 'en_curso': return 'bg-[#fdab3d] text-white';
+      case 'rescheduled': return 'bg-indigo-600 text-white';
       case 'stuck':
       case 'detenido': return 'bg-[#e2445c] text-white';
       case 'devuelto': return 'bg-[#ff7575] text-white';
@@ -743,6 +748,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     switch (status) {
       case 'completed': return 'LISTO';
       case 'completed_late': return 'LISTO CON RETRASO';
+      case 'rescheduled': return 'REPROGRAMACIÓN';
       case 'in_progress': return 'TRABAJANDO';
       case 'stuck': return 'ESTANCADO';
       case 'todo':
@@ -1277,7 +1283,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   value={task.status || 'todo'}
                                   onChange={(e) => onUpdateTaskStatus?.(task.id, e.target.value, task)}
                                   disabled={!canUseStatusSelect}
-                                  title={isWorkflowTask ? 'Los workflows solo se inician desde Trabajando; se finalizan por sus pasos.' : undefined}
+                                  title={isWorkflowTask ? 'Los workflows se inician, pausan o reprograman aquí; se finalizan por sus pasos.' : undefined}
                                   className={`h-full w-full appearance-none flex items-center justify-center text-[10px] font-bold tracking-tight px-2 text-center focus:outline-none transition-all hover:brightness-105 ${canUseStatusSelect ? 'cursor-pointer' : 'cursor-default'} ${getStatusColor(task.status)}`}
                                 >
                                   {isWorkflowTask ? (
@@ -1288,12 +1294,15 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         </option>
                                       )}
                                       <option value="in_progress" className="bg-white text-slate-700">TRABAJANDO</option>
+                                      <option value="stuck" className="bg-white text-slate-700">ESTANCADO</option>
+                                      <option value="rescheduled" className="bg-white text-slate-700">REPROGRAMAR</option>
                                     </>
                                   ) : (
                                     <>
                                       <option value="todo" className="bg-white text-slate-700">PENDIENTE</option>
                                       <option value="in_progress" className="bg-white text-slate-700">TRABAJANDO</option>
                                       <option value="stuck" className="bg-white text-slate-700">ESTANCADO</option>
+                                      <option value="rescheduled" className="bg-white text-slate-700">REPROGRAMAR</option>
                                       <option value="completed" className="bg-white text-slate-700">LISTO</option>
                                       {task.status === 'completed_late' && <option value="completed_late" className="bg-white text-slate-700">LISTO CON RETRASO</option>}
                                     </>

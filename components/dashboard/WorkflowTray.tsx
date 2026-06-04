@@ -12,7 +12,13 @@ import { TaskDocumentsViewer } from '@/components/projects/TaskDocumentsViewer';
 import { TaskCommentsModal } from '@/components/projects/TaskCommentsModal';
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
-import { getCompletionStatusForTask, getProgressForTaskStatus, isCompletedTaskStatus } from '@/lib/taskProgress';
+import {
+  getCompletionStatusForTask,
+  getProgressForTaskStatus,
+  getRemainingScheduleDays,
+  getResumedDueDate,
+  isCompletedTaskStatus,
+} from '@/lib/taskProgress';
 
 import { useAuth } from '@/hooks/useAuth';
 import { organizationNameFor } from '@/lib/organizations';
@@ -231,6 +237,8 @@ const getTaskStatusLabel = (status: string) => {
       return 'Trabajando';
     case 'stuck':
       return 'Estancada';
+    case 'rescheduled':
+      return 'Reprogramada';
     case 'pending':
     case 'todo':
       return 'Pendiente';
@@ -249,6 +257,8 @@ const getTaskStatusClass = (status: string) => {
       return 'bg-amber-50 text-amber-700';
     case 'stuck':
       return 'bg-red-50 text-red-700';
+    case 'rescheduled':
+      return 'bg-indigo-50 text-indigo-700';
     case 'pending':
     case 'todo':
       return 'bg-slate-100 text-slate-700';
@@ -262,6 +272,11 @@ const getTaskDate = (value: any) => {
   if (value.toDate) return value.toDate();
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const toHistoryDateValue = (value: any) => {
+  const date = getTaskDate(value);
+  return date ? format(date, 'yyyy-MM-dd') : null;
 };
 
 const getTaskTimestamp = (value: any) => {
@@ -579,6 +594,7 @@ const getQualityParticipantIds = (task: any, currentIndex: number, currentStep: 
 const getDueState = (task: any) => {
   const status = task?.status || 'todo';
   if (status === 'completed' || status === 'completed_late' || status === 'listo') return 'closed';
+  if (status === 'stuck' || status === 'detenido') return 'paused';
 
   const endDate = getTaskDate(task?.endDate || task?.end);
   if (!endDate) return 'none';
@@ -628,6 +644,14 @@ const getInboxUrgencyStyles = (dueState: string) => {
         text: 'text-emerald-700',
         progress: 'bg-emerald-500',
       };
+    case 'paused':
+      return {
+        row: 'border-red-200 bg-red-50/70 hover:bg-red-100/70',
+        rail: 'bg-red-600',
+        due: 'bg-red-100 text-red-700',
+        text: 'text-red-700',
+        progress: 'bg-red-600',
+      };
     default:
       return {
         row: 'border-slate-200 bg-white hover:bg-slate-50',
@@ -642,6 +666,7 @@ const getInboxUrgencyStyles = (dueState: string) => {
 const getDueLabel = (dueState: string) => {
   if (dueState === 'overdue') return 'Vencida';
   if (dueState === 'due_soon') return 'Por vencer';
+  if (dueState === 'paused') return 'Pausada';
   return 'En fecha';
 };
 
@@ -1452,8 +1477,20 @@ export default function WorkflowTray() {
     comment?: string | null;
   }, meetingSubmission?: {
     comment: string;
+  }, statusAction?: {
+    comment?: string | null;
   }) => {
     if (!user || !task?.id || isWorkflowItem(task)) return;
+
+    let statusComment = statusAction?.comment?.trim() || null;
+    if (nextStatus === 'stuck' && task.status !== 'stuck' && !statusComment) {
+      const pauseReason = window.prompt('Describe por qué se estanca la tarea. Este argumento quedará en interacciones.');
+      statusComment = pauseReason?.trim() || null;
+      if (!statusComment) {
+        toast.warning('Para estancar una tarea debes registrar el motivo.');
+        return;
+      }
+    }
 
     let finalStatus = normalizeCompletionStatus(nextStatus, task);
     let progress = getProgressForTaskStatus(finalStatus, task.progress);
@@ -1582,6 +1619,24 @@ export default function WorkflowTray() {
 
       const actionDate = new Date();
       const actionTimestamp = Timestamp.fromDate(actionDate);
+      const previousStatus = task.status || null;
+      const isPausingSchedule = finalStatus === 'stuck' && previousStatus !== 'stuck';
+      const isResumingSchedule = previousStatus === 'stuck' && finalStatus === 'in_progress';
+      const statusHistoryEntry: any = {
+        id: `${task.id}-status-${finalStatus}-${Date.now()}`,
+        status: finalStatus,
+        previousStatus,
+        action: isPausingSchedule ? 'pause' : isResumingSchedule ? 'resume' : 'status',
+        changedBy: user.uid,
+        memberId,
+        userIds: reviewActorIds,
+        changedByEmail: user.email || null,
+        changedByName: user.displayName || user.email || 'Usuario',
+        timestamp: actionTimestamp,
+        source: 'inbox',
+        comment: meetingCompletion?.response?.comment || dynamicCharge?.comment || statusComment,
+        dynamicRateCard: dynamicRateCardCharge,
+      };
       const taskPerformanceEntry =
         isCompleted && !wasCompleted
           ? buildTaskPerformanceEntry({
@@ -1597,20 +1652,46 @@ export default function WorkflowTray() {
         status: finalStatus,
         progress,
         updatedAt: actionTimestamp,
-        statusHistory: arrayUnion({
-          status: finalStatus,
-          previousStatus: task.status || null,
-          changedBy: user.uid,
-          memberId,
-          userIds: reviewActorIds,
-          changedByEmail: user.email || null,
-          changedByName: user.displayName || user.email || 'Usuario',
-          timestamp: actionTimestamp,
-          source: 'inbox',
-          comment: meetingCompletion?.response?.comment || dynamicCharge?.comment || null,
-          dynamicRateCard: dynamicRateCardCharge,
-        }),
+        statusHistory: arrayUnion(statusHistoryEntry),
       };
+
+      if (isPausingSchedule) {
+        const remainingDays = getRemainingScheduleDays(task.endDate || task.end, actionDate);
+        taskUpdate.schedulePause = {
+          pausedAt: actionTimestamp,
+          pausedBy: user.uid,
+          pausedByEmail: user.email || null,
+          pausedByName: user.displayName || user.email || 'Usuario',
+          reason: statusComment,
+          previousStatus,
+          remainingDays,
+          originalEndDate: toHistoryDateValue(task.endDate || task.end),
+        };
+        statusHistoryEntry.remainingDaysAtPause = remainingDays;
+        statusHistoryEntry.previousEndDate = toHistoryDateValue(task.endDate || task.end);
+      }
+
+      if (isResumingSchedule) {
+        const remainingDays = task.schedulePause?.remainingDays;
+        const resumedEndDate =
+          remainingDays === null || remainingDays === undefined
+            ? getTaskDate(task.endDate || task.end) || actionDate
+            : getResumedDueDate(remainingDays, actionDate);
+        taskUpdate.endDate = resumedEndDate;
+        taskUpdate.end = resumedEndDate;
+        taskUpdate.schedulePauseHistory = arrayUnion({
+          ...(task.schedulePause || {}),
+          resumedAt: actionTimestamp,
+          resumedBy: user.uid,
+          resumedByEmail: user.email || null,
+          resumedByName: user.displayName || user.email || 'Usuario',
+          resumedEndDate: toHistoryDateValue(resumedEndDate),
+        });
+        taskUpdate.schedulePause = null;
+        statusHistoryEntry.remainingDaysRestored = remainingDays ?? null;
+        statusHistoryEntry.previousEndDate = toHistoryDateValue(task.endDate || task.end);
+        statusHistoryEntry.newEndDate = toHistoryDateValue(resumedEndDate);
+      }
 
       if (taskPerformanceEntry) {
         taskUpdate.performanceHistory = arrayUnion(taskPerformanceEntry);
@@ -1639,7 +1720,7 @@ export default function WorkflowTray() {
           memberId,
           userIds: reviewActorIds,
           userName: user.displayName || user.email || 'Usuario',
-          comment: meetingCompletion?.response?.comment || dynamicCharge?.comment || null,
+          comment: meetingCompletion?.response?.comment || dynamicCharge?.comment || statusComment,
           timestamp: actionTimestamp,
           source: meetingCompletion ? 'meeting_closure' : 'inbox_status',
           performanceEntryId: taskPerformanceEntry?.id || null,
@@ -1875,7 +1956,7 @@ export default function WorkflowTray() {
     if (statusHistory.length > 0) {
       return statusHistory.map((entry: any) => ({
         ...entry,
-        action: 'status',
+        action: entry.action || 'status',
         historyType: 'status',
       }));
     }
@@ -1907,6 +1988,14 @@ export default function WorkflowTray() {
   };
 
   const renderHistoryIcon = (history: any) => {
+    if (history.action === 'reschedule') {
+      return (
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-indigo-600">
+          <CalendarDays size={16} />
+        </div>
+      );
+    }
+
     if (history.historyType === 'status' && isCompletedTaskStatus(history.status)) {
       return (
         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
@@ -1931,7 +2020,7 @@ export default function WorkflowTray() {
       );
     }
 
-    if (history.action === 'stop') {
+    if (history.action === 'stop' || history.action === 'pause') {
       return (
         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-100 text-orange-600">
           <Pause size={16} />
@@ -1959,6 +2048,18 @@ export default function WorkflowTray() {
 
   const getHistoryDetailText = (history: any, task: any) => {
     if (history.historyType === 'status') {
+      if (history.action === 'pause') {
+        const remaining = history.remainingDaysAtPause;
+        return remaining === null || remaining === undefined
+          ? 'Vencimiento pausado'
+          : `Vencimiento pausado con ${remaining} día${Number(remaining) === 1 ? '' : 's'} restante${Number(remaining) === 1 ? '' : 's'}`;
+      }
+      if (history.action === 'resume') {
+        return history.newEndDate ? `Vencimiento reanudado hasta ${history.newEndDate}` : 'Vencimiento reanudado';
+      }
+      if (history.action === 'reschedule') {
+        return `Reprogramación: ${history.previousEndDate || 'sin fecha'} -> ${history.newEndDate || 'sin fecha'}`;
+      }
       const previousStatus = history.previousStatus ? getTaskStatusLabel(history.previousStatus) : null;
       const nextStatus = getTaskStatusLabel(history.status);
       return previousStatus ? `${previousStatus} -> ${nextStatus}` : `Estado: ${nextStatus}`;

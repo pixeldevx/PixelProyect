@@ -180,6 +180,7 @@ const getStatusLabel = (task: any, status: string) => {
 
 const getDueState = (event: CalendarEvent) => {
   if (isCompletedTaskStatus(event.status)) return 'closed';
+  if (event.status === 'stuck' || event.status === 'detenido') return 'paused';
 
   const dueEnd = endOfDay(event.end);
   const today = startOfDay(new Date());
@@ -209,6 +210,15 @@ const getDueStyles = (dueState: string) => {
     };
   }
 
+  if (dueState === 'paused') {
+    return {
+      cell: 'border-red-200 bg-red-50 text-red-900',
+      dot: 'bg-red-600',
+      badge: 'bg-red-100 text-red-700',
+      rail: 'bg-red-600',
+    };
+  }
+
   return {
     cell: 'border-emerald-200 bg-emerald-50 text-emerald-900',
     dot: 'bg-emerald-500',
@@ -221,6 +231,7 @@ const getDueText = (event: CalendarEvent) => {
   const dueState = getDueState(event);
   if (dueState === 'overdue') return `Vencida ${SHORT_DATE_LABEL.format(event.end)}`;
   if (dueState === 'due_soon') return `Por vencer ${SHORT_DATE_LABEL.format(event.end)}`;
+  if (dueState === 'paused') return `Pausada ${SHORT_DATE_LABEL.format(event.end)}`;
   return `Cierre ${SHORT_DATE_LABEL.format(event.end)}`;
 };
 

@@ -2,6 +2,7 @@ export const isCompletedTaskStatus = (status?: string | null) =>
   status === "completed" || status === "completed_late" || status === "listo";
 
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const getTaskDateValue = (value: any): Date | null => {
   if (!value) return null;
@@ -22,8 +23,28 @@ export const getTaskDateValue = (value: any): Date | null => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
-const startOfLocalDay = (date: Date) =>
+export const startOfLocalDay = (date: Date) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+
+export const endOfLocalDay = (date: Date) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999).getTime();
+
+export const addLocalDays = (date: Date, days: number) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+
+export const getRemainingScheduleDays = (dueDateValue: any, pausedAt: Date = new Date()) => {
+  const dueDate = getTaskDateValue(dueDateValue);
+  if (!dueDate) return null;
+
+  const remainingMs = endOfLocalDay(dueDate) - startOfLocalDay(pausedAt);
+  return Math.max(0, Math.ceil(remainingMs / DAY_MS));
+};
+
+export const getResumedDueDate = (remainingDays: any, resumedAt: Date = new Date()) => {
+  const days = Math.max(0, Number(remainingDays) || 0);
+  if (days <= 0) return addLocalDays(resumedAt, 0);
+  return addLocalDays(resumedAt, days - 1);
+};
 
 export const isCompletionAfterDueDate = (dueDateValue: any, completedAt: Date = new Date()) => {
   const dueDate = getTaskDateValue(dueDateValue);
