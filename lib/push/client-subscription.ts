@@ -14,6 +14,8 @@ const cleanEnvValue = (value?: string) => {
 };
 
 const WEB_PUSH_PUBLIC_KEY = cleanEnvValue(process.env.NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY);
+const PUSH_PUBLIC_KEY_STORAGE_KEY = 'pixel-project-push-public-key';
+const PUSH_DEVICE_ID_STORAGE_KEY = 'pixel-project-push-device-id';
 
 export type PixelPushRegistrationUser = {
   uid: string;
@@ -69,9 +71,42 @@ const arrayBufferToBase64Url = (buffer: ArrayBuffer) => {
     .replace(/=+$/g, '');
 };
 
+const getStoredPushPublicKey = () => {
+  try {
+    return window.localStorage.getItem(PUSH_PUBLIC_KEY_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+};
+
+const setStoredPushPublicKey = () => {
+  try {
+    window.localStorage.setItem(PUSH_PUBLIC_KEY_STORAGE_KEY, WEB_PUSH_PUBLIC_KEY);
+  } catch {
+    // Local storage can be unavailable in restricted browser modes.
+  }
+};
+
+const getPushDeviceId = () => {
+  try {
+    const existing = window.localStorage.getItem(PUSH_DEVICE_ID_STORAGE_KEY);
+    if (existing) return existing;
+
+    const nextId =
+      typeof window.crypto?.randomUUID === 'function'
+        ? window.crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    window.localStorage.setItem(PUSH_DEVICE_ID_STORAGE_KEY, nextId);
+    return nextId;
+  } catch {
+    return '';
+  }
+};
+
 const subscriptionUsesCurrentPublicKey = (subscription: PushSubscription) => {
   const applicationServerKey = subscription.options?.applicationServerKey;
-  if (!applicationServerKey) return true;
+  if (!applicationServerKey) return getStoredPushPublicKey() === WEB_PUSH_PUBLIC_KEY;
   return arrayBufferToBase64Url(applicationServerKey) === WEB_PUSH_PUBLIC_KEY;
 };
 
@@ -83,9 +118,11 @@ const supportsPushNotifications = () => {
 export const ensurePixelPushSubscription = async ({
   user,
   organizationIds = [],
+  forceRenew = false,
 }: {
   user: PixelPushRegistrationUser | null | undefined;
   organizationIds?: string[];
+  forceRenew?: boolean;
 }): Promise<EnsurePixelPushSubscriptionResult> => {
   if (!user?.uid) {
     return {
@@ -130,7 +167,7 @@ export const ensurePixelPushSubscription = async ({
     const registration = await navigator.serviceWorker.ready;
     const existingSubscription = await registration.pushManager.getSubscription();
     const reusableSubscription =
-      existingSubscription && subscriptionUsesCurrentPublicKey(existingSubscription)
+      !forceRenew && existingSubscription && subscriptionUsesCurrentPublicKey(existingSubscription)
         ? existingSubscription
         : null;
 
@@ -168,6 +205,9 @@ export const ensurePixelPushSubscription = async ({
         endpoint: subscription.endpoint,
         permission,
         organizationIds,
+        deviceId: getPushDeviceId(),
+        vapidPublicKey: WEB_PUSH_PUBLIC_KEY,
+        replaceExistingForDevice: forceRenew,
         userAgent: navigator.userAgent,
         platform: navigator.platform,
       }),
@@ -182,6 +222,8 @@ export const ensurePixelPushSubscription = async ({
         message: body?.error || 'No fue posible guardar este dispositivo para push.',
       };
     }
+
+    setStoredPushPublicKey();
 
     return {
       ok: true,

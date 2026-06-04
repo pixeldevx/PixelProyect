@@ -260,6 +260,19 @@ export default function AlertsPage() {
     return `Encontré el dispositivo, pero el proveedor push rechazó el envío${statusText}. ${providerDetail || 'Revisa WEB_PUSH_PRIVATE_KEY y WEB_PUSH_SUBJECT en Vercel.'}`;
   };
 
+  const sendTestPushRequest = async (token: string) => {
+    const response = await fetch('/api/notifications/test-push', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const body = await response.json().catch(() => null);
+    return { response, body };
+  };
+
   const handleSendTestPush = async () => {
     setIsSendingTestPush(true);
     try {
@@ -289,14 +302,24 @@ export default function AlertsPage() {
         return;
       }
 
-      const response = await fetch('/api/notifications/test-push', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      const body = await response.json().catch(() => null);
+      let { response, body } = await sendTestPushRequest(token);
+
+      if (
+        response.ok &&
+        Number(body?.push?.attempted || 0) > 0 &&
+        Number(body?.push?.failed || 0) > 0 &&
+        body?.push?.providerErrors?.[0]?.reason === 'vapid_auth_rejected'
+      ) {
+        const renewalResult = await ensurePixelPushSubscription({
+          user,
+          organizationIds: userOrganizationIds || [],
+          forceRenew: true,
+        });
+
+        if (renewalResult.ok) {
+          ({ response, body } = await sendTestPushRequest(token));
+        }
+      }
 
       if (!response.ok) {
         toast.error(body?.error || 'No fue posible enviar la prueba push.');

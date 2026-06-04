@@ -44,8 +44,14 @@ const normalizeStringArray = (value: unknown) =>
         .filter(Boolean)
     : [];
 
+const normalizeOptionalString = (value: unknown) =>
+  typeof value === 'string' ? value.trim() : '';
+
 const hashEndpoint = (endpoint: string) =>
   createHash('sha256').update(endpoint).digest('hex');
+
+const hashValue = (value: string) =>
+  value ? createHash('sha256').update(value).digest('hex') : null;
 
 const getDocument = async (supabase: any, docId: string) => {
   const { data, error } = await supabase
@@ -57,6 +63,54 @@ const getDocument = async (supabase: any, docId: string) => {
 
   if (error) throw error;
   return (data || null) as AppDocumentRow | null;
+};
+
+const deactivatePreviousDeviceSubscriptions = async (
+  supabase: any,
+  userId: string,
+  deviceId: string,
+  currentSubscriptionId: string,
+  userAgent: string | null,
+  platform: string | null
+) => {
+  if (!userId || !deviceId) return;
+
+  const { data, error } = await supabase
+    .from(DOCUMENTS_TABLE)
+    .select('collection_path, doc_id, data')
+    .eq('collection_path', 'push_subscriptions')
+    .eq('data->>userId', userId);
+
+  if (error) throw error;
+
+  const now = new Date().toISOString();
+  const previousSubscriptions = (data || []).filter(
+    (row: AppDocumentRow) => {
+      if (row.doc_id === currentSubscriptionId || row.data?.isActive === false) return false;
+      if (row.data?.deviceId === deviceId) return true;
+      return !row.data?.deviceId && row.data?.userAgent === userAgent && row.data?.platform === platform;
+    }
+  );
+
+  await Promise.all(
+    previousSubscriptions.map((row: AppDocumentRow) =>
+      supabase.from(DOCUMENTS_TABLE).upsert(
+        {
+          collection_path: 'push_subscriptions',
+          doc_id: row.doc_id,
+          data: {
+            ...row.data,
+            isActive: false,
+            deactivatedAt: now,
+            deactivationReason: 'replaced_by_new_vapid_subscription',
+            updatedAt: now,
+          },
+          updated_at: now,
+        },
+        { onConflict: 'collection_path,doc_id' }
+      )
+    )
+  );
 };
 
 export async function POST(request: NextRequest) {
@@ -87,6 +141,11 @@ export async function POST(request: NextRequest) {
     const subscriptionId = hashEndpoint(endpoint);
     const existing = await getDocument(supabase, subscriptionId);
     const organizationIds = normalizeStringArray(payload?.organizationIds);
+    const deviceId = normalizeOptionalString(payload?.deviceId);
+    const vapidPublicKey = normalizeOptionalString(payload?.vapidPublicKey);
+    const replaceExistingForDevice = payload?.replaceExistingForDevice === true;
+    const userAgent = typeof payload?.userAgent === 'string' ? payload.userAgent : null;
+    const platform = typeof payload?.platform === 'string' ? payload.platform : null;
 
     const { error } = await supabase.from(DOCUMENTS_TABLE).upsert(
       {
@@ -105,8 +164,11 @@ export async function POST(request: NextRequest) {
           },
           permission: payload?.permission || 'granted',
           isActive: true,
-          userAgent: typeof payload?.userAgent === 'string' ? payload.userAgent : null,
-          platform: typeof payload?.platform === 'string' ? payload.platform : null,
+          deviceId: deviceId || existing?.data?.deviceId || null,
+          vapidPublicKey: vapidPublicKey || existing?.data?.vapidPublicKey || null,
+          vapidPublicKeyHash: vapidPublicKey ? hashValue(vapidPublicKey) : existing?.data?.vapidPublicKeyHash || null,
+          userAgent,
+          platform,
           deactivatedAt: null,
           deactivationReason: null,
           createdAt: existing?.data?.createdAt || now,
@@ -118,6 +180,17 @@ export async function POST(request: NextRequest) {
     );
 
     if (error) throw error;
+
+    if (replaceExistingForDevice && deviceId) {
+      await deactivatePreviousDeviceSubscriptions(
+        supabase,
+        requesterData.user.id,
+        deviceId,
+        subscriptionId,
+        userAgent,
+        platform
+      );
+    }
 
     return json({
       ok: true,
