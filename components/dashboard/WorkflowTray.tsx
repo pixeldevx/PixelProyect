@@ -294,6 +294,165 @@ const normalizeCompletionStatus = (nextStatus: string, task: any) => {
   return getCompletionStatusForTask(nextStatus, task);
 };
 
+const toIsoString = (value: any) => {
+  const date = getTaskDate(value);
+  return date ? date.toISOString() : null;
+};
+
+const startOfLocalDay = (date: Date) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+
+const getDelayDays = (plannedEndValue: any, completedAt: Date) => {
+  const plannedEnd = getTaskDate(plannedEndValue);
+  if (!plannedEnd) return 0;
+  const delay = startOfLocalDay(completedAt) - startOfLocalDay(plannedEnd);
+  return delay > 0 ? Math.ceil(delay / 86400000) : 0;
+};
+
+const getDurationDays = (startedAtValue: any, completedAt: Date) => {
+  const startedAt = getTaskDate(startedAtValue);
+  if (!startedAt) return null;
+  const days = Math.max(0, (completedAt.getTime() - startedAt.getTime()) / 86400000);
+  return Math.round(days * 10) / 10;
+};
+
+const getWorkflowStepPlannedStart = (task: any, step: any) =>
+  step?.plannedStartAt ||
+  step?.plannedStartDate ||
+  step?.startDate ||
+  step?.start ||
+  task?.startDate ||
+  task?.start ||
+  task?.createdAt ||
+  null;
+
+const getWorkflowStepPlannedEnd = (task: any, step: any) =>
+  step?.plannedEndAt ||
+  step?.plannedEndDate ||
+  step?.endDate ||
+  step?.end ||
+  step?.dueDate ||
+  task?.endDate ||
+  task?.end ||
+  task?.dueDate ||
+  null;
+
+const getWorkflowStepStartedAt = (task: any, step: any) =>
+  step?.startedAt || step?.restartedAt || getWorkflowStepPlannedStart(task, step) || task?.createdAt || null;
+
+const getTaskPerformanceStartedAt = (task: any) =>
+  task?.startedAt || task?.startDate || task?.start || task?.createdAt || null;
+
+const getTaskPerformancePlannedEnd = (task: any) =>
+  task?.endDate || task?.end || task?.dueDate || null;
+
+const getPerformanceAssigneeId = (candidate: any, fallback?: string | null) => {
+  const value = candidate?.assignedTo || candidate?.assignedTeamMembers?.[0] || candidate?.assignedUsers?.[0] || fallback || null;
+  return value && value !== 'DYNAMIC' ? value : fallback || null;
+};
+
+const buildWorkflowStepPerformanceEntry = ({
+  task,
+  step,
+  stepIndex,
+  action,
+  completedAt,
+  user,
+  memberId,
+  actorIds,
+}: {
+  task: any;
+  step: any;
+  stepIndex: number;
+  action: string;
+  completedAt: Date;
+  user: any;
+  memberId: string | null;
+  actorIds: string[];
+}) => {
+  const plannedStart = getWorkflowStepPlannedStart(task, step);
+  const plannedEnd = getWorkflowStepPlannedEnd(task, step);
+  const startedAt = getWorkflowStepStartedAt(task, step);
+  const assigneeId = getPerformanceAssigneeId(step, memberId || user?.uid);
+  const delayDays = getDelayDays(plannedEnd, completedAt);
+
+  return {
+    id: `${task.id}-workflow-step-${stepIndex}-${action}-${completedAt.getTime()}`,
+    type: 'workflow_step',
+    source: 'workflow_tray',
+    projectId: task.projectId,
+    projectName: task.projectName || null,
+    organizationId: task.organizationId || null,
+    taskId: task.id,
+    taskTitle: task.title || task.name || 'Tarea',
+    externalWorkflowId: task.externalWorkflowId || null,
+    municipality: task.workflowMunicipality || task.municipality || null,
+    stepIndex,
+    stepLabel: step?.label || `Paso ${stepIndex + 1}`,
+    action,
+    outcome: action === 'approve' ? 'completed' : action === 'return' ? 'returned' : action,
+    assigneeId,
+    userId: user?.uid || null,
+    memberId,
+    userIds: actorIds,
+    userName: user?.displayName || user?.email || 'Usuario',
+    startedAt: toIsoString(startedAt),
+    plannedStartAt: toIsoString(plannedStart),
+    plannedEndAt: toIsoString(plannedEnd),
+    completedAt: completedAt.toISOString(),
+    durationDays: getDurationDays(startedAt, completedAt),
+    delayDays,
+    completedLate: delayDays > 0,
+    ...getDateKeys(completedAt),
+  };
+};
+
+const buildTaskPerformanceEntry = ({
+  task,
+  status,
+  completedAt,
+  user,
+  memberId,
+  actorIds,
+}: {
+  task: any;
+  status: string;
+  completedAt: Date;
+  user: any;
+  memberId: string | null;
+  actorIds: string[];
+}) => {
+  const startedAt = getTaskPerformanceStartedAt(task);
+  const plannedEnd = getTaskPerformancePlannedEnd(task);
+  const delayDays = getDelayDays(plannedEnd, completedAt);
+
+  return {
+    id: `${task.id}-task-${status}-${completedAt.getTime()}`,
+    type: 'task',
+    source: 'inbox_status',
+    projectId: task.projectId,
+    projectName: task.projectName || null,
+    organizationId: task.organizationId || null,
+    taskId: task.id,
+    taskTitle: task.title || task.name || 'Tarea',
+    status,
+    outcome: 'completed',
+    assigneeId: getPerformanceAssigneeId(task, memberId || user?.uid),
+    userId: user?.uid || null,
+    memberId,
+    userIds: actorIds,
+    userName: user?.displayName || user?.email || 'Usuario',
+    startedAt: toIsoString(startedAt),
+    plannedStartAt: toIsoString(task?.startDate || task?.start || task?.createdAt),
+    plannedEndAt: toIsoString(plannedEnd),
+    completedAt: completedAt.toISOString(),
+    durationDays: getDurationDays(startedAt, completedAt),
+    delayDays,
+    completedLate: delayDays > 0,
+    ...getDateKeys(completedAt),
+  };
+};
+
 const isDynamicRateCardEnabled = (source: any) =>
   Boolean(source?.dynamicRateCard || source?.rateCardMode === 'dynamic' || source?.dynamicRateCardConfig);
 
@@ -979,8 +1138,35 @@ export default function WorkflowTray() {
         batch.set(eventRef, qualityEvent);
       }
 
+      const actionDate = new Date();
+      const actionTimestamp = Timestamp.fromDate(actionDate);
+      const reviewActorIds = normalizeActorIds([user.uid, memberId, ...memberIds]);
+      const workflowPerformanceEntry =
+        action === 'approve' || action === 'return'
+          ? buildWorkflowStepPerformanceEntry({
+              task,
+              step: currentStep,
+              stepIndex: currentIndex,
+              action,
+              completedAt: actionDate,
+              user,
+              memberId,
+              actorIds: reviewActorIds,
+            })
+          : null;
+
       if (action === 'approve') {
-        steps[currentIndex].status = 'listo';
+        steps[currentIndex] = {
+          ...steps[currentIndex],
+          status: 'listo',
+          completedAt: actionTimestamp,
+          completedBy: user.uid,
+          completedByMemberId: memberId,
+          completedByIds: reviewActorIds,
+          durationDays: workflowPerformanceEntry?.durationDays ?? null,
+          delayDays: workflowPerformanceEntry?.delayDays ?? 0,
+          completedLate: Boolean(workflowPerformanceEntry?.completedLate),
+        };
         // Save form data to the step
         if (Object.keys(formData).length > 0) {
           steps[currentIndex].formData = formData;
@@ -988,7 +1174,14 @@ export default function WorkflowTray() {
 
         if (currentIndex < steps.length - 1) {
           nextIndex = currentIndex + 1;
-          steps[nextIndex].status = 'en_curso';
+          steps[nextIndex] = {
+            ...steps[nextIndex],
+            status: 'en_curso',
+            startedAt: actionTimestamp,
+            startedBy: user.uid,
+            startedByMemberId: memberId,
+            assignedAt: actionTimestamp,
+          };
           newStatus = 'in_progress';
           
           // Apply dynamic assignee if configured
@@ -1025,32 +1218,53 @@ export default function WorkflowTray() {
         }
       } else if (action === 'return') {
         // Return
-        steps[currentIndex].status = 'devuelto';
+        steps[currentIndex] = {
+          ...steps[currentIndex],
+          status: 'devuelto',
+          completedAt: actionTimestamp,
+          completedBy: user.uid,
+          completedByMemberId: memberId,
+          completedByIds: reviewActorIds,
+          durationDays: workflowPerformanceEntry?.durationDays ?? null,
+          delayDays: workflowPerformanceEntry?.delayDays ?? 0,
+          completedLate: Boolean(workflowPerformanceEntry?.completedLate),
+        };
         
         if (currentIndex > 0) {
           nextIndex = currentIndex - 1;
-          steps[nextIndex].status = 'reproceso';
+          steps[nextIndex] = {
+            ...steps[nextIndex],
+            status: 'reproceso',
+            restartedAt: actionTimestamp,
+            startedAt: actionTimestamp,
+            startedBy: user.uid,
+            startedByMemberId: memberId,
+            assignedAt: actionTimestamp,
+          };
         }
       } else if (action === 'stop') {
         steps[currentIndex].status = 'detenido';
       } else if (action === 'resume') {
         // Find if it was reproceso before, or just en_curso
         const wasReproceso = task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex && h.action === 'return');
-        steps[currentIndex].status = wasReproceso ? 'reproceso' : 'en_curso';
+        steps[currentIndex] = {
+          ...steps[currentIndex],
+          status: wasReproceso ? 'reproceso' : 'en_curso',
+          startedAt: steps[currentIndex]?.startedAt || actionTimestamp,
+          startedBy: steps[currentIndex]?.startedBy || user.uid,
+          startedByMemberId: steps[currentIndex]?.startedByMemberId || memberId,
+        };
       }
 
       progress = Math.round((nextIndex / steps.length) * 100);
       if (newStatus === 'completed' || newStatus === 'completed_late') progress = 100;
 
-      const actionTimestamp = Timestamp.now();
-      const reviewActorIds = normalizeActorIds([user.uid, memberId, ...memberIds]);
-
-      batch.update(taskRef, {
+      const taskUpdate: any = {
         workflowSteps: steps,
         currentStepIndex: nextIndex,
         status: newStatus,
         progress: progress,
-        updatedAt: Timestamp.now(),
+        updatedAt: actionTimestamp,
         reviewedByIds: arrayUnion(...reviewActorIds),
         workflowReviewReceipts: arrayUnion({
           id: `${task.id}-${currentIndex}-${action}-${Date.now()}`,
@@ -1076,9 +1290,24 @@ export default function WorkflowTray() {
           nextStepAssignee: action === 'approve' && currentStep.assignsNextStep ? nextStepAssignee : null,
           dynamicRateCard: dynamicRateCardCharge,
           qualityEvent,
+          performanceEntryId: workflowPerformanceEntry?.id || null,
+          durationDays: workflowPerformanceEntry?.durationDays ?? null,
+          delayDays: workflowPerformanceEntry?.delayDays ?? 0,
           timestamp: actionTimestamp
         })
-      });
+      };
+
+      if (workflowPerformanceEntry) {
+        taskUpdate.performanceHistory = arrayUnion(workflowPerformanceEntry);
+      }
+
+      if (newStatus === 'completed' || newStatus === 'completed_late') {
+        taskUpdate.completedAt = actionTimestamp;
+        taskUpdate.completedBy = user.uid;
+        taskUpdate.completedByMemberId = memberId;
+      }
+
+      batch.update(taskRef, taskUpdate);
 
       await batch.commit();
 
@@ -1281,7 +1510,19 @@ export default function WorkflowTray() {
         });
       }
 
-      const actionTimestamp = Timestamp.now();
+      const actionDate = new Date();
+      const actionTimestamp = Timestamp.fromDate(actionDate);
+      const taskPerformanceEntry =
+        isCompleted && !wasCompleted
+          ? buildTaskPerformanceEntry({
+              task,
+              status: finalStatus,
+              completedAt: actionDate,
+              user,
+              memberId,
+              actorIds: reviewActorIds,
+            })
+          : null;
       const taskUpdate: any = {
         status: finalStatus,
         progress,
@@ -1300,6 +1541,17 @@ export default function WorkflowTray() {
           dynamicRateCard: dynamicRateCardCharge,
         }),
       };
+
+      if (taskPerformanceEntry) {
+        taskUpdate.performanceHistory = arrayUnion(taskPerformanceEntry);
+        taskUpdate.completedAt = actionTimestamp;
+        taskUpdate.completedBy = user.uid;
+        taskUpdate.completedByMemberId = memberId;
+      } else if (wasCompleted && !isCompleted) {
+        taskUpdate.completedAt = null;
+        taskUpdate.completedBy = null;
+        taskUpdate.completedByMemberId = null;
+      }
 
       if (meetingCompletion) {
         taskUpdate.meetingResponses = arrayUnion(meetingCompletion.response);
@@ -1320,6 +1572,7 @@ export default function WorkflowTray() {
           comment: meetingCompletion?.response?.comment || dynamicCharge?.comment || null,
           timestamp: actionTimestamp,
           source: meetingCompletion ? 'meeting_closure' : 'inbox_status',
+          performanceEntryId: taskPerformanceEntry?.id || null,
         });
       }
 

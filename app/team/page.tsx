@@ -46,6 +46,7 @@ type TeamTask = {
   projectName?: string;
   title?: string;
   name?: string;
+  type?: string;
   status?: string;
   priority?: string;
   progress?: number;
@@ -63,6 +64,10 @@ type TeamTask = {
   updatedAt?: any;
   completedAt?: any;
   externalWorkflowId?: string;
+  workflowHistory?: any[];
+  performanceHistory?: PerformanceItem[];
+  completedBy?: string;
+  completedByMemberId?: string;
 };
 
 type RateCardEntry = {
@@ -106,12 +111,46 @@ type QualityEvent = {
   createdByEmail?: string;
 };
 
+type PerformanceItem = {
+  id: string;
+  type: 'task' | 'workflow_step';
+  source?: string;
+  projectId: string;
+  projectName?: string | null;
+  organizationId?: string | null;
+  taskId?: string;
+  taskTitle?: string;
+  externalWorkflowId?: string | null;
+  municipality?: string | null;
+  stepIndex?: number | null;
+  stepLabel?: string | null;
+  status?: string;
+  action?: string;
+  outcome?: string;
+  assigneeId?: string | null;
+  userId?: string | null;
+  memberId?: string | null;
+  userIds?: string[];
+  userName?: string | null;
+  startedAt?: any;
+  plannedStartAt?: any;
+  plannedEndAt?: any;
+  completedAt?: any;
+  durationDays?: number | null;
+  delayDays?: number;
+  completedLate?: boolean;
+  dateKey?: string;
+  monthKey?: string;
+  weekKey?: string;
+};
+
 type MemberMetric = {
   member: any;
   organizationLabel: string;
   currentTasks: TeamTask[];
   relatedTasks: TeamTask[];
   criticalTasks: TeamTask[];
+  completedWorkItems: PerformanceItem[];
   openTasks: number;
   completedTasks: number;
   completedLate: number;
@@ -281,6 +320,161 @@ const matchesMember = (member: any, value?: string | null) => {
   return identifiers.has(String(value)) || identifiers.has(normalized);
 };
 
+const roundDayValue = (value: number) => Math.round(value * 10) / 10;
+
+const getDurationDaysBetween = (startedAt: any, completedAt: any) => {
+  const startDate = getDate(startedAt);
+  const endDate = getDate(completedAt);
+  if (!startDate || !endDate) return null;
+  return roundDayValue(Math.max(0, (endDate.getTime() - startDate.getTime()) / 86400000));
+};
+
+const getDelayDaysFromPlannedEnd = (plannedEnd: any, completedAt: any) => {
+  const plannedEndDate = getDate(plannedEnd);
+  const completionDate = getDate(completedAt);
+  if (!plannedEndDate || !completionDate) return 0;
+  const plannedDay = new Date(plannedEndDate.getFullYear(), plannedEndDate.getMonth(), plannedEndDate.getDate()).getTime();
+  const completedDay = new Date(completionDate.getFullYear(), completionDate.getMonth(), completionDate.getDate()).getTime();
+  const delay = completedDay - plannedDay;
+  return delay > 0 ? Math.ceil(delay / 86400000) : 0;
+};
+
+const normalizePerformanceItem = (task: TeamTask, item: any, index: number): PerformanceItem => {
+  const completedAt = item.completedAt || item.timestamp || task.completedAt || task.updatedAt;
+  const startedAt = item.startedAt || item.plannedStartAt || task.startDate || task.start || task.createdAt;
+  const plannedEndAt = item.plannedEndAt || task.endDate || task.end || task.dueDate;
+  const durationDays = typeof item.durationDays === 'number'
+    ? item.durationDays
+    : getDurationDaysBetween(startedAt, completedAt);
+  const delayDays = typeof item.delayDays === 'number'
+    ? item.delayDays
+    : getDelayDaysFromPlannedEnd(plannedEndAt, completedAt);
+
+  return {
+    id: String(item.id || `${task.projectId}-${task.id}-performance-${index}`),
+    type: item.type === 'workflow_step' ? 'workflow_step' : 'task',
+    source: item.source,
+    projectId: item.projectId || task.projectId,
+    projectName: item.projectName || task.projectName || null,
+    organizationId: item.organizationId || null,
+    taskId: item.taskId || task.id,
+    taskTitle: item.taskTitle || getTaskTitle(task),
+    externalWorkflowId: item.externalWorkflowId || task.externalWorkflowId || null,
+    municipality: item.municipality || null,
+    stepIndex: typeof item.stepIndex === 'number' ? item.stepIndex : null,
+    stepLabel: item.stepLabel || null,
+    status: item.status,
+    action: item.action,
+    outcome: item.outcome || (item.action === 'return' ? 'returned' : 'completed'),
+    assigneeId: item.assigneeId || null,
+    userId: item.userId || null,
+    memberId: item.memberId || null,
+    userIds: Array.isArray(item.userIds) ? item.userIds : [],
+    userName: item.userName || null,
+    startedAt,
+    plannedStartAt: item.plannedStartAt || task.startDate || task.start || task.createdAt,
+    plannedEndAt,
+    completedAt,
+    durationDays,
+    delayDays,
+    completedLate: Boolean(item.completedLate || delayDays > 0),
+    dateKey: item.dateKey,
+    monthKey: item.monthKey,
+    weekKey: item.weekKey,
+  };
+};
+
+const buildStepPerformanceFallback = (task: TeamTask, step: any, index: number): PerformanceItem | null => {
+  const completedAt = step?.completedAt || step?.finishedAt || step?.updatedAt || task.completedAt || task.updatedAt;
+  if (!isCompletedWorkflowStep(step) || !completedAt) return null;
+
+  return normalizePerformanceItem(
+    task,
+    {
+      id: `${task.projectId}-${task.id}-step-${index}-${getTime(completedAt) || index}`,
+      type: 'workflow_step',
+      source: 'workflow_step_fallback',
+      stepIndex: index,
+      stepLabel: step?.label || `Paso ${index + 1}`,
+      assigneeId: step?.assignedTo || step?.completedBy || null,
+      userId: step?.completedBy || null,
+      memberId: step?.completedByMemberId || null,
+      userIds: Array.isArray(step?.completedByIds) ? step.completedByIds : [],
+      startedAt: step?.startedAt || step?.restartedAt || task.startDate || task.start || task.createdAt,
+      plannedStartAt: step?.plannedStartAt || step?.plannedStartDate || step?.startDate || task.startDate || task.start,
+      plannedEndAt: step?.plannedEndAt || step?.plannedEndDate || step?.endDate || task.endDate || task.end || task.dueDate,
+      completedAt,
+      durationDays: typeof step?.durationDays === 'number' ? step.durationDays : undefined,
+      delayDays: typeof step?.delayDays === 'number' ? step.delayDays : undefined,
+      completedLate: Boolean(step?.completedLate),
+      outcome: step?.status === 'devuelto' ? 'returned' : 'completed',
+    },
+    index
+  );
+};
+
+const buildTaskPerformanceFallback = (task: TeamTask): PerformanceItem | null => {
+  if (!isCompletedTask(task)) return null;
+  if (task.type === 'workflow' && Array.isArray(task.workflowSteps) && task.workflowSteps.length > 0) return null;
+
+  return normalizePerformanceItem(
+    task,
+    {
+      id: `${task.projectId}-${task.id}-task-fallback`,
+      type: 'task',
+      source: 'task_status_fallback',
+      status: task.status,
+      assigneeId: task.assignedTo || null,
+      userId: task.completedBy || null,
+      memberId: task.completedByMemberId || null,
+      startedAt: task.startDate || task.start || task.createdAt,
+      plannedEndAt: task.endDate || task.end || task.dueDate,
+      completedAt: task.completedAt || task.updatedAt,
+      outcome: 'completed',
+    },
+    0
+  );
+};
+
+const getPerformanceItemsForTask = (task: TeamTask) => {
+  const seen = new Set<string>();
+  const items: PerformanceItem[] = [];
+
+  (Array.isArray(task.performanceHistory) ? task.performanceHistory : []).forEach((item, index) => {
+    const normalized = normalizePerformanceItem(task, item, index);
+    if (!normalized.completedAt || seen.has(normalized.id)) return;
+    seen.add(normalized.id);
+    items.push(normalized);
+  });
+
+  if (Array.isArray(task.workflowSteps)) {
+    task.workflowSteps.forEach((step, index) => {
+      const item = buildStepPerformanceFallback(task, step, index);
+      if (!item || seen.has(item.id)) return;
+      const hasStoredStep = items.some(
+        (stored) => stored.type === 'workflow_step' && stored.taskId === task.id && stored.stepIndex === index
+      );
+      if (hasStoredStep) return;
+      seen.add(item.id);
+      items.push(item);
+    });
+  }
+
+  const taskFallback = buildTaskPerformanceFallback(task);
+  if (taskFallback && !seen.has(taskFallback.id)) {
+    items.push(taskFallback);
+  }
+
+  return items.sort((left, right) => getTime(right.completedAt) - getTime(left.completedAt));
+};
+
+const performanceItemMatchesMember = (item: PerformanceItem, member: any) => {
+  if (matchesMember(member, item.assigneeId)) return true;
+  if (matchesMember(member, item.memberId)) return true;
+  if (matchesMember(member, item.userId)) return true;
+  return Array.isArray(item.userIds) && item.userIds.some((id) => matchesMember(member, id));
+};
+
 const isTaskDirectlyAssignedToMember = (task: TeamTask, member: any) => {
   if (matchesMember(member, task.assignedTo)) return true;
   if (Array.isArray(task.assignedUsers) && task.assignedUsers.some((id) => matchesMember(member, id))) return true;
@@ -347,6 +541,15 @@ const getAverageDays = (tasks: TeamTask[]) => {
 
   if (durations.length === 0) return null;
   return Math.round((durations.reduce((sum, value) => sum + value, 0) / durations.length) * 10) / 10;
+};
+
+const getAveragePerformanceDays = (items: PerformanceItem[]) => {
+  const durations = items
+    .map((item) => (typeof item.durationDays === 'number' ? item.durationDays : getDurationDaysBetween(item.startedAt, item.completedAt)))
+    .filter((value): value is number => typeof value === 'number');
+
+  if (durations.length === 0) return null;
+  return roundDayValue(durations.reduce((sum, value) => sum + value, 0) / durations.length);
 };
 
 const getQualityTone = (score: number | null) => {
@@ -472,6 +675,7 @@ export default function TeamPage() {
   const [selectedOrganizationId, setSelectedOrganizationId] = useState('all');
   const [sortMode, setSortMode] = useState<SortMode>('risk');
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
+  const [completedWorkFilter, setCompletedWorkFilter] = useState<'all' | 'task' | 'workflow_step'>('all');
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingMember, setEditingMember] = useState<any>(null);
@@ -663,6 +867,10 @@ export default function TeamPage() {
     () => scopedProjects.flatMap((project) => qualityEventsByProject[project.id] || []),
     [qualityEventsByProject, scopedProjects]
   );
+  const allPerformanceItems = useMemo(
+    () => allTasks.flatMap((task) => getPerformanceItemsForTask(task)),
+    [allTasks]
+  );
 
   const rateCardByKey = useMemo(() => {
     return new Map(allRateCards.map((rateCard) => [`${rateCard.projectId}::${rateCard.id}`, rateCard]));
@@ -679,8 +887,11 @@ export default function TeamPage() {
       const dueSoonTasks = openTaskRows.filter((task) => getScheduleState(task) === 'dueSoon').length;
       const laggingTasks = openTaskRows.filter(isTaskLagging).length;
       const blockedTasks = openTaskRows.filter((task) => getStatusBucket(task.status) === 'blocked').length;
-      const completedTasks = relatedTasks.filter((task) => getStatusBucket(task.status) === 'completed').length;
-      const completedLate = relatedTasks.filter((task) => getStatusBucket(task.status) === 'completedLate').length;
+      const completedWorkItems = allPerformanceItems
+        .filter((item) => scopedProjectIds.has(item.projectId) && performanceItemMatchesMember(item, member))
+        .sort((left, right) => getTime(right.completedAt) - getTime(left.completedAt));
+      const completedTasks = completedWorkItems.filter((item) => item.type === 'task').length;
+      const completedLate = completedWorkItems.filter((item) => Number(item.delayDays || 0) > 0 || item.completedLate).length;
       const averageProgress = openAssignmentProgressValues.length
         ? Math.round(openAssignmentProgressValues.reduce((sum, progress) => sum + progress, 0) / openAssignmentProgressValues.length)
         : 0;
@@ -723,6 +934,7 @@ export default function TeamPage() {
       const qualityScore = qualityReviewed > 0 ? Math.round((qualityAccepted / qualityReviewed) * 100) : null;
       const latestActivity = Math.max(
         ...relatedTasks.map((task) => getTime(task.updatedAt || task.createdAt)),
+        ...completedWorkItems.map((item) => getTime(item.completedAt)),
         ...memberRateEntries.map((entry) => getTime(entry.createdAt || entry.dateKey)),
         ...professionalQualityEvents.map((event) => getTime(event.createdAt)),
         0
@@ -744,6 +956,7 @@ export default function TeamPage() {
         currentTasks,
         relatedTasks,
         criticalTasks,
+        completedWorkItems,
         openTasks: openAssignmentCount,
         completedTasks,
         completedLate,
@@ -752,7 +965,7 @@ export default function TeamPage() {
         laggingTasks,
         blockedTasks,
         averageProgress,
-        averageDays: getAverageDays(relatedTasks),
+        averageDays: getAveragePerformanceDays(completedWorkItems) ?? getAverageDays(relatedTasks),
         rateUnits,
         rateValue,
         reworkUnits,
@@ -772,7 +985,7 @@ export default function TeamPage() {
         rateSummaries: Array.from(rateSummaryMap.values()).sort((left, right) => Math.abs(right.value) - Math.abs(left.value)),
       };
     });
-  }, [allQualityEvents, allRateEntries, allTasks, organizations, rateCardByKey, scopedProjectIds, scopedTeamMembers]);
+  }, [allPerformanceItems, allQualityEvents, allRateEntries, allTasks, organizations, rateCardByKey, scopedProjectIds, scopedTeamMembers]);
 
   const filteredMetrics = useMemo(() => {
     const search = searchTerm.trim().toLowerCase();
@@ -809,6 +1022,13 @@ export default function TeamPage() {
       .sort((left, right) => getTime(right.createdAt) - getTime(left.createdAt))
       .slice(0, 8);
   }, [selectedMetric]);
+
+  const selectedCompletedWorkItems = useMemo(() => {
+    if (!selectedMetric) return [];
+    return selectedMetric.completedWorkItems
+      .filter((item) => completedWorkFilter === 'all' || item.type === completedWorkFilter)
+      .slice(0, 12);
+  }, [completedWorkFilter, selectedMetric]);
 
   const portfolioStats = useMemo(() => {
     const totalOpen = memberMetrics.reduce((sum, metric) => sum + metric.openTasks, 0);
@@ -1152,60 +1372,151 @@ export default function TeamPage() {
               </div>
 
               <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-                <section className="rounded-lg border border-slate-200 bg-white">
-                  <div className="border-b border-slate-200 p-4">
-                    <h4 className="flex items-center gap-2 text-lg font-black text-slate-950">
-                      <CalendarClock size={18} className="text-indigo-600" />
-                      Tareas que requieren atención
-                    </h4>
-                    <p className="mt-1 text-sm font-medium text-slate-500">Vencidas, próximas, rezagadas o bloqueadas.</p>
-                  </div>
-                  <div className="divide-y divide-slate-100">
-                    {selectedMetric.criticalTasks.length === 0 ? (
-                      <div className="p-6 text-center text-sm font-medium text-slate-500">No hay tareas críticas para esta persona.</div>
-                    ) : (
-                      selectedMetric.criticalTasks.map((task) => {
-                        const schedule = getScheduleState(task);
-                        const scheduleClass =
-                          schedule === 'overdue'
-                            ? 'bg-red-50 text-red-700 ring-red-100'
-                            : schedule === 'dueSoon'
-                              ? 'bg-orange-50 text-orange-700 ring-orange-100'
-                              : 'bg-slate-100 text-slate-700 ring-slate-200';
-                        return (
-                          <div key={`${task.projectId}-${task.id}`} className="grid gap-3 p-4 md:grid-cols-[1fr_auto] md:items-center">
-                            <div className="min-w-0">
-                              <div className="mb-1 flex flex-wrap items-center gap-2">
-                                <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${scheduleClass}`}>
-                                  {schedule === 'overdue' ? 'Vencida' : schedule === 'dueSoon' ? 'Por vencer' : 'Riesgo'}
-                                </span>
-                                <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${getStatusClass(task.status)}`}>
-                                  {getStatusLabel(task.status)}
-                                </span>
-                              </div>
-                              <p className="truncate text-sm font-black text-slate-950">{getTaskTitle(task)}</p>
-                              <p className="text-xs font-bold text-slate-500">{task.projectName || 'Proyecto'} · Cierre {formatShortDate(task.endDate || task.end || task.dueDate)}</p>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <div className="w-32">
-                                <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                                  <div className="h-full rounded-full bg-indigo-600" style={{ width: `${Math.min(Math.max(Number(task.progress || 0), 0), 100)}%` }} />
+                <div className="space-y-5">
+                  <section className="rounded-lg border border-slate-200 bg-white">
+                    <div className="border-b border-slate-200 p-4">
+                      <h4 className="flex items-center gap-2 text-lg font-black text-slate-950">
+                        <CalendarClock size={18} className="text-indigo-600" />
+                        Tareas que requieren atención
+                      </h4>
+                      <p className="mt-1 text-sm font-medium text-slate-500">Vencidas, próximas, rezagadas o bloqueadas.</p>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {selectedMetric.criticalTasks.length === 0 ? (
+                        <div className="p-6 text-center text-sm font-medium text-slate-500">No hay tareas críticas para esta persona.</div>
+                      ) : (
+                        selectedMetric.criticalTasks.map((task) => {
+                          const schedule = getScheduleState(task);
+                          const scheduleClass =
+                            schedule === 'overdue'
+                              ? 'bg-red-50 text-red-700 ring-red-100'
+                              : schedule === 'dueSoon'
+                                ? 'bg-orange-50 text-orange-700 ring-orange-100'
+                                : 'bg-slate-100 text-slate-700 ring-slate-200';
+                          return (
+                            <div key={`${task.projectId}-${task.id}`} className="grid gap-3 p-4 md:grid-cols-[1fr_auto] md:items-center">
+                              <div className="min-w-0">
+                                <div className="mb-1 flex flex-wrap items-center gap-2">
+                                  <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${scheduleClass}`}>
+                                    {schedule === 'overdue' ? 'Vencida' : schedule === 'dueSoon' ? 'Por vencer' : 'Riesgo'}
+                                  </span>
+                                  <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${getStatusClass(task.status)}`}>
+                                    {getStatusLabel(task.status)}
+                                  </span>
                                 </div>
-                                <p className="mt-1 text-right text-xs font-black text-slate-500">{Number(task.progress || 0)}%</p>
+                                <p className="truncate text-sm font-black text-slate-950">{getTaskTitle(task)}</p>
+                                <p className="text-xs font-bold text-slate-500">{task.projectName || 'Proyecto'} · Cierre {formatShortDate(task.endDate || task.end || task.dueDate)}</p>
                               </div>
-                              <Link href={getTaskDeepLink(task.projectId, task.id)}>
-                                <Button variant="outline" size="sm" className="h-9 border-slate-200 text-slate-600">
-                                  Abrir
-                                  <ArrowRight size={14} />
-                                </Button>
-                              </Link>
+                              <div className="flex items-center gap-3">
+                                <div className="w-32">
+                                  <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                                    <div className="h-full rounded-full bg-indigo-600" style={{ width: `${Math.min(Math.max(Number(task.progress || 0), 0), 100)}%` }} />
+                                  </div>
+                                  <p className="mt-1 text-right text-xs font-black text-slate-500">{Number(task.progress || 0)}%</p>
+                                </div>
+                                <Link href={getTaskDeepLink(task.projectId, task.id)}>
+                                  <Button variant="outline" size="sm" className="h-9 border-slate-200 text-slate-600">
+                                    Abrir
+                                    <ArrowRight size={14} />
+                                  </Button>
+                                </Link>
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </section>
+                          );
+                        })
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="rounded-lg border border-slate-200 bg-white">
+                    <div className="border-b border-slate-200 p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h4 className="flex items-center gap-2 text-lg font-black text-slate-950">
+                            <CheckCircle2 size={18} className="text-emerald-600" />
+                            Tareas y pasos realizados
+                          </h4>
+                          <p className="mt-1 text-sm font-medium text-slate-500">Historial de entregas con duración real y retraso atribuido.</p>
+                        </div>
+                        <div className="flex rounded-md bg-slate-100 p-1 text-xs font-black">
+                          {[
+                            ['all', 'Todo'],
+                            ['task', 'Tareas'],
+                            ['workflow_step', 'Pasos'],
+                          ].map(([value, label]) => (
+                            <button
+                              key={value}
+                              type="button"
+                              onClick={() => setCompletedWorkFilter(value as 'all' | 'task' | 'workflow_step')}
+                              className={`rounded px-3 py-1.5 transition ${
+                                completedWorkFilter === value ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {selectedCompletedWorkItems.length === 0 ? (
+                        <div className="p-6 text-center text-sm font-medium text-slate-500">Aún no hay entregas registradas para este filtro.</div>
+                      ) : (
+                        selectedCompletedWorkItems.map((item) => {
+                          const delayDays = Number(item.delayDays || 0);
+                          return (
+                            <Link
+                              key={item.id}
+                              href={getTaskDeepLink(item.projectId, item.taskId)}
+                              className="grid gap-3 p-4 transition hover:bg-slate-50 md:grid-cols-[1fr_auto] md:items-center"
+                            >
+                              <div className="min-w-0">
+                                <div className="mb-1 flex flex-wrap items-center gap-2">
+                                  <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${
+                                    item.type === 'workflow_step'
+                                      ? 'bg-indigo-50 text-indigo-700 ring-indigo-100'
+                                      : 'bg-cyan-50 text-cyan-700 ring-cyan-100'
+                                  }`}>
+                                    {item.type === 'workflow_step' ? 'Paso workflow' : 'Tarea'}
+                                  </span>
+                                  <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${
+                                    delayDays > 0 ? 'bg-orange-50 text-orange-700 ring-orange-100' : 'bg-emerald-50 text-emerald-700 ring-emerald-100'
+                                  }`}>
+                                    {delayDays > 0 ? `${delayDays} d tarde` : 'A tiempo'}
+                                  </span>
+                                  {item.outcome === 'returned' && (
+                                    <span className="rounded bg-red-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-red-700 ring-1 ring-red-100">
+                                      Devuelto
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="truncate text-sm font-black text-slate-950">
+                                  {item.type === 'workflow_step' ? `${item.stepLabel || 'Paso'} · ${item.taskTitle || 'Tarea'}` : item.taskTitle || 'Tarea'}
+                                </p>
+                                <p className="text-xs font-bold text-slate-500">
+                                  {item.projectName || 'Proyecto'}
+                                  {item.municipality ? ` · ${item.municipality}` : ''}
+                                  {' · '}
+                                  Finalizó {formatShortDate(item.completedAt)}
+                                </p>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-right text-xs font-black text-slate-600">
+                                <div className="rounded-md bg-slate-50 px-3 py-2 ring-1 ring-slate-100">
+                                  <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">Duración</p>
+                                  <p className="mt-1 text-sm text-slate-950">{item.durationDays == null ? '--' : `${item.durationDays} d`}</p>
+                                </div>
+                                <div className="rounded-md bg-slate-50 px-3 py-2 ring-1 ring-slate-100">
+                                  <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">Retraso</p>
+                                  <p className={`mt-1 text-sm ${delayDays > 0 ? 'text-orange-700' : 'text-emerald-700'}`}>{delayDays} d</p>
+                                </div>
+                              </div>
+                            </Link>
+                          );
+                        })
+                      )}
+                    </div>
+                  </section>
+                </div>
 
                 <div className="space-y-5">
                   <section className="rounded-lg border border-slate-200 bg-white p-4">
