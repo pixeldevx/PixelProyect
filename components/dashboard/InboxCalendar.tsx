@@ -11,12 +11,15 @@ import {
   ChevronRight,
   Clock,
   ExternalLink,
+  Eye,
+  EyeOff,
   Loader2,
   MapPin,
+  RotateCcw,
   Sparkles,
   Video,
 } from 'lucide-react';
-import { collection, getDocs, onSnapshot, query, where } from '@/lib/supabase/document-store';
+import { collection, doc, getDoc, getDocs, onSnapshot, query, setDoc, where } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
@@ -63,6 +66,7 @@ const MONTH_LABEL = new Intl.DateTimeFormat('es-CO', { month: 'long', year: 'num
 const DAY_LABEL = new Intl.DateTimeFormat('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
 const SHORT_DATE_LABEL = new Intl.DateTimeFormat('es-CO', { day: 'numeric', month: 'short' });
 const TIME_LABEL = new Intl.DateTimeFormat('es-CO', { hour: 'numeric', minute: '2-digit' });
+const CALENDAR_VISIBILITY_STORAGE_PREFIX = 'pixel-project:inbox-calendar-hidden';
 
 const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
 const endOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
@@ -341,6 +345,33 @@ const getTaskTypeLabel = (event: CalendarEvent) => {
   return event.task.parentTaskId ? 'Subtarea' : 'Tarea';
 };
 
+const getVisibilityStorageKey = (uid?: string | null) =>
+  `${CALENDAR_VISIBILITY_STORAGE_PREFIX}:${uid || 'anonymous'}`;
+
+const readHiddenTaskIdsFromStorage = (uid?: string | null) => {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const rawValue = window.localStorage.getItem(getVisibilityStorageKey(uid));
+    if (!rawValue) return [];
+    const parsed = JSON.parse(rawValue);
+    return Array.isArray(parsed) ? normalizeIds(parsed) : [];
+  } catch (error) {
+    console.warn('No fue posible leer la vista guardada del calendario:', error);
+    return [];
+  }
+};
+
+const saveHiddenTaskIdsToStorage = (uid: string | undefined | null, ids: string[]) => {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(getVisibilityStorageKey(uid), JSON.stringify(normalizeIds(ids)));
+  } catch (error) {
+    console.warn('No fue posible guardar la vista del calendario localmente:', error);
+  }
+};
+
 export default function InboxCalendar() {
   const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -349,12 +380,15 @@ export default function InboxCalendar() {
   const [tasks, setTasks] = useState<CalendarTask[]>([]);
   const [monthDate, setMonthDate] = useState(() => startOfMonth(new Date()));
   const [selectedDate, setSelectedDate] = useState(() => startOfDay(new Date()));
+  const [hiddenTaskIds, setHiddenTaskIds] = useState<string[]>([]);
+  const [showHiddenTasks, setShowHiddenTasks] = useState(false);
 
   const managedOrganizationIds = useMemo(
     () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
     [userOrganizationId, userOrganizationIds],
   );
   const calendarWindow = useMemo(() => getCalendarWindow(monthDate), [monthDate]);
+  const hiddenTaskIdSet = useMemo(() => new Set(hiddenTaskIds), [hiddenTaskIds]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(query(collection(db, 'organizations')), (snapshot) => {
@@ -363,6 +397,46 @@ export default function InboxCalendar() {
 
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadHiddenTasks = async () => {
+      if (!user?.uid) {
+        queueMicrotask(() => {
+          setHiddenTaskIds([]);
+          setShowHiddenTasks(false);
+        });
+        return;
+      }
+
+      const localIds = readHiddenTaskIdsFromStorage(user.uid);
+      if (!cancelled && localIds.length > 0) {
+        setHiddenTaskIds(localIds);
+      }
+
+      try {
+        const userSnapshot = await getDoc(doc(db, 'users', user.uid));
+        const profileData = userSnapshot.exists() ? userSnapshot.data() : {};
+        const remoteIds = normalizeIds(profileData?.inboxCalendarHiddenTaskIds || profileData?.calendarHiddenTaskIds || []);
+        const nextIds = remoteIds.length > 0 ? remoteIds : localIds;
+
+        if (!cancelled) {
+          setHiddenTaskIds(nextIds);
+          saveHiddenTaskIdsToStorage(user.uid, nextIds);
+        }
+      } catch (error) {
+        console.warn('No fue posible cargar la vista guardada del calendario:', error);
+        if (!cancelled) setHiddenTaskIds(localIds);
+      }
+    };
+
+    loadHiddenTasks();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
 
   useEffect(() => {
     let cancelled = false;
@@ -477,28 +551,73 @@ export default function InboxCalendar() {
       .sort(eventSort);
   }, [calendarWindow.visibleEnd, calendarWindow.visibleStart, tasks]);
 
+  const visibleTasks = useMemo(
+    () => (showHiddenTasks ? tasks : tasks.filter((task) => !hiddenTaskIdSet.has(task.id))),
+    [hiddenTaskIdSet, showHiddenTasks, tasks],
+  );
+
+  const visibleEvents = useMemo(
+    () => (showHiddenTasks ? events : events.filter((event) => !hiddenTaskIdSet.has(event.taskId))),
+    [events, hiddenTaskIdSet, showHiddenTasks],
+  );
+
   const eventsByDay = useMemo(() => {
     const next = new Map<string, CalendarEvent[]>();
     calendarWindow.days.forEach((day) => {
       const key = day.toISOString().slice(0, 10);
-      next.set(key, events.filter((event) => eventIntersectsDay(event, day)).sort(eventSort));
+      next.set(key, visibleEvents.filter((event) => eventIntersectsDay(event, day)).sort(eventSort));
     });
     return next;
-  }, [calendarWindow.days, events]);
+  }, [calendarWindow.days, visibleEvents]);
 
   const selectedEvents = useMemo(
-    () => events.filter((event) => eventIntersectsDay(event, selectedDate)).sort(eventSort),
-    [events, selectedDate],
+    () => visibleEvents.filter((event) => eventIntersectsDay(event, selectedDate)).sort(eventSort),
+    [selectedDate, visibleEvents],
   );
 
-  const noDateCount = useMemo(() => tasks.filter((task) => !buildBaseEvent(task)).length, [tasks]);
-  const todayEventsCount = useMemo(() => events.filter((event) => eventIntersectsDay(event, new Date())).length, [events]);
-  const overdueEventsCount = useMemo(() => events.filter((event) => getDueState(event) === 'overdue').length, [events]);
+  const hiddenTaskCount = useMemo(() => tasks.filter((task) => hiddenTaskIdSet.has(task.id)).length, [hiddenTaskIdSet, tasks]);
+  const noDateCount = useMemo(() => visibleTasks.filter((task) => !buildBaseEvent(task)).length, [visibleTasks]);
+  const todayEventsCount = useMemo(() => visibleEvents.filter((event) => eventIntersectsDay(event, new Date())).length, [visibleEvents]);
+  const overdueEventsCount = useMemo(() => visibleEvents.filter((event) => getDueState(event) === 'overdue').length, [visibleEvents]);
   const upcomingEventsCount = useMemo(() => {
     const today = startOfDay(new Date());
     const nextWeek = endOfDay(addDays(today, 7));
-    return events.filter((event) => event.start.getTime() <= nextWeek.getTime() && event.end.getTime() >= today.getTime()).length;
-  }, [events]);
+    return visibleEvents.filter((event) => event.start.getTime() <= nextWeek.getTime() && event.end.getTime() >= today.getTime()).length;
+  }, [visibleEvents]);
+
+  const saveHiddenTaskIds = async (nextIds: string[]) => {
+    const normalizedIds = normalizeIds(nextIds);
+    setHiddenTaskIds(normalizedIds);
+    saveHiddenTaskIdsToStorage(user?.uid, normalizedIds);
+
+    if (!user?.uid) return;
+
+    try {
+      await setDoc(
+        doc(db, 'users', user.uid),
+        {
+          inboxCalendarHiddenTaskIds: normalizedIds,
+          inboxCalendarViewUpdatedAt: new Date().toISOString(),
+        },
+        { merge: true },
+      );
+    } catch (error) {
+      console.warn('No fue posible sincronizar la vista guardada del calendario:', error);
+    }
+  };
+
+  const toggleTaskVisibility = (taskId: string) => {
+    const nextIds = hiddenTaskIdSet.has(taskId)
+      ? hiddenTaskIds.filter((id) => id !== taskId)
+      : [...hiddenTaskIds, taskId];
+
+    void saveHiddenTaskIds(nextIds);
+  };
+
+  const restoreCalendarView = () => {
+    setShowHiddenTasks(false);
+    void saveHiddenTaskIds([]);
+  };
 
   const moveMonth = (amount: number) => {
     const nextMonth = addMonths(monthDate, amount);
@@ -540,6 +659,32 @@ export default function InboxCalendar() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              {hiddenTaskCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowHiddenTasks((current) => !current)}
+                  className={`inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-bold shadow-sm transition-colors ${
+                    showHiddenTasks
+                      ? 'border-indigo-200 bg-indigo-600 text-white hover:bg-indigo-700'
+                      : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700'
+                  }`}
+                  title={showHiddenTasks ? 'Volver a ocultar tareas silenciadas' : 'Mostrar tareas ocultas de esta vista'}
+                >
+                  {showHiddenTasks ? <Eye size={16} /> : <EyeOff size={16} />}
+                  {showHiddenTasks ? 'Viendo ocultas' : `${hiddenTaskCount} ocultas`}
+                </button>
+              )}
+              {hiddenTaskCount > 0 && (
+                <button
+                  type="button"
+                  onClick={restoreCalendarView}
+                  className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 shadow-sm transition-colors hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700"
+                  title="Restaurar todas las tareas ocultas del calendario"
+                >
+                  <RotateCcw size={16} />
+                  Restaurar
+                </button>
+              )}
               <button
                 type="button"
                 onClick={goToToday}
@@ -571,10 +716,10 @@ export default function InboxCalendar() {
             </div>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
+          <div className="mt-4 grid grid-cols-2 gap-2 lg:grid-cols-5">
             <div className="rounded-xl border border-indigo-100 bg-white/90 p-3">
-              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Asignadas</p>
-              <p className="mt-1 text-2xl font-black text-slate-950">{tasks.length}</p>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Visibles</p>
+              <p className="mt-1 text-2xl font-black text-slate-950">{visibleTasks.length}</p>
             </div>
             <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
               <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-600">Hoy</p>
@@ -588,7 +733,17 @@ export default function InboxCalendar() {
               <p className="text-[10px] font-black uppercase tracking-[0.18em] text-red-600">Vencidas</p>
               <p className="mt-1 text-2xl font-black text-red-700">{overdueEventsCount}</p>
             </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Ocultas</p>
+              <p className="mt-1 text-2xl font-black text-slate-700">{hiddenTaskCount}</p>
+            </div>
           </div>
+
+          {hiddenTaskCount > 0 && (
+            <div className="mt-3 rounded-xl border border-indigo-100 bg-white/80 px-3 py-2 text-xs font-semibold text-slate-600">
+              Vista guardada: {hiddenTaskCount} tarea{hiddenTaskCount === 1 ? '' : 's'} silenciada{hiddenTaskCount === 1 ? '' : 's'} en este calendario. Esto no cambia el proyecto ni la bandeja de entrada.
+            </div>
+          )}
         </div>
 
         <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -638,10 +793,11 @@ export default function InboxCalendar() {
                     <div className="mt-2 space-y-1">
                       {dayEvents.slice(0, 3).map((event) => {
                         const dueStyles = getDueStyles(getDueState(event));
+                        const isHiddenEvent = hiddenTaskIdSet.has(event.taskId);
                         return (
                           <div
                             key={event.id}
-                            className={`min-w-0 rounded-md border px-1.5 py-1 ${dueStyles.cell}`}
+                            className={`min-w-0 rounded-md border px-1.5 py-1 ${dueStyles.cell} ${isHiddenEvent ? 'opacity-50 grayscale' : ''}`}
                             title={`${event.title} · ${event.projectName}`}
                           >
                             <div className="flex min-w-0 items-center gap-1">
@@ -687,12 +843,14 @@ export default function InboxCalendar() {
                   const dueState = getDueState(event);
                   const dueStyles = getDueStyles(dueState);
                   const googleCalendarUrl = event.type === 'meeting' ? createGoogleCalendarUrl(event.task) : '';
+                  const isHiddenEvent = hiddenTaskIdSet.has(event.taskId);
 
                   return (
-                    <article key={event.id} className={`relative overflow-hidden rounded-2xl border bg-white p-4 shadow-sm ${dueStyles.cell}`}>
+                    <article key={event.id} className={`relative overflow-hidden rounded-2xl border bg-white p-4 shadow-sm ${dueStyles.cell} ${isHiddenEvent ? 'opacity-60 grayscale' : ''}`}>
                       <div className={`absolute inset-y-0 left-0 w-1 ${dueStyles.rail}`} />
                       <div className="min-w-0 pl-2">
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                           <span className="rounded-md bg-white/80 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-indigo-700">
                             {getTaskTypeLabel(event)}
                           </span>
@@ -704,6 +862,16 @@ export default function InboxCalendar() {
                               Alta
                             </span>
                           )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => toggleTaskVisibility(event.taskId)}
+                            className="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white/90 px-2 text-[10px] font-black uppercase tracking-[0.08em] text-slate-600 transition-colors hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+                            title={isHiddenEvent ? 'Mostrar de nuevo esta tarea en el calendario' : 'Ocultar esta tarea de la vista calendario'}
+                          >
+                            {isHiddenEvent ? <Eye size={12} /> : <EyeOff size={12} />}
+                            {isHiddenEvent ? 'Mostrar' : 'Ocultar'}
+                          </button>
                         </div>
 
                         <h4 className="mt-3 min-w-0 text-base font-black leading-tight text-slate-950">
