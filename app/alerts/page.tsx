@@ -13,6 +13,7 @@ import { Plus, Trash2, Edit, Bell, Mail, Clock, AlertTriangle, CheckCircle2, Set
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, serverTimestamp, getDocs, where, setDoc } from '@/lib/supabase/document-store';
 import { db, supabase } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
+import { ensurePixelPushSubscription } from '@/lib/push/client-subscription';
 import { toast } from 'sonner';
 import {
   DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO,
@@ -96,7 +97,7 @@ function ScopeToggleRow({ title, subtitle, active, muted, saving, onToggle }: Sc
 }
 
 export default function AlertsPage() {
-  const { user } = useAuth();
+  const { user, userOrganizationIds } = useAuth();
   const [rules, setRules] = useState<any[]>([]);
   const [alerts, setAlerts] = useState<any[]>([]);
   const [isCreatingRule, setIsCreatingRule] = useState(false);
@@ -235,6 +236,24 @@ export default function AlertsPage() {
   const handleSendTestPush = async () => {
     setIsSendingTestPush(true);
     try {
+      const subscriptionResult = await ensurePixelPushSubscription({
+        user,
+        organizationIds: userOrganizationIds || [],
+      });
+
+      if (!subscriptionResult.ok) {
+        if (subscriptionResult.reason === 'permission_denied') {
+          toast.error('Las notificaciones están bloqueadas en este dispositivo. Revisa permisos del navegador o de la PWA.');
+        } else if (subscriptionResult.reason === 'unsupported_browser') {
+          toast.error('Este navegador no soporta push PWA. En iPhone abre Pixel Project instalada desde la pantalla de inicio.');
+        } else if (subscriptionResult.reason === 'missing_public_key') {
+          toast.error('Falta NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY en Vercel o el despliegue no tomó la variable.');
+        } else {
+          toast.error(subscriptionResult.message);
+        }
+        return;
+      }
+
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token;
 
@@ -268,7 +287,17 @@ export default function AlertsPage() {
       }
 
       if (body?.push?.reason === 'no_active_subscriptions') {
-        toast.warning('No hay dispositivos PWA activos para este usuario. Abre la PWA instalada y activa notificaciones.');
+        toast.warning('El dispositivo se registró, pero el backend no encontró una suscripción activa. Espera unos segundos y prueba de nuevo.');
+        return;
+      }
+
+      if (Array.isArray(body?.push?.expiredIds) && body.push.expiredIds.length > 0) {
+        toast.warning('Había una suscripción push vencida. La limpiamos; vuelve a enviar la prueba para registrar una nueva.');
+        return;
+      }
+
+      if (Number(body?.push?.attempted || 0) > 0 && Number(body?.push?.failed || 0) > 0) {
+        toast.error('Encontré el dispositivo, pero el proveedor push rechazó el envío. Revisa WEB_PUSH_PRIVATE_KEY y WEB_PUSH_SUBJECT en Vercel.');
         return;
       }
 

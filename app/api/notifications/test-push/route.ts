@@ -53,6 +53,33 @@ const appUrlFromRequest = (request: NextRequest) => {
   return new URL(request.url).origin.replace(/\/$/, '');
 };
 
+const getDocument = async (supabase: any, collectionPath: string, docId: string) => {
+  if (!docId) return null;
+  const { data, error } = await supabase
+    .from(DOCUMENTS_TABLE)
+    .select('collection_path, doc_id, data')
+    .eq('collection_path', collectionPath)
+    .eq('doc_id', docId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data || null) as AppDocumentRow | null;
+};
+
+const upsertDocument = async (supabase: any, collectionPath: string, docId: string, data: Record<string, any>) => {
+  const { error } = await supabase.from(DOCUMENTS_TABLE).upsert(
+    {
+      collection_path: collectionPath,
+      doc_id: docId,
+      data,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'collection_path,doc_id' }
+  );
+
+  if (error) throw error;
+};
+
 const normalizePushSubscriptionTarget = (row: AppDocumentRow): PixelPushTarget | null => {
   const subscription = row.data?.subscription;
   const endpoint = subscription?.endpoint || row.data?.endpoint;
@@ -110,6 +137,26 @@ const findPushSubscriptions = async (supabase: any, userId: string, email: strin
     .filter((target): target is PixelPushTarget => Boolean(target));
 };
 
+const deactivatePushSubscriptions = async (supabase: any, subscriptionIds: string[]) => {
+  if (subscriptionIds.length === 0) return;
+  const now = new Date().toISOString();
+
+  await Promise.all(
+    subscriptionIds.map(async (subscriptionId) => {
+      const row = await getDocument(supabase, 'push_subscriptions', subscriptionId);
+      if (!row) return;
+
+      await upsertDocument(supabase, 'push_subscriptions', subscriptionId, {
+        ...row.data,
+        isActive: false,
+        deactivatedAt: now,
+        deactivationReason: 'push_subscription_expired',
+        updatedAt: now,
+      });
+    })
+  );
+};
+
 export async function POST(request: NextRequest) {
   try {
     const supabase = getAdminClient();
@@ -132,6 +179,10 @@ export async function POST(request: NextRequest) {
         userId: user.id,
       },
     });
+
+    if (Array.isArray(pushResult.expiredIds) && pushResult.expiredIds.length > 0) {
+      await deactivatePushSubscriptions(supabase, pushResult.expiredIds);
+    }
 
     return json({
       ok: true,

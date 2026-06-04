@@ -4,8 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Bell, Download, Share, Smartphone, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
-import { db } from '@/lib/backend';
-import { doc, serverTimestamp, setDoc } from '@/lib/supabase/document-store';
+import { ensurePixelPushSubscription } from '@/lib/push/client-subscription';
 import { toast } from 'sonner';
 
 type BeforeInstallPromptEvent = Event & {
@@ -17,27 +16,6 @@ const LEGACY_DISMISSED_KEY = 'pixel-project-pwa-dismissed';
 const INSTALL_DISMISSED_KEY = 'pixel-project-pwa-install-dismissed';
 const PUSH_DISMISSED_KEY = 'pixel-project-pwa-push-dismissed';
 const WEB_PUSH_PUBLIC_KEY = process.env.NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY || '';
-
-const urlBase64ToUint8Array = (base64String: string) => {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = `${base64String}${padding}`.replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = window.atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-
-  for (let i = 0; i < rawData.length; i += 1) {
-    outputArray[i] = rawData.charCodeAt(i);
-  }
-
-  return outputArray;
-};
-
-const hashEndpoint = async (endpoint: string) => {
-  const data = new TextEncoder().encode(endpoint);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-};
 
 const isIosDevice = () => {
   if (typeof navigator === 'undefined') return false;
@@ -56,7 +34,6 @@ export function PWAInstallPrompt() {
   const [isPushDismissed, setIsPushDismissed] = useState(true);
   const [isStandalone, setIsStandalone] = useState(false);
   const [isIos, setIsIos] = useState(false);
-  const [registration, setRegistration] = useState<ServiceWorkerRegistration | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
   const [hasActiveSubscription, setHasActiveSubscription] = useState(false);
   const [isSavingSubscription, setIsSavingSubscription] = useState(false);
@@ -108,7 +85,6 @@ export function PWAInstallPrompt() {
     navigator.serviceWorker
       .register('/sw.js')
       .then(async (serviceWorkerRegistration) => {
-        setRegistration(serviceWorkerRegistration);
         if ('PushManager' in window) {
           const existingSubscription = await serviceWorkerRegistration.pushManager.getSubscription();
           setHasActiveSubscription(Boolean(existingSubscription));
@@ -143,47 +119,26 @@ export function PWAInstallPrompt() {
   };
 
   const handleEnableNotifications = async () => {
-    if (!user || !registration || !canUseNotifications || !hasPushKey) return;
+    if (!user || !canUseNotifications || !hasPushKey) return;
 
     setIsSavingSubscription(true);
     try {
-      const permission = await Notification.requestPermission();
-      setNotificationPermission(permission);
+      const result = await ensurePixelPushSubscription({
+        user,
+        organizationIds: userOrganizationIds || [],
+      });
 
-      if (permission !== 'granted') {
-        toast.error('Las notificaciones quedaron bloqueadas en este dispositivo.');
+      if (!result.ok) {
+        setNotificationPermission(result.permission || ('Notification' in window ? Notification.permission : 'default'));
+        if (result.reason === 'permission_denied') {
+          toast.error('Las notificaciones quedaron bloqueadas en este dispositivo.');
+        } else {
+          toast.error(result.message);
+        }
         return;
       }
 
-      const existingSubscription = await registration.pushManager.getSubscription();
-      const subscription =
-        existingSubscription ||
-        (await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(WEB_PUSH_PUBLIC_KEY),
-        }));
-
-      const subscriptionJson = subscription.toJSON();
-      const subscriptionId = await hashEndpoint(subscription.endpoint);
-
-      await setDoc(
-        doc(db, 'push_subscriptions', subscriptionId),
-        {
-          userId: user.uid,
-          email: user.email || null,
-          organizationIds: userOrganizationIds || [],
-          endpoint: subscription.endpoint,
-          subscription: subscriptionJson,
-          permission,
-          isActive: true,
-          userAgent: navigator.userAgent,
-          platform: navigator.platform,
-          updatedAt: serverTimestamp(),
-          createdAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-
+      setNotificationPermission(result.permission);
       setHasActiveSubscription(true);
       toast.success('Notificaciones activadas en este dispositivo.');
     } catch (error) {
