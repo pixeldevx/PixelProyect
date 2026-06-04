@@ -14,18 +14,83 @@ import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, serve
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
+import {
+  DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO,
+  DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT,
+} from '@/lib/email/task-assignment-template';
 
-const defaultPreferences = {
-  taskAssignmentEmailEnabled: true,
-  disabledOrganizationIds: [] as string[],
-  disabledProjectIds: [] as string[],
+type AlertPreferences = {
+  taskAssignmentEmailEnabled: boolean;
+  taskAssignmentEmailSubject: string;
+  taskAssignmentEmailIntro: string;
+  disabledOrganizationIds: string[];
+  disabledProjectIds: string[];
 };
 
-const normalizePreferences = (data: any = {}) => ({
+const defaultPreferences: AlertPreferences = {
+  taskAssignmentEmailEnabled: true,
+  taskAssignmentEmailSubject: DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT,
+  taskAssignmentEmailIntro: DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO,
+  disabledOrganizationIds: [],
+  disabledProjectIds: [],
+};
+
+const normalizePreferences = (data: any = {}): AlertPreferences => ({
   taskAssignmentEmailEnabled: data.taskAssignmentEmailEnabled !== false,
+  taskAssignmentEmailSubject:
+    typeof data.taskAssignmentEmailSubject === 'string' && data.taskAssignmentEmailSubject.trim()
+      ? data.taskAssignmentEmailSubject
+      : DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT,
+  taskAssignmentEmailIntro:
+    typeof data.taskAssignmentEmailIntro === 'string' && data.taskAssignmentEmailIntro.trim()
+      ? data.taskAssignmentEmailIntro
+      : DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO,
   disabledOrganizationIds: Array.isArray(data.disabledOrganizationIds) ? data.disabledOrganizationIds : [],
   disabledProjectIds: Array.isArray(data.disabledProjectIds) ? data.disabledProjectIds : [],
 });
+
+type ScopeToggleRowProps = {
+  title: string;
+  subtitle?: string;
+  active: boolean;
+  muted: boolean;
+  saving: boolean;
+  onToggle: () => void;
+};
+
+function ScopeToggleRow({ title, subtitle, active, muted, saving, onToggle }: ScopeToggleRowProps) {
+  const isAvailable = active && !muted;
+  const rowClass = muted
+    ? 'border-slate-700 bg-slate-900/70 opacity-70'
+    : active
+      ? 'border-emerald-400/40 bg-emerald-400/10 shadow-[0_0_0_1px_rgba(52,211,153,.08)]'
+      : 'border-rose-400/35 bg-rose-500/10';
+  const statusClass = isAvailable
+    ? 'bg-emerald-400/15 text-emerald-200 ring-1 ring-emerald-300/25'
+    : muted
+      ? 'bg-slate-700/80 text-slate-300 ring-1 ring-white/10'
+      : 'bg-rose-400/15 text-rose-200 ring-1 ring-rose-300/25';
+  const statusLabel = muted ? 'Regla apagada' : active ? 'Activo' : 'Apagado';
+
+  return (
+    <div className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-3 transition-colors ${rowClass}`}>
+      <div className="min-w-0">
+        <p className="truncate text-sm font-semibold text-slate-50">{title}</p>
+        {subtitle && <p className="truncate text-[11px] text-slate-400">{subtitle}</p>}
+      </div>
+      <div className="flex shrink-0 items-center gap-3">
+        <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] ${statusClass}`}>
+          {statusLabel}
+        </span>
+        <Switch
+          checked={active}
+          disabled={saving || muted}
+          onCheckedChange={onToggle}
+        />
+      </div>
+    </div>
+  );
+}
 
 export default function AlertsPage() {
   const { user } = useAuth();
@@ -37,6 +102,11 @@ export default function AlertsPage() {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [preferences, setPreferences] = useState(defaultPreferences);
   const [savingPreferences, setSavingPreferences] = useState(false);
+  const [isEditingAssignmentRule, setIsEditingAssignmentRule] = useState(false);
+  const [assignmentDraft, setAssignmentDraft] = useState({
+    subject: DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT,
+    intro: DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO,
+  });
 
   // Form state for new rule
   const [newRule, setNewRule] = useState({
@@ -93,7 +163,12 @@ export default function AlertsPage() {
     fetchOrganizations();
 
     const unsubscribePreferences = onSnapshot(doc(db, 'alert_preferences', user.uid), (snapshot) => {
-      setPreferences(normalizePreferences(snapshot.exists() ? snapshot.data() : {}));
+      const normalizedPreferences = normalizePreferences(snapshot.exists() ? snapshot.data() : {});
+      setPreferences(normalizedPreferences);
+      setAssignmentDraft({
+        subject: normalizedPreferences.taskAssignmentEmailSubject,
+        intro: normalizedPreferences.taskAssignmentEmailIntro,
+      });
     }, (error) => {
       console.error("Error fetching alert preferences:", error);
     });
@@ -131,6 +206,24 @@ export default function AlertsPage() {
       ? current.filter((item) => item !== id)
       : [...current, id];
     void savePreferences({ ...preferences, [field]: nextValues });
+  };
+
+  const handleSaveAssignmentTemplate = async () => {
+    const subject = assignmentDraft.subject.trim() || DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT;
+    const intro = assignmentDraft.intro.trim() || DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO;
+    await savePreferences({
+      ...preferences,
+      taskAssignmentEmailSubject: subject,
+      taskAssignmentEmailIntro: intro,
+    });
+    setIsEditingAssignmentRule(false);
+  };
+
+  const handleResetAssignmentTemplate = () => {
+    setAssignmentDraft({
+      subject: DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT,
+      intro: DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO,
+    });
   };
 
   const handleCreateRule = async () => {
@@ -215,21 +308,27 @@ export default function AlertsPage() {
         </div>
 
         <Card className="overflow-hidden border-slate-200 bg-slate-950 text-white shadow-xl">
-          <CardHeader className="border-b border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(99,102,241,.35),_transparent_35%),linear-gradient(135deg,#0f172a,#111827)]">
+          <CardHeader className="border-b border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(99,102,241,.30),_transparent_36%),linear-gradient(135deg,#0f172a,#111827)]">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2 text-xl text-white">
                   <Mail className="h-5 w-5 text-cyan-300" />
-                  Alertas futuristas de bandeja
+                  Correo por asignación de tarea
                 </CardTitle>
                 <CardDescription className="mt-1 text-slate-300">
-                  Recibe correos con plantilla Pixel Project cuando una tarea o workflow entre a tu bandeja.
+                  Regla predefinida que envía la plantilla Pixel Project cuando una tarea o workflow entra a la bandeja.
                 </CardDescription>
               </div>
-              <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/10 px-4 py-3">
+              <div className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
+                preferences.taskAssignmentEmailEnabled
+                  ? 'border-emerald-300/35 bg-emerald-400/10'
+                  : 'border-rose-300/35 bg-rose-500/10'
+              }`}>
                 <div className="text-right">
-                  <p className="text-sm font-bold text-white">Correo de asignación</p>
-                  <p className="text-xs text-slate-300">{preferences.taskAssignmentEmailEnabled ? 'Activo' : 'Desactivado'}</p>
+                  <p className="text-sm font-bold text-white">Regla predefinida</p>
+                  <p className={`text-xs font-semibold ${preferences.taskAssignmentEmailEnabled ? 'text-emerald-200' : 'text-rose-200'}`}>
+                    {preferences.taskAssignmentEmailEnabled ? 'Activa' : 'Apagada'}
+                  </p>
                 </div>
                 <Switch
                   checked={preferences.taskAssignmentEmailEnabled}
@@ -239,57 +338,126 @@ export default function AlertsPage() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="grid gap-4 bg-slate-950 p-5 lg:grid-cols-2">
+          <CardContent className="space-y-4 bg-slate-950 p-5">
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-cyan-200">Organizaciones</h3>
-              <p className="mt-1 text-xs text-slate-400">Desactiva correos de organizaciones específicas.</p>
-              <div className="mt-4 space-y-2">
-                {organizations.length === 0 ? (
-                  <p className="text-sm text-slate-500">No hay organizaciones disponibles.</p>
-                ) : (
-                  organizations.map((organization) => {
-                    const disabled = preferences.disabledOrganizationIds.includes(organization.id);
-                    return (
-                      <div key={organization.id} className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2">
-                        <span className="truncate text-sm font-medium text-slate-100">{organization.name || organization.displayName || 'Organización'}</span>
-                        <Switch
-                          checked={!disabled}
-                          disabled={savingPreferences || !preferences.taskAssignmentEmailEnabled}
-                          onCheckedChange={() => toggleDisabledPreference('disabledOrganizationIds', organization.id)}
-                        />
-                      </div>
-                    );
-                  })
-                )}
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-indigo-400/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-indigo-200 ring-1 ring-indigo-300/20">
+                      Regla predefinida
+                    </span>
+                    <span className="rounded-full bg-cyan-400/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-cyan-200 ring-1 ring-cyan-300/20">
+                      Plantilla Pixel Project
+                    </span>
+                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] ring-1 ${
+                      preferences.taskAssignmentEmailEnabled
+                        ? 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/20'
+                        : 'bg-rose-400/15 text-rose-200 ring-rose-300/20'
+                    }`}>
+                      {preferences.taskAssignmentEmailEnabled ? 'Activa' : 'Apagada'}
+                    </span>
+                  </div>
+                  <h3 className="mt-3 text-lg font-black text-white">Asignación de tarea o workflow</h3>
+                  <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-300">
+                    Se dispara cuando una persona recibe una tarea en su bandeja. Puedes apagarla completa,
+                    excluir organizaciones o proyectos, y personalizar el asunto o mensaje inicial del correo.
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => setIsEditingAssignmentRule(!isEditingAssignmentRule)}
+                  className="border-white/15 bg-white/10 text-white hover:bg-white/15 hover:text-white"
+                >
+                  <Edit className="mr-2 h-4 w-4" />
+                  {isEditingAssignmentRule ? 'Cerrar edición' : 'Personalizar'}
+                </Button>
               </div>
+
+              {isEditingAssignmentRule && (
+                <div className="mt-4 grid gap-4 rounded-2xl border border-indigo-300/20 bg-indigo-500/10 p-4">
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label className="text-slate-200">Asunto del correo</Label>
+                      <Input
+                        value={assignmentDraft.subject}
+                        onChange={(event) => setAssignmentDraft({ ...assignmentDraft, subject: event.target.value })}
+                        className="border-white/10 bg-slate-950/70 text-white placeholder:text-slate-500"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-slate-200">Mensaje inicial</Label>
+                      <textarea
+                        value={assignmentDraft.intro}
+                        onChange={(event) => setAssignmentDraft({ ...assignmentDraft, intro: event.target.value })}
+                        className="min-h-[84px] w-full rounded-md border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-white shadow-sm outline-none transition-colors placeholder:text-slate-500 focus:border-indigo-300"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-3 border-t border-white/10 pt-3 lg:flex-row lg:items-center lg:justify-between">
+                    <p className="text-xs leading-5 text-slate-400">
+                      Variables disponibles: {'{assigneeName}'}, {'{taskTitle}'}, {'{projectName}'}, {'{organizationName}'}, {'{dueDateLabel}'}.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button variant="outline" onClick={handleResetAssignmentTemplate} className="border-white/15 bg-white/5 text-white hover:bg-white/10 hover:text-white">
+                        Restaurar plantilla
+                      </Button>
+                      <Button onClick={() => void handleSaveAssignmentTemplate()} disabled={savingPreferences} className="bg-indigo-500 hover:bg-indigo-400">
+                        Guardar personalización
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-indigo-200">Proyectos</h3>
-              <p className="mt-1 text-xs text-slate-400">Controla los correos por proyecto asignado.</p>
-              <div className="mt-4 max-h-64 space-y-2 overflow-y-auto pr-1">
-                {projects.length === 0 ? (
-                  <p className="text-sm text-slate-500">No hay proyectos disponibles.</p>
-                ) : (
-                  projects.map((project) => {
-                    const disabled = preferences.disabledProjectIds.includes(project.id);
-                    return (
-                      <div key={project.id} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-slate-100">{project.name || project.title || 'Proyecto'}</p>
-                          <p className="truncate text-[11px] text-slate-500">
-                            {organizations.find((organization) => organization.id === project.organizationId)?.name || project.organizationName || 'Sin organización'}
-                          </p>
-                        </div>
-                        <Switch
-                          checked={!disabled}
-                          disabled={savingPreferences || !preferences.taskAssignmentEmailEnabled}
-                          onCheckedChange={() => toggleDisabledPreference('disabledProjectIds', project.id)}
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <h3 className="text-sm font-bold uppercase tracking-wider text-cyan-200">Organizaciones</h3>
+                <p className="mt-1 text-xs text-slate-400">Define en qué organizaciones se envía esta regla.</p>
+                <div className="mt-4 space-y-2">
+                  {organizations.length === 0 ? (
+                    <p className="text-sm text-slate-500">No hay organizaciones disponibles.</p>
+                  ) : (
+                    organizations.map((organization) => {
+                      const isActive = !preferences.disabledOrganizationIds.includes(organization.id);
+                      return (
+                        <ScopeToggleRow
+                          key={organization.id}
+                          title={organization.name || organization.displayName || 'Organización'}
+                          active={isActive}
+                          muted={!preferences.taskAssignmentEmailEnabled}
+                          saving={savingPreferences}
+                          onToggle={() => toggleDisabledPreference('disabledOrganizationIds', organization.id)}
                         />
-                      </div>
-                    );
-                  })
-                )}
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <h3 className="text-sm font-bold uppercase tracking-wider text-indigo-200">Proyectos</h3>
+                <p className="mt-1 text-xs text-slate-400">Controla correos por cada proyecto asignado.</p>
+                <div className="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {projects.length === 0 ? (
+                    <p className="text-sm text-slate-500">No hay proyectos disponibles.</p>
+                  ) : (
+                    projects.map((project) => {
+                      const isActive = !preferences.disabledProjectIds.includes(project.id);
+                      return (
+                        <ScopeToggleRow
+                          key={project.id}
+                          title={project.name || project.title || 'Proyecto'}
+                          subtitle={organizations.find((organization) => organization.id === project.organizationId)?.name || project.organizationName || 'Sin organización'}
+                          active={isActive}
+                          muted={!preferences.taskAssignmentEmailEnabled}
+                          saving={savingPreferences}
+                          onToggle={() => toggleDisabledPreference('disabledProjectIds', project.id)}
+                        />
+                      );
+                    })
+                  )}
+                </div>
               </div>
             </div>
           </CardContent>
@@ -486,25 +654,67 @@ export default function AlertsPage() {
               </div>
             </CardHeader>
             <CardContent className="p-0">
-              {rules.length === 0 ? (
-                <div className="p-8 text-center text-slate-500">
-                  <p>No hay reglas configuradas.</p>
-                  <Button variant="link" onClick={() => setIsCreatingRule(true)} className="mt-2 text-indigo-600">
-                    Crear tu primera regla
-                  </Button>
-                </div>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-slate-50/50">
-                      <TableHead>Regla</TableHead>
-                      <TableHead>Condición</TableHead>
-                      <TableHead className="text-center">Estado</TableHead>
-                      <TableHead className="text-right">Acciones</TableHead>
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-slate-50/50">
+                    <TableHead>Regla</TableHead>
+                    <TableHead>Condición</TableHead>
+                    <TableHead className="text-center">Estado</TableHead>
+                    <TableHead className="text-right">Acciones</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow className="bg-indigo-50/35">
+                    <TableCell>
+                      <div className="font-medium text-slate-900">Correo por asignación de tarea</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500">
+                        <span className="rounded-full bg-indigo-100 px-2 py-0.5 font-bold text-indigo-700">Predefinida</span>
+                        <span className="rounded-full bg-cyan-100 px-2 py-0.5 font-bold text-cyan-700">Plantilla Pixel Project</span>
+                        <Mail className="h-3 w-3" />
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-sm text-slate-600">
+                      Cuando una tarea o workflow entra a la bandeja del responsable.
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <div className="flex flex-col items-center gap-2">
+                        <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${
+                          preferences.taskAssignmentEmailEnabled
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : 'bg-rose-100 text-rose-700'
+                        }`}>
+                          {preferences.taskAssignmentEmailEnabled ? 'Activa' : 'Apagada'}
+                        </span>
+                        <Switch
+                          checked={preferences.taskAssignmentEmailEnabled}
+                          disabled={savingPreferences}
+                          onCheckedChange={(checked) => void savePreferences({ ...preferences, taskAssignmentEmailEnabled: checked })}
+                        />
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsEditingAssignmentRule(true)}
+                        className="text-indigo-600 hover:bg-indigo-50 hover:text-indigo-800"
+                      >
+                        <Edit className="mr-2 h-4 w-4" />
+                        Editar
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                  {rules.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-8 text-center text-slate-500">
+                        No hay reglas adicionales configuradas.
+                        <Button variant="link" onClick={() => setIsCreatingRule(true)} className="ml-1 text-indigo-600">
+                          Crear otra regla
+                        </Button>
+                      </TableCell>
                     </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {rules.map(rule => (
+                  ) : (
+                    rules.map(rule => (
                       <TableRow key={rule.id}>
                         <TableCell>
                           <div className="font-medium text-slate-900">{rule.title}</div>
@@ -532,10 +742,10 @@ export default function AlertsPage() {
                           </Button>
                         </TableCell>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
+                    ))
+                  )}
+                </TableBody>
+              </Table>
             </CardContent>
           </Card>
         </div>

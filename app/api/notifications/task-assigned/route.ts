@@ -4,6 +4,8 @@ import {
   buildTaskAssignmentEmailHtml,
   buildTaskAssignmentSubject,
   buildTaskAssignmentText,
+  DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO,
+  DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT,
 } from '@/lib/email/task-assignment-template';
 import { sendEmailWithResend } from '@/lib/email/resend';
 
@@ -257,6 +259,14 @@ export async function POST(request: NextRequest) {
       task.description ||
       currentStep?.label ||
       'Tienes una nueva actividad pendiente en tu bandeja.';
+    const emailSubjectTemplate =
+      typeof preferences.taskAssignmentEmailSubject === 'string' && preferences.taskAssignmentEmailSubject.trim()
+        ? preferences.taskAssignmentEmailSubject.trim()
+        : DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT;
+    const emailIntroTemplate =
+      typeof preferences.taskAssignmentEmailIntro === 'string' && preferences.taskAssignmentEmailIntro.trim()
+        ? preferences.taskAssignmentEmailIntro.trim()
+        : DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO;
 
     const emailData = {
       appUrl,
@@ -270,6 +280,7 @@ export async function POST(request: NextRequest) {
       taskTypeLabel,
       description,
       actionUrl,
+      introTemplate: emailIntroTemplate,
     };
 
     const now = new Date().toISOString();
@@ -295,7 +306,7 @@ export async function POST(request: NextRequest) {
     if (emailEnabled) {
       emailResult = await sendEmailWithResend({
         to: resolvedAssignee.email,
-        subject: buildTaskAssignmentSubject(emailData),
+        subject: buildTaskAssignmentSubject(emailData, emailSubjectTemplate),
         html: buildTaskAssignmentEmailHtml(emailData),
         text: buildTaskAssignmentText(emailData),
       });

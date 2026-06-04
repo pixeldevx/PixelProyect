@@ -10,7 +10,11 @@ export type TaskAssignmentEmailData = {
   taskTypeLabel: string;
   description: string;
   actionUrl: string;
+  introTemplate?: string;
 };
+
+export const DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT = 'Nueva tarea en Pixel Project: {taskTitle} · {projectName}';
+export const DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO = 'Hola {assigneeName}, tienes una actividad lista para gestionar dentro de Pixel Project.';
 
 const escapeHtml = (value: unknown) =>
   String(value ?? '')
@@ -31,13 +35,37 @@ const metaRow = (label: string, value: string, accent = '#6d5dfc') => `
   </tr>
 `;
 
-export const buildTaskAssignmentSubject = (data: Pick<TaskAssignmentEmailData, 'taskTitle' | 'projectName'>) =>
-  `Nueva tarea en Pixel Project: ${data.taskTitle} · ${data.projectName}`;
+const interpolateTemplate = (template: string, data: TaskAssignmentEmailData) => {
+  const tokens: Record<string, string> = {
+    assigneeName: data.assigneeName,
+    taskTitle: data.taskTitle,
+    projectName: data.projectName,
+    organizationName: data.organizationName,
+    priorityLabel: data.priorityLabel,
+    statusLabel: data.statusLabel,
+    dueDateLabel: data.dueDateLabel,
+    taskTypeLabel: data.taskTypeLabel,
+    actionUrl: data.actionUrl,
+    appUrl: data.appUrl,
+  };
+
+  return template.replace(/\{(\w+)\}/g, (match, key) => tokens[key] || match);
+};
+
+export const buildTaskAssignmentSubject = (
+  data: TaskAssignmentEmailData,
+  template = DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT
+) => interpolateTemplate(template || DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT, data);
+
+export const buildTaskAssignmentIntro = (
+  data: TaskAssignmentEmailData,
+  template = DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO
+) => interpolateTemplate(template || DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO, data);
 
 export const buildTaskAssignmentText = (data: TaskAssignmentEmailData) => `
-Hola ${data.assigneeName},
+${buildTaskAssignmentIntro(data, data.introTemplate)}
 
-Tienes una nueva tarea en tu bandeja de entrada de Pixel Project.
+Tienes una nueva tarea en tu bandeja de entrada.
 
 Tarea: ${data.taskTitle}
 Proyecto: ${data.projectName}
@@ -52,6 +80,7 @@ Abrir: ${data.actionUrl}
 export const buildTaskAssignmentEmailHtml = (data: TaskAssignmentEmailData) => {
   const preview = `Nueva tarea en ${data.projectName}: ${data.taskTitle}`;
   const safeDescription = escapeHtml(data.description || 'Sin descripción').replace(/\n/g, '<br />');
+  const intro = buildTaskAssignmentIntro(data, data.introTemplate);
 
   return `<!doctype html>
 <html>
@@ -86,7 +115,7 @@ export const buildTaskAssignmentEmailHtml = (data: TaskAssignmentEmailData) => {
                     <td style="padding:34px 34px 18px;">
                       <div style="display:inline-block; border:1px solid rgba(53,208,255,.28); border-radius:999px; padding:6px 10px; color:#8be8ff; background:rgba(53,208,255,.10); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.12em;">Nueva asignación</div>
                       <h1 style="margin:18px 0 8px; color:#ffffff; font-size:28px; line-height:1.18; letter-spacing:-.02em;">Tu bandeja recibió una nueva tarea</h1>
-                      <p style="margin:0; color:#9fb0d1; font-size:15px; line-height:1.6;">Hola ${escapeHtml(data.assigneeName)}, tienes una actividad lista para gestionar dentro de Pixel Project.</p>
+                      <p style="margin:0; color:#9fb0d1; font-size:15px; line-height:1.6;">${escapeHtml(intro)}</p>
                     </td>
                   </tr>
                   <tr>
