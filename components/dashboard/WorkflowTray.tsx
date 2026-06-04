@@ -2091,6 +2091,72 @@ export default function WorkflowTray() {
     </button>
   );
 
+  const renderWorkflowModalActions = (task: any, onCloseModal?: () => void) => {
+    if (activeTab !== 'pending' || !isWorkflowItem(task)) return null;
+
+    const currentIndex = task.currentStepIndex || 0;
+    const workflowSteps = task.workflowSteps || [];
+    const currentStep = workflowSteps[currentIndex] || {};
+    const isStopped = currentStep?.status === 'detenido';
+    const isProcessing = processingId === task.id;
+
+    const openWorkflowAction = (type: 'approve' | 'return' | 'stop' | 'resume') => {
+      onCloseModal?.();
+      void openActionModal(task, type);
+    };
+
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        {isStopped ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => openWorkflowAction('resume')}
+            disabled={isProcessing}
+            className="h-8 text-blue-600"
+          >
+            <Play className="mr-1.5 h-3.5 w-3.5" />
+            Reanudar
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => openWorkflowAction('stop')}
+            disabled={isProcessing}
+            className="h-8 text-orange-600"
+          >
+            <Pause className="mr-1.5 h-3.5 w-3.5" />
+            Detener
+          </Button>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => openWorkflowAction('return')}
+          disabled={isProcessing || currentIndex === 0 || isStopped}
+          className="h-8 text-red-600"
+        >
+          <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
+          Devolver
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => openWorkflowAction('approve')}
+          disabled={isProcessing || isStopped}
+          className="h-8 bg-emerald-600 text-white hover:bg-emerald-700"
+        >
+          {currentIndex === workflowSteps.length - 1 ? (
+            <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
+          ) : (
+            <ArrowRight className="mr-1.5 h-3.5 w-3.5" />
+          )}
+          {currentIndex === workflowSteps.length - 1 ? 'Finalizar' : 'Aprobar'}
+        </Button>
+      </div>
+    );
+  };
+
   const renderInboxItem = (task: any) => {
     const taskIsWorkflow = isWorkflowItem(task);
     const dueState = getDueState(task);
@@ -3220,7 +3286,9 @@ export default function WorkflowTray() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 p-4">
+                {renderWorkflowModalActions(detailTask, () => setDetailsModalTask(null))}
+                <div className="flex flex-wrap items-center justify-end gap-2">
                 <Button
                   variant="outline"
                   size="sm"
@@ -3251,6 +3319,7 @@ export default function WorkflowTray() {
                   <FolderOpen className="mr-2 h-4 w-4" />
                   Abrir proyecto
                 </Link>
+                </div>
               </div>
             </div>
           </div>
@@ -3352,6 +3421,16 @@ export default function WorkflowTray() {
                 );
               })()}
             </div>
+            {(() => {
+              const historyActions = renderWorkflowModalActions(historyModalTask, () => setHistoryModalTask(null));
+              if (!historyActions) return null;
+
+              return (
+                <div className="flex justify-end border-t border-slate-100 bg-white p-4">
+                  {historyActions}
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -3371,6 +3450,7 @@ export default function WorkflowTray() {
         task={commentsModalTask}
         currentUser={user}
         teamMembers={projectTeamMembers}
+        footerActions={commentsModalTask ? renderWorkflowModalActions(commentsModalTask, () => setCommentsModalTask(null)) : null}
       />
     </div>
   );

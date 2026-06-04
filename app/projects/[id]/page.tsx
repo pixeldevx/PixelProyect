@@ -2408,6 +2408,24 @@ export default function ProjectDetailsPage() {
         task={selectedTaskForComments}
         currentUser={user}
         teamMembers={teamMembersForAssignment}
+        footerActions={
+          selectedTaskForComments?.type === 'workflow' && canEditTaskDetails ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSelectedTaskForDocs(selectedTaskForComments);
+                setSelectedTaskForComments(null);
+                setIsTaskDocsModalOpen(true);
+              }}
+              className="border-indigo-100 text-indigo-700 hover:bg-indigo-50"
+            >
+              <ClipboardList size={15} className="mr-2" />
+              Gestionar pasos
+            </Button>
+          ) : null
+        }
       />
 
       <TaskStatusReportModal

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, CheckCircle2, Circle, RotateCcw, BookOpen, CalendarDays, Download, ExternalLink, MapPin, Users } from 'lucide-react';
-import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment } from '@/lib/supabase/document-store';
-import { db } from '@/lib/backend';
+import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment, arrayUnion, Timestamp } from '@/lib/supabase/document-store';
+import { auth, db } from '@/lib/backend';
 import { toast } from 'sonner';
 import {
   getStaticRateCardAssignee,
@@ -11,6 +11,7 @@ import {
 } from '@/lib/rate-card-config';
 import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
 import { getCompletionStatusForTask } from '@/lib/taskProgress';
+import { notifyTaskAssignment } from '@/lib/notifications';
 import {
   createGoogleCalendarUrl,
   downloadMeetingIcs,
@@ -43,6 +44,12 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     index: number;
     unitsByKey: Record<string, number | ''>;
     assigneesByKey: Record<string, string>;
+    requiresNextAssignee?: boolean;
+    nextAssignee?: string;
+  } | null>(null);
+  const [pendingNextStepNotification, setPendingNextStepNotification] = useState<{
+    stepIndex: number;
+    assigneeId: string;
   } | null>(null);
   const [additionalCycles, setAdditionalCycles] = useState(1);
   const [isAddingCycles, setIsAddingCycles] = useState(false);
@@ -52,6 +59,8 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       setDocumentation(task.documentation || "");
       setWorkflowSteps(task.workflowSteps || []);
       setAdditionalCycles(1);
+      setStepUnitPrompt(null);
+      setPendingNextStepNotification(null);
     }
   }, [task]);
 
@@ -167,12 +176,20 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       // Calculate progress and status for workflow tasks
       let newProgress = task.progress;
       let newStatus = task.status;
+      let newCurrentStepIndex = task.currentStepIndex || 0;
 
       if (task.type === "workflow" && workflowSteps.length > 0) {
         const approvedCount = workflowSteps.filter(
           (s) => s.status === "listo",
         ).length;
         newProgress = Math.round((approvedCount / workflowSteps.length) * 100);
+        const firstOpenStepIndex = workflowSteps.findIndex(
+          (step) => step.status !== "listo",
+        );
+        newCurrentStepIndex =
+          firstOpenStepIndex === -1
+            ? Math.max(0, workflowSteps.length - 1)
+            : firstOpenStepIndex;
 
         if (newProgress === 100) {
           newStatus = getCompletionStatusForTask("completed", task);
@@ -256,15 +273,49 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         }
       }
 
-      batch.update(taskRef, {
+      const taskUpdate: any = {
         documentation,
         workflowSteps,
         progress: newProgress,
         status: newStatus,
         updatedAt: serverTimestamp(),
-      });
+      };
+
+      if (task.type === "workflow") {
+        taskUpdate.currentStepIndex = newCurrentStepIndex;
+
+        if (pendingNextStepNotification) {
+          taskUpdate.workflowHistory = arrayUnion({
+            stepIndex: Math.max(0, pendingNextStepNotification.stepIndex - 1),
+            userId: auth.currentUser?.uid || null,
+            userName:
+              auth.currentUser?.displayName ||
+              auth.currentUser?.email ||
+              "Usuario",
+            action: "approve",
+            comment:
+              "Avance manual desde detalles de la tarea. Se asignó el siguiente paso.",
+            nextStepAssignee: pendingNextStepNotification.assigneeId,
+            timestamp: Timestamp.now(),
+          });
+        }
+      }
+
+      batch.update(taskRef, taskUpdate);
 
       await batch.commit();
+
+      if (pendingNextStepNotification) {
+        void notifyTaskAssignment({
+          projectId,
+          taskId: task.id,
+          assigneeId: pendingNextStepNotification.assigneeId,
+          stepIndex: pendingNextStepNotification.stepIndex,
+          eventType: "workflow_step_assigned",
+          source: "task_details_manual_advance",
+        });
+        setPendingNextStepNotification(null);
+      }
 
       if (task.parentTaskId) {
         const { updateParentTaskStatus } = await import("@/lib/taskUtils");
@@ -298,8 +349,16 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     const runtimeRateCardSources = getStaticRateCardSources(step).filter(
       (source) => source.assigneeMode === "runtime"
     );
+    const requiresNextAssignee = Boolean(
+      step.assignsNextStep && index < newSteps.length - 1
+    );
 
-    if (currentStatus !== "listo" && (manualRateCardSources.length > 0 || runtimeRateCardSources.length > 0)) {
+    if (
+      currentStatus !== "listo" &&
+      (manualRateCardSources.length > 0 ||
+        runtimeRateCardSources.length > 0 ||
+        requiresNextAssignee)
+    ) {
       setStepUnitPrompt({
         index,
         unitsByKey: Object.fromEntries(
@@ -308,14 +367,39 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         assigneesByKey: Object.fromEntries(
           runtimeRateCardSources.map((source) => [source.key, source.assignedTo || ""])
         ),
+        requiresNextAssignee,
+        nextAssignee: "",
       });
       return;
     }
 
+    const nextStatus = currentStatus === "listo" ? "not_started" : "listo";
     newSteps[index] = {
       ...newSteps[index],
-      status: currentStatus === "listo" ? "not_started" : "listo",
+      status: nextStatus,
+      ...(nextStatus === "listo"
+        ? {
+            completedAt: new Date(),
+            completedBy: auth.currentUser?.uid || null,
+          }
+        : {}),
     };
+
+    if (nextStatus === "listo" && index < newSteps.length - 1 && newSteps[index + 1]?.status !== "listo") {
+      newSteps[index + 1] = {
+        ...newSteps[index + 1],
+        status: "en_curso",
+        startedAt: new Date(),
+        assignedAt: new Date(),
+      };
+    }
+
+    if (nextStatus !== "listo") {
+      setPendingNextStepNotification((current) =>
+        current?.stepIndex === index + 1 ? null : current
+      );
+    }
+
     setWorkflowSteps(newSteps);
   };
 
@@ -332,6 +416,10 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     }
     if (runtimeSources.some((source) => !stepUnitPrompt.assigneesByKey[source.key])) {
       toast.warning("Selecciona el profesional para cada Rate Card que se asigna al ejecutar.");
+      return;
+    }
+    if (stepUnitPrompt.requiresNextAssignee && !stepUnitPrompt.nextAssignee) {
+      toast.warning("Selecciona el responsable del siguiente paso.");
       return;
     }
     let updatedStep = { ...currentStep };
@@ -385,7 +473,30 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     newSteps[stepUnitPrompt.index] = {
       ...updatedStep,
       status: "listo",
+      completedAt: new Date(),
+      completedBy: auth.currentUser?.uid || null,
     };
+
+    if (stepUnitPrompt.index < newSteps.length - 1) {
+      const nextIndex = stepUnitPrompt.index + 1;
+      newSteps[nextIndex] = {
+        ...newSteps[nextIndex],
+        status: newSteps[nextIndex]?.status === "listo" ? "listo" : "en_curso",
+        startedAt: newSteps[nextIndex]?.startedAt || new Date(),
+        assignedAt: new Date(),
+        ...(stepUnitPrompt.requiresNextAssignee && stepUnitPrompt.nextAssignee
+          ? { assignedTo: stepUnitPrompt.nextAssignee }
+          : {}),
+      };
+
+      if (stepUnitPrompt.requiresNextAssignee && stepUnitPrompt.nextAssignee) {
+        setPendingNextStepNotification({
+          stepIndex: nextIndex,
+          assigneeId: stepUnitPrompt.nextAssignee,
+        });
+      }
+    }
+
     setWorkflowSteps(newSteps);
     setStepUnitPrompt(null);
   };
@@ -647,10 +758,10 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         <div className="fixed inset-0 z-[60] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
             <h3 className="text-lg font-bold text-slate-800 mb-2">
-              Confirmar Rate Cards
+              Completar paso
             </h3>
             <p className="text-sm text-slate-500 mb-4">
-              Completa los datos requeridos para cargar los indicadores de este paso.
+              Completa los datos requeridos antes de adelantar el workflow.
             </p>
             <div className="mb-6 space-y-3">
               {getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.autoAddUnits === false).map((source, sourceIndex) => (
@@ -704,6 +815,35 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                   </select>
                 </label>
               ))}
+              {stepUnitPrompt.requiresNextAssignee && (
+                <label className="block rounded-lg border border-indigo-100 bg-indigo-50 p-3">
+                  <span className="mb-1 flex items-center gap-2 text-sm font-medium text-indigo-800">
+                    <Users size={15} />
+                    Responsable del siguiente paso
+                  </span>
+                  <select
+                    value={stepUnitPrompt.nextAssignee || ""}
+                    onChange={(e) =>
+                      setStepUnitPrompt({
+                        ...stepUnitPrompt,
+                        nextAssignee: e.target.value,
+                      })
+                    }
+                    className="h-10 w-full rounded-lg border border-indigo-100 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    required
+                  >
+                    <option value="">Selecciona quién recibe el siguiente paso</option>
+                    {teamMembers.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name || member.email || "Profesional"}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-xs text-indigo-700">
+                    Al guardar, el siguiente paso quedará en curso y llegará a su bandeja.
+                  </p>
+                </label>
+              )}
             </div>
             <div className="flex justify-end gap-2">
               <button
@@ -716,7 +856,8 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                 onClick={confirmStepUnitToggle}
                 disabled={
                   getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.autoAddUnits === false).some((source) => isInvalidRateCardUnits(stepUnitPrompt.unitsByKey[source.key])) ||
-                  getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.assigneeMode === "runtime").some((source) => !stepUnitPrompt.assigneesByKey[source.key])
+                  getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.assigneeMode === "runtime").some((source) => !stepUnitPrompt.assigneesByKey[source.key]) ||
+                  Boolean(stepUnitPrompt.requiresNextAssignee && !stepUnitPrompt.nextAssignee)
                 }
                 className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg transition-colors disabled:opacity-50"
               >

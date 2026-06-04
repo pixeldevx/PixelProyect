@@ -14,6 +14,7 @@ interface TaskCommentsModalProps {
   task: any | null;
   currentUser: any;
   teamMembers: any[];
+  footerActions?: React.ReactNode;
 }
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
@@ -222,6 +223,7 @@ export function TaskCommentsModal({
   task,
   currentUser,
   teamMembers,
+  footerActions,
 }: TaskCommentsModalProps) {
   const [comments, setComments] = useState<any[]>([]);
   const [commentText, setCommentText] = useState('');
@@ -485,6 +487,12 @@ export function TaskCommentsModal({
             </div>
           )}
         </div>
+
+        {footerActions && (
+          <div className="flex justify-end border-t border-slate-100 bg-white px-4 py-3">
+            {footerActions}
+          </div>
+        )}
 
         {activeTab === 'comments' && (
           <form onSubmit={handleSubmit} className="border-t border-slate-100 bg-white p-4">
