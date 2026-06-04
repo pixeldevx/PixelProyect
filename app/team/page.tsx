@@ -39,6 +39,7 @@ import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
+import { formatRateCardUnits, formatRateCardValue, isCurrencyRateCard, normalizeRateCardValueType } from '@/lib/rate-card-config';
 
 type TeamTask = {
   id: string;
@@ -91,6 +92,9 @@ type RateCardDefinition = {
   name?: string;
   indicator?: string;
   rate?: number;
+  rateType?: string;
+  valueType?: string;
+  unitLabel?: string;
   currency?: string;
 };
 
@@ -175,10 +179,13 @@ type MemberMetric = {
   rateSummaries: Array<{
     key: string;
     name: string;
+    indicator?: string;
     units: number;
     value: number;
     reworkUnits: number;
     currency: string;
+    rateType: string;
+    unitLabel?: string;
   }>;
 };
 
@@ -907,14 +914,18 @@ export default function TeamPage() {
         const units = Number(entry.units || 0);
         const rateCard = rateCardByKey.get(`${entry.projectId}::${entry.rateCardId}`);
         const value = units * Number(rateCard?.rate || 0);
+        const monetaryRateCard = isCurrencyRateCard(rateCard);
         const key = `${entry.projectId}::${entry.rateCardId || 'unknown'}`;
         const current = rateSummaryMap.get(key) || {
           key,
           name: rateCard?.name || 'Rate card sin nombre',
+          indicator: rateCard?.indicator,
           units: 0,
           value: 0,
           reworkUnits: 0,
           currency: rateCard?.currency || 'USD',
+          rateType: normalizeRateCardValueType(rateCard?.rateType || rateCard?.valueType),
+          unitLabel: rateCard?.unitLabel,
         };
 
         current.units += units;
@@ -922,7 +933,7 @@ export default function TeamPage() {
         if (entry.isRework) current.reworkUnits += Math.abs(units);
         rateSummaryMap.set(key, current);
         rateUnits += units;
-        rateValue += value;
+        if (monetaryRateCard) rateValue += value;
         if (entry.isRework) reworkUnits += Math.abs(units);
       });
 
@@ -1592,14 +1603,16 @@ export default function TeamPage() {
                           <div key={row.key} className="rounded-md border border-slate-100 p-3">
                             <div className="flex items-center justify-between gap-3">
                               <p className="min-w-0 truncate text-sm font-black text-slate-900">{row.name}</p>
-                              <span className="rounded bg-slate-100 px-2 py-1 text-xs font-black text-slate-600">{row.currency}</span>
+                              <span className="rounded bg-slate-100 px-2 py-1 text-xs font-black text-slate-600">
+                                {row.rateType === 'unit' ? row.unitLabel || 'unidades' : row.currency}
+                              </span>
                             </div>
                             <div className="mt-2 flex items-center justify-between text-xs font-bold text-slate-500">
-                              <span>{compactNumber(row.units)} unidades</span>
-                              <span>{formatCurrency(row.value)} valor</span>
+                              <span>{formatRateCardUnits(row.units, row)}</span>
+                              <span>{formatRateCardValue(row.value, row)} resultado</span>
                             </div>
                             {row.reworkUnits > 0 && (
-                              <p className="mt-1 text-xs font-bold text-orange-600">{compactNumber(row.reworkUnits)} unidades en reproceso</p>
+                              <p className="mt-1 text-xs font-bold text-orange-600">{formatRateCardUnits(row.reworkUnits, row)} en reproceso</p>
                             )}
                           </div>
                         ))

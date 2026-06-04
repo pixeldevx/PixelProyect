@@ -7,13 +7,23 @@ import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp 
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import {
+  formatRateCardRate,
+  formatRateCardUnits,
+  formatRateCardValue,
+  isCurrencyRateCard,
+  normalizeDecimalInput,
+  normalizeRateCardValueType,
+} from '@/lib/rate-card-config';
 
 export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembers = [], budgetLines = [] }: { projectId: string, currentUser: any, tasks?: any[], teamMembers?: any[], budgetLines?: any[] }) {
   const [rateCards, setRateCards] = useState<any[]>([]);
   const [name, setName] = useState('');
   const [indicator, setIndicator] = useState('');
   const [rate, setRate] = useState('');
+  const [rateType, setRateType] = useState<'currency' | 'unit'>('currency');
   const [currency, setCurrency] = useState('USD');
+  const [unitLabel, setUnitLabel] = useState('');
   const [syncExternal, setSyncExternal] = useState(false);
   const [budgetLineId, setBudgetLineId] = useState('');
   const [currentValue, setCurrentValue] = useState('');
@@ -65,6 +75,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   let totalProjectRework = 0;
 
   const cardComputedUserStats: Record<string, Record<string, number>> = {};
+  let unitRateCardCount = 0;
 
   rateCards.forEach(card => {
     let cardTotalUnits = 0;
@@ -97,35 +108,39 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     
     cardComputedUserStats[card.id] = computedUserStats;
 
-    const cardTotalValue = cardTotalUnits * card.rate;
-    const cardReworkValue = (card.reworkValue || 0) * card.rate;
-    
-    totalProjectGenerated += cardTotalValue;
-    totalProjectRework += cardReworkValue;
+    const cardTotalValue = cardTotalUnits * Number(card.rate || 0);
+    const cardReworkValue = Number(card.reworkValue || 0) * Number(card.rate || 0);
+
+    if (isCurrencyRateCard(card)) {
+      totalProjectGenerated += cardTotalValue;
+      totalProjectRework += cardReworkValue;
+    } else {
+      unitRateCardCount += 1;
+    }
     
     cardTotals.push({ name: card.name, value: cardTotalValue, reworkValue: cardReworkValue });
 
     Object.entries(computedUserStats).forEach(([userId, units]: [string, any]) => {
       const member = teamMembers.find(m => m.id === userId);
       const userName = member ? member.name : 'Usuario Desconocido';
-      const value = units * card.rate;
+      const value = units * Number(card.rate || 0);
       
       if (!userTotals[userId]) {
         userTotals[userId] = { name: userName, value: 0, reworkValue: 0 };
       }
-      userTotals[userId].value += value;
+      if (isCurrencyRateCard(card)) userTotals[userId].value += value;
     });
     
     if (card.userReworkStats) {
       Object.entries(card.userReworkStats).forEach(([userId, units]: [string, any]) => {
         const member = teamMembers.find(m => m.id === userId);
         const userName = member ? member.name : 'Usuario Desconocido';
-        const value = units * card.rate;
+        const value = units * Number(card.rate || 0);
         
         if (!userTotals[userId]) {
           userTotals[userId] = { name: userName, value: 0, reworkValue: 0 };
         }
-        userTotals[userId].reworkValue += value;
+        if (isCurrencyRateCard(card)) userTotals[userId].reworkValue += value;
       });
     }
   });
@@ -176,14 +191,17 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
         const dateKey = getEntryDateKey(entry);
         const card = getRateCardById(entry.rateCardId);
         const units = Number(entry.units || 0);
+        const rateCardContext = card || entry;
         return {
           ...entry,
           dateKey,
           personName: getMemberName(entry.assignedTo),
           rateCardName: card?.name || 'Rate Card eliminado',
-          indicator: card?.indicator || 'unidades',
-          currency: card?.currency || 'USD',
-          value: units * Number(card?.rate || 0),
+          indicator: rateCardContext?.indicator || 'unidades',
+          rateType: normalizeRateCardValueType(rateCardContext?.rateType || rateCardContext?.valueType),
+          unitLabel: rateCardContext?.unitLabel || rateCardContext?.measureUnit || 'unidades',
+          currency: rateCardContext?.currency || 'USD',
+          value: units * Number(rateCardContext?.rate || 0),
           units,
         };
       })
@@ -200,6 +218,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
         rateCardName: entry.rateCardName,
         indicator: entry.indicator,
         currency: entry.currency,
+        rateType: entry.rateType,
+        unitLabel: entry.unitLabel,
         units: 0,
         value: 0,
         movements: 0,
@@ -217,7 +237,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       return;
     }
 
-    const headers = ['Fecha', 'Persona', 'Rate Card', 'Tarea', 'Unidades', 'Indicador', 'Valor', 'Moneda', 'Fuente'];
+    const headers = ['Fecha', 'Persona', 'Rate Card', 'Tarea', 'Unidades', 'Indicador', 'Resultado', 'Tipo', 'Unidad/moneda', 'Fuente'];
     const csvRows = reportRows.map((entry: any) => [
       entry.dateKey,
       entry.personName,
@@ -226,7 +246,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       entry.units,
       entry.indicator,
       entry.value.toFixed(2),
-      entry.currency,
+      entry.rateType === 'unit' ? 'Unidad' : 'Dinero',
+      entry.rateType === 'unit' ? entry.unitLabel : entry.currency,
       entry.source || '',
     ]);
     const escapeCsv = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
@@ -242,15 +263,26 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
   const handleCreateRateCard = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !indicator.trim() || !rate) return;
+    const parsedRate = normalizeDecimalInput(rate, Number.NaN);
+    if (!name.trim() || !indicator.trim() || !Number.isFinite(parsedRate) || parsedRate < 0) {
+      toast.warning('Completa nombre, indicador y un valor/factor válido en cero o mayor.');
+      return;
+    }
+    if (rateType === 'unit' && !unitLabel.trim()) {
+      toast.warning('Define la unidad o medida que produce este rate card.');
+      return;
+    }
     setLoading(true);
     try {
       await addDoc(collection(db, 'projects', projectId, 'rateCards'), {
         projectId,
         name: name.trim(),
         indicator: indicator.trim(),
-        rate: parseFloat(rate),
-        currency,
+        rate: parsedRate,
+        rateType,
+        valueType: rateType,
+        currency: rateType === 'currency' ? currency : null,
+        unitLabel: rateType === 'unit' ? unitLabel.trim() : null,
         syncExternal,
         budgetLineId: budgetLineId || null,
         createdAt: serverTimestamp(),
@@ -259,6 +291,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       setName('');
       setIndicator('');
       setRate('');
+      setRateType('currency');
+      setUnitLabel('');
+      setCurrency('USD');
       setBudgetLineId('');
       setSyncExternal(false);
       setIsCreateModalOpen(false);
@@ -274,8 +309,10 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     setRateCardToEdit(card);
     setName(card.name);
     setIndicator(card.indicator);
-    setRate(card.rate.toString());
-    setCurrency(card.currency);
+    setRate(String(card.rate ?? ''));
+    setRateType(normalizeRateCardValueType(card.rateType || card.valueType));
+    setCurrency(card.currency || 'USD');
+    setUnitLabel(card.unitLabel || card.measureUnit || '');
     setSyncExternal(card.syncExternal || false);
     setBudgetLineId(card.budgetLineId || '');
     setCurrentValue(card.currentValue ? card.currentValue.toString() : '0');
@@ -284,27 +321,41 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
   const executeEditRateCard = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!rateCardToEdit || !name.trim() || !indicator.trim() || !rate) return;
+    const parsedRate = normalizeDecimalInput(rate, Number.NaN);
+    if (!rateCardToEdit || !name.trim() || !indicator.trim() || !Number.isFinite(parsedRate) || parsedRate < 0) {
+      toast.warning('Completa nombre, indicador y un valor/factor válido en cero o mayor.');
+      return;
+    }
+    if (rateType === 'unit' && !unitLabel.trim()) {
+      toast.warning('Define la unidad o medida que produce este rate card.');
+      return;
+    }
     setLoading(true);
     try {
       const { updateDoc } = await import('@/lib/supabase/document-store');
       const updateData: any = {
         name: name.trim(),
         indicator: indicator.trim(),
-        rate: parseFloat(rate),
-        currency,
+        rate: parsedRate,
+        rateType,
+        valueType: rateType,
+        currency: rateType === 'currency' ? currency : null,
+        unitLabel: rateType === 'unit' ? unitLabel.trim() : null,
         syncExternal,
         budgetLineId: budgetLineId || null,
       };
       
-      if (syncExternal && currentValue) {
-        updateData.currentValue = parseFloat(currentValue);
+      if (syncExternal && currentValue !== '') {
+        updateData.currentValue = normalizeDecimalInput(currentValue, 0);
       }
       
       await updateDoc(doc(db, 'projects', projectId, 'rateCards', rateCardToEdit.id), updateData);
       setName('');
       setIndicator('');
       setRate('');
+      setRateType('currency');
+      setUnitLabel('');
+      setCurrency('USD');
       setBudgetLineId('');
       setSyncExternal(false);
       setCurrentValue('');
@@ -372,7 +423,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   {totalProjectGenerated.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}
                 </div>
                 <p className="text-xs text-slate-500 mt-2">
-                  Valor acumulado en todos los rate cards
+                  Valor acumulado en rate cards monetarios
+                  {unitRateCardCount > 0 ? ` · ${unitRateCardCount} métricas de unidad aparte` : ''}
                 </p>
               </CardContent>
             </Card>
@@ -527,7 +579,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                         <TableHead className="font-semibold text-slate-600">Rate Card</TableHead>
                         <TableHead className="font-semibold text-slate-600">Movimientos</TableHead>
                         <TableHead className="font-semibold text-slate-600">Unidades netas</TableHead>
-                        <TableHead className="font-semibold text-slate-600 text-right">Valor estimado</TableHead>
+                        <TableHead className="font-semibold text-slate-600 text-right">Resultado</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -537,10 +589,10 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                           <TableCell className="text-slate-700">{row.rateCardName}</TableCell>
                           <TableCell className="text-slate-600">{row.movements}</TableCell>
                           <TableCell className="text-slate-700">
-                            {row.units.toFixed(2)} {row.indicator}
+                            {formatRateCardUnits(row.units, row)}
                           </TableCell>
                           <TableCell className="text-right font-semibold text-emerald-700">
-                            {row.value.toLocaleString('es-CO', { style: 'currency', currency: row.currency })}
+                            {formatRateCardValue(row.value, row)}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -558,7 +610,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                       <TableHead className="font-semibold text-slate-600">Rate Card</TableHead>
                       <TableHead className="font-semibold text-slate-600">Tarea</TableHead>
                       <TableHead className="font-semibold text-slate-600">Unidades</TableHead>
-                      <TableHead className="font-semibold text-slate-600 text-right">Valor</TableHead>
+                      <TableHead className="font-semibold text-slate-600 text-right">Resultado</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -571,10 +623,10 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                           {entry.taskTitle || 'Sin tarea'}
                         </TableCell>
                         <TableCell className={entry.units < 0 ? 'font-medium text-red-600' : 'font-medium text-emerald-700'}>
-                          {entry.units.toFixed(2)} {entry.indicator}
+                          {formatRateCardUnits(entry.units, entry)}
                         </TableCell>
                         <TableCell className={`text-right font-semibold ${entry.value < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
-                          {entry.value.toLocaleString('es-CO', { style: 'currency', currency: entry.currency })}
+                          {formatRateCardValue(entry.value, entry)}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -606,7 +658,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 <TableHead className="font-semibold text-slate-600">Línea de Presupuesto</TableHead>
                 <TableHead className="font-semibold text-slate-600">Indicador</TableHead>
                 <TableHead className="font-semibold text-slate-600">Sincronización</TableHead>
-                <TableHead className="font-semibold text-slate-600">Tarifa</TableHead>
+                <TableHead className="font-semibold text-slate-600">Tipo / Factor</TableHead>
                 <TableHead className="font-semibold text-slate-600">Generado</TableHead>
                 <TableHead className="font-semibold text-slate-600">Por Usuario</TableHead>
                 <TableHead className="font-semibold text-slate-600 text-right">Acciones</TableHead>
@@ -635,7 +687,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     totalUnits = userStatsTotal;
                   }
                 }
-                const totalGenerated = totalUnits * card.rate;
+                const totalGenerated = totalUnits * Number(card.rate || 0);
                 const associatedBudgetLine = budgetLines.find(bl => bl.id === card.budgetLineId);
 
                 return (
@@ -659,17 +711,20 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                       )}
                     </TableCell>
                     <TableCell className="font-medium text-indigo-600">
-                      {card.rate.toLocaleString('en-US', { style: 'currency', currency: card.currency })}
+                      <div>{formatRateCardRate(card.rate, card)}</div>
+                      <div className="mt-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
+                        {isCurrencyRateCard(card) ? 'Dinero' : 'Unidad / medida'}
+                      </div>
                     </TableCell>
                     <TableCell className="font-medium text-emerald-600">
                       <div>
-                        {totalGenerated.toLocaleString('en-US', { style: 'currency', currency: card.currency })}
-                        <div className="text-xs text-slate-500 font-normal">{totalUnits.toFixed(1)} {card.indicator}</div>
+                        {formatRateCardValue(totalGenerated, card)}
+                        <div className="text-xs text-slate-500 font-normal">{formatRateCardUnits(totalUnits, card, 1)}</div>
                       </div>
                       {card.reworkValue > 0 && (
                         <div className="mt-1 text-red-600" title="Costo de reproceso (Devoluciones)">
-                          -{(card.reworkValue * card.rate).toLocaleString('en-US', { style: 'currency', currency: card.currency })}
-                          <div className="text-[10px] font-normal">{card.reworkValue.toFixed(1)} {card.indicator} reproceso</div>
+                          -{formatRateCardValue(card.reworkValue * Number(card.rate || 0), card)}
+                          <div className="text-[10px] font-normal">{formatRateCardUnits(card.reworkValue, card, 1)} reproceso</div>
                         </div>
                       )}
                     </TableCell>
@@ -681,22 +736,22 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                             const reworkUnits = (card.userReworkStats && card.userReworkStats[userId]) || 0;
                             const member = teamMembers.find(m => m.id === userId);
                             const name = member ? member.name : 'Usuario Desconocido';
-                            const value = units * card.rate;
-                            const reworkValue = reworkUnits * card.rate;
+                            const value = units * Number(card.rate || 0);
+                            const reworkValue = reworkUnits * Number(card.rate || 0);
                             
                             return (
                               <div key={userId} className="flex flex-col text-[11px] border-b border-slate-50 pb-1 last:border-0">
                                 <div className="flex items-center justify-between">
                                   <span className="text-slate-600 truncate mr-2" title={name}>{name}</span>
                                   <span className="font-medium text-indigo-600 whitespace-nowrap">
-                                    {units.toFixed(1)} ({value.toLocaleString('en-US', { style: 'currency', currency: card.currency, maximumFractionDigits: 0 })})
+                                    {formatRateCardUnits(units, card, 1)} ({formatRateCardValue(value, card, 0)})
                                   </span>
                                 </div>
                                 {reworkUnits > 0 && (
                                   <div className="flex items-center justify-between text-red-600 mt-0.5">
                                     <span className="truncate mr-2 text-[10px]">Reproceso:</span>
                                     <span className="font-medium whitespace-nowrap">
-                                      {reworkUnits.toFixed(1)} (-{reworkValue.toLocaleString('en-US', { style: 'currency', currency: card.currency, maximumFractionDigits: 0 })})
+                                      {formatRateCardUnits(reworkUnits, card, 1)} (-{formatRateCardValue(reworkValue, card, 0)})
                                     </span>
                                   </div>
                                 )}
@@ -750,7 +805,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       {/* Create Rate Card Modal */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-indigo-100 rounded-lg">
@@ -789,12 +844,25 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   required
                 />
               </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Tipo de resultado</label>
+                <select
+                  value={rateType}
+                  onChange={(e) => setRateType(e.target.value === 'unit' ? 'unit' : 'currency')}
+                  className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                >
+                  <option value="currency">Dinero / tarifa monetaria</option>
+                  <option value="unit">Unidad / métrica medible</option>
+                </select>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-700">Tarifa</label>
+                  <label className="text-sm font-medium text-slate-700">
+                    {rateType === 'currency' ? 'Tarifa por indicador' : 'Factor por indicador'}
+                  </label>
                   <input 
                     type="number" 
-                    step="0.01"
+                    step="any"
                     min="0"
                     value={rate}
                     onChange={(e) => setRate(e.target.value)}
@@ -803,19 +871,33 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     required
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-700">Moneda</label>
-                  <select 
-                    value={currency}
-                    onChange={(e) => setCurrency(e.target.value)}
-                    className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                  >
-                    <option value="USD">USD</option>
-                    <option value="EUR">EUR</option>
-                    <option value="COP">COP</option>
-                    <option value="MXN">MXN</option>
-                  </select>
-                </div>
+                {rateType === 'currency' ? (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700">Moneda</label>
+                    <select
+                      value={currency}
+                      onChange={(e) => setCurrency(e.target.value)}
+                      className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                    >
+                      <option value="USD">USD</option>
+                      <option value="EUR">EUR</option>
+                      <option value="COP">COP</option>
+                      <option value="MXN">MXN</option>
+                    </select>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700">Unidad resultado</label>
+                    <input
+                      type="text"
+                      value={unitLabel}
+                      onChange={(e) => setUnitLabel(e.target.value)}
+                      className="w-full h-10 px-3 rounded-md border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                      placeholder="Ej. predios, m2, puntos"
+                      required={rateType === 'unit'}
+                    />
+                  </div>
+                )}
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">Línea de Presupuesto (Opcional)</label>
@@ -868,7 +950,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       {/* Edit Rate Card Modal */}
       {isEditModalOpen && rateCardToEdit && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-indigo-100 rounded-lg">
@@ -910,12 +992,25 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   required
                 />
               </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">Tipo de resultado</label>
+                <select
+                  value={rateType}
+                  onChange={(e) => setRateType(e.target.value === 'unit' ? 'unit' : 'currency')}
+                  className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                >
+                  <option value="currency">Dinero / tarifa monetaria</option>
+                  <option value="unit">Unidad / métrica medible</option>
+                </select>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-700">Tarifa</label>
+                  <label className="text-sm font-medium text-slate-700">
+                    {rateType === 'currency' ? 'Tarifa por indicador' : 'Factor por indicador'}
+                  </label>
                   <input 
                     type="number" 
-                    step="0.01"
+                    step="any"
                     min="0"
                     value={rate}
                     onChange={(e) => setRate(e.target.value)}
@@ -924,19 +1019,33 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     required
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-700">Moneda</label>
-                  <select 
-                    value={currency}
-                    onChange={(e) => setCurrency(e.target.value)}
-                    className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
-                  >
-                    <option value="USD">USD</option>
-                    <option value="EUR">EUR</option>
-                    <option value="COP">COP</option>
-                    <option value="MXN">MXN</option>
-                  </select>
-                </div>
+                {rateType === 'currency' ? (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700">Moneda</label>
+                    <select
+                      value={currency}
+                      onChange={(e) => setCurrency(e.target.value)}
+                      className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                    >
+                      <option value="USD">USD</option>
+                      <option value="EUR">EUR</option>
+                      <option value="COP">COP</option>
+                      <option value="MXN">MXN</option>
+                    </select>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-700">Unidad resultado</label>
+                    <input
+                      type="text"
+                      value={unitLabel}
+                      onChange={(e) => setUnitLabel(e.target.value)}
+                      className="w-full h-10 px-3 rounded-md border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                      placeholder="Ej. predios, m2, puntos"
+                      required={rateType === 'unit'}
+                    />
+                  </div>
+                )}
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">Línea de Presupuesto (Opcional)</label>
@@ -969,7 +1078,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   <label className="text-sm font-medium text-slate-700">Valor Actual (Cantidad)</label>
                   <input 
                     type="number" 
-                    step="0.01"
+                    step="any"
                     min="0"
                     value={currentValue}
                     onChange={(e) => setCurrentValue(e.target.value)}

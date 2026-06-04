@@ -861,7 +861,7 @@ export default function ProjectDetailsPage() {
     },
   ) => {
     const amount = Number(params.units);
-    if (!params.rateCardId || !params.assigneeId || !amount) return null;
+    if (!params.rateCardId || !params.assigneeId || !Number.isFinite(amount)) return null;
 
     const rcRef = doc(db, 'projects', projectId, 'rateCards', params.rateCardId);
     batch.update(rcRef, {
@@ -2543,7 +2543,7 @@ export default function ProjectDetailsPage() {
                   <input
                     type="number"
                     min="0"
-                    step="0.1"
+                    step="any"
                     value={dynamicRateCardUnits}
                     onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
                     className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"

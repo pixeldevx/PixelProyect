@@ -1387,7 +1387,7 @@ export function CreateTaskModal({
                                   <input
                                     type="number"
                                     min="0"
-                                    step="0.1"
+                                    step="any"
                                     value={step.unitsToAdd ?? 1}
                                     onChange={(e) => {
                                       const newSteps = [...workflowSteps];
@@ -1473,7 +1473,7 @@ export function CreateTaskModal({
                                         <input
                                           type="number"
                                           min="0"
-                                          step="0.1"
+                                          step="any"
                                           value={rateCardItem.unitsToAdd ?? 1}
                                           onChange={(e) =>
                                             updateStepStaticRateCards(idx, (currentCards) =>
@@ -1911,7 +1911,7 @@ export function CreateTaskModal({
                   </label>
                   <input
                     type="number"
-                    step="0.1"
+                    step="any"
                     min="0"
                     value={newTaskUnitsToAdd}
                     onChange={(e) =>

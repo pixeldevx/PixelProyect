@@ -858,7 +858,7 @@ export function EditTaskStructureModal({
                     <input
                       type="number"
                       min="0"
-                      step="0.1"
+                      step="any"
                       value={taskUnitsToAdd}
                       onChange={(event) => setTaskUnitsToAdd(Number(event.target.value))}
                       className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
@@ -1072,7 +1072,7 @@ export function EditTaskStructureModal({
                             <input
                               type="number"
                               min="0"
-                              step="0.1"
+                              step="any"
                               value={step.unitsToAdd ?? 1}
                               onChange={(event) => {
                                 const unitsToAdd = Number(event.target.value);
@@ -1161,7 +1161,7 @@ export function EditTaskStructureModal({
                                   <input
                                     type="number"
                                     min="0"
-                                    step="0.1"
+                                    step="any"
                                     value={rateCardItem.unitsToAdd ?? 1}
                                     onChange={(event) =>
                                       updateStepStaticRateCards(index, (currentCards) =>

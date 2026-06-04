@@ -15,6 +15,7 @@ import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts';
 import Image from 'next/image';
+import { formatRateCardRate, formatRateCardUnits, formatRateCardValue, isCurrencyRateCard } from '@/lib/rate-card-config';
 
 export default function RateCardsPage() {
   const { user } = useAuth();
@@ -208,13 +209,13 @@ export default function RateCardsPage() {
       });
     }
     
-    const totalGenerated = totalUnits * card.rate;
+    const totalGenerated = totalUnits * Number(card.rate || 0);
 
-    if (card.userStats) {
+    if (isCurrencyRateCard(card) && card.userStats) {
       Object.entries(card.userStats).forEach(([userId, units]: [string, any]) => {
         const member = teamMembers.find(m => m.id === userId);
         const userName = member ? member.name : 'Usuario Desconocido';
-        const value = units * card.rate;
+        const value = Number(units || 0) * Number(card.rate || 0);
         
         if (!globalUserTotals[userId]) {
           globalUserTotals[userId] = { name: userName, value: 0 };
@@ -237,7 +238,10 @@ export default function RateCardsPage() {
   const globalUserChartData = Object.values(globalUserTotals).sort((a, b) => b.value - a.value);
   const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
 
-  const totalMoneyGenerated = economicData.reduce((sum, card) => sum + card.totalGenerated, 0);
+  const totalMoneyGenerated = economicData
+    .filter(isCurrencyRateCard)
+    .reduce((sum, card) => sum + card.totalGenerated, 0);
+  const unitMetricCount = economicData.filter((card) => !isCurrencyRateCard(card)).length;
 
   return (
     <DashboardLayout>
@@ -542,7 +546,9 @@ export default function RateCardsPage() {
                         {totalMoneyGenerated.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}
                       </span>
                     </div>
-                    <span className="text-slate-500 text-sm mt-2 block">en todos los proyectos</span>
+                    <span className="text-slate-500 text-sm mt-2 block">
+                      rate cards monetarios{unitMetricCount > 0 ? ` · ${unitMetricCount} métricas aparte` : ''}
+                    </span>
                   </div>
                   <div className="p-4 bg-indigo-100 rounded-full">
                     <DollarSign className="w-8 h-8 text-indigo-600" />
@@ -612,7 +618,7 @@ export default function RateCardsPage() {
                     <TableHead className="font-semibold text-slate-600">Rate Card</TableHead>
                     <TableHead className="font-semibold text-slate-600">Proyecto</TableHead>
                     <TableHead className="font-semibold text-slate-600">Indicador</TableHead>
-                    <TableHead className="font-semibold text-slate-600">Tarifa</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Tipo / Factor</TableHead>
                     <TableHead className="font-semibold text-slate-600 text-right">Generado</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -632,13 +638,16 @@ export default function RateCardsPage() {
                         <TableCell className="text-slate-600">{card.projectName}</TableCell>
                         <TableCell className="text-slate-600">{card.indicator}</TableCell>
                         <TableCell className="font-medium text-indigo-600">
-                          {card.rate.toLocaleString('en-US', { style: 'currency', currency: card.currency || 'USD' })}
+                          <div>{formatRateCardRate(card.rate, card)}</div>
+                          <div className="mt-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
+                            {isCurrencyRateCard(card) ? 'Dinero' : 'Unidad / medida'}
+                          </div>
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="font-medium text-emerald-600">
-                            {card.totalGenerated.toLocaleString('en-US', { style: 'currency', currency: card.currency || 'USD' })}
+                            {formatRateCardValue(card.totalGenerated, card)}
                           </div>
-                          <div className="text-xs text-slate-500 font-normal">{card.totalUnits.toFixed(1)} unidades</div>
+                          <div className="text-xs text-slate-500 font-normal">{formatRateCardUnits(card.totalUnits, card, 1)}</div>
                         </TableCell>
                       </TableRow>
                     ))

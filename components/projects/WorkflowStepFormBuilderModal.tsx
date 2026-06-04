@@ -407,7 +407,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                     <input
                       type="number"
                       min="0"
-                      step="0.1"
+                      step="any"
                       value={formUnitsToAdd}
                       onChange={(event) => setFormUnitsToAdd(Number(event.target.value))}
                       className="h-10 w-24 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
@@ -468,7 +468,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                         <input
                           type="number"
                           min="0"
-                          step="0.1"
+                          step="any"
                           value={item.unitsToAdd}
                           onChange={(event) => updateFormRateCard(item.id, { unitsToAdd: Number(event.target.value) })}
                           className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 md:w-24"

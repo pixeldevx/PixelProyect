@@ -10,16 +10,75 @@ export type StaticRateCardSource = {
   itemIndex: number | null;
 };
 
-export const normalizeRateCardUnits = (value: any, fallback = 1) => {
+export type RateCardValueType = "currency" | "unit";
+
+export const normalizeDecimalInput = (value: any, fallback = 0) => {
   const rawValue = value === undefined || value === null || value === "" ? fallback : value;
-  const units = Number(rawValue);
+  const normalizedValue = typeof rawValue === "string" ? rawValue.replace(",", ".") : rawValue;
+  const numberValue = Number(normalizedValue);
+  return Number.isFinite(numberValue) ? numberValue : fallback;
+};
+
+export const normalizeRateCardUnits = (value: any, fallback = 1) => {
+  const units = normalizeDecimalInput(value, fallback);
   return Number.isFinite(units) && units >= 0 ? units : fallback;
 };
 
 export const isInvalidRateCardUnits = (value: any) => {
   if (value === undefined || value === null || value === "") return true;
-  const units = Number(value);
+  const units = normalizeDecimalInput(value, Number.NaN);
   return !Number.isFinite(units) || units < 0;
+};
+
+export const normalizeRateCardValueType = (value: any): RateCardValueType =>
+  value === "unit" || value === "measure" || value === "quantity" ? "unit" : "currency";
+
+export const isCurrencyRateCard = (rateCard: any) =>
+  normalizeRateCardValueType(rateCard?.rateType || rateCard?.valueType) === "currency";
+
+export const getRateCardOutputUnit = (rateCard: any) => {
+  if (isCurrencyRateCard(rateCard)) return rateCard?.currency || "USD";
+  return (
+    rateCard?.unitLabel ||
+    rateCard?.measureUnit ||
+    rateCard?.resultUnit ||
+    rateCard?.outputUnit ||
+    "unidades"
+  );
+};
+
+export const formatRateCardNumber = (value: any, maximumFractionDigits = 2) =>
+  new Intl.NumberFormat("es-CO", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  }).format(normalizeDecimalInput(value, 0));
+
+export const formatRateCardUnits = (units: any, rateCard: any, maximumFractionDigits = 2) => {
+  const indicator = rateCard?.indicator || rateCard?.inputUnit || "unidades";
+  return `${formatRateCardNumber(units, maximumFractionDigits)} ${indicator}`;
+};
+
+export const formatRateCardValue = (value: any, rateCard: any, maximumFractionDigits = 2) => {
+  const numberValue = normalizeDecimalInput(value, 0);
+
+  if (isCurrencyRateCard(rateCard)) {
+    return new Intl.NumberFormat("es-CO", {
+      style: "currency",
+      currency: rateCard?.currency || "USD",
+      minimumFractionDigits: 0,
+      maximumFractionDigits,
+    }).format(numberValue);
+  }
+
+  return `${formatRateCardNumber(numberValue, maximumFractionDigits)} ${getRateCardOutputUnit(rateCard)}`;
+};
+
+export const formatRateCardRate = (rate: any, rateCard: any, maximumFractionDigits = 4) => {
+  const indicator = rateCard?.indicator || "unidad";
+  if (isCurrencyRateCard(rateCard)) {
+    return `${formatRateCardValue(rate, rateCard, maximumFractionDigits)} / ${indicator}`;
+  }
+  return `${formatRateCardNumber(rate, maximumFractionDigits)} ${getRateCardOutputUnit(rateCard)} / ${indicator}`;
 };
 
 const normalizeUnits = (value: any) => normalizeRateCardUnits(value);

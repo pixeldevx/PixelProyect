@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, getDocs, where } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
+import { isCurrencyRateCard } from '@/lib/rate-card-config';
 
 export interface DashboardMetrics {
   totalPlannedBudget: number;
@@ -72,11 +73,13 @@ export function useDashboardData() {
           
           const generatedValue = (data.currentValue || 0) * (data.rate || 0);
           const reworkValue = (data.reworkValue || 0) * (data.rate || 0);
-          totalActual += (generatedValue + reworkValue);
+          if (isCurrencyRateCard(data)) {
+            totalActual += (generatedValue + reworkValue);
+          }
           totalProd += (data.currentValue || 0);
 
           // Aggregate user stats
-          if (data.userStats) {
+          if (isCurrencyRateCard(data) && data.userStats) {
             Object.entries(data.userStats).forEach(([uid, units]: [string, any]) => {
               if (!userTotals[uid]) {
                 userTotals[uid] = { name: 'Usuario', value: 0, reworkValue: 0 };
@@ -84,7 +87,7 @@ export function useDashboardData() {
               userTotals[uid].value += units * (data.rate || 0);
             });
           }
-          if (data.userReworkStats) {
+          if (isCurrencyRateCard(data) && data.userReworkStats) {
             Object.entries(data.userReworkStats).forEach(([uid, units]: [string, any]) => {
               if (!userTotals[uid]) {
                 userTotals[uid] = { name: 'Usuario', value: 0, reworkValue: 0 };

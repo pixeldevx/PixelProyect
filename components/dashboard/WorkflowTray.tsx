@@ -1014,7 +1014,7 @@ export default function WorkflowTray() {
     },
   ) => {
     const amount = Number(params.units);
-    if (!params.rateCardId || !params.assigneeId || !amount) return null;
+    if (!params.rateCardId || !params.assigneeId || !Number.isFinite(amount)) return null;
 
     const rcRef = doc(db, 'projects', params.projectId, 'rateCards', params.rateCardId);
     const statsField = params.isRework ? 'userReworkStats' : 'userStats';
@@ -2597,7 +2597,7 @@ export default function WorkflowTray() {
                         <input
                           type="number"
                           min="0"
-                          step="0.1"
+                          step="any"
                           value={dynamicRateCardUnits}
                           onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
                           className="w-full rounded-lg border border-emerald-100 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
@@ -2632,7 +2632,7 @@ export default function WorkflowTray() {
                           <input
                             type="number"
                             min="0"
-                            step="0.1"
+                            step="any"
                             value={staticRateCardUnits[source.key] ?? source.unitsToAdd}
                             onChange={(e) => {
                               const nextValue = e.target.value === '' ? '' : Number(e.target.value);
@@ -2909,7 +2909,7 @@ export default function WorkflowTray() {
                   <input
                     type="number"
                     min="0"
-                    step="0.1"
+                    step="any"
                     value={dynamicRateCardUnits}
                     onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
                     className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"

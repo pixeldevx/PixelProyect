@@ -661,7 +661,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                   <input
                     type="number"
                     min="0"
-                    step="0.1"
+                    step="any"
                     value={stepUnitPrompt.unitsByKey[source.key] || ''}
                     onChange={(e) =>
                       setStepUnitPrompt({

@@ -24,6 +24,7 @@ import { collection, onSnapshot, query } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
+import { isCurrencyRateCard } from '@/lib/rate-card-config';
 
 type ProjectRow = {
   id: string;
@@ -67,6 +68,8 @@ type RateCard = {
   currentValue?: number;
   reworkValue?: number;
   rate?: number;
+  rateType?: string;
+  valueType?: string;
   userStats?: Record<string, number>;
   userReworkStats?: Record<string, number>;
 };
@@ -167,9 +170,13 @@ const pieceTotal = (piece: BudgetPiece) =>
 const pieceMonthlyTotal = (piece: BudgetPiece) =>
   Number(piece.quantity || 0) * Number(piece.multiplier || 0) * Number(piece.unitCost || 0);
 
-const rateCardTotal = (card: RateCard) => (Number(card.currentValue || 0) + Number(card.reworkValue || 0)) * Number(card.rate || 0);
+const rateCardTotal = (card: RateCard) =>
+  isCurrencyRateCard(card)
+    ? (Number(card.currentValue || 0) + Number(card.reworkValue || 0)) * Number(card.rate || 0)
+    : 0;
 
 const rateCardUserTotal = (card: RateCard, memberId: string) => {
+  if (!isCurrencyRateCard(card)) return 0;
   const produced = Number(card.userStats?.[memberId] || 0) * Number(card.rate || 0);
   const rework = Number(card.userReworkStats?.[memberId] || 0) * Number(card.rate || 0);
   return produced + rework;

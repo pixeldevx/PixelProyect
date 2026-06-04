@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Plus, Trash2, Edit, FileText, DollarSign, TrendingUp, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
+import { isCurrencyRateCard } from '@/lib/rate-card-config';
 
 interface Invoice {
   id: string;
@@ -91,7 +92,7 @@ export default function ProjectBilling({ projectId, rateCards, tasks }: ProjectB
   }, [projectId]);
 
   // Calculate Costs (same logic as ProjectBudget)
-  const rateCardActuals = rateCards.map(card => {
+  const rateCardActuals = rateCards.filter(isCurrencyRateCard).map(card => {
     let cardTotalUnits = card.currentValue || 0;
     if (card.userStats) {
       const userStatsTotal: number = Object.values(card.userStats).reduce((sum: any, val: any) => sum + (Number(val) || 0), 0) as number;

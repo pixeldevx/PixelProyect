@@ -24,6 +24,7 @@ import { addDoc, collection, deleteDoc, doc, onSnapshot, query, serverTimestamp,
 import { db } from '@/lib/backend';
 import { getOrganizationIds } from '@/lib/organizations';
 import { toast } from 'sonner';
+import { isCurrencyRateCard } from '@/lib/rate-card-config';
 
 type BudgetPiece = {
   id: string;
@@ -904,7 +905,7 @@ export function ProjectBudget({
   };
 
   const rateCardActuals = useMemo(() => {
-    return rateCards.map((card) => {
+    return rateCards.filter(isCurrencyRateCard).map((card) => {
       let cardTotalUnits = 0;
       const computedUserStats: Record<string, number> = { ...(card.userStats || {}) };
 
