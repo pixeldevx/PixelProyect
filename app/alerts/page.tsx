@@ -233,6 +233,33 @@ export default function AlertsPage() {
 
   const assignmentRuleEnabled = preferences.taskAssignmentEmailEnabled || preferences.taskAssignmentPushEnabled;
 
+  const getPushProviderErrorMessage = (providerError: any) => {
+    const statusText = providerError?.statusCode ? ` (${providerError.statusCode})` : '';
+    const providerDetail = providerError?.body || providerError?.message || '';
+
+    if (providerError?.reason === 'vapid_auth_rejected') {
+      return `El proveedor push rechazó la autenticación VAPID${statusText}. Revisa que NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY y WEB_PUSH_PRIVATE_KEY sean del mismo par, y que WEB_PUSH_SUBJECT sea un mailto: o https:// válido.`;
+    }
+
+    if (providerError?.reason === 'invalid_push_request') {
+      return `El proveedor push rechazó la solicitud${statusText}. ${providerDetail || 'Vuelve a registrar el dispositivo y prueba de nuevo.'}`;
+    }
+
+    if (providerError?.reason === 'payload_too_large') {
+      return 'El contenido de la notificación es demasiado grande para el proveedor push.';
+    }
+
+    if (providerError?.reason === 'provider_rate_limited') {
+      return 'El proveedor push está limitando temporalmente los envíos. Espera unos minutos y prueba de nuevo.';
+    }
+
+    if (providerError?.reason === 'provider_unavailable') {
+      return 'El proveedor push no está disponible temporalmente. Intenta nuevamente en unos minutos.';
+    }
+
+    return `Encontré el dispositivo, pero el proveedor push rechazó el envío${statusText}. ${providerDetail || 'Revisa WEB_PUSH_PRIVATE_KEY y WEB_PUSH_SUBJECT en Vercel.'}`;
+  };
+
   const handleSendTestPush = async () => {
     setIsSendingTestPush(true);
     try {
@@ -297,7 +324,7 @@ export default function AlertsPage() {
       }
 
       if (Number(body?.push?.attempted || 0) > 0 && Number(body?.push?.failed || 0) > 0) {
-        toast.error('Encontré el dispositivo, pero el proveedor push rechazó el envío. Revisa WEB_PUSH_PRIVATE_KEY y WEB_PUSH_SUBJECT en Vercel.');
+        toast.error(getPushProviderErrorMessage(body?.push?.providerErrors?.[0]));
         return;
       }
 

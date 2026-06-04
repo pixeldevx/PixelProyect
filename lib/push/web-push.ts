@@ -16,6 +16,15 @@ export type PixelPushTarget = {
   subscription: PushSubscription;
 };
 
+export type PixelPushProviderError = {
+  id: string;
+  endpointHost?: string;
+  statusCode?: number;
+  reason: string;
+  message?: string;
+  body?: string;
+};
+
 export type PixelPushResult = {
   skipped: boolean;
   reason?: string;
@@ -23,12 +32,35 @@ export type PixelPushResult = {
   sent: number;
   failed: number;
   expiredIds: string[];
+  providerErrors?: PixelPushProviderError[];
+};
+
+const cleanEnvValue = (value?: string) => {
+  const trimmed = (value || '').trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+};
+
+const normalizeWebPushSubject = (value?: string) => {
+  const subject = cleanEnvValue(value);
+  if (!subject) return '';
+  if (/^mailto:/i.test(subject) || /^https:\/\//i.test(subject)) return subject;
+  if (/^http:\/\//i.test(subject)) return subject.replace(/^http:/i, 'https:');
+  if (subject.includes('@')) return `mailto:${subject}`;
+  return `https://${subject.replace(/^\/+/, '')}`;
 };
 
 const getWebPushConfig = () => {
-  const publicKey = process.env.NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY || '';
-  const privateKey = process.env.WEB_PUSH_PRIVATE_KEY || '';
-  const subject = process.env.WEB_PUSH_SUBJECT || process.env.NEXT_PUBLIC_SITE_URL || '';
+  const publicKey = cleanEnvValue(process.env.NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY);
+  const privateKey = cleanEnvValue(process.env.WEB_PUSH_PRIVATE_KEY);
+  const subject = normalizeWebPushSubject(
+    process.env.WEB_PUSH_SUBJECT || process.env.NEXT_PUBLIC_SITE_URL || ''
+  );
 
   if (!publicKey || !privateKey || !subject) {
     return null;
@@ -46,6 +78,46 @@ const isExpiredSubscriptionError = (error: unknown) => {
   return statusCode === 404 || statusCode === 410;
 };
 
+const truncateDiagnostic = (value: unknown) => {
+  if (!value) return undefined;
+  return String(value).replace(/\s+/g, ' ').trim().slice(0, 300);
+};
+
+const getEndpointHost = (endpoint?: string) => {
+  if (!endpoint) return undefined;
+  try {
+    return new URL(endpoint).host;
+  } catch {
+    return undefined;
+  }
+};
+
+const getProviderErrorReason = (statusCode: number) => {
+  if (statusCode === 400) return 'invalid_push_request';
+  if (statusCode === 401 || statusCode === 403) return 'vapid_auth_rejected';
+  if (statusCode === 413) return 'payload_too_large';
+  if (statusCode === 429) return 'provider_rate_limited';
+  if (statusCode >= 500) return 'provider_unavailable';
+  return 'provider_rejected';
+};
+
+const buildProviderError = (target: PixelPushTarget, error: unknown): PixelPushProviderError => {
+  const statusCode = Number((error as any)?.statusCode || 0);
+  const providerError: PixelPushProviderError = {
+    id: target.id,
+    endpointHost: getEndpointHost(target.subscription?.endpoint),
+    reason: getProviderErrorReason(statusCode),
+    message: truncateDiagnostic((error as any)?.message),
+    body: truncateDiagnostic((error as any)?.body),
+  };
+
+  if (statusCode) {
+    providerError.statusCode = statusCode;
+  }
+
+  return providerError;
+};
+
 export const sendPixelPushBatch = async (
   targets: PixelPushTarget[],
   payload: PixelPushPayload
@@ -60,6 +132,7 @@ export const sendPixelPushBatch = async (
       sent: 0,
       failed: 0,
       expiredIds: [],
+      providerErrors: [],
     };
   }
 
@@ -71,6 +144,7 @@ export const sendPixelPushBatch = async (
       sent: 0,
       failed: 0,
       expiredIds: [],
+      providerErrors: [],
     };
   }
 
@@ -92,6 +166,7 @@ export const sendPixelPushBatch = async (
   );
 
   const expiredIds: string[] = [];
+  const providerErrors: PixelPushProviderError[] = [];
   let sent = 0;
   let failed = 0;
 
@@ -104,14 +179,21 @@ export const sendPixelPushBatch = async (
     failed += 1;
     if (isExpiredSubscriptionError(result.reason)) {
       expiredIds.push(targets[index].id);
+      return;
     }
+
+    const providerError = buildProviderError(targets[index], result.reason);
+    providerErrors.push(providerError);
+    console.warn('Pixel push provider rejected notification', providerError);
   });
 
   return {
     skipped: false,
+    reason: failed > 0 ? 'web_push_provider_rejected' : undefined,
     attempted: targets.length,
     sent,
     failed,
     expiredIds,
+    providerErrors,
   };
 };

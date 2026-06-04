@@ -2,7 +2,18 @@
 
 import { supabase } from '@/lib/backend';
 
-const WEB_PUSH_PUBLIC_KEY = process.env.NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY || '';
+const cleanEnvValue = (value?: string) => {
+  const trimmed = (value || '').trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+};
+
+const WEB_PUSH_PUBLIC_KEY = cleanEnvValue(process.env.NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY);
 
 export type PixelPushRegistrationUser = {
   uid: string;
