@@ -5,7 +5,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Plus, Trash2, Edit2, AlertCircle, Shield, Users, SlidersHorizontal } from 'lucide-react';
+import { Plus, Trash2, Edit2, AlertCircle, Shield, Users, SlidersHorizontal, Palette } from 'lucide-react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
@@ -13,12 +13,13 @@ import { toast } from 'sonner';
 import { UserManagement } from '@/components/settings/UserManagement';
 import { OrganizationManagement } from '@/components/settings/OrganizationManagement';
 import { PermissionManagement } from '@/components/settings/PermissionManagement';
+import { BrandingManagement } from '@/components/settings/BrandingManagement';
 import { Building } from 'lucide-react';
 import { belongsToAnyOrganization } from '@/lib/organizations';
 
 export default function SettingsPage() {
   const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
-  const [activeTab, setActiveTab] = useState<'roles' | 'users' | 'permissions' | 'organizations'>('roles');
+  const [activeTab, setActiveTab] = useState<'roles' | 'users' | 'permissions' | 'organizations' | 'branding'>('roles');
   const [roles, setRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
@@ -210,11 +211,29 @@ export default function SettingsPage() {
               </div>
             </button>
           )}
+
+          {userRole === 'admin' && (
+            <button
+              onClick={() => setActiveTab('branding')}
+              className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'branding'
+                  ? 'border-indigo-600 text-indigo-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Palette size={16} />
+                Marca
+              </div>
+            </button>
+          )}
         </div>
       </div>
 
       {activeTab === 'organizations' && userRole === 'admin' ? (
         <OrganizationManagement />
+      ) : activeTab === 'branding' && userRole === 'admin' ? (
+        <BrandingManagement />
       ) : activeTab === 'permissions' ? (
         <PermissionManagement currentUser={user} />
       ) : activeTab === 'roles' ? (

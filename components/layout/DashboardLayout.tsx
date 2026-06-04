@@ -26,6 +26,10 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
 import { useInboxPendingCount } from '@/hooks/useInboxPendingCount';
 import { ProfileModal } from '@/components/settings/ProfileModal';
+import { doc, onSnapshot } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
+
+const DEFAULT_BRAND_NAME = 'Pixel Project';
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -41,6 +45,8 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [showLoadingRecovery, setShowLoadingRecovery] = useState(false);
+  const [brandName, setBrandName] = useState(DEFAULT_BRAND_NAME);
+  const [brandLogoUrl, setBrandLogoUrl] = useState('');
   const isInitialAuthLoading = loading && !user;
   const canAccessBudgetOverview = ['admin', 'org_admin', 'manager', 'coordinador'].includes(userRole || '');
 
@@ -53,6 +59,30 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
     const timeoutId = window.setTimeout(() => setShowLoadingRecovery(true), 8000);
     return () => window.clearTimeout(timeoutId);
   }, [isInitialAuthLoading]);
+
+  useEffect(() => {
+    if (!user) {
+      setBrandName(DEFAULT_BRAND_NAME);
+      setBrandLogoUrl('');
+      return;
+    }
+
+    const unsubscribe = onSnapshot(
+      doc(db, 'app_config', 'branding'),
+      (snapshot) => {
+        const branding = snapshot.exists() ? snapshot.data() : {};
+        setBrandName(branding.companyName || DEFAULT_BRAND_NAME);
+        setBrandLogoUrl(branding.logoUrl || '');
+      },
+      (error) => {
+        console.warn('No fue posible cargar la marca de la instancia:', error);
+        setBrandName(DEFAULT_BRAND_NAME);
+        setBrandLogoUrl('');
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user]);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -222,10 +252,20 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
       <aside className={`${isCollapsed ? 'w-20' : 'w-64'} border-r border-slate-200 bg-white flex flex-col transition-all duration-300 ease-in-out relative z-30`}>
         <div className={`h-16 flex items-center ${isCollapsed ? 'justify-center' : 'px-6'} border-b border-slate-200`}>
           <div className="flex items-center gap-2 font-bold text-lg tracking-tight overflow-hidden">
-            <div className="w-8 h-8 bg-indigo-600 rounded-md flex items-center justify-center text-white shrink-0">
-              PX
+            <div className="relative w-8 h-8 bg-indigo-600 rounded-md flex items-center justify-center text-white shrink-0 overflow-hidden shadow-sm">
+              {brandLogoUrl ? (
+                <Image
+                  src={brandLogoUrl}
+                  alt={brandName || DEFAULT_BRAND_NAME}
+                  fill
+                  sizes="32px"
+                  className="object-cover"
+                />
+              ) : (
+                'PX'
+              )}
             </div>
-            {!isCollapsed && <span className="whitespace-nowrap">Pixel Project</span>}
+            {!isCollapsed && <span className="whitespace-nowrap truncate">{brandName || DEFAULT_BRAND_NAME}</span>}
           </div>
           
           <button 
