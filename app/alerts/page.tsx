@@ -21,6 +21,7 @@ import {
 
 type AlertPreferences = {
   taskAssignmentEmailEnabled: boolean;
+  taskAssignmentPushEnabled: boolean;
   taskAssignmentEmailSubject: string;
   taskAssignmentEmailIntro: string;
   disabledOrganizationIds: string[];
@@ -29,6 +30,7 @@ type AlertPreferences = {
 
 const defaultPreferences: AlertPreferences = {
   taskAssignmentEmailEnabled: true,
+  taskAssignmentPushEnabled: true,
   taskAssignmentEmailSubject: DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT,
   taskAssignmentEmailIntro: DEFAULT_TASK_ASSIGNMENT_EMAIL_INTRO,
   disabledOrganizationIds: [],
@@ -37,6 +39,7 @@ const defaultPreferences: AlertPreferences = {
 
 const normalizePreferences = (data: any = {}): AlertPreferences => ({
   taskAssignmentEmailEnabled: data.taskAssignmentEmailEnabled !== false,
+  taskAssignmentPushEnabled: data.taskAssignmentPushEnabled !== false,
   taskAssignmentEmailSubject:
     typeof data.taskAssignmentEmailSubject === 'string' && data.taskAssignmentEmailSubject.trim()
       ? data.taskAssignmentEmailSubject
@@ -226,6 +229,8 @@ export default function AlertsPage() {
     });
   };
 
+  const assignmentRuleEnabled = preferences.taskAssignmentEmailEnabled || preferences.taskAssignmentPushEnabled;
+
   const handleCreateRule = async () => {
     if (!user || !newRule.title) return;
 
@@ -313,28 +318,23 @@ export default function AlertsPage() {
               <div>
                 <CardTitle className="flex items-center gap-2 text-xl text-white">
                   <Mail className="h-5 w-5 text-cyan-300" />
-                  Correo por asignación de tarea
+                  Asignación de tareas y workflows
                 </CardTitle>
                 <CardDescription className="mt-1 text-slate-300">
-                  Regla predefinida que envía la plantilla Pixel Project cuando una tarea o workflow entra a la bandeja.
+                  Regla predefinida que avisa por correo y push móvil cuando una tarea o workflow entra a la bandeja.
                 </CardDescription>
               </div>
               <div className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
-                preferences.taskAssignmentEmailEnabled
+                assignmentRuleEnabled
                   ? 'border-emerald-300/35 bg-emerald-400/10'
                   : 'border-rose-300/35 bg-rose-500/10'
               }`}>
                 <div className="text-right">
                   <p className="text-sm font-bold text-white">Regla predefinida</p>
-                  <p className={`text-xs font-semibold ${preferences.taskAssignmentEmailEnabled ? 'text-emerald-200' : 'text-rose-200'}`}>
-                    {preferences.taskAssignmentEmailEnabled ? 'Activa' : 'Apagada'}
+                  <p className={`text-xs font-semibold ${assignmentRuleEnabled ? 'text-emerald-200' : 'text-rose-200'}`}>
+                    {assignmentRuleEnabled ? 'Activa' : 'Apagada'}
                   </p>
                 </div>
-                <Switch
-                  checked={preferences.taskAssignmentEmailEnabled}
-                  disabled={savingPreferences}
-                  onCheckedChange={(checked) => void savePreferences({ ...preferences, taskAssignmentEmailEnabled: checked })}
-                />
               </div>
             </div>
           </CardHeader>
@@ -347,14 +347,14 @@ export default function AlertsPage() {
                       Regla predefinida
                     </span>
                     <span className="rounded-full bg-cyan-400/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-cyan-200 ring-1 ring-cyan-300/20">
-                      Plantilla Pixel Project
+                      Correo + Push
                     </span>
                     <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] ring-1 ${
-                      preferences.taskAssignmentEmailEnabled
+                      assignmentRuleEnabled
                         ? 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/20'
                         : 'bg-rose-400/15 text-rose-200 ring-rose-300/20'
                     }`}>
-                      {preferences.taskAssignmentEmailEnabled ? 'Activa' : 'Apagada'}
+                      {assignmentRuleEnabled ? 'Activa' : 'Apagada'}
                     </span>
                   </div>
                   <h3 className="mt-3 text-lg font-black text-white">Asignación de tarea o workflow</h3>
@@ -362,6 +362,48 @@ export default function AlertsPage() {
                     Se dispara cuando una persona recibe una tarea en su bandeja. Puedes apagarla completa,
                     excluir organizaciones o proyectos, y personalizar el asunto o mensaje inicial del correo.
                   </p>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div className={`rounded-2xl border p-3 transition-colors ${
+                      preferences.taskAssignmentEmailEnabled
+                        ? 'border-cyan-300/30 bg-cyan-400/10'
+                        : 'border-slate-700 bg-slate-900/70'
+                    }`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Mail className="h-4 w-4 shrink-0 text-cyan-200" />
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-black text-white">Correo moderno</p>
+                            <p className="truncate text-xs text-slate-400">Plantilla Pixel Project por email.</p>
+                          </div>
+                        </div>
+                        <Switch
+                          checked={preferences.taskAssignmentEmailEnabled}
+                          disabled={savingPreferences}
+                          onCheckedChange={(checked) => void savePreferences({ ...preferences, taskAssignmentEmailEnabled: checked })}
+                        />
+                      </div>
+                    </div>
+                    <div className={`rounded-2xl border p-3 transition-colors ${
+                      preferences.taskAssignmentPushEnabled
+                        ? 'border-violet-300/30 bg-violet-400/10'
+                        : 'border-slate-700 bg-slate-900/70'
+                    }`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <Bell className="h-4 w-4 shrink-0 text-violet-200" />
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-black text-white">Push móvil PWA</p>
+                            <p className="truncate text-xs text-slate-400">Notificación directa al celular.</p>
+                          </div>
+                        </div>
+                        <Switch
+                          checked={preferences.taskAssignmentPushEnabled}
+                          disabled={savingPreferences}
+                          onCheckedChange={(checked) => void savePreferences({ ...preferences, taskAssignmentPushEnabled: checked })}
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <Button
                   variant="outline"
@@ -425,7 +467,7 @@ export default function AlertsPage() {
                           key={organization.id}
                           title={organization.name || organization.displayName || 'Organización'}
                           active={isActive}
-                          muted={!preferences.taskAssignmentEmailEnabled}
+                          muted={!assignmentRuleEnabled}
                           saving={savingPreferences}
                           onToggle={() => toggleDisabledPreference('disabledOrganizationIds', organization.id)}
                         />
@@ -437,7 +479,7 @@ export default function AlertsPage() {
 
               <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                 <h3 className="text-sm font-bold uppercase tracking-wider text-indigo-200">Proyectos</h3>
-                <p className="mt-1 text-xs text-slate-400">Controla correos por cada proyecto asignado.</p>
+                <p className="mt-1 text-xs text-slate-400">Controla notificaciones por cada proyecto asignado.</p>
                 <div className="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1">
                   {projects.length === 0 ? (
                     <p className="text-sm text-slate-500">No hay proyectos disponibles.</p>
@@ -450,7 +492,7 @@ export default function AlertsPage() {
                           title={project.name || project.title || 'Proyecto'}
                           subtitle={organizations.find((organization) => organization.id === project.organizationId)?.name || project.organizationName || 'Sin organización'}
                           active={isActive}
-                          muted={!preferences.taskAssignmentEmailEnabled}
+                          muted={!assignmentRuleEnabled}
                           saving={savingPreferences}
                           onToggle={() => toggleDisabledPreference('disabledProjectIds', project.id)}
                         />
@@ -702,6 +744,40 @@ export default function AlertsPage() {
                         <Edit className="mr-2 h-4 w-4" />
                         Editar
                       </Button>
+                    </TableCell>
+                  </TableRow>
+                  <TableRow className="bg-violet-50/35">
+                    <TableCell>
+                      <div className="font-medium text-slate-900">Push móvil por asignación de tarea</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500">
+                        <span className="rounded-full bg-violet-100 px-2 py-0.5 font-bold text-violet-700">Predefinida</span>
+                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-bold text-emerald-700">PWA</span>
+                        <Bell className="h-3 w-3" />
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-sm text-slate-600">
+                      Cuando una tarea o workflow entra a la bandeja del responsable con la PWA instalada.
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <div className="flex flex-col items-center gap-2">
+                        <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${
+                          preferences.taskAssignmentPushEnabled
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : 'bg-rose-100 text-rose-700'
+                        }`}>
+                          {preferences.taskAssignmentPushEnabled ? 'Activa' : 'Apagada'}
+                        </span>
+                        <Switch
+                          checked={preferences.taskAssignmentPushEnabled}
+                          disabled={savingPreferences}
+                          onCheckedChange={(checked) => void savePreferences({ ...preferences, taskAssignmentPushEnabled: checked })}
+                        />
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500">
+                        Automática
+                      </span>
                     </TableCell>
                   </TableRow>
                   {rules.length === 0 ? (

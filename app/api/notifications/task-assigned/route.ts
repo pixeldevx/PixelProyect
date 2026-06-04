@@ -8,6 +8,7 @@ import {
   DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT,
 } from '@/lib/email/task-assignment-template';
 import { sendEmailWithResend } from '@/lib/email/resend';
+import { sendPixelPushBatch, type PixelPushTarget } from '@/lib/push/web-push';
 
 export const runtime = 'nodejs';
 
@@ -146,6 +147,90 @@ const shouldSendEmail = (preferences: any, projectId: string, organizationId: st
   return true;
 };
 
+const shouldSendPush = (preferences: any, projectId: string, organizationId: string) => {
+  if (preferences?.taskAssignmentPushEnabled === false) return false;
+  if (Array.isArray(preferences?.disabledProjectIds) && preferences.disabledProjectIds.includes(projectId)) return false;
+  if (organizationId && Array.isArray(preferences?.disabledOrganizationIds) && preferences.disabledOrganizationIds.includes(organizationId)) return false;
+  return true;
+};
+
+const normalizePushSubscriptionTarget = (row: AppDocumentRow): PixelPushTarget | null => {
+  const subscription = row.data?.subscription;
+  const endpoint = subscription?.endpoint || row.data?.endpoint;
+  const keys = subscription?.keys;
+
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    return null;
+  }
+
+  return {
+    id: row.doc_id,
+    subscription: {
+      ...subscription,
+      endpoint,
+      keys,
+    },
+  };
+};
+
+const findPushSubscriptions = async (supabase: any, userId: string, email: string) => {
+  const queries = [];
+
+  if (userId) {
+    queries.push(
+      supabase
+        .from(DOCUMENTS_TABLE)
+        .select('collection_path, doc_id, data')
+        .eq('collection_path', 'push_subscriptions')
+        .eq('data->>userId', userId)
+        .eq('data->>isActive', 'true')
+    );
+  }
+
+  if (email) {
+    queries.push(
+      supabase
+        .from(DOCUMENTS_TABLE)
+        .select('collection_path, doc_id, data')
+        .eq('collection_path', 'push_subscriptions')
+        .eq('data->>email', email)
+        .eq('data->>isActive', 'true')
+    );
+  }
+
+  const results = await Promise.all(queries);
+  const byId = new Map<string, AppDocumentRow>();
+
+  results.forEach(({ data, error }) => {
+    if (error) throw error;
+    (data || []).forEach((row: AppDocumentRow) => byId.set(row.doc_id, row));
+  });
+
+  return Array.from(byId.values())
+    .map(normalizePushSubscriptionTarget)
+    .filter((target): target is PixelPushTarget => Boolean(target));
+};
+
+const deactivatePushSubscriptions = async (supabase: any, subscriptionIds: string[]) => {
+  if (subscriptionIds.length === 0) return;
+  const now = new Date().toISOString();
+
+  await Promise.all(
+    subscriptionIds.map(async (subscriptionId) => {
+      const row = await getDocument(supabase, 'push_subscriptions', subscriptionId);
+      if (!row) return;
+
+      await upsertDocument(supabase, 'push_subscriptions', subscriptionId, {
+        ...row.data,
+        isActive: false,
+        deactivatedAt: now,
+        deactivationReason: 'push_subscription_expired',
+        updatedAt: now,
+      });
+    })
+  );
+};
+
 const resolveAssignee = async (supabase: any, assigneeId: string) => {
   const teamMember = await getDocument(supabase, 'team_members', assigneeId);
   const teamData = teamMember?.data || {};
@@ -246,6 +331,7 @@ export async function POST(request: NextRequest) {
     const preferenceByEmail = await findDocumentByEmail(supabase, 'alert_preferences', resolvedAssignee.email);
     const preferences = preferenceById?.data || preferenceByEmail?.data || {};
     const emailEnabled = shouldSendEmail(preferences, projectId, organizationId);
+    const pushEnabled = shouldSendPush(preferences, projectId, organizationId);
 
     const appUrl = appUrlFromRequest(request);
     const actionUrl = `${appUrl}/workflows`;
@@ -312,6 +398,28 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    let pushResult: any = { skipped: true, reason: 'disabled_by_preferences' };
+    if (pushEnabled) {
+      const pushTargets = await findPushSubscriptions(supabase, resolvedAssignee.authUserId, resolvedAssignee.email);
+      pushResult = await sendPixelPushBatch(pushTargets, {
+        title: eventType === 'workflow_step_assigned' ? 'Nuevo paso de workflow' : 'Nueva tarea asignada',
+        body: `${emailData.taskTitle} · ${emailData.projectName}`,
+        url: actionUrl,
+        tag: eventKey,
+        data: {
+          eventType,
+          projectId,
+          taskId,
+          stepIndex,
+          organizationId: organizationId || null,
+        },
+      });
+
+      if (Array.isArray(pushResult.expiredIds) && pushResult.expiredIds.length > 0) {
+        await deactivatePushSubscriptions(supabase, pushResult.expiredIds);
+      }
+    }
+
     await upsertDocument(supabase, 'notification_events', eventKey, {
       eventKey,
       eventType,
@@ -324,6 +432,8 @@ export async function POST(request: NextRequest) {
       source: payload.source || null,
       emailEnabled,
       emailResult,
+      pushEnabled,
+      pushResult,
       createdAt: now,
       createdBy: requesterData.user.id,
     });
@@ -331,6 +441,7 @@ export async function POST(request: NextRequest) {
     return json({
       ok: true,
       email: emailResult,
+      push: pushResult,
     });
   } catch (error: any) {
     console.error('Error sending task assignment notification:', error);

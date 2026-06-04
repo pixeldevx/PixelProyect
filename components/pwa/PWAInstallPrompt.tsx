@@ -13,7 +13,9 @@ type BeforeInstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
 
-const DISMISSED_KEY = 'pixel-project-pwa-dismissed';
+const LEGACY_DISMISSED_KEY = 'pixel-project-pwa-dismissed';
+const INSTALL_DISMISSED_KEY = 'pixel-project-pwa-install-dismissed';
+const PUSH_DISMISSED_KEY = 'pixel-project-pwa-push-dismissed';
 const WEB_PUSH_PUBLIC_KEY = process.env.NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY || '';
 
 const urlBase64ToUint8Array = (base64String: string) => {
@@ -50,11 +52,13 @@ const isStandaloneMode = () => {
 export function PWAInstallPrompt() {
   const { user, userOrganizationIds } = useAuth();
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isDismissed, setIsDismissed] = useState(true);
+  const [isInstallDismissed, setIsInstallDismissed] = useState(true);
+  const [isPushDismissed, setIsPushDismissed] = useState(true);
   const [isStandalone, setIsStandalone] = useState(false);
   const [isIos, setIsIos] = useState(false);
   const [registration, setRegistration] = useState<ServiceWorkerRegistration | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
+  const [hasActiveSubscription, setHasActiveSubscription] = useState(false);
   const [isSavingSubscription, setIsSavingSubscription] = useState(false);
 
   const canUseNotifications = useMemo(() => {
@@ -66,7 +70,9 @@ export function PWAInstallPrompt() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    setIsDismissed(window.localStorage.getItem(DISMISSED_KEY) === 'true');
+    const legacyDismissed = window.localStorage.getItem(LEGACY_DISMISSED_KEY) === 'true';
+    setIsInstallDismissed(window.localStorage.getItem(INSTALL_DISMISSED_KEY) === 'true' || legacyDismissed);
+    setIsPushDismissed(window.localStorage.getItem(PUSH_DISMISSED_KEY) === 'true');
     setIsStandalone(isStandaloneMode());
     setIsIos(isIosDevice());
     if ('Notification' in window) {
@@ -76,13 +82,14 @@ export function PWAInstallPrompt() {
     const onBeforeInstallPrompt = (event: Event) => {
       event.preventDefault();
       setDeferredPrompt(event as BeforeInstallPromptEvent);
-      setIsDismissed(false);
+      setIsInstallDismissed(false);
     };
 
     const onAppInstalled = () => {
       setDeferredPrompt(null);
       setIsStandalone(true);
-      window.localStorage.removeItem(DISMISSED_KEY);
+      window.localStorage.removeItem(INSTALL_DISMISSED_KEY);
+      window.localStorage.removeItem(LEGACY_DISMISSED_KEY);
       toast.success('Pixel Project quedo instalado.');
     };
 
@@ -100,15 +107,26 @@ export function PWAInstallPrompt() {
 
     navigator.serviceWorker
       .register('/sw.js')
-      .then((serviceWorkerRegistration) => setRegistration(serviceWorkerRegistration))
+      .then(async (serviceWorkerRegistration) => {
+        setRegistration(serviceWorkerRegistration);
+        if ('PushManager' in window) {
+          const existingSubscription = await serviceWorkerRegistration.pushManager.getSubscription();
+          setHasActiveSubscription(Boolean(existingSubscription));
+        }
+      })
       .catch((error) => {
         console.warn('No fue posible registrar la PWA:', error);
       });
   }, []);
 
-  const handleDismiss = () => {
-    window.localStorage.setItem(DISMISSED_KEY, 'true');
-    setIsDismissed(true);
+  const handleDismiss = (mode: 'install' | 'push') => {
+    const key = mode === 'push' ? PUSH_DISMISSED_KEY : INSTALL_DISMISSED_KEY;
+    window.localStorage.setItem(key, 'true');
+    if (mode === 'push') {
+      setIsPushDismissed(true);
+    } else {
+      setIsInstallDismissed(true);
+    }
   };
 
   const handleInstall = async () => {
@@ -118,7 +136,8 @@ export function PWAInstallPrompt() {
     setDeferredPrompt(null);
 
     if (choice.outcome === 'accepted') {
-      window.localStorage.removeItem(DISMISSED_KEY);
+      window.localStorage.removeItem(INSTALL_DISMISSED_KEY);
+      window.localStorage.removeItem(LEGACY_DISMISSED_KEY);
       toast.success('Pixel Project se esta instalando.');
     }
   };
@@ -165,6 +184,7 @@ export function PWAInstallPrompt() {
         { merge: true }
       );
 
+      setHasActiveSubscription(true);
       toast.success('Notificaciones activadas en este dispositivo.');
     } catch (error) {
       console.error('Error enabling push notifications:', error);
@@ -174,10 +194,16 @@ export function PWAInstallPrompt() {
     }
   };
 
-  if (!user || isDismissed) return null;
+  if (!user) return null;
 
-  const shouldShowInstall = !isStandalone && (Boolean(deferredPrompt) || isIos);
-  const shouldShowPush = isStandalone && canUseNotifications && notificationPermission !== 'granted' && hasPushKey;
+  const shouldShowInstall = !isInstallDismissed && !isStandalone && (Boolean(deferredPrompt) || isIos);
+  const shouldShowPush =
+    !isPushDismissed &&
+    isStandalone &&
+    canUseNotifications &&
+    notificationPermission !== 'denied' &&
+    hasPushKey &&
+    (notificationPermission !== 'granted' || !hasActiveSubscription);
 
   if (!shouldShowInstall && !shouldShowPush) return null;
 
@@ -186,7 +212,7 @@ export function PWAInstallPrompt() {
       <div className="rounded-2xl border border-indigo-100 bg-white/95 p-3 shadow-2xl shadow-indigo-950/15 backdrop-blur">
         <button
           type="button"
-          onClick={handleDismiss}
+          onClick={() => handleDismiss(shouldShowPush ? 'push' : 'install')}
           className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
           aria-label="Cerrar"
         >
