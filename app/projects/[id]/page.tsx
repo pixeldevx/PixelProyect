@@ -6,7 +6,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen, BarChart3 } from 'lucide-react';
+import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen, BarChart3, Package } from 'lucide-react';
 import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
@@ -19,6 +19,7 @@ import ProjectBilling from '@/components/projects/ProjectBilling';
 import { ProjectGantt } from '@/components/projects/ProjectGantt';
 import { ProjectDocumentsTree } from '@/components/projects/ProjectDocumentsTree';
 import { ProjectDriveRepositories } from '@/components/projects/ProjectDriveRepositories';
+import { ProjectInventory } from '@/components/projects/ProjectInventory';
 import { ProjectQuality } from '@/components/projects/ProjectQuality';
 import { ProjectLogbook } from '@/components/projects/ProjectLogbook';
 import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
@@ -164,7 +165,7 @@ export default function ProjectDetailsPage() {
   const [userProfiles, setUserProfiles] = useState<any[]>([]);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'tasks' | 'logbook' | 'quality' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
+  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'inventory' | 'tasks' | 'logbook' | 'quality' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
   const [showDocumentIssueAlert, setShowDocumentIssueAlert] = useState(false);
   const canAccessProjectBudget = PROJECT_BUDGET_ACCESS_ROLES.has(userRole || '');
 
@@ -174,7 +175,7 @@ export default function ProjectDetailsPage() {
       setActiveTab('tasks');
       return;
     }
-    if (tabParam && ['documents', 'drive', 'tasks', 'logbook', 'quality', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
+    if (tabParam && ['documents', 'drive', 'inventory', 'tasks', 'logbook', 'quality', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
       setActiveTab(tabParam as any);
     }
   }, [searchParams]);
@@ -488,6 +489,10 @@ export default function ProjectDetailsPage() {
     (userRole !== 'org_admin' || !project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds));
   const canManageDriveRepositories =
     userRole === 'admin' ||
+    (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
+  const canManageInventory =
+    canManageProject ||
+    userRole === 'manager' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
   const canDeleteLogbookEntries =
     userRole === 'admin' ||
@@ -1944,6 +1949,19 @@ export default function ProjectDetailsPage() {
             </div>
           </button>
           <button
+            onClick={() => setActiveTab('inventory')}
+            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
+              activeTab === 'inventory'
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Package size={16} />
+              Inventario
+            </div>
+          </button>
+          <button
             onClick={() => setActiveTab('logbook')}
             className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
               activeTab === 'logbook'
@@ -2077,6 +2095,16 @@ export default function ProjectDetailsPage() {
           teamMembers={teamMembers}
           currentUser={user}
           canManage={canManageDriveRepositories}
+        />
+      )}
+
+      {activeTab === 'inventory' && (
+        <ProjectInventory
+          projectId={projectId}
+          project={project}
+          teamMembers={projectAssignableTeamMembers}
+          currentUser={user}
+          canManage={canManageInventory}
         />
       )}
 
