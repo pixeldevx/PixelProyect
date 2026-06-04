@@ -183,7 +183,6 @@ const findPushSubscriptions = async (supabase: any, userId: string, email: strin
         .select('collection_path, doc_id, data')
         .eq('collection_path', 'push_subscriptions')
         .eq('data->>userId', userId)
-        .eq('data->>isActive', 'true')
     );
   }
 
@@ -194,7 +193,6 @@ const findPushSubscriptions = async (supabase: any, userId: string, email: strin
         .select('collection_path, doc_id, data')
         .eq('collection_path', 'push_subscriptions')
         .eq('data->>email', email)
-        .eq('data->>isActive', 'true')
     );
   }
 
@@ -203,7 +201,9 @@ const findPushSubscriptions = async (supabase: any, userId: string, email: strin
 
   results.forEach(({ data, error }) => {
     if (error) throw error;
-    (data || []).forEach((row: AppDocumentRow) => byId.set(row.doc_id, row));
+    (data || [])
+      .filter((row: AppDocumentRow) => row.data?.isActive !== false)
+      .forEach((row: AppDocumentRow) => byId.set(row.doc_id, row));
   });
 
   return Array.from(byId.values())

@@ -11,7 +11,7 @@ import { Switch } from '@/components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Plus, Trash2, Edit, Bell, Mail, Clock, AlertTriangle, CheckCircle2, Settings } from 'lucide-react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, serverTimestamp, getDocs, where, setDoc } from '@/lib/supabase/document-store';
-import { db } from '@/lib/backend';
+import { db, supabase } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import {
@@ -105,6 +105,7 @@ export default function AlertsPage() {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [preferences, setPreferences] = useState(defaultPreferences);
   const [savingPreferences, setSavingPreferences] = useState(false);
+  const [isSendingTestPush, setIsSendingTestPush] = useState(false);
   const [isEditingAssignmentRule, setIsEditingAssignmentRule] = useState(false);
   const [assignmentDraft, setAssignmentDraft] = useState({
     subject: DEFAULT_TASK_ASSIGNMENT_EMAIL_SUBJECT,
@@ -230,6 +231,55 @@ export default function AlertsPage() {
   };
 
   const assignmentRuleEnabled = preferences.taskAssignmentEmailEnabled || preferences.taskAssignmentPushEnabled;
+
+  const handleSendTestPush = async () => {
+    setIsSendingTestPush(true);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+
+      if (!token) {
+        toast.warning('Inicia sesión nuevamente para probar las notificaciones push.');
+        return;
+      }
+
+      const response = await fetch('/api/notifications/test-push', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const body = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        toast.error(body?.error || 'No fue posible enviar la prueba push.');
+        return;
+      }
+
+      if (body?.push?.sent > 0) {
+        toast.success('Prueba push enviada. Revisa tu dispositivo.');
+        return;
+      }
+
+      if (body?.push?.reason === 'missing_web_push_config') {
+        toast.error('Faltan variables VAPID en Vercel o el despliegue no las tomó todavía.');
+        return;
+      }
+
+      if (body?.push?.reason === 'no_active_subscriptions') {
+        toast.warning('No hay dispositivos PWA activos para este usuario. Abre la PWA instalada y activa notificaciones.');
+        return;
+      }
+
+      toast.warning('La prueba no llegó a ningún dispositivo activo.');
+    } catch (error) {
+      console.error('Error sending test push:', error);
+      toast.error('No fue posible enviar la prueba push.');
+    } finally {
+      setIsSendingTestPush(false);
+    }
+  };
 
   const handleCreateRule = async () => {
     if (!user || !newRule.title) return;
@@ -401,6 +451,18 @@ export default function AlertsPage() {
                           disabled={savingPreferences}
                           onCheckedChange={(checked) => void savePreferences({ ...preferences, taskAssignmentPushEnabled: checked })}
                         />
+                      </div>
+                      <div className="mt-3 flex justify-end border-t border-white/10 pt-3">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void handleSendTestPush()}
+                          disabled={isSendingTestPush}
+                          className="h-8 border-white/15 bg-white/10 text-xs font-black text-white hover:bg-white/15 hover:text-white"
+                        >
+                          {isSendingTestPush ? 'Enviando...' : 'Enviar prueba'}
+                        </Button>
                       </div>
                     </div>
                   </div>
