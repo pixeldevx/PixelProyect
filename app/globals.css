@@ -89,6 +89,9 @@
   }
   body {
     @apply bg-background text-foreground;
+    min-height: 100%;
+    overscroll-behavior-y: none;
+    -webkit-tap-highlight-color: transparent;
   }
 }
 

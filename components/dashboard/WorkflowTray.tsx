@@ -1942,15 +1942,15 @@ export default function WorkflowTray() {
       return (
         <article
           key={`${task.projectId}-${task.id}`}
-          className={`relative grid min-h-[54px] gap-2 px-3 py-1.5 transition-colors lg:grid-cols-[minmax(0,1fr)_auto] ${urgencyStyles.row}`}
+          className={`relative grid min-h-[54px] gap-2 px-3 py-2 transition-colors lg:grid-cols-[minmax(0,1fr)_auto] lg:py-1.5 ${urgencyStyles.row}`}
         >
           <span className={`absolute bottom-0 left-0 top-0 w-1 ${urgencyStyles.rail}`} />
           <div className="min-w-0 pl-2.5">
-            <div className="flex min-w-0 items-center gap-1.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               <span className="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-sky-700">
                 {isMeetingTask(task) ? 'Reunion' : task.parentTaskId ? 'Subtarea' : 'Tarea'}
               </span>
-              <h3 className="min-w-0 flex-1 truncate text-sm font-bold text-slate-900">{title}</h3>
+              <h3 className="min-w-0 flex-[1_1_100%] truncate text-sm font-bold text-slate-900 sm:flex-1">{title}</h3>
               <span className={`hidden shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider sm:inline-flex ${getTaskStatusClass(status)}`}>
                 {getTaskStatusLabel(status)}
               </span>
@@ -1963,11 +1963,11 @@ export default function WorkflowTray() {
               </span>
             </div>
 
-            <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-slate-600">
+            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600">
               <span className={`shrink-0 font-bold ${urgencyStyles.text}`}>
                 {task.organizationName || 'Sin organización'}
               </span>
-              <span className="truncate">
+              <span className="min-w-0 flex-1 truncate">
                 {task.projectName ? `${task.projectName} · ` : ''}{description}
               </span>
               <span className="hidden shrink-0 text-slate-400 sm:inline">{dueText}</span>
@@ -1988,13 +1988,13 @@ export default function WorkflowTray() {
             </div>
           </div>
 
-          <div className="flex items-center gap-1 pl-2 lg:justify-end lg:pl-0">
+          <div className="flex flex-wrap items-center gap-1 pl-2 lg:justify-end lg:pl-0">
             {activeTab === 'pending' && (
               <select
                 value={status}
                 onChange={(event) => void updateAssignedTaskStatus(task, event.target.value)}
                 disabled={processingId === task.id}
-                className="h-7 w-[126px] rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60"
+                className="h-8 min-w-[132px] flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60 sm:h-7 sm:flex-none"
                 title="Cambiar estado"
               >
                 <option value="todo">Pendiente</option>
@@ -2034,15 +2034,15 @@ export default function WorkflowTray() {
     return (
       <article
         key={`${task.projectId}-${task.id}`}
-        className={`relative grid min-h-[54px] gap-2 px-3 py-1.5 transition-colors lg:grid-cols-[minmax(0,1fr)_auto] ${workflowUrgencyStyles.row}`}
+        className={`relative grid min-h-[54px] gap-2 px-3 py-2 transition-colors lg:grid-cols-[minmax(0,1fr)_auto] lg:py-1.5 ${workflowUrgencyStyles.row}`}
       >
         <span className={`absolute bottom-0 left-0 top-0 w-1 ${workflowUrgencyStyles.rail}`} />
         <div className="min-w-0 pl-2.5">
-          <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${isReturned || isStopped ? 'bg-red-600 text-white' : 'bg-indigo-100 text-indigo-700'}`}>
               {isStopped ? 'Detenido' : isReturned ? 'Devuelto' : 'Workflow'}
             </span>
-            <h3 className="min-w-0 flex-1 truncate text-sm font-bold text-slate-900">{title}</h3>
+            <h3 className="min-w-0 flex-[1_1_100%] truncate text-sm font-bold text-slate-900 sm:flex-1">{title}</h3>
             <span className="hidden shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-600 sm:inline-flex">
               Paso {currentIndex + 1}/{workflowSteps.length || 1}
             </span>
@@ -2061,18 +2061,18 @@ export default function WorkflowTray() {
             </span>
           </div>
 
-          <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-slate-600">
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600">
             <span className={`shrink-0 font-bold ${workflowUrgencyStyles.text}`}>
               {task.organizationName || 'Sin organización'}
             </span>
-            <span className="truncate">
+            <span className="min-w-0 flex-1 truncate">
               {task.projectName ? `${task.projectName} · ` : ''}{description}
             </span>
             <span className="hidden shrink-0 text-slate-400 sm:inline">{dueText}</span>
           </div>
         </div>
 
-        <div className="flex items-center gap-1 pl-2 lg:justify-end lg:pl-0">
+        <div className="flex flex-wrap items-center gap-1 pl-2 lg:justify-end lg:pl-0">
           {activeTab === 'pending' ? (
             <>
               {isStopped ? (
@@ -2259,7 +2259,7 @@ export default function WorkflowTray() {
       </div>
 
       {filteredWorkflows.length === 0 ? (
-        <div className="bg-white rounded-xl border border-dashed border-slate-300 p-12 text-center">
+        <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center sm:p-12">
           <CheckCircle2 className="w-12 h-12 text-slate-200 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-slate-900">
             {searchTerm ? 'No se encontraron resultados' : '¡Todo al día!'}

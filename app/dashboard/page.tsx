@@ -278,17 +278,17 @@ function MetricCard({
   }[tone];
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+    <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">{title}</p>
-          <p className="mt-3 text-3xl font-black tracking-tight text-slate-950">{value}</p>
+          <p className="mt-2 break-words text-2xl font-black tracking-tight text-slate-950 sm:mt-3 sm:text-3xl">{value}</p>
         </div>
-        <div className={`flex h-10 w-10 items-center justify-center rounded-lg ring-1 ${toneClass}`}>
+        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ring-1 sm:h-10 sm:w-10 ${toneClass}`}>
           {icon}
         </div>
       </div>
-      <p className="mt-3 text-sm font-medium text-slate-500">{subtitle}</p>
+      <p className="mt-2 text-xs font-medium leading-5 text-slate-500 sm:mt-3 sm:text-sm">{subtitle}</p>
     </div>
   );
 }
@@ -511,15 +511,15 @@ export default function DashboardPage() {
 
   return (
     <DashboardLayout>
-      <div className="space-y-5">
-        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="space-y-4 sm:space-y-5">
+        <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
           <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
             <div className="max-w-3xl">
-              <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-slate-950 px-3 py-1 text-xs font-bold uppercase tracking-[0.16em] text-white">
+              <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-slate-950 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white sm:text-xs sm:tracking-[0.16em]">
                 <BrainCircuit size={14} className="text-cyan-300" />
                 Centro inteligente
               </div>
-              <h1 className="text-3xl font-black tracking-tight text-slate-950">
+              <h1 className="text-2xl font-black leading-tight tracking-tight text-slate-950 sm:text-3xl">
                 Hola, {displayName}. Tu operación está lista para decidir.
               </h1>
               <p className="mt-2 max-w-2xl text-sm font-medium leading-6 text-slate-500">
@@ -528,14 +528,14 @@ export default function DashboardPage() {
                   : `Estas viendo tus tareas asignadas dentro de ${visibleProjects.length} proyecto${visibleProjects.length === 1 ? '' : 's'}, ordenadas por prioridad operativa.`}
               </p>
             </div>
-            <div className="grid min-w-full grid-cols-2 gap-3 sm:min-w-[440px]">
+            <div className="grid min-w-full grid-cols-2 gap-2 sm:min-w-[440px] sm:gap-3">
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">Rol</p>
-                <p className="mt-2 text-sm font-black text-slate-900">{ROLE_LABELS[userRole || 'user'] || userRole || 'Usuario'}</p>
+                <p className="mt-2 truncate text-sm font-black text-slate-900">{ROLE_LABELS[userRole || 'user'] || userRole || 'Usuario'}</p>
               </div>
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-400">Alcance</p>
-                <p className="mt-2 text-sm font-black text-slate-900">{scopeLabel}</p>
+                <p className="mt-2 truncate text-sm font-black text-slate-900">{scopeLabel}</p>
               </div>
             </div>
           </div>
@@ -592,7 +592,7 @@ export default function DashboardPage() {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-2 md:gap-4 xl:grid-cols-4">
               <MetricCard
                 title="Proyectos"
                 value={compactNumber(scopeProjects.length)}
@@ -623,9 +623,9 @@ export default function DashboardPage() {
               />
             </div>
 
-            <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.75fr)]">
+            <div className="grid grid-cols-1 gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.75fr)]">
               <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-                <div className="flex flex-col gap-3 border-b border-slate-100 p-4 md:flex-row md:items-center md:justify-between">
+                <div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h2 className="flex items-center gap-2 text-lg font-black text-slate-950">
                       <BarChart3 size={19} className="text-indigo-600" />
@@ -641,8 +641,8 @@ export default function DashboardPage() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-5 p-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-                  <div className="h-64 rounded-lg border border-slate-100 bg-slate-50/70 p-3">
+                <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-5">
+                  <div className="h-52 rounded-lg border border-slate-100 bg-slate-50/70 p-3 sm:h-64">
                     {statusChartData.length > 0 ? (
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
@@ -660,7 +660,7 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="space-y-4">
-                    <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-3">
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-[repeat(auto-fit,minmax(150px,1fr))] sm:gap-3">
                       {[
                         ['Pendientes', scopeStats.pending, 'bg-slate-100 text-slate-700'],
                         ['En curso', scopeStats.active, 'bg-amber-50 text-amber-700'],
@@ -668,11 +668,11 @@ export default function DashboardPage() {
                         ['Finalizadas', scopeStats.completed, 'bg-emerald-50 text-emerald-700'],
                         ['Con retraso', scopeStats.completedLate, 'bg-orange-50 text-orange-700'],
                       ].map(([label, value, className]) => (
-                        <div key={String(label)} className={`min-h-[96px] rounded-lg p-3 ${className}`}>
-                          <p className="min-h-8 break-words text-[11px] font-black uppercase leading-4 tracking-[0.06em] opacity-75 [overflow-wrap:anywhere]">
+                        <div key={String(label)} className={`min-h-[86px] rounded-lg p-3 sm:min-h-[96px] ${className}`}>
+                          <p className="min-h-7 break-words text-[10px] font-black uppercase leading-4 tracking-[0.06em] opacity-75 [overflow-wrap:anywhere] sm:min-h-8 sm:text-[11px]">
                             {label}
                           </p>
-                          <p className="mt-2 text-2xl font-black">{value}</p>
+                          <p className="mt-2 text-xl font-black sm:text-2xl">{value}</p>
                         </div>
                       ))}
                     </div>
@@ -685,7 +685,7 @@ export default function DashboardPage() {
                         </div>
                         <Layers3 size={18} className="text-slate-300" />
                       </div>
-                      <div className="h-56">
+                      <div className="h-48 sm:h-56">
                         {projectBarData.length > 0 ? (
                           <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={projectBarData} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>

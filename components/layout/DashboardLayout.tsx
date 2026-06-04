@@ -252,9 +252,9 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen w-full bg-slate-50 text-slate-900 font-sans">
+    <div className="flex h-[100dvh] w-full overflow-hidden bg-slate-50 text-slate-900 font-sans">
       {/* Sidebar */}
-      <aside className={`${isCollapsed ? 'w-20' : 'w-64'} border-r border-slate-200 bg-white flex flex-col transition-all duration-300 ease-in-out relative z-30`}>
+      <aside className={`${isCollapsed ? 'w-20' : 'w-64'} relative z-30 hidden flex-col border-r border-slate-200 bg-white transition-all duration-300 ease-in-out md:flex`}>
         <div className={`h-16 flex items-center ${isCollapsed ? 'justify-center' : 'px-6'} border-b border-slate-200`}>
           <div className="flex items-center gap-2 font-bold text-lg tracking-tight overflow-hidden">
             <div className="relative w-8 h-8 bg-indigo-600 rounded-md flex items-center justify-center text-white shrink-0 overflow-hidden shadow-sm">
@@ -369,23 +369,44 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Header */}
-        <header className="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8 shrink-0">
-          <div className="flex items-center gap-4 flex-1">
-            <div className="relative w-64">
+        <header className="h-14 shrink-0 border-b border-slate-200 bg-white px-3 md:h-16 md:px-8">
+          <div className="flex h-full items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3 md:hidden">
+              <div className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-indigo-600 text-sm font-black text-white shadow-sm">
+                {brandLogoUrl ? (
+                  <Image
+                    src={brandLogoUrl}
+                    alt={brandName || DEFAULT_BRAND_NAME}
+                    fill
+                    sizes="36px"
+                    className="object-cover"
+                  />
+                ) : (
+                  'PX'
+                )}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-black text-slate-950">{brandName || DEFAULT_BRAND_NAME}</p>
+                <p className="truncate text-[11px] font-bold text-slate-400">Operacion inteligente</p>
+              </div>
+            </div>
+
+            <div className="hidden flex-1 items-center gap-4 md:flex">
+              <div className="relative w-64">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
               <input 
                 type="text" 
                 placeholder="Search projects, people..." 
                 className="w-full h-9 pl-9 pr-4 rounded-md border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
               />
+              </div>
             </div>
-          </div>
           
-          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 md:gap-4">
             {loading && (
-              <span className="text-xs font-medium text-slate-400">
+              <span className="hidden text-xs font-medium text-slate-400 sm:inline">
                 Verificando sesión...
               </span>
             )}
@@ -395,22 +416,52 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
               <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
             </Button>
             
-            <div className="h-6 w-px bg-slate-200 mx-2"></div>
+            <div className="mx-2 hidden h-6 w-px bg-slate-200 md:block"></div>
             
-            <div className="flex items-center gap-2 text-sm font-medium cursor-pointer hover:text-indigo-600 transition-colors">
+            <div className="hidden cursor-pointer items-center gap-2 text-sm font-medium transition-colors hover:text-indigo-600 md:flex">
               <span>View as: Project Manager</span>
               <ChevronDown size={16} className="text-slate-400" />
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsProfileModalOpen(true)}
+              className="relative h-9 w-9 overflow-hidden rounded-full bg-slate-100 md:hidden"
+              aria-label="Abrir perfil"
+            >
+              {user.photoURL ? (
+                <Image
+                  src={user.photoURL}
+                  alt={user.displayName || 'Usuario'}
+                  fill
+                  className="object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <span className="flex h-full w-full items-center justify-center text-xs font-black text-slate-500">
+                  {user.displayName?.charAt(0) || 'U'}
+                </span>
+              )}
+            </button>
             </div>
           </div>
         </header>
         
         {/* Page Content */}
-        <div className="flex-1 overflow-y-auto p-8">
+        <div className="flex-1 overflow-y-auto p-3 pb-24 sm:p-5 sm:pb-24 md:p-8">
           <div className="w-full">
             {children}
           </div>
         </div>
       </main>
+
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-14px_30px_rgba(15,23,42,0.08)] backdrop-blur md:hidden">
+        <div className="grid grid-cols-4 gap-1">
+          <MobileNavItem href="/dashboard" icon={<LayoutDashboard size={18} />} label="Dashboard" active={pathname === '/dashboard'} />
+          <MobileNavItem href="/workflows" icon={<Inbox size={18} />} label="Bandeja" active={pathname?.startsWith('/workflows')} badge={inboxPendingCount} />
+          <MobileNavItem href="/projects" icon={<FolderKanban size={18} />} label="Proyectos" active={pathname?.startsWith('/projects')} />
+          <MobileNavItem href="/alerts" icon={<Bell size={18} />} label="Alertas" active={pathname?.startsWith('/alerts')} />
+        </div>
+      </nav>
 
       <ProfileModal 
         user={user} 
@@ -436,6 +487,29 @@ function NavItem({ href, icon, label, active, collapsed, badge }: { href: string
       {!collapsed && <span className="truncate">{label}</span>}
       {Boolean(badge) && (
         <span className={`${collapsed ? 'absolute -right-1 -top-1' : 'ml-auto'} min-w-5 rounded-full bg-indigo-600 px-1.5 text-center text-[11px] font-bold leading-5 text-white`}>
+          {badge && badge > 99 ? '99+' : badge}
+        </span>
+      )}
+    </Link>
+  );
+}
+
+function MobileNavItem({ href, icon, label, active, badge }: { href: string, icon: React.ReactNode, label: string, active?: boolean, badge?: number }) {
+  return (
+    <Link
+      href={href}
+      className={`relative flex min-h-[54px] flex-col items-center justify-center rounded-2xl text-[11px] font-black transition-all ${
+        active
+          ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'
+          : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+      }`}
+    >
+      <span className={active ? 'text-white' : 'text-slate-400'}>{icon}</span>
+      <span className="mt-1 max-w-full truncate px-1">{label}</span>
+      {Boolean(badge) && (
+        <span className={`absolute right-2 top-1.5 min-w-5 rounded-full px-1.5 text-center text-[10px] font-black leading-5 ${
+          active ? 'bg-white text-indigo-700' : 'bg-indigo-600 text-white'
+        }`}>
           {badge && badge > 99 ? '99+' : badge}
         </span>
       )}
