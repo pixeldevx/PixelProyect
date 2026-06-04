@@ -20,20 +20,24 @@ import {
   ChevronRight,
   Inbox,
   ShieldCheck,
-  WalletCards
+  WalletCards,
+  PackageSearch
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
+import { useRolePermissions } from '@/hooks/useRolePermissions';
 import { useInboxPendingCount } from '@/hooks/useInboxPendingCount';
 import { ProfileModal } from '@/components/settings/ProfileModal';
 import { doc, onSnapshot } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 
 const DEFAULT_BRAND_NAME = 'Pixel Project';
+const INVENTORY_OVERVIEW_ROLES = new Set(['admin', 'org_admin', 'manager']);
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, userRole, loading, accessError, loginWithEmail, requestPasswordReset, logout } = useAuth();
+  const { permissions: rolePermissions } = useRolePermissions(userRole);
   const inboxPendingCount = useInboxPendingCount();
   
   const [email, setEmail] = useState('');
@@ -49,6 +53,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [brandLogoUrl, setBrandLogoUrl] = useState('');
   const isInitialAuthLoading = loading && !user;
   const canAccessBudgetOverview = ['admin', 'org_admin', 'manager', 'coordinador'].includes(userRole || '');
+  const canAccessInventoryOverview = INVENTORY_OVERVIEW_ROLES.has(userRole || '') && rolePermissions.inventoryOverview;
 
   useEffect(() => {
     if (!isInitialAuthLoading) {
@@ -288,6 +293,9 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           <NavItem href="/projects" icon={<FolderKanban size={18} />} label="Projects" active={pathname?.startsWith('/projects')} collapsed={isCollapsed} />
           <NavItem href="/team" icon={<Users size={18} />} label="Team Performance" active={pathname?.startsWith('/team')} collapsed={isCollapsed} />
           <NavItem href="/quality" icon={<ShieldCheck size={18} />} label="Calidad global" active={pathname?.startsWith('/quality')} collapsed={isCollapsed} />
+          {canAccessInventoryOverview && (
+            <NavItem href="/inventory" icon={<PackageSearch size={18} />} label="Inventario global" active={pathname?.startsWith('/inventory')} collapsed={isCollapsed} />
+          )}
           {canAccessBudgetOverview && (
             <NavItem href="/budgets" icon={<WalletCards size={18} />} label="Presupuestos" active={pathname?.startsWith('/budgets')} collapsed={isCollapsed} />
           )}

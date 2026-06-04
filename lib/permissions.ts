@@ -8,7 +8,8 @@ export type PermissionKey =
   | 'taskDelete'
   | 'activityCreate'
   | 'activityEditStatus'
-  | 'activityDelete';
+  | 'activityDelete'
+  | 'inventoryOverview';
 
 export type RolePermissionSet = Record<PermissionKey, boolean>;
 export type RolePermissionSettings = Record<string, RolePermissionSet>;
@@ -46,6 +47,12 @@ export const PERMISSION_GROUPS: Array<{
       { key: 'activityDelete', label: 'Eliminar actividades' },
     ],
   },
+  {
+    title: 'Overview',
+    permissions: [
+      { key: 'inventoryOverview', label: 'Ver inventario global' },
+    ],
+  },
 ];
 
 const allPermissions = (value: boolean): RolePermissionSet => ({
@@ -59,6 +66,7 @@ const allPermissions = (value: boolean): RolePermissionSet => ({
   activityCreate: value,
   activityEditStatus: value,
   activityDelete: value,
+  inventoryOverview: value,
 });
 
 export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
@@ -68,6 +76,7 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
   coordinador: {
     ...allPermissions(true),
     taskEditStructure: false,
+    inventoryOverview: false,
   },
   administrativo: {
     ...allPermissions(false),
