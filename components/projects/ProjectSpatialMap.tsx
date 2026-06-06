@@ -21,18 +21,8 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  updateDoc,
-} from "@/lib/supabase/document-store";
-import { db } from "@/lib/backend";
+import { ref, uploadBytes, getDownloadURL, deleteObject } from "@/lib/supabase/storage-shim";
+import { storage, supabase } from "@/lib/backend";
 import { getTaskDateValue, isCompletedTaskStatus } from "@/lib/taskProgress";
 import { toast } from "sonner";
 
@@ -58,6 +48,10 @@ type SpatialLayer = {
   fileName?: string;
   sourceType?: "geojson" | "shapefile";
   geojson?: GeoJsonFeatureCollection;
+  storagePath?: string;
+  downloadUrl?: string;
+  bounds?: ReturnType<typeof getGeoJsonBounds>;
+  featureCount?: number;
   attributes?: string[];
   visible?: boolean;
   joinConfig?: {
@@ -94,11 +88,30 @@ type FeatureJoin = {
   tasks: any[];
 };
 
+type SpatialLayerRow = {
+  id: string;
+  project_id: string;
+  name: string;
+  file_name?: string | null;
+  source_type?: string | null;
+  storage_path?: string | null;
+  download_url?: string | null;
+  bounds?: ReturnType<typeof getGeoJsonBounds> | null;
+  feature_count?: number | null;
+  attributes?: string[] | null;
+  visible?: boolean | null;
+  join_config?: SpatialLayer["joinConfig"] | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 const OSM_TILE_URL = "https://tile.openstreetmap.org";
 const SHP_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/shpjs@6.1.0/dist/shp.min.js";
+const SPATIAL_LAYERS_TABLE = "project_spatial_layers";
 const TILE_SIZE = 256;
 const MIN_ZOOM = 3;
 const MAX_ZOOM = 18;
+const MAX_RENDER_FEATURES = 5000;
 
 const statusMeta: Record<string, { label: string; color: string; fill: string; border: string }> = {
   todo: { label: "Pendiente", color: "#64748b", fill: "rgba(100,116,139,.18)", border: "#64748b" },
@@ -119,6 +132,43 @@ const normalizeKey = (value: any) =>
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase();
+
+const safeFilePart = (value: string) =>
+  value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80)
+    .toLowerCase() || "layer";
+
+const makeSpatialLayerStoragePath = (projectId: string, fileName: string) => {
+  const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `projects/${projectId}/spatial-layers/${suffix}-${safeFilePart(fileName.replace(/\.[^.]+$/, ""))}.geojson`;
+};
+
+const makeGeoJsonFile = (geojson: GeoJsonFeatureCollection, fileName: string) => {
+  const blob = new Blob([JSON.stringify(geojson)], { type: "application/geo+json" });
+  return new File([blob], `${safeFilePart(fileName.replace(/\.[^.]+$/, ""))}.geojson`, { type: "application/geo+json" });
+};
+
+const mapSpatialLayerRow = (row: SpatialLayerRow): SpatialLayer => ({
+  id: row.id,
+  name: row.name,
+  fileName: row.file_name || undefined,
+  sourceType: row.source_type === "shapefile" ? "shapefile" : "geojson",
+  storagePath: row.storage_path || undefined,
+  downloadUrl: row.download_url || undefined,
+  bounds: row.bounds || null,
+  featureCount: Number(row.feature_count || 0),
+  attributes: Array.isArray(row.attributes) ? row.attributes : [],
+  visible: row.visible !== false,
+  joinConfig: row.join_config || undefined,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
 
 const getTaskTitle = (task: any) => task?.title || task?.name || task?.externalWorkflowId || "Tarea";
 
@@ -378,7 +428,10 @@ export function ProjectSpatialMap({
 }: ProjectSpatialMapProps) {
   const [layers, setLayers] = useState<SpatialLayer[]>([]);
   const [loading, setLoading] = useState(true);
+  const [spatialStoreError, setSpatialStoreError] = useState("");
   const [selectedLayerId, setSelectedLayerId] = useState("");
+  const [layerGeojsons, setLayerGeojsons] = useState<Record<string, GeoJsonFeatureCollection>>({});
+  const [loadingLayerData, setLoadingLayerData] = useState(false);
   const [uploadName, setUploadName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [layerAttribute, setLayerAttribute] = useState("");
@@ -396,30 +449,63 @@ export function ProjectSpatialMap({
   useEffect(() => {
     if (!projectId) return;
 
-    const layersQuery = query(
-      collection(db, "projects", projectId, "spatialLayers"),
-      orderBy("createdAt", "desc")
-    );
+    let active = true;
 
-    const unsubscribe = onSnapshot(
-      layersQuery,
-      (snapshot) => {
-        const nextLayers = snapshot.docs.map((document) => ({ id: document.id, ...document.data() } as SpatialLayer));
-        setLayers(nextLayers);
-        setSelectedLayerId((current) => {
-          if (current && nextLayers.some((layer) => layer.id === current)) return current;
-          return nextLayers[0]?.id || "";
-        });
-        setLoading(false);
-      },
-      (error) => {
+    const loadLayers = async () => {
+      const { data, error } = await supabase
+        .from(SPATIAL_LAYERS_TABLE)
+        .select("*")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false });
+
+      if (!active) return;
+
+      if (error) {
         console.error("Error loading spatial layers:", error);
-        toast.error("No se pudieron cargar las capas espaciales.");
+        setSpatialStoreError(
+          error.code === "42P01"
+            ? "Falta aplicar la migración espacial con PostGIS."
+            : "No se pudieron cargar las capas espaciales."
+        );
+        setLayers([]);
         setLoading(false);
+        return;
       }
-    );
 
-    return () => unsubscribe();
+      const nextLayers = ((data || []) as SpatialLayerRow[]).map(mapSpatialLayerRow);
+      const nextLayerIds = new Set(nextLayers.map((layer) => layer.id));
+      setLayerGeojsons((current) => Object.fromEntries(Object.entries(current).filter(([layerId]) => nextLayerIds.has(layerId))));
+      setLayers(nextLayers);
+      setSelectedLayerId((current) => {
+        if (current && nextLayers.some((layer) => layer.id === current)) return current;
+        return nextLayers[0]?.id || "";
+      });
+      setSpatialStoreError("");
+      setLoading(false);
+    };
+
+    void loadLayers();
+
+    const channel = supabase
+      .channel(`project_spatial_layers_${projectId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: SPATIAL_LAYERS_TABLE,
+          filter: `project_id=eq.${projectId}`,
+        },
+        () => {
+          void loadLayers();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      active = false;
+      void supabase.removeChannel(channel);
+    };
   }, [projectId]);
 
   useEffect(() => {
@@ -443,6 +529,36 @@ export function ProjectSpatialMap({
     () => layers.find((layer) => layer.id === selectedLayerId) || null,
     [layers, selectedLayerId]
   );
+  const selectedLayerGeojson = selectedLayer ? layerGeojsons[selectedLayer.id] : undefined;
+
+  useEffect(() => {
+    if (!selectedLayer) return;
+    if (layerGeojsons[selectedLayer.id]) return;
+    if (!selectedLayer.downloadUrl) return;
+
+    let active = true;
+    setLoadingLayerData(true);
+
+    void (async () => {
+      try {
+        const response = await fetch(selectedLayer.downloadUrl as string);
+        if (!response.ok) throw new Error("No se pudo descargar la geometría desde Storage.");
+        const parsed = await response.json();
+        const geojson = normalizeGeoJson(parsed);
+        if (!active) return;
+        setLayerGeojsons((current) => ({ ...current, [selectedLayer.id]: geojson }));
+      } catch (error: any) {
+        console.error("Error loading layer geojson:", error);
+        if (active) toast.error(error?.message || "No se pudo cargar la geometría de la capa.");
+      } finally {
+        if (active) setLoadingLayerData(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [layerGeojsons, selectedLayer]);
 
   useEffect(() => {
     if (!selectedLayer) {
@@ -453,7 +569,7 @@ export function ProjectSpatialMap({
       return;
     }
 
-    const firstAttribute = selectedLayer.attributes?.[0] || extractAttributes(selectedLayer.geojson)[0] || "";
+    const firstAttribute = selectedLayer.attributes?.[0] || "";
     setLayerAttribute(selectedLayer.joinConfig?.layerAttribute || firstAttribute);
     setTaskAttribute(selectedLayer.joinConfig?.taskAttribute || "externalWorkflowId");
     setCustomTaskAttribute(
@@ -466,9 +582,9 @@ export function ProjectSpatialMap({
   }, [selectedLayer]);
 
   useEffect(() => {
-    const bounds = getGeoJsonBounds(selectedLayer?.geojson);
+    const bounds = getGeoJsonBounds(selectedLayerGeojson) || selectedLayer?.bounds || null;
     setMapView(getFittedView(bounds, mapSize.width, mapSize.height));
-  }, [mapSize.height, mapSize.width, selectedLayer?.id, selectedLayer?.geojson]);
+  }, [mapSize.height, mapSize.width, selectedLayer?.bounds, selectedLayer?.id, selectedLayerGeojson]);
 
   const memberById = useMemo(() => {
     const map = new Map<string, any>();
@@ -496,7 +612,7 @@ export function ProjectSpatialMap({
   }, [effectiveTaskAttribute, tasks]);
 
   const featureJoins = useMemo<FeatureJoin[]>(() => {
-    const features = selectedLayer?.geojson?.features || [];
+    const features = (selectedLayerGeojson?.features || []).slice(0, MAX_RENDER_FEATURES);
     return features.map((feature) => {
       const rawKey = feature.properties?.[layerAttribute];
       const key = normalizeKey(rawKey);
@@ -506,7 +622,7 @@ export function ProjectSpatialMap({
         tasks: key ? tasksByJoinKey.get(key) || [] : [],
       };
     });
-  }, [layerAttribute, selectedLayer?.geojson?.features, tasksByJoinKey]);
+  }, [layerAttribute, selectedLayerGeojson?.features, tasksByJoinKey]);
 
   const filteredFeatureJoins = useMemo(() => {
     const search = normalizeKey(searchTerm);
@@ -533,13 +649,13 @@ export function ProjectSpatialMap({
     const linkedFeatures = featureJoins.filter((join) => join.tasks.length > 0);
     const taskStatusCounts = statusCountsFromTasks(spatializedTasks);
     return {
-      features: featureJoins.length,
+      features: selectedLayer?.featureCount || featureJoins.length,
       linkedFeatures: linkedFeatures.length,
       linkedTasks: spatializedTasks.length,
       coverage: featureJoins.length > 0 ? Math.round((linkedFeatures.length / featureJoins.length) * 100) : 0,
       ...taskStatusCounts,
     };
-  }, [featureJoins, spatializedTasks]);
+  }, [featureJoins, selectedLayer?.featureCount, spatializedTasks]);
 
   const selectedFeatureJoin = selectedFeatureIndex == null ? null : featureJoins[selectedFeatureIndex] || null;
 
@@ -592,6 +708,7 @@ export function ProjectSpatialMap({
     }
 
     setUploading(true);
+    let uploadedStoragePath = "";
     try {
       let parsed: any;
       if (sourceType === "shapefile") {
@@ -609,25 +726,72 @@ export function ProjectSpatialMap({
       const attributes = extractAttributes(geojson);
       const name = uploadName.trim() || file.name.replace(/\.[^.]+$/, "");
       const firstAttribute = attributes[0] || "";
+      const bounds = getGeoJsonBounds(geojson);
+      const storagePath = makeSpatialLayerStoragePath(projectId, file.name);
+      const geoJsonRef = ref(storage, storagePath);
 
-      const layerRef = await addDoc(collection(db, "projects", projectId, "spatialLayers"), {
-        name,
-        fileName: file.name,
-        sourceType,
-        geojson,
-        attributes,
-        visible: true,
-        joinConfig: {
-          layerAttribute: firstAttribute,
-          taskAttribute: "externalWorkflowId",
+      await uploadBytes(geoJsonRef, makeGeoJsonFile(geojson, file.name));
+      uploadedStoragePath = storagePath;
+      const downloadUrl = await getDownloadURL(geoJsonRef);
+
+      const { data, error } = await supabase
+        .from(SPATIAL_LAYERS_TABLE)
+        .insert({
+          project_id: projectId,
+          name,
+          file_name: file.name,
+          source_type: sourceType,
+          storage_path: storagePath,
+          download_url: downloadUrl,
+          attributes,
+          bounds,
+          visible: true,
+          join_config: {
+            layerAttribute: firstAttribute,
+            taskAttribute: "externalWorkflowId",
+          },
+          feature_count: geojson.features.length,
+          created_by: currentUser?.uid || null,
+          updated_at: new Date().toISOString(),
+        })
+        .select("id")
+        .single();
+
+      if (error) {
+        if (uploadedStoragePath) {
+          await deleteObject(ref(storage, uploadedStoragePath)).catch((storageError) => {
+            console.warn("Spatial layer storage cleanup failed after metadata insert error:", storageError);
+          });
+        }
+        throw error;
+      }
+
+      const layerId = data?.id;
+      if (layerId) {
+        setLayerGeojsons((current) => ({ ...current, [layerId]: geojson }));
+      }
+
+      setLayers((current) => [
+        {
+          id: layerId || storagePath,
+          name,
+          fileName: file.name,
+          sourceType,
+          storagePath,
+          downloadUrl,
+          attributes,
+          bounds,
+          visible: true,
+          joinConfig: {
+            layerAttribute: firstAttribute,
+            taskAttribute: "externalWorkflowId",
+          },
+          featureCount: geojson.features.length,
         },
-        featureCount: geojson.features.length,
-        createdAt: serverTimestamp(),
-        createdBy: currentUser?.uid || null,
-        updatedAt: serverTimestamp(),
-      });
+        ...current,
+      ]);
 
-      setSelectedLayerId(layerRef.id);
+      setSelectedLayerId(layerId || storagePath);
       setUploadName("");
       toast.success(`Capa "${name}" cargada con ${geojson.features.length} entidades.`);
     } catch (error: any) {
@@ -646,11 +810,31 @@ export function ProjectSpatialMap({
     }
 
     try {
-      await updateDoc(doc(db, "projects", projectId, "spatialLayers", selectedLayer.id), {
-        "joinConfig.layerAttribute": layerAttribute,
-        "joinConfig.taskAttribute": effectiveTaskAttribute,
-        updatedAt: serverTimestamp(),
-      });
+      const joinConfig = {
+        layerAttribute,
+        taskAttribute: effectiveTaskAttribute,
+      };
+      const { error } = await supabase
+        .from(SPATIAL_LAYERS_TABLE)
+        .update({
+          join_config: joinConfig,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", selectedLayer.id)
+        .eq("project_id", projectId);
+
+      if (error) throw error;
+
+      setLayers((current) =>
+        current.map((layer) =>
+          layer.id === selectedLayer.id
+            ? {
+                ...layer,
+                joinConfig,
+              }
+            : layer
+        )
+      );
       toast.success("Unión espacial guardada.");
     } catch (error) {
       console.error("Error saving spatial join:", error);
@@ -662,7 +846,26 @@ export function ProjectSpatialMap({
     if (!layerPendingDelete || !canManage) return;
 
     try {
-      await deleteDoc(doc(db, "projects", projectId, "spatialLayers", layerPendingDelete.id));
+      const { error } = await supabase
+        .from(SPATIAL_LAYERS_TABLE)
+        .delete()
+        .eq("id", layerPendingDelete.id)
+        .eq("project_id", projectId);
+
+      if (error) throw error;
+
+      if (layerPendingDelete.storagePath) {
+        await deleteObject(ref(storage, layerPendingDelete.storagePath)).catch((storageError) => {
+          console.warn("Spatial layer storage object was not deleted:", storageError);
+        });
+      }
+
+      setLayerGeojsons((current) => {
+        const next = { ...current };
+        delete next[layerPendingDelete.id];
+        return next;
+      });
+      setLayers((current) => current.filter((layer) => layer.id !== layerPendingDelete.id));
       setLayerPendingDelete(null);
       toast.success("Capa eliminada.");
     } catch (error) {
@@ -696,7 +899,8 @@ export function ProjectSpatialMap({
   };
 
   const recenterLayer = () => {
-    setMapView(getFittedView(getGeoJsonBounds(selectedLayer?.geojson), mapSize.width, mapSize.height));
+    const bounds = getGeoJsonBounds(selectedLayerGeojson) || selectedLayer?.bounds || null;
+    setMapView(getFittedView(bounds, mapSize.width, mapSize.height));
   };
 
   return (
@@ -729,6 +933,48 @@ export function ProjectSpatialMap({
           </label>
         )}
       </div>
+
+      {spatialStoreError && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold leading-6 text-amber-900">
+          <div className="flex gap-3">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+            <div>
+              <p className="font-black">La base espacial todavía no está lista</p>
+              <p className="mt-1">
+                {spatialStoreError} Aplica la migración de PostGIS antes de cargar nuevas capas. Mientras tanto, no se guardarán shapefiles dentro de documentos pesados.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedLayer && !selectedLayer.downloadUrl && !selectedLayerGeojson && (
+        <div className="rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm font-semibold leading-6 text-orange-900">
+          <div className="flex gap-3">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-orange-600" />
+            <div>
+              <p className="font-black">Capa antigua sin archivo liviano</p>
+              <p className="mt-1">
+                Esta capa parece venir del almacenamiento anterior. Elimínala y vuelve a cargarla para que quede en Storage y no en la base de datos.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedLayer && (selectedLayer.featureCount || 0) > MAX_RENDER_FEATURES && (
+        <div className="rounded-2xl border border-cyan-200 bg-cyan-50 p-4 text-sm font-semibold leading-6 text-cyan-900">
+          <div className="flex gap-3">
+            <Database className="mt-0.5 h-5 w-5 shrink-0 text-cyan-700" />
+            <div>
+              <p className="font-black">Capa pesada protegida</p>
+              <p className="mt-1">
+                Esta capa tiene {selectedLayer.featureCount?.toLocaleString("es-CO")} entidades. Para cuidar el navegador y la base, este MVP renderiza las primeras {MAX_RENDER_FEATURES.toLocaleString("es-CO")} mientras dejamos PostGIS listo para consultas espaciales paginadas.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -895,6 +1141,15 @@ export function ProjectSpatialMap({
                     <p className="mt-2 text-sm font-medium leading-6 text-slate-600">
                       Puedes subir un shapefile comprimido en .zip o un GeoJSON. Luego eliges el atributo para unirlo con tareas.
                     </p>
+                  </div>
+                </div>
+              )}
+
+              {loadingLayerData && selectedLayer && (
+                <div className="absolute inset-0 flex items-center justify-center bg-white/70 p-6 text-center backdrop-blur-sm">
+                  <div className="inline-flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 shadow-sm">
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin text-emerald-600" />
+                    Cargando geometría desde Storage...
                   </div>
                 </div>
               )}
