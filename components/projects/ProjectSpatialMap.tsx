@@ -162,6 +162,8 @@ type ScreenSelectionRect = {
   endY: number;
 };
 
+type SpatialPanelTab = "summary" | "analysis" | "style" | "search";
+
 type SpatialLayerRow = {
   id: string;
   project_id: string;
@@ -853,6 +855,7 @@ export function ProjectSpatialMap({
   const [analysisBounds, setAnalysisBounds] = useState<GeoJsonBounds | null>(null);
   const [analysisDraftRect, setAnalysisDraftRect] = useState<ScreenSelectionRect | null>(null);
   const [isDrawingAnalysis, setIsDrawingAnalysis] = useState(false);
+  const [spatialPanelTab, setSpatialPanelTab] = useState<SpatialPanelTab>("summary");
   const [layerPendingDelete, setLayerPendingDelete] = useState<SpatialLayer | null>(null);
   const [mapSize, setMapSize] = useState({ width: 960, height: 560 });
   const [mapView, setMapView] = useState({ center: { lon: -74.2973, lat: 4.5709 }, zoom: 5 });
@@ -1941,7 +1944,7 @@ export function ProjectSpatialMap({
         </div>
       )}
 
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="self-start overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50/70 p-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="grid flex-1 gap-3 md:grid-cols-3">
@@ -2185,7 +2188,334 @@ export function ProjectSpatialMap({
           </div>
         </div>
 
-        <aside className="space-y-4">
+        <aside className="space-y-3 xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto xl:pr-1">
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-100 bg-slate-950 p-4 text-white">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-black uppercase tracking-[0.22em] text-cyan-300">Panel operativo</p>
+                  <h3 className="mt-1 truncate text-lg font-black">{selectedLayer?.name || "Sin capa activa"}</h3>
+                  <p className="mt-1 text-xs font-semibold text-slate-300">
+                    Herramientas, análisis y simbología sin perder el mapa de vista.
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-full bg-white/10 px-3 py-1 text-xs font-black text-cyan-100">
+                  {stats.coverage}% unión
+                </span>
+              </div>
+
+              <div className="mt-4 grid grid-cols-4 gap-1 rounded-xl bg-white/10 p-1">
+                {[
+                  { key: "summary", label: "Resumen", icon: Layers },
+                  { key: "analysis", label: "Análisis", icon: BarChart3 },
+                  { key: "style", label: "Estilo", icon: Palette },
+                  { key: "search", label: "Buscar", icon: Search },
+                ].map((tab) => {
+                  const Icon = tab.icon;
+                  const isActive = spatialPanelTab === tab.key;
+                  return (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setSpatialPanelTab(tab.key as SpatialPanelTab)}
+                      className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[11px] font-black transition ${
+                        isActive ? "bg-white text-slate-950 shadow-sm" : "text-slate-300 hover:bg-white/10 hover:text-white"
+                      }`}
+                    >
+                      <Icon size={13} />
+                      <span className="hidden sm:inline xl:hidden 2xl:inline">{tab.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="p-4">
+              {spatialPanelTab === "summary" && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      ["En mapa", stats.visibleFeatures, "bg-cyan-50 text-cyan-700"],
+                      ["Vinculadas", stats.linkedFeatures, "bg-emerald-50 text-emerald-700"],
+                      ["Tareas", stats.linkedTasks, "bg-indigo-50 text-indigo-700"],
+                    ].map(([label, value, className]) => (
+                      <div key={String(label)} className={`rounded-xl p-3 ${className}`}>
+                        <p className="text-[9px] font-black uppercase tracking-[0.14em] opacity-70">{label}</p>
+                        <p className="mt-1 text-xl font-black">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button type="button" variant="outline" onClick={recenterLayer} disabled={!selectedLayer}>
+                      <RefreshCw size={15} className="mr-2" />
+                      Centrar
+                    </Button>
+                    {canManage ? (
+                      <Button type="button" onClick={handleSaveJoin} disabled={!selectedLayer || !layerAttribute || !effectiveTaskAttribute} className="bg-slate-950 text-white hover:bg-slate-800">
+                        <Save size={15} className="mr-2" />
+                        Unión
+                      </Button>
+                    ) : (
+                      <Button type="button" variant="outline" disabled>
+                        <Save size={15} className="mr-2" />
+                        Unión
+                      </Button>
+                    )}
+                  </div>
+                  <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs font-semibold leading-5 text-slate-600">
+                    <span className="font-black text-slate-900">{layerAttribute || "atributo capa"}</span>
+                    <span> se compara con </span>
+                    <span className="font-black text-slate-900">{effectiveTaskAttribute || "atributo tarea"}</span>
+                  </div>
+                </div>
+              )}
+
+              {spatialPanelTab === "analysis" && (
+                <div className="space-y-3">
+                  <label className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Atributo estadístico</label>
+                  <select
+                    value={analysisAttribute}
+                    onChange={(event) => setAnalysisAttribute(event.target.value)}
+                    disabled={!selectedLayer}
+                    className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 disabled:bg-slate-100"
+                  >
+                    {(selectedLayer?.attributes || []).length === 0 && <option value="">Sin atributos</option>}
+                    {(selectedLayer?.attributes || []).map((attribute) => (
+                      <option key={attribute} value={attribute}>
+                        {attribute}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      type="button"
+                      variant={isDrawingAnalysis ? "default" : "outline"}
+                      disabled={!selectedLayer}
+                      onClick={() => {
+                        setIsDrawingAnalysis((current) => !current);
+                        setAnalysisDraftRect(null);
+                      }}
+                      className={isDrawingAnalysis ? "bg-cyan-600 text-white hover:bg-cyan-700" : ""}
+                    >
+                      <MousePointer2 size={15} className="mr-2" />
+                      Dibujar
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setAnalysisBounds(null);
+                        setAnalysisDraftRect(null);
+                        setIsDrawingAnalysis(false);
+                      }}
+                      disabled={!analysisBounds && !analysisDraftRect}
+                    >
+                      <Eraser size={15} className="mr-2" />
+                      Limpiar
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="rounded-xl bg-cyan-50 p-3 text-cyan-800">
+                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Área</p>
+                      <p className="mt-1 text-xl font-black">{analysisStats.total}</p>
+                    </div>
+                    <div className="rounded-xl bg-indigo-50 p-3 text-indigo-800">
+                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Categorías</p>
+                      <p className="mt-1 text-xl font-black">{analysisStats.distinct}</p>
+                    </div>
+                    <div className="rounded-xl bg-emerald-50 p-3 text-emerald-800">
+                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Num.</p>
+                      <p className="mt-1 text-xl font-black">{analysisStats.numericCount}</p>
+                    </div>
+                  </div>
+                  {analysisStats.numericCount > 0 && (
+                    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs font-bold text-slate-600">
+                      Promedio <span className="font-black text-slate-900">{formatMetricNumber(analysisStats.average, 2)}</span>
+                      <span className="mx-2 text-slate-300">•</span>
+                      Suma <span className="font-black text-slate-900">{formatMetricNumber(analysisStats.sum, 2)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {spatialPanelTab === "style" && (
+                <div className="space-y-3">
+                  {!canManage || !selectedLayer ? (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-500">
+                      Selecciona una capa administrable para configurar su simbología.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                        <div>
+                          <label className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Simbología</label>
+                          <select
+                            value={layerEditStyle.themeMode}
+                            onChange={(event) =>
+                              setLayerEditStyle((current) => ({
+                                ...current,
+                                themeMode: event.target.value as LayerThemeMode,
+                                themeAttribute: event.target.value === "attribute" ? current.themeAttribute || selectedLayer.attributes?.[0] || "" : current.themeAttribute,
+                              }))
+                            }
+                            className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                          >
+                            <option value="task_status">Estado tarea</option>
+                            <option value="attribute">Atributo capa</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Categoría</label>
+                          <select
+                            value={layerEditStyle.themeAttribute}
+                            disabled={layerEditStyle.themeMode !== "attribute"}
+                            onChange={(event) =>
+                              setLayerEditStyle((current) => ({
+                                ...current,
+                                themeAttribute: event.target.value,
+                              }))
+                            }
+                            className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 disabled:bg-slate-100"
+                          >
+                            <option value="">Sin atributo</option>
+                            {(selectedLayer.attributes || []).map((attribute) => (
+                              <option key={attribute} value={attribute}>
+                                {attribute}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
+                        {layerEditStyle.themeMode === "attribute" ? (
+                          selectedLayerThemeCategories.slice(0, 24).map((item) => (
+                            <div key={item.category} className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                              <input
+                                type="color"
+                                value={item.style.fillColor}
+                                onChange={(event) => {
+                                  const color = event.target.value;
+                                  setLayerEditStyle((current) => ({
+                                    ...current,
+                                    attributeStyles: {
+                                      ...current.attributeStyles,
+                                      [item.category]: { fillColor: color, strokeColor: color },
+                                    },
+                                  }));
+                                }}
+                                className="h-8 w-9 shrink-0 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
+                                aria-label={`Color para ${item.category}`}
+                              />
+                              <p className="min-w-0 flex-1 truncate text-xs font-black text-slate-800">{item.category}</p>
+                              <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-600">{item.count}</span>
+                            </div>
+                          ))
+                        ) : (
+                          SPATIAL_STATUS_STYLE_OPTIONS.map((option) => {
+                            const stateStyle = layerEditStyle.statusStyles[option.key];
+                            return (
+                              <div key={option.key} className="flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                                <input
+                                  type="color"
+                                  value={stateStyle.fillColor}
+                                  onChange={(event) => updateLayerStatusColor(option.key, event.target.value)}
+                                  className="h-8 w-9 shrink-0 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
+                                  aria-label={`Color para ${option.label}`}
+                                />
+                                <p className="min-w-0 flex-1 truncate text-xs font-black text-slate-800">{option.label}</p>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      <div className="grid gap-2">
+                        <label className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                          Opacidad {Math.round(layerEditStyle.fillOpacity * 100)}%
+                        </label>
+                        <input
+                          type="range"
+                          min={0.04}
+                          max={0.8}
+                          step={0.02}
+                          value={layerEditStyle.fillOpacity}
+                          onChange={(event) =>
+                            setLayerEditStyle((current) => ({
+                              ...current,
+                              fillOpacity: Number(event.target.value),
+                              strokeOpacity: Math.min(1, Math.max(0.35, Number(event.target.value) + 0.45)),
+                            }))
+                          }
+                          className="w-full accent-emerald-600"
+                        />
+                        <Button
+                          type="button"
+                          onClick={handleSaveLayerSettings}
+                          disabled={savingLayerSettings}
+                          className="bg-slate-950 text-white hover:bg-slate-800"
+                        >
+                          {savingLayerSettings ? <Loader2 size={15} className="mr-2 animate-spin" /> : <Save size={15} className="mr-2" />}
+                          Guardar estilo
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {spatialPanelTab === "search" && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3">
+                    <Search size={16} className="text-slate-400" />
+                    <input
+                      value={searchTerm}
+                      onChange={(event) => setSearchTerm(event.target.value)}
+                      placeholder="Buscar predio, municipio, tarea..."
+                      className="h-10 flex-1 bg-transparent text-sm font-semibold text-slate-700 outline-none placeholder:text-slate-400"
+                    />
+                    {searchTerm && (
+                      <button type="button" onClick={() => setSearchTerm("")} className="text-slate-400 hover:text-slate-600">
+                        <X size={16} />
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-100">
+                    {filteredFeatureJoins.length === 0 ? (
+                      <div className="p-4 text-center text-sm font-semibold text-slate-500">
+                        {visibleLayers.length > 0 ? "Sin coincidencias visibles." : "No hay capas encendidas."}
+                      </div>
+                    ) : (
+                      filteredFeatureJoins.slice(0, 8).map((join) => {
+                        const primaryTask = join.tasks[0];
+                        const meta = primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
+                        return (
+                          <button
+                            type="button"
+                            key={`quick-${join.featureId}`}
+                            onClick={() => {
+                              setSelectedLayerId(join.layerId);
+                              setSelectedFeatureId(join.featureId);
+                            }}
+                            className="block w-full border-b border-slate-100 px-3 py-2 text-left transition last:border-b-0 hover:bg-slate-50"
+                          >
+                            <p className="truncate text-[10px] font-black uppercase tracking-[0.14em] text-indigo-600">{join.layerName}</p>
+                            <div className="mt-1 flex items-center gap-2">
+                              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: meta.color }} />
+                              <p className="min-w-0 flex-1 truncate text-xs font-black text-slate-900">
+                                {join.label || join.key || "Sin clave"}
+                              </p>
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-start justify-between gap-3">
               <div>
