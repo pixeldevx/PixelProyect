@@ -51,12 +51,24 @@ type GeoJsonBounds = {
   north: number;
 };
 
+type SpatialStyleKey = "unlinked" | "pending" | "not_started" | "in_progress" | "completed" | "completed_late" | "stuck";
+
+type LayerStateStyleConfig = {
+  fillColor?: string;
+  strokeColor?: string;
+};
+
 type LayerStyleConfig = {
   fillColor?: string;
   strokeColor?: string;
   fillOpacity?: number;
   strokeOpacity?: number;
   strokeWidth?: number;
+  statusStyles?: Partial<Record<SpatialStyleKey, LayerStateStyleConfig>>;
+};
+
+type NormalizedLayerStyleConfig = Required<Omit<LayerStyleConfig, "statusStyles">> & {
+  statusStyles: Record<SpatialStyleKey, Required<LayerStateStyleConfig>>;
 };
 
 type SpatialLayer = {
@@ -146,14 +158,32 @@ const MIN_ZOOM = 3;
 const MAX_ZOOM = 18;
 const MAX_RENDER_FEATURES = 20000;
 const VIEWPORT_BOUNDS_PADDING_RATIO = 0.18;
-const DEFAULT_LAYER_STYLE: Required<LayerStyleConfig> = {
+const DEFAULT_STATUS_STYLES: Record<SpatialStyleKey, Required<LayerStateStyleConfig>> = {
+  unlinked: { fillColor: "#64748b", strokeColor: "#475569" },
+  pending: { fillColor: "#94a3b8", strokeColor: "#64748b" },
+  not_started: { fillColor: "#cbd5e1", strokeColor: "#94a3b8" },
+  in_progress: { fillColor: "#f97316", strokeColor: "#ea580c" },
+  completed: { fillColor: "#10b981", strokeColor: "#059669" },
+  completed_late: { fillColor: "#c2410c", strokeColor: "#9a3412" },
+  stuck: { fillColor: "#ef4444", strokeColor: "#dc2626" },
+};
+const DEFAULT_LAYER_STYLE: NormalizedLayerStyleConfig = {
   fillColor: "#64748b",
   strokeColor: "#475569",
   fillOpacity: 0.18,
   strokeOpacity: 0.74,
   strokeWidth: 1.2,
+  statusStyles: DEFAULT_STATUS_STYLES,
 };
-const LAYER_COLOR_PRESETS = ["#64748b", "#0ea5e9", "#10b981", "#f97316", "#8b5cf6", "#ef4444", "#f59e0b", "#111827"];
+const SPATIAL_STATUS_STYLE_OPTIONS: Array<{ key: SpatialStyleKey; label: string; helper: string }> = [
+  { key: "unlinked", label: "Sin tarea", helper: "Predios sin tarea vinculada." },
+  { key: "pending", label: "Pendiente", helper: "Tareas pendientes o por gestionar." },
+  { key: "not_started", label: "No iniciado", helper: "Subtareas o flujos aún sin iniciar." },
+  { key: "in_progress", label: "Trabajando", helper: "Tareas activas en ejecución." },
+  { key: "completed", label: "Finalizada", helper: "Predios o tareas cerradas a tiempo." },
+  { key: "completed_late", label: "Finalizada con retraso", helper: "Cierres posteriores al cronograma." },
+  { key: "stuck", label: "Estancada", helper: "Tareas pausadas o bloqueadas." },
+];
 
 const statusMeta: Record<string, { label: string; color: string; fill: string; border: string }> = {
   todo: { label: "Pendiente", color: "#64748b", fill: "rgba(100,116,139,.18)", border: "#64748b" },
@@ -181,13 +211,32 @@ const clampNumber = (value: any, min: number, max: number, fallback: number) => 
   return Math.min(max, Math.max(min, numericValue));
 };
 
-const normalizeLayerStyle = (style?: LayerStyleConfig | null): Required<LayerStyleConfig> => ({
-  fillColor: style?.fillColor || DEFAULT_LAYER_STYLE.fillColor,
-  strokeColor: style?.strokeColor || style?.fillColor || DEFAULT_LAYER_STYLE.strokeColor,
-  fillOpacity: clampNumber(style?.fillOpacity, 0.04, 0.8, DEFAULT_LAYER_STYLE.fillOpacity),
-  strokeOpacity: clampNumber(style?.strokeOpacity, 0.1, 1, DEFAULT_LAYER_STYLE.strokeOpacity),
-  strokeWidth: clampNumber(style?.strokeWidth, 0.5, 6, DEFAULT_LAYER_STYLE.strokeWidth),
-});
+const normalizeLayerStyle = (style?: LayerStyleConfig | null): NormalizedLayerStyleConfig => {
+  const fillColor = style?.fillColor || DEFAULT_LAYER_STYLE.fillColor;
+  const strokeColor = style?.strokeColor || style?.fillColor || DEFAULT_LAYER_STYLE.strokeColor;
+
+  const statusStyles = SPATIAL_STATUS_STYLE_OPTIONS.reduce<Record<SpatialStyleKey, Required<LayerStateStyleConfig>>>(
+    (styles, option) => {
+      const savedStyle = style?.statusStyles?.[option.key];
+      const defaultStyle = DEFAULT_LAYER_STYLE.statusStyles[option.key];
+      styles[option.key] = {
+        fillColor: savedStyle?.fillColor || (option.key === "unlinked" ? fillColor : defaultStyle.fillColor),
+        strokeColor: savedStyle?.strokeColor || savedStyle?.fillColor || (option.key === "unlinked" ? strokeColor : defaultStyle.strokeColor),
+      };
+      return styles;
+    },
+    {} as Record<SpatialStyleKey, Required<LayerStateStyleConfig>>
+  );
+
+  return {
+    fillColor,
+    strokeColor,
+    fillOpacity: clampNumber(style?.fillOpacity, 0.04, 0.8, DEFAULT_LAYER_STYLE.fillOpacity),
+    strokeOpacity: clampNumber(style?.strokeOpacity, 0.1, 1, DEFAULT_LAYER_STYLE.strokeOpacity),
+    strokeWidth: clampNumber(style?.strokeWidth, 0.5, 6, DEFAULT_LAYER_STYLE.strokeWidth),
+    statusStyles,
+  };
+};
 
 const colorToRgba = (color: string, opacity: number) => {
   const normalized = color.replace("#", "");
@@ -245,6 +294,17 @@ const getTaskTitle = (task: any) => task?.title || task?.name || task?.externalW
 const getTaskStatus = (task: any) => String(task?.status || "todo").toLowerCase();
 
 const getStatusMeta = (task: any) => statusMeta[getTaskStatus(task)] || statusMeta.todo;
+
+const getSpatialStyleKeyForTask = (task?: any): SpatialStyleKey => {
+  if (!task) return "unlinked";
+  const status = getTaskStatus(task);
+  if (status.includes("retraso") || status === "completed_late" || status === "late_completed") return "completed_late";
+  if (["completed", "listo", "finalizada", "finalizado", "done"].includes(status)) return "completed";
+  if (["in_progress", "trabajando", "en_curso", "working"].includes(status)) return "in_progress";
+  if (["not_started", "no_iniciado", "sin_iniciar"].includes(status)) return "not_started";
+  if (["stuck", "estancada", "estancado", "blocked", "bloqueada", "bloqueado"].includes(status)) return "stuck";
+  return "pending";
+};
 
 const getMemberName = (memberById: Map<string, any>, memberId?: string) => {
   if (!memberId) return "Sin responsable";
@@ -606,7 +666,7 @@ export function ProjectSpatialMap({
   const [uploadDraftName, setUploadDraftName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [layerEditName, setLayerEditName] = useState("");
-  const [layerEditStyle, setLayerEditStyle] = useState<Required<LayerStyleConfig>>(DEFAULT_LAYER_STYLE);
+  const [layerEditStyle, setLayerEditStyle] = useState<NormalizedLayerStyleConfig>(DEFAULT_LAYER_STYLE);
   const [layerEditVisible, setLayerEditVisible] = useState(true);
   const [savingLayerSettings, setSavingLayerSettings] = useState(false);
   const [layerAttribute, setLayerAttribute] = useState("");
@@ -940,11 +1000,11 @@ export function ProjectSpatialMap({
 
       featureJoins.forEach((join, index) => {
         const primaryTask = join.tasks[0];
-        const meta = primaryTask ? getStatusMeta(primaryTask) : null;
+        const stateStyle = selectedLayerStyle.statusStyles[getSpatialStyleKeyForTask(primaryTask)];
         const isSelected = selectedFeatureIndex === index;
         const baseStyle = selectedLayerStyle;
-        const fillStyle = meta?.fill || colorToRgba(baseStyle.fillColor, baseStyle.fillOpacity);
-        const strokeStyle = meta?.border || colorToRgba(baseStyle.strokeColor, baseStyle.strokeOpacity);
+        const fillStyle = colorToRgba(stateStyle.fillColor, baseStyle.fillOpacity);
+        const strokeStyle = colorToRgba(stateStyle.strokeColor, baseStyle.strokeOpacity);
         const strokeWidth = isSelected ? Math.max(baseStyle.strokeWidth + 1.8, 3) : baseStyle.strokeWidth;
         const path = new Path2D();
         const drawState = appendGeometryToCanvasPath(path, join.feature.geometry, projectCoordinate, tolerance);
@@ -974,7 +1034,7 @@ export function ProjectSpatialMap({
         points.forEach((point) => {
           context.beginPath();
           context.arc(point.x, point.y, point.radius, 0, Math.PI * 2);
-          context.fillStyle = meta?.border || baseStyle.strokeColor;
+          context.fillStyle = stateStyle.strokeColor;
           context.fill();
           context.lineWidth = isSelected ? 2.5 : 1.5;
           context.strokeStyle = "#fff";
@@ -1329,6 +1389,21 @@ export function ProjectSpatialMap({
     setMapView(getFittedView(bounds, mapSize.width, mapSize.height));
   };
 
+  const updateLayerStatusColor = (statusKey: SpatialStyleKey, color: string) => {
+    setLayerEditStyle((current) => ({
+      ...current,
+      fillColor: statusKey === "unlinked" ? color : current.fillColor,
+      strokeColor: statusKey === "unlinked" ? color : current.strokeColor,
+      statusStyles: {
+        ...current.statusStyles,
+        [statusKey]: {
+          fillColor: color,
+          strokeColor: color,
+        },
+      },
+    }));
+  };
+
   return (
     <section className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -1616,38 +1691,30 @@ export function ProjectSpatialMap({
               <div className="mt-4">
                 <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
                   <Palette size={14} />
-                  Estilo visual
+                  Visualización por estado
                 </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {LAYER_COLOR_PRESETS.map((color) => {
-                    const isActive = layerEditStyle.fillColor.toLowerCase() === color.toLowerCase();
+                <div className="mt-3 space-y-2">
+                  {SPATIAL_STATUS_STYLE_OPTIONS.map((option) => {
+                    const stateStyle = layerEditStyle.statusStyles[option.key];
                     return (
-                      <button
-                        type="button"
-                        key={color}
-                        title={`Usar color ${color}`}
-                        onClick={() => setLayerEditStyle((current) => ({ ...current, fillColor: color, strokeColor: color }))}
-                        className={`h-8 w-8 rounded-full border-2 shadow-sm transition ${
-                          isActive ? "border-slate-950 ring-2 ring-slate-950/10" : "border-white hover:scale-105"
-                        }`}
-                        style={{ backgroundColor: color }}
-                        aria-label={`Usar color ${color}`}
-                      />
+                      <div key={option.key} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <span className="h-5 w-5 shrink-0 rounded-full border border-white shadow-sm" style={{ backgroundColor: stateStyle.fillColor }} />
+                          <div className="min-w-0">
+                            <p className="text-xs font-black uppercase tracking-[0.12em] text-slate-700">{option.label}</p>
+                            <p className="truncate text-[11px] font-semibold text-slate-400">{option.helper}</p>
+                          </div>
+                        </div>
+                        <input
+                          type="color"
+                          value={stateStyle.fillColor}
+                          onChange={(event) => updateLayerStatusColor(option.key, event.target.value)}
+                          className="h-8 w-10 shrink-0 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
+                          aria-label={`Color para ${option.label}`}
+                        />
+                      </div>
                     );
                   })}
-                  <input
-                    type="color"
-                    value={layerEditStyle.fillColor}
-                    onChange={(event) =>
-                      setLayerEditStyle((current) => ({
-                        ...current,
-                        fillColor: event.target.value,
-                        strokeColor: event.target.value,
-                      }))
-                    }
-                    className="h-8 w-10 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
-                    aria-label="Color personalizado"
-                  />
                 </div>
               </div>
 
