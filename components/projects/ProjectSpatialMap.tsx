@@ -64,6 +64,8 @@ type LayerStyleConfig = {
   fillOpacity?: number;
   strokeOpacity?: number;
   strokeWidth?: number;
+  labelAttribute?: string;
+  labelsVisible?: boolean;
   statusStyles?: Partial<Record<SpatialStyleKey, LayerStateStyleConfig>>;
 };
 
@@ -119,6 +121,18 @@ type FeatureJoin = {
   sourceIndex: number;
 };
 
+type LayerFeatureJoin = FeatureJoin & {
+  featureId: string;
+  layerId: string;
+  layerName: string;
+  layer: SpatialLayer;
+  label: string;
+  labelAttribute: string;
+  layerAttribute: string;
+  taskAttribute: string;
+  style: NormalizedLayerStyleConfig;
+};
+
 type FeatureWithBounds = {
   feature: GeoJsonFeature;
   bounds: GeoJsonBounds;
@@ -126,7 +140,8 @@ type FeatureWithBounds = {
 };
 
 type CanvasHitRegion = {
-  index: number;
+  featureId: string;
+  layerId: string;
   path: Path2D;
   strokeWidth: number;
   points: Array<{ x: number; y: number; radius: number }>;
@@ -149,6 +164,8 @@ type SpatialLayerRow = {
   created_at?: string | null;
   updated_at?: string | null;
 };
+
+const makeFeatureId = (layerId: string, sourceIndex: number) => `${layerId}:${sourceIndex}`;
 
 const OSM_TILE_URL = "https://tile.openstreetmap.org";
 const SHP_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/shpjs@6.1.0/dist/shp.min.js";
@@ -173,6 +190,8 @@ const DEFAULT_LAYER_STYLE: NormalizedLayerStyleConfig = {
   fillOpacity: 0.18,
   strokeOpacity: 0.74,
   strokeWidth: 1.2,
+  labelAttribute: "",
+  labelsVisible: false,
   statusStyles: DEFAULT_STATUS_STYLES,
 };
 const SPATIAL_STATUS_STYLE_OPTIONS: Array<{ key: SpatialStyleKey; label: string; helper: string }> = [
@@ -234,6 +253,8 @@ const normalizeLayerStyle = (style?: LayerStyleConfig | null): NormalizedLayerSt
     fillOpacity: clampNumber(style?.fillOpacity, 0.04, 0.8, DEFAULT_LAYER_STYLE.fillOpacity),
     strokeOpacity: clampNumber(style?.strokeOpacity, 0.1, 1, DEFAULT_LAYER_STYLE.strokeOpacity),
     strokeWidth: clampNumber(style?.strokeWidth, 0.5, 6, DEFAULT_LAYER_STYLE.strokeWidth),
+    labelAttribute: style?.labelAttribute || "",
+    labelsVisible: style?.labelsVisible === true,
     statusStyles,
   };
 };
@@ -497,12 +518,64 @@ const getPointCoordinates = (geometry: GeoJsonGeometry | null) => {
   return [];
 };
 
+const getLabelCoordinate = (geometry: GeoJsonGeometry | null): number[] | null => {
+  if (!geometry?.coordinates) return null;
+  if (geometry.type === "Point") return geometry.coordinates;
+  if (geometry.type === "MultiPoint") return geometry.coordinates[0] || null;
+  if (geometry.type === "LineString") return geometry.coordinates[Math.floor(geometry.coordinates.length / 2)] || null;
+  if (geometry.type === "MultiLineString") {
+    const longestLine = [...geometry.coordinates].sort((left: number[][], right: number[][]) => right.length - left.length)[0];
+    return longestLine?.[Math.floor(longestLine.length / 2)] || null;
+  }
+  if (geometry.type === "Polygon") {
+    const ring = geometry.coordinates?.[0] || [];
+    if (!ring.length) return null;
+    const summary = ring.reduce(
+      (acc: { lon: number; lat: number; count: number }, coord: number[]) => {
+        if (!Array.isArray(coord) || typeof coord[0] !== "number" || typeof coord[1] !== "number") return acc;
+        return { lon: acc.lon + coord[0], lat: acc.lat + coord[1], count: acc.count + 1 };
+      },
+      { lon: 0, lat: 0, count: 0 }
+    );
+    return summary.count > 0 ? [summary.lon / summary.count, summary.lat / summary.count] : null;
+  }
+  if (geometry.type === "MultiPolygon") {
+    const polygon = geometry.coordinates?.[0];
+    return getLabelCoordinate(polygon ? { type: "Polygon", coordinates: polygon } : null);
+  }
+  return null;
+};
+
 const getCanvasSimplificationTolerance = (zoom: number) => {
   if (zoom <= 10) return 6;
   if (zoom <= 12) return 3.5;
   if (zoom <= 14) return 1.8;
   if (zoom <= 16) return 0.9;
   return 0.35;
+};
+
+const drawCanvasLabel = (
+  context: CanvasRenderingContext2D,
+  label: string,
+  point: ProjectedPoint,
+  color: string
+) => {
+  const text = label.length > 38 ? `${label.slice(0, 35)}...` : label;
+  const paddingX = 7;
+  const labelHeight = 20;
+
+  context.font = "700 11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const width = Math.ceil(context.measureText(text).width + paddingX * 2);
+  const left = Math.round(point.x - width / 2);
+  const top = Math.round(point.y - 28);
+
+  context.fillStyle = "rgba(255,255,255,0.9)";
+  context.strokeStyle = colorToRgba(color, 0.55);
+  context.lineWidth = 1;
+  context.fillRect(left, top, width, labelHeight);
+  context.strokeRect(left, top, width, labelHeight);
+  context.fillStyle = color;
+  context.fillText(text, left + paddingX, top + 14);
 };
 
 const appendLineToCanvasPath = (
@@ -673,7 +746,7 @@ export function ProjectSpatialMap({
   const [taskAttribute, setTaskAttribute] = useState("externalWorkflowId");
   const [customTaskAttribute, setCustomTaskAttribute] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedFeatureIndex, setSelectedFeatureIndex] = useState<number | null>(null);
+  const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
   const [layerPendingDelete, setLayerPendingDelete] = useState<SpatialLayer | null>(null);
   const [mapSize, setMapSize] = useState({ width: 960, height: 560 });
   const [mapView, setMapView] = useState({ center: { lon: -74.2973, lat: 4.5709 }, zoom: 5 });
@@ -774,24 +847,37 @@ export function ProjectSpatialMap({
     () => layers.find((layer) => layer.id === selectedLayerId) || null,
     [layers, selectedLayerId]
   );
+  const visibleLayers = useMemo(() => layers.filter((layer) => layer.visible !== false), [layers]);
+  const activeRenderLayers = useMemo(() => {
+    const layerMap = new Map<string, SpatialLayer>();
+    visibleLayers.forEach((layer) => layerMap.set(layer.id, layer));
+    if (selectedLayer) layerMap.set(selectedLayer.id, selectedLayer);
+    return Array.from(layerMap.values());
+  }, [selectedLayer, visibleLayers]);
   const selectedLayerGeojson = selectedLayer ? layerGeojsons[selectedLayer.id] : undefined;
 
   useEffect(() => {
-    if (!selectedLayer) return;
-    if (layerGeojsons[selectedLayer.id]) return;
-    if (!selectedLayer.downloadUrl) return;
+    const layersToLoad = activeRenderLayers.filter((layer) => layer.downloadUrl && !layerGeojsons[layer.id]);
+    if (layersToLoad.length === 0) return;
 
     let active = true;
     setLoadingLayerData(true);
 
     void (async () => {
       try {
-        const response = await fetch(selectedLayer.downloadUrl as string);
-        if (!response.ok) throw new Error("No se pudo descargar la geometría desde Storage.");
-        const parsed = await response.json();
-        const geojson = normalizeGeoJson(parsed);
+        const loadedEntries = await Promise.all(
+          layersToLoad.map(async (layer) => {
+            const response = await fetch(layer.downloadUrl as string);
+            if (!response.ok) throw new Error(`No se pudo descargar la geometría de ${layer.name || layer.fileName || "la capa"}.`);
+            const parsed = await response.json();
+            return [layer.id, normalizeGeoJson(parsed)] as const;
+          })
+        );
         if (!active) return;
-        setLayerGeojsons((current) => ({ ...current, [selectedLayer.id]: geojson }));
+        setLayerGeojsons((current) => ({
+          ...current,
+          ...Object.fromEntries(loadedEntries),
+        }));
       } catch (error: any) {
         console.error("Error loading layer geojson:", error);
         if (active) toast.error(error?.message || "No se pudo cargar la geometría de la capa.");
@@ -803,7 +889,7 @@ export function ProjectSpatialMap({
     return () => {
       active = false;
     };
-  }, [layerGeojsons, selectedLayer]);
+  }, [activeRenderLayers, layerGeojsons]);
 
   useEffect(() => {
     if (!selectedLayer) {
@@ -813,7 +899,7 @@ export function ProjectSpatialMap({
       setLayerEditName("");
       setLayerEditStyle(DEFAULT_LAYER_STYLE);
       setLayerEditVisible(true);
-      setSelectedFeatureIndex(null);
+      setSelectedFeatureId(null);
       return;
     }
 
@@ -829,7 +915,6 @@ export function ProjectSpatialMap({
         ? selectedLayer.joinConfig.taskAttribute
         : ""
     );
-    setSelectedFeatureIndex(null);
   }, [selectedLayer]);
 
   useEffect(() => {
@@ -849,26 +934,44 @@ export function ProjectSpatialMap({
 
   const effectiveTaskAttribute = taskAttribute === "__custom__" ? customTaskAttribute.trim() : taskAttribute;
 
-  const tasksByJoinKey = useMemo(() => {
-    const map = new Map<string, any[]>();
-    tasks.forEach((task) => {
-      const rawValue = getTaskAttributeValue(task, effectiveTaskAttribute);
-      const key = normalizeKey(rawValue);
-      if (!key) return;
-      const current = map.get(key) || [];
-      current.push(task);
-      map.set(key, current);
+  const taskAttributesForJoins = useMemo(() => {
+    const attributes = new Set<string>();
+    layers.forEach((layer) => attributes.add(layer.joinConfig?.taskAttribute || "externalWorkflowId"));
+    if (effectiveTaskAttribute) attributes.add(effectiveTaskAttribute);
+    return Array.from(attributes);
+  }, [effectiveTaskAttribute, layers]);
+
+  const taskJoinMaps = useMemo(() => {
+    const maps = new Map<string, Map<string, any[]>>();
+    taskAttributesForJoins.forEach((attribute) => {
+      const map = new Map<string, any[]>();
+      tasks.forEach((task) => {
+        const rawValue = getTaskAttributeValue(task, attribute);
+        const key = normalizeKey(rawValue);
+        if (!key) return;
+        const current = map.get(key) || [];
+        current.push(task);
+        map.set(key, current);
+      });
+      maps.set(attribute, map);
+    });
+    return maps;
+  }, [taskAttributesForJoins, tasks]);
+
+  const boundedFeaturesByLayerId = useMemo(() => {
+    const map = new Map<string, FeatureWithBounds[]>();
+    Object.entries(layerGeojsons).forEach(([layerId, geojson]) => {
+      map.set(
+        layerId,
+        (geojson?.features || []).reduce<FeatureWithBounds[]>((features, feature, sourceIndex) => {
+          const bounds = getGeoJsonBounds({ type: "FeatureCollection", features: [feature] });
+          if (bounds) features.push({ feature, bounds, sourceIndex });
+          return features;
+        }, [])
+      );
     });
     return map;
-  }, [effectiveTaskAttribute, tasks]);
-
-  const boundedFeatures = useMemo<FeatureWithBounds[]>(() => {
-    return (selectedLayerGeojson?.features || []).reduce<FeatureWithBounds[]>((features, feature, sourceIndex) => {
-      const bounds = getGeoJsonBounds({ type: "FeatureCollection", features: [feature] });
-      if (bounds) features.push({ feature, bounds, sourceIndex });
-      return features;
-    }, []);
-  }, [selectedLayerGeojson]);
+  }, [layerGeojsons]);
 
   const mapViewportBounds = useMemo(() => {
     if (mapSize.width <= 0 || mapSize.height <= 0) return null;
@@ -894,46 +997,74 @@ export function ProjectSpatialMap({
     });
   }, [mapSize.height, mapSize.width, mapView.center.lat, mapView.center.lon, mapView.zoom]);
 
-  const visibleFeatureWindow = useMemo(() => {
-    const features: FeatureWithBounds[] = [];
-    let matchedCount = 0;
+  const renderedFeatureJoins = useMemo<LayerFeatureJoin[]>(() => {
+    const joins: LayerFeatureJoin[] = [];
+    let renderedCount = 0;
 
-    if (selectedLayer?.visible === false) return { features, matchedCount };
+    visibleLayers.forEach((layer) => {
+      if (renderedCount >= MAX_RENDER_FEATURES) return;
+      const boundedFeatures = boundedFeaturesByLayerId.get(layer.id) || [];
+      const style = normalizeLayerStyle(layer.styleConfig);
+      const effectiveLayerAttribute =
+        layer.id === selectedLayer?.id ? layerAttribute : layer.joinConfig?.layerAttribute || layer.attributes?.[0] || "";
+      const effectiveLayerTaskAttribute =
+        layer.id === selectedLayer?.id ? effectiveTaskAttribute : layer.joinConfig?.taskAttribute || "externalWorkflowId";
+      const taskMap = taskJoinMaps.get(effectiveLayerTaskAttribute) || new Map<string, any[]>();
 
-    boundedFeatures.forEach((item) => {
-      if (mapViewportBounds && !boundsIntersect(item.bounds, mapViewportBounds)) return;
-      matchedCount += 1;
-      if (features.length < MAX_RENDER_FEATURES) features.push(item);
+      boundedFeatures.forEach(({ feature, sourceIndex, bounds }) => {
+        if (renderedCount >= MAX_RENDER_FEATURES) return;
+        if (mapViewportBounds && !boundsIntersect(bounds, mapViewportBounds)) return;
+        const rawKey = feature.properties?.[effectiveLayerAttribute];
+        const key = normalizeKey(rawKey);
+        const rawLabel = style.labelAttribute ? feature.properties?.[style.labelAttribute] : "";
+        joins.push({
+          featureId: makeFeatureId(layer.id, sourceIndex),
+          layerId: layer.id,
+          layerName: layer.name || layer.fileName || "Capa sin nombre",
+          layer,
+          feature,
+          key: String(rawKey ?? ""),
+          tasks: key ? taskMap.get(key) || [] : [],
+          sourceIndex,
+          label: String(rawLabel ?? "").trim(),
+          labelAttribute: style.labelAttribute,
+          layerAttribute: effectiveLayerAttribute,
+          taskAttribute: effectiveLayerTaskAttribute,
+          style,
+        });
+        renderedCount += 1;
+      });
     });
 
-    return { features, matchedCount };
-  }, [boundedFeatures, mapViewportBounds, selectedLayer?.visible]);
+    return joins;
+  }, [
+    boundedFeaturesByLayerId,
+    effectiveTaskAttribute,
+    layerAttribute,
+    mapViewportBounds,
+    selectedLayer?.id,
+    taskJoinMaps,
+    visibleLayers,
+  ]);
 
-  const featureJoins = useMemo<FeatureJoin[]>(() => {
-    return visibleFeatureWindow.features.map(({ feature, sourceIndex }) => {
-      const rawKey = feature.properties?.[layerAttribute];
-      const key = normalizeKey(rawKey);
-      return {
-        feature,
-        key: String(rawKey ?? ""),
-        tasks: key ? tasksByJoinKey.get(key) || [] : [],
-        sourceIndex,
-      };
-    });
-  }, [layerAttribute, tasksByJoinKey, visibleFeatureWindow.features]);
+  const featureJoins = useMemo(
+    () => renderedFeatureJoins.filter((join) => join.layerId === selectedLayer?.id),
+    [renderedFeatureJoins, selectedLayer?.id]
+  );
 
   const filteredFeatureJoins = useMemo(() => {
     const search = normalizeKey(searchTerm);
-    if (!search) return featureJoins;
-    return featureJoins.filter((item) => {
+    const source = renderedFeatureJoins;
+    if (!search) return source;
+    return source.filter((item) => {
       const taskMatch = item.tasks.some((task) =>
         [getTaskTitle(task), task.externalWorkflowId, task.municipality, task.workflowMunicipality, task.status]
           .some((value) => normalizeKey(value).includes(search))
       );
       const propertyMatch = Object.values(item.feature.properties || {}).some((value) => normalizeKey(value).includes(search));
-      return taskMatch || propertyMatch;
+      return taskMatch || propertyMatch || normalizeKey(item.layerName).includes(search) || normalizeKey(item.label).includes(search);
     });
-  }, [featureJoins, searchTerm]);
+  }, [renderedFeatureJoins, searchTerm]);
 
   const spatializedTasks = useMemo(() => {
     const map = new Map<string, any>();
@@ -948,17 +1079,18 @@ export function ProjectSpatialMap({
     const taskStatusCounts = statusCountsFromTasks(spatializedTasks);
     return {
       features: selectedLayer?.featureCount || featureJoins.length,
-      visibleFeatures: visibleFeatureWindow.features.length,
-      viewportFeatures: visibleFeatureWindow.matchedCount,
+      visibleFeatures: featureJoins.length,
+      viewportFeatures: featureJoins.length,
       linkedFeatures: linkedFeatures.length,
       linkedTasks: spatializedTasks.length,
       coverage: featureJoins.length > 0 ? Math.round((linkedFeatures.length / featureJoins.length) * 100) : 0,
       ...taskStatusCounts,
     };
-  }, [featureJoins, selectedLayer?.featureCount, spatializedTasks, visibleFeatureWindow.features.length, visibleFeatureWindow.matchedCount]);
+  }, [featureJoins, selectedLayer?.featureCount, spatializedTasks]);
 
-  const selectedFeatureJoin = selectedFeatureIndex == null ? null : featureJoins[selectedFeatureIndex] || null;
-  const selectedLayerStyle = useMemo(() => normalizeLayerStyle(selectedLayer?.styleConfig), [selectedLayer?.styleConfig]);
+  const selectedFeatureJoin = selectedFeatureId
+    ? renderedFeatureJoins.find((join) => join.featureId === selectedFeatureId) || null
+    : null;
 
   const centerPx = projectLonLat(mapView.center.lon, mapView.center.lat, mapView.zoom);
   const topLeft = {
@@ -998,11 +1130,11 @@ export function ProjectSpatialMap({
       const tolerance = getCanvasSimplificationTolerance(mapView.zoom);
       const hitRegions: CanvasHitRegion[] = [];
 
-      featureJoins.forEach((join, index) => {
+      renderedFeatureJoins.forEach((join) => {
         const primaryTask = join.tasks[0];
-        const stateStyle = selectedLayerStyle.statusStyles[getSpatialStyleKeyForTask(primaryTask)];
-        const isSelected = selectedFeatureIndex === index;
-        const baseStyle = selectedLayerStyle;
+        const baseStyle = join.style;
+        const stateStyle = baseStyle.statusStyles[getSpatialStyleKeyForTask(primaryTask)];
+        const isSelected = selectedFeatureId === join.featureId;
         const fillStyle = colorToRgba(stateStyle.fillColor, baseStyle.fillOpacity);
         const strokeStyle = colorToRgba(stateStyle.strokeColor, baseStyle.strokeOpacity);
         const strokeWidth = isSelected ? Math.max(baseStyle.strokeWidth + 1.8, 3) : baseStyle.strokeWidth;
@@ -1042,22 +1174,40 @@ export function ProjectSpatialMap({
         });
 
         if (drawState.hasFill || drawState.hasStroke || points.length > 0) {
-          hitRegions.push({ index, path, strokeWidth: Math.max(strokeWidth + 5, 8), points });
+          hitRegions.push({
+            featureId: join.featureId,
+            layerId: join.layerId,
+            path,
+            strokeWidth: Math.max(strokeWidth + 5, 8),
+            points,
+          });
         }
       });
+
+      if (mapView.zoom >= 14 || renderedFeatureJoins.length <= 350) {
+        renderedFeatureJoins.forEach((join) => {
+          if (!join.style.labelsVisible || !join.label) return;
+          const labelCoordinate = getLabelCoordinate(join.feature.geometry);
+          if (!labelCoordinate) return;
+          const labelPoint = projectCoordinate(labelCoordinate);
+          if (!Number.isFinite(labelPoint.x) || !Number.isFinite(labelPoint.y)) return;
+
+          const stateStyle = join.style.statusStyles[getSpatialStyleKeyForTask(join.tasks[0])];
+          drawCanvasLabel(context, join.label, labelPoint, stateStyle.strokeColor);
+        });
+      }
 
       hitRegionsRef.current = hitRegions;
     });
 
     return () => cancelAnimationFrame(frame);
   }, [
-    featureJoins,
     mapSize.height,
     mapSize.width,
     mapView.zoom,
     projectCoordinate,
-    selectedFeatureIndex,
-    selectedLayerStyle,
+    renderedFeatureJoins,
+    selectedFeatureId,
   ]);
 
   const tiles = useMemo(() => {
@@ -1286,6 +1436,33 @@ export function ProjectSpatialMap({
     }
   };
 
+  const handleToggleLayerVisibility = async (layer: SpatialLayer, visible: boolean) => {
+    if (!canManage) return;
+
+    setLayers((current) => current.map((item) => (item.id === layer.id ? { ...item, visible } : item)));
+    if (layer.id === selectedLayerId) setLayerEditVisible(visible);
+    if (visible) setSelectedLayerId(layer.id);
+
+    try {
+      const { error } = await supabase
+        .from(SPATIAL_LAYERS_TABLE)
+        .update({
+          visible,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", layer.id)
+        .eq("project_id", projectId);
+
+      if (error) throw error;
+      toast.success(visible ? "Capa encendida en el mapa." : "Capa apagada del mapa.");
+    } catch (error) {
+      console.error("Error updating spatial layer visibility:", error);
+      setLayers((current) => current.map((item) => (item.id === layer.id ? { ...item, visible: layer.visible !== false } : item)));
+      if (layer.id === selectedLayerId) setLayerEditVisible(layer.visible !== false);
+      toast.error("No se pudo actualizar la visibilidad de la capa.");
+    }
+  };
+
   const handleDeleteLayer = async () => {
     if (!layerPendingDelete || !canManage) return;
 
@@ -1378,10 +1555,13 @@ export function ProjectSpatialMap({
       const pointHit = region.points.some((point) => Math.hypot(point.x - x, point.y - y) <= point.radius + 5);
       context.lineWidth = region.strokeWidth;
       if (pointHit || context.isPointInPath(region.path, x, y, "evenodd") || context.isPointInStroke(region.path, x, y)) {
-        setSelectedFeatureIndex(region.index);
+        setSelectedLayerId(region.layerId);
+        setSelectedFeatureId(region.featureId);
         return;
       }
     }
+
+    setSelectedFeatureId(null);
   };
 
   const recenterLayer = () => {
@@ -1481,10 +1661,13 @@ export function ProjectSpatialMap({
           <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50/70 p-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="grid flex-1 gap-3 md:grid-cols-3">
               <div>
-                <label className="mb-1 block text-xs font-black uppercase tracking-[0.18em] text-slate-400">Capa</label>
+                <label className="mb-1 block text-xs font-black uppercase tracking-[0.18em] text-slate-400">Capa a configurar</label>
                 <select
                   value={selectedLayerId}
-                  onChange={(event) => setSelectedLayerId(event.target.value)}
+                  onChange={(event) => {
+                    setSelectedLayerId(event.target.value);
+                    setSelectedFeatureId(null);
+                  }}
                   className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
                 >
                   {layers.length === 0 ? (
@@ -1617,6 +1800,47 @@ export function ProjectSpatialMap({
               )}
             </div>
 
+            {selectedFeatureJoin && (
+              <div className="absolute bottom-14 right-4 z-10 w-[min(380px,calc(100%-2rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur">
+                <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-4">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-indigo-700">
+                        {selectedFeatureJoin.layerName}
+                      </span>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-slate-600">
+                        {selectedFeatureJoin.tasks.length} tareas
+                      </span>
+                    </div>
+                    <h4 className="mt-2 truncate text-lg font-black text-slate-900">
+                      {selectedFeatureJoin.label || selectedFeatureJoin.key || "Entidad sin etiqueta"}
+                    </h4>
+                    <p className="mt-1 truncate text-xs font-bold text-slate-500">
+                      {selectedFeatureJoin.layerAttribute || "Sin unión"} → {selectedFeatureJoin.taskAttribute || "Sin atributo"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedFeatureId(null)}
+                    className="rounded-full p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                    aria-label="Cerrar detalle de entidad"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="grid max-h-52 gap-2 overflow-y-auto p-3">
+                  {Object.entries(selectedFeatureJoin.feature.properties || {})
+                    .slice(0, 6)
+                    .map(([key, value]) => (
+                      <div key={key} className="rounded-xl bg-slate-50 px-3 py-2">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">{key}</p>
+                        <p className="mt-0.5 break-words text-xs font-bold text-slate-700">{String(value ?? "")}</p>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+
             <div className="absolute left-4 top-4 flex overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
               <button type="button" onClick={() => setZoom(mapView.zoom + 1)} className="p-2 text-slate-700 hover:bg-slate-50" aria-label="Acercar">
                 <ZoomIn size={18} />
@@ -1633,6 +1857,80 @@ export function ProjectSpatialMap({
         </div>
 
         <aside className="space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Layers size={16} className="text-indigo-600" />
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Capas del mapa</p>
+                </div>
+                <p className="mt-1 text-xs font-semibold text-slate-500">
+                  Mantén varias capas prendidas y elige cuál configurar.
+                </p>
+              </div>
+              <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-black text-indigo-700">
+                {visibleLayers.length}/{layers.length}
+              </span>
+            </div>
+
+            <div className="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1">
+              {layers.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-sm font-semibold text-slate-500">
+                  No hay capas cargadas todavía.
+                </div>
+              ) : (
+                layers.map((layer) => {
+                  const style = normalizeLayerStyle(layer.styleConfig);
+                  const isVisible = layer.visible !== false;
+                  const isActive = layer.id === selectedLayerId;
+                  return (
+                    <div
+                      key={layer.id}
+                      className={`rounded-xl border p-2 transition ${
+                        isActive ? "border-indigo-300 bg-indigo-50/70" : "border-slate-200 bg-white hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <label className="relative inline-flex h-6 w-10 shrink-0 cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={isVisible}
+                            disabled={!canManage}
+                            onChange={(event) => void handleToggleLayerVisibility(layer, event.target.checked)}
+                            className="peer sr-only"
+                            aria-label={isVisible ? `Apagar ${layer.name}` : `Encender ${layer.name}`}
+                          />
+                          <span className="absolute inset-0 rounded-full bg-slate-200 transition peer-checked:bg-emerald-500 peer-disabled:opacity-50" />
+                          <span className="absolute left-1 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4" />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedLayerId(layer.id);
+                            setSelectedFeatureId(null);
+                          }}
+                          className="min-w-0 flex-1 text-left"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="h-3 w-3 shrink-0 rounded-full"
+                              style={{ backgroundColor: style.statusStyles.unlinked.fillColor }}
+                            />
+                            <p className="truncate text-sm font-black text-slate-900">{layer.name || layer.fileName || "Capa sin nombre"}</p>
+                          </div>
+                          <p className="mt-1 truncate text-[11px] font-semibold text-slate-500">
+                            {(layer.featureCount || 0).toLocaleString("es-CO")} entidades
+                            {style.labelsVisible && style.labelAttribute ? ` · etiqueta: ${style.labelAttribute}` : ""}
+                          </p>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -1687,6 +1985,46 @@ export function ProjectSpatialMap({
                 placeholder="Ej: Predios operativos"
                 className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
               />
+
+              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <label className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Etiqueta visible</label>
+                <select
+                  value={layerEditStyle.labelAttribute}
+                  onChange={(event) =>
+                    setLayerEditStyle((current) => ({
+                      ...current,
+                      labelAttribute: event.target.value,
+                      labelsVisible: event.target.value ? current.labelsVisible : false,
+                    }))
+                  }
+                  className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
+                >
+                  <option value="">Sin etiqueta</option>
+                  {(selectedLayer.attributes || []).map((attribute) => (
+                    <option key={attribute} value={attribute}>
+                      {attribute}
+                    </option>
+                  ))}
+                </select>
+                <label className="mt-3 flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-sm font-bold text-slate-700">
+                  Mostrar etiquetas en el mapa
+                  <input
+                    type="checkbox"
+                    checked={layerEditStyle.labelsVisible}
+                    disabled={!layerEditStyle.labelAttribute}
+                    onChange={(event) =>
+                      setLayerEditStyle((current) => ({
+                        ...current,
+                        labelsVisible: event.target.checked,
+                      }))
+                    }
+                    className="h-5 w-5 accent-emerald-600 disabled:opacity-50"
+                  />
+                </label>
+                <p className="mt-2 text-xs font-semibold leading-5 text-slate-500">
+                  Las etiquetas se dibujan con el atributo elegido y aparecen cuando el zoom permite leerlas sin saturar el mapa.
+                </p>
+              </div>
 
               <div className="mt-4">
                 <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
@@ -1808,28 +2146,34 @@ export function ProjectSpatialMap({
                 </div>
               ) : filteredFeatureJoins.length === 0 ? (
                 <div className="p-6 text-center text-sm font-semibold text-slate-500">
-                  {selectedLayer ? "No hay entidades que coincidan con la búsqueda." : "No hay capa seleccionada."}
+                  {visibleLayers.length > 0 ? "No hay entidades visibles que coincidan con la búsqueda." : "No hay capas encendidas en el mapa."}
                 </div>
               ) : (
                 filteredFeatureJoins.slice(0, 80).map((join) => {
-                  const originalIndex = featureJoins.indexOf(join);
                   const primaryTask = join.tasks[0];
                   const meta = primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
                   const schedule = primaryTask ? getScheduleState(primaryTask) : null;
+                  const isSelected = selectedFeatureId === join.featureId;
 
                   return (
                     <button
                       type="button"
-                      key={`${join.key}-${originalIndex}`}
-                      onClick={() => setSelectedFeatureIndex(originalIndex)}
+                      key={join.featureId}
+                      onClick={() => {
+                        setSelectedLayerId(join.layerId);
+                        setSelectedFeatureId(join.featureId);
+                      }}
                       className={`block w-full border-b border-slate-100 p-3 text-left transition hover:bg-slate-50 ${
-                        selectedFeatureIndex === originalIndex ? "bg-emerald-50" : "bg-white"
+                        isSelected ? "bg-emerald-50" : "bg-white"
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
+                          <p className="truncate text-[10px] font-black uppercase tracking-[0.14em] text-indigo-600">
+                            {join.layerName}
+                          </p>
                           <p className="truncate text-xs font-black uppercase tracking-[0.14em]" style={{ color: meta.color }}>
-                            {join.key || "Sin clave"}
+                            {join.label || join.key || "Sin clave"}
                           </p>
                           <p className="mt-1 truncate text-sm font-black text-slate-900">
                             {primaryTask ? getTaskTitle(primaryTask) : "Sin tarea vinculada"}
@@ -1864,9 +2208,19 @@ export function ProjectSpatialMap({
           <div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-600">Entidad seleccionada</p>
-              <h3 className="mt-1 text-xl font-black text-slate-900">{selectedFeatureJoin.key || "Sin clave"}</h3>
+              <h3 className="mt-1 text-xl font-black text-slate-900">
+                {selectedFeatureJoin.label || selectedFeatureJoin.key || "Sin clave"}
+              </h3>
+              <p className="mt-1 text-sm font-semibold text-slate-500">
+                {selectedFeatureJoin.layerName}
+                {selectedFeatureJoin.labelAttribute ? ` · etiqueta ${selectedFeatureJoin.labelAttribute}` : ""}
+                {selectedFeatureJoin.key ? ` · clave ${selectedFeatureJoin.key}` : ""}
+              </p>
             </div>
             <div className="flex flex-wrap gap-2 text-xs font-black uppercase tracking-[0.12em]">
+              <span className="rounded-full bg-indigo-50 px-3 py-1 text-indigo-700">
+                {selectedFeatureJoin.layerAttribute || "Sin atributo"} → {selectedFeatureJoin.taskAttribute || "Sin atributo"}
+              </span>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-600">
                 {selectedFeatureJoin.tasks.length} tareas vinculadas
               </span>
