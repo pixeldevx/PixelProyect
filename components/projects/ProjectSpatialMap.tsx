@@ -42,6 +42,13 @@ type GeoJsonFeatureCollection = {
   features: GeoJsonFeature[];
 };
 
+type GeoJsonBounds = {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+};
+
 type SpatialLayer = {
   id: string;
   name?: string;
@@ -50,7 +57,7 @@ type SpatialLayer = {
   geojson?: GeoJsonFeatureCollection;
   storagePath?: string;
   downloadUrl?: string;
-  bounds?: ReturnType<typeof getGeoJsonBounds>;
+  bounds?: GeoJsonBounds | null;
   featureCount?: number;
   attributes?: string[];
   visible?: boolean;
@@ -88,6 +95,12 @@ type FeatureJoin = {
   tasks: any[];
 };
 
+type FeatureWithBounds = {
+  feature: GeoJsonFeature;
+  bounds: GeoJsonBounds;
+  sourceIndex: number;
+};
+
 type SpatialLayerRow = {
   id: string;
   project_id: string;
@@ -96,7 +109,7 @@ type SpatialLayerRow = {
   source_type?: string | null;
   storage_path?: string | null;
   download_url?: string | null;
-  bounds?: ReturnType<typeof getGeoJsonBounds> | null;
+  bounds?: GeoJsonBounds | null;
   feature_count?: number | null;
   attributes?: string[] | null;
   visible?: boolean | null;
@@ -111,7 +124,8 @@ const SPATIAL_LAYERS_TABLE = "project_spatial_layers";
 const TILE_SIZE = 256;
 const MIN_ZOOM = 3;
 const MAX_ZOOM = 18;
-const MAX_RENDER_FEATURES = 5000;
+const MAX_RENDER_FEATURES = 20000;
+const VIEWPORT_BOUNDS_PADDING_RATIO = 0.18;
 
 const statusMeta: Record<string, { label: string; color: string; fill: string; border: string }> = {
   todo: { label: "Pendiente", color: "#64748b", fill: "rgba(100,116,139,.18)", border: "#64748b" },
@@ -261,7 +275,7 @@ const extractAttributes = (geojson?: GeoJsonFeatureCollection) => {
   return Array.from(attributes).sort((left, right) => left.localeCompare(right));
 };
 
-const getGeoJsonBounds = (geojson?: GeoJsonFeatureCollection) => {
+const getGeoJsonBounds = (geojson?: GeoJsonFeatureCollection): GeoJsonBounds | null => {
   let west = Number.POSITIVE_INFINITY;
   let south = Number.POSITIVE_INFINITY;
   let east = Number.NEGATIVE_INFINITY;
@@ -299,6 +313,23 @@ const getGeoJsonBounds = (geojson?: GeoJsonFeatureCollection) => {
 
   return { west, south, east, north };
 };
+
+const expandBounds = (bounds: GeoJsonBounds, ratio = VIEWPORT_BOUNDS_PADDING_RATIO): GeoJsonBounds => {
+  const lonPadding = Math.max((bounds.east - bounds.west) * ratio, 0.0005);
+  const latPadding = Math.max((bounds.north - bounds.south) * ratio, 0.0005);
+  return {
+    west: Math.max(-180, bounds.west - lonPadding),
+    south: Math.max(-85.05112878, bounds.south - latPadding),
+    east: Math.min(180, bounds.east + lonPadding),
+    north: Math.min(85.05112878, bounds.north + latPadding),
+  };
+};
+
+const boundsIntersect = (left: GeoJsonBounds, right: GeoJsonBounds) =>
+  left.west <= right.east &&
+  left.east >= right.west &&
+  left.south <= right.north &&
+  left.north >= right.south;
 
 const projectLonLat = (lon: number, lat: number, zoom: number): ProjectedPoint => {
   const scale = TILE_SIZE * Math.pow(2, zoom);
@@ -619,9 +650,53 @@ export function ProjectSpatialMap({
     return map;
   }, [effectiveTaskAttribute, tasks]);
 
+  const boundedFeatures = useMemo<FeatureWithBounds[]>(() => {
+    return (selectedLayerGeojson?.features || []).reduce<FeatureWithBounds[]>((features, feature, sourceIndex) => {
+      const bounds = getGeoJsonBounds({ type: "FeatureCollection", features: [feature] });
+      if (bounds) features.push({ feature, bounds, sourceIndex });
+      return features;
+    }, []);
+  }, [selectedLayerGeojson]);
+
+  const mapViewportBounds = useMemo(() => {
+    if (mapSize.width <= 0 || mapSize.height <= 0) return null;
+    const viewportCenterPx = projectLonLat(mapView.center.lon, mapView.center.lat, mapView.zoom);
+    const viewportTopLeft = {
+      x: viewportCenterPx.x - mapSize.width / 2,
+      y: viewportCenterPx.y - mapSize.height / 2,
+    };
+    const northWest = unprojectPoint(viewportTopLeft, mapView.zoom);
+    const southEast = unprojectPoint(
+      {
+        x: viewportTopLeft.x + mapSize.width,
+        y: viewportTopLeft.y + mapSize.height,
+      },
+      mapView.zoom
+    );
+
+    return expandBounds({
+      west: Math.min(northWest.lon, southEast.lon),
+      south: Math.min(northWest.lat, southEast.lat),
+      east: Math.max(northWest.lon, southEast.lon),
+      north: Math.max(northWest.lat, southEast.lat),
+    });
+  }, [mapSize.height, mapSize.width, mapView.center.lat, mapView.center.lon, mapView.zoom]);
+
+  const visibleFeatureWindow = useMemo(() => {
+    const features: FeatureWithBounds[] = [];
+    let matchedCount = 0;
+
+    boundedFeatures.forEach((item) => {
+      if (mapViewportBounds && !boundsIntersect(item.bounds, mapViewportBounds)) return;
+      matchedCount += 1;
+      if (features.length < MAX_RENDER_FEATURES) features.push(item);
+    });
+
+    return { features, matchedCount };
+  }, [boundedFeatures, mapViewportBounds]);
+
   const featureJoins = useMemo<FeatureJoin[]>(() => {
-    const features = (selectedLayerGeojson?.features || []).slice(0, MAX_RENDER_FEATURES);
-    return features.map((feature) => {
+    return visibleFeatureWindow.features.map(({ feature }) => {
       const rawKey = feature.properties?.[layerAttribute];
       const key = normalizeKey(rawKey);
       return {
@@ -630,7 +705,7 @@ export function ProjectSpatialMap({
         tasks: key ? tasksByJoinKey.get(key) || [] : [],
       };
     });
-  }, [layerAttribute, selectedLayerGeojson?.features, tasksByJoinKey]);
+  }, [layerAttribute, tasksByJoinKey, visibleFeatureWindow.features]);
 
   const filteredFeatureJoins = useMemo(() => {
     const search = normalizeKey(searchTerm);
@@ -658,12 +733,14 @@ export function ProjectSpatialMap({
     const taskStatusCounts = statusCountsFromTasks(spatializedTasks);
     return {
       features: selectedLayer?.featureCount || featureJoins.length,
+      visibleFeatures: visibleFeatureWindow.features.length,
+      viewportFeatures: visibleFeatureWindow.matchedCount,
       linkedFeatures: linkedFeatures.length,
       linkedTasks: spatializedTasks.length,
       coverage: featureJoins.length > 0 ? Math.round((linkedFeatures.length / featureJoins.length) * 100) : 0,
       ...taskStatusCounts,
     };
-  }, [featureJoins, selectedLayer?.featureCount, spatializedTasks]);
+  }, [featureJoins, selectedLayer?.featureCount, spatializedTasks, visibleFeatureWindow.features.length, visibleFeatureWindow.matchedCount]);
 
   const selectedFeatureJoin = selectedFeatureIndex == null ? null : featureJoins[selectedFeatureIndex] || null;
 
@@ -977,7 +1054,7 @@ export function ProjectSpatialMap({
             <div>
               <p className="font-black">Capa pesada protegida</p>
               <p className="mt-1">
-                Esta capa tiene {selectedLayer.featureCount?.toLocaleString("es-CO")} entidades. Para cuidar el navegador y la base, este MVP renderiza las primeras {MAX_RENDER_FEATURES.toLocaleString("es-CO")} mientras dejamos PostGIS listo para consultas espaciales paginadas.
+                Esta capa tiene {selectedLayer.featureCount?.toLocaleString("es-CO")} entidades. El mapa muestra hasta {MAX_RENDER_FEATURES.toLocaleString("es-CO")} entidades que intersectan la ventana visible actual y se recalcula al mover o acercar el mapa. Ahora ves {stats.visibleFeatures.toLocaleString("es-CO")} de {stats.viewportFeatures.toLocaleString("es-CO")} entidades dentro de esta vista.
               </p>
             </div>
           </div>
@@ -1190,7 +1267,8 @@ export function ProjectSpatialMap({
 
             <div className="mt-4 grid grid-cols-2 gap-2">
               {[
-                ["Entidades", stats.features, "bg-slate-50 text-slate-700"],
+                ["Totales", stats.features, "bg-slate-50 text-slate-700"],
+                ["En mapa", stats.visibleFeatures, "bg-cyan-50 text-cyan-700"],
                 ["Vinculadas", stats.linkedFeatures, "bg-emerald-50 text-emerald-700"],
                 ["Tareas", stats.linkedTasks, "bg-indigo-50 text-indigo-700"],
                 ["Trabajando", stats.inProgress, "bg-orange-50 text-orange-700"],
