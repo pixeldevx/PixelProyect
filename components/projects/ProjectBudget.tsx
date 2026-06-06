@@ -201,6 +201,8 @@ const toNumber = (value: any, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const toDurationNumber = (value: any, fallback = 1) => Math.max(0, toNumber(value, fallback));
+
 const getLineColorConfig = (color?: string) =>
   BUDGET_LINE_COLORS.find((item) => item.value === color) || BUDGET_LINE_COLORS[0];
 
@@ -232,8 +234,10 @@ const buildContinuousMonths = (startMonth: number, duration: number) =>
 
 const getPieceActiveMonths = (piece: BudgetPiece) => {
   if (Array.isArray(piece.activeMonths)) return normalizeActiveMonths(piece.activeMonths);
-  return buildContinuousMonths(clampMonthNumber(piece.startMonth), Math.max(1, Math.ceil(toNumber(piece.duration, 1))));
+  return buildContinuousMonths(clampMonthNumber(piece.startMonth), Math.max(1, toDurationNumber(piece.duration, 1)));
 };
+
+const getPieceDuration = (piece: BudgetPiece) => toDurationNumber(piece.duration, getPieceActiveMonths(piece).length || 0);
 
 const applyPieceSchedule = (piece: BudgetPiece, months: number[]) => {
   const activeMonths = normalizeActiveMonths(months);
@@ -248,7 +252,7 @@ const applyPieceSchedule = (piece: BudgetPiece, months: number[]) => {
 const updatePieceField = (piece: BudgetPiece, field: keyof BudgetPiece, value: string | number | string[]): BudgetPiece => {
   if (field === 'startMonth') {
     const startMonth = clampMonthNumber(value);
-    const duration = Math.max(0, Math.ceil(toNumber(piece.duration, 0)));
+    const duration = toDurationNumber(piece.duration, 0);
     return {
       ...piece,
       startMonth,
@@ -257,7 +261,7 @@ const updatePieceField = (piece: BudgetPiece, field: keyof BudgetPiece, value: s
   }
 
   if (field === 'duration') {
-    const duration = Math.max(0, Math.ceil(toNumber(value, 0)));
+    const duration = toDurationNumber(value, 0);
     return {
       ...piece,
       duration,
@@ -294,10 +298,11 @@ const createBlankPiece = (overrides: Partial<BudgetPiece> = {}): BudgetPiece => 
 
 const normalizePiece = (piece: any): BudgetPiece => {
   const startMonth = clampMonthNumber(piece?.startMonth);
-  const duration = Math.max(0, Math.ceil(toNumber(piece?.duration, 1)));
-  const activeMonths = Array.isArray(piece?.activeMonths)
+  const savedActiveMonths = Array.isArray(piece?.activeMonths)
     ? normalizeActiveMonths(piece.activeMonths)
-    : buildContinuousMonths(startMonth, Math.max(1, duration));
+    : null;
+  const duration = toDurationNumber(piece?.duration, savedActiveMonths?.length || 1);
+  const activeMonths = savedActiveMonths || buildContinuousMonths(startMonth, Math.max(1, duration));
 
   return {
     id: piece?.id || createId(),
@@ -308,7 +313,7 @@ const normalizePiece = (piece: any): BudgetPiece => {
     activeMonths,
     assignedMemberIds: normalizeStringArray(piece?.assignedMemberIds),
     quantity: toNumber(piece?.quantity, 1),
-    duration: activeMonths.length,
+    duration,
     multiplier: toNumber(piece?.multiplier, 1),
     unitCost: toNumber(piece?.unitCost, 0),
     unitLabel: piece?.unitLabel || 'unidad',
@@ -343,8 +348,7 @@ const normalizeBudgetPieces = (line: BudgetLine): BudgetPiece[] => {
 };
 
 const pieceTotal = (piece: BudgetPiece) => {
-  const activeDuration = Array.isArray(piece.activeMonths) ? getPieceActiveMonths(piece).length : toNumber(piece.duration, 0);
-  return toNumber(piece.quantity, 0) * activeDuration * toNumber(piece.multiplier, 0) * toNumber(piece.unitCost, 0);
+  return toNumber(piece.quantity, 0) * getPieceDuration(piece) * toNumber(piece.multiplier, 0) * toNumber(piece.unitCost, 0);
 };
 
 const piecesTotal = (pieces: BudgetPiece[]) => pieces.reduce((sum, piece) => sum + pieceTotal(piece), 0);
@@ -1127,7 +1131,7 @@ export function ProjectBudget({
                   <input
                     type="number"
                     min="0"
-                    step="1"
+                    step="0.01"
                     value={piece.duration}
                     onChange={(event) => handlers.update(piece.id, 'duration', event.target.value)}
                     className="h-9 w-full rounded-md border border-slate-200 px-2 text-right text-sm font-bold text-slate-700 outline-none transition group-hover:border-indigo-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
@@ -1260,7 +1264,7 @@ export function ProjectBudget({
                     <div className="min-w-0">
                       <p className="truncate text-xs font-black text-slate-700">{piece.name || 'Pieza'}</p>
                       <p className="truncate text-[10px] font-bold text-slate-400">
-                        {compactNumber(activeMonths.length)} meses · {monthRange}
+                        {compactNumber(getPieceDuration(piece))} tiempo · {compactNumber(activeMonths.length)} pixels · {monthRange}
                       </p>
                     </div>
                   </div>
@@ -1664,7 +1668,7 @@ export function ProjectBudget({
                     <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-3">
                       <div>
                         <h4 className="font-black text-slate-950">Hoja de cálculo de piezas</h4>
-                        <p className="text-xs font-medium text-slate-500">Subtotal = cantidad x meses activos x factor x valor unitario.</p>
+                        <p className="text-xs font-medium text-slate-500">Subtotal = cantidad x tiempo x factor x valor unitario. El tiempo admite decimales.</p>
                       </div>
                       <div className="flex flex-wrap items-center justify-end gap-2">
                         <div className="inline-flex rounded-md bg-slate-100 p-1 ring-1 ring-slate-200">

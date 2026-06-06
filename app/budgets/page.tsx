@@ -164,11 +164,16 @@ const getPieceActiveMonths = (piece: BudgetPiece) => {
   return buildContinuousMonths(clampMonthNumber(piece.startMonth), Math.max(1, Math.ceil(Number(piece.duration) || 1)));
 };
 
+const getPieceDuration = (piece: BudgetPiece) => {
+  const parsedDuration = Number(piece.duration);
+  return Math.max(0, Number.isFinite(parsedDuration) ? parsedDuration : getPieceActiveMonths(piece).length || 0);
+};
+
 const pieceTotal = (piece: BudgetPiece) =>
-  Number(piece.quantity || 0) * getPieceActiveMonths(piece).length * Number(piece.multiplier || 0) * Number(piece.unitCost || 0);
+  Number(piece.quantity || 0) * getPieceDuration(piece) * Number(piece.multiplier || 0) * Number(piece.unitCost || 0);
 
 const pieceMonthlyTotal = (piece: BudgetPiece) =>
-  Number(piece.quantity || 0) * Number(piece.multiplier || 0) * Number(piece.unitCost || 0);
+  pieceTotal(piece) / Math.max(1, getPieceActiveMonths(piece).length);
 
 const rateCardTotal = (card: RateCard) =>
   isCurrencyRateCard(card)
