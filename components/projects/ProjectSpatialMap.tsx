@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable @next/next/no-img-element */
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -11,9 +11,11 @@ import {
   Loader2,
   MapPin,
   MousePointer2,
+  Palette,
   RefreshCw,
   Save,
   Search,
+  Settings2,
   Trash2,
   Upload,
   X,
@@ -49,6 +51,14 @@ type GeoJsonBounds = {
   north: number;
 };
 
+type LayerStyleConfig = {
+  fillColor?: string;
+  strokeColor?: string;
+  fillOpacity?: number;
+  strokeOpacity?: number;
+  strokeWidth?: number;
+};
+
 type SpatialLayer = {
   id: string;
   name?: string;
@@ -61,6 +71,7 @@ type SpatialLayer = {
   featureCount?: number;
   attributes?: string[];
   visible?: boolean;
+  styleConfig?: LayerStyleConfig;
   joinConfig?: {
     layerAttribute?: string;
     taskAttribute?: string;
@@ -93,12 +104,20 @@ type FeatureJoin = {
   feature: GeoJsonFeature;
   key: string;
   tasks: any[];
+  sourceIndex: number;
 };
 
 type FeatureWithBounds = {
   feature: GeoJsonFeature;
   bounds: GeoJsonBounds;
   sourceIndex: number;
+};
+
+type CanvasHitRegion = {
+  index: number;
+  path: Path2D;
+  strokeWidth: number;
+  points: Array<{ x: number; y: number; radius: number }>;
 };
 
 type SpatialLayerRow = {
@@ -113,6 +132,7 @@ type SpatialLayerRow = {
   feature_count?: number | null;
   attributes?: string[] | null;
   visible?: boolean | null;
+  style_config?: LayerStyleConfig | null;
   join_config?: SpatialLayer["joinConfig"] | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -126,6 +146,14 @@ const MIN_ZOOM = 3;
 const MAX_ZOOM = 18;
 const MAX_RENDER_FEATURES = 20000;
 const VIEWPORT_BOUNDS_PADDING_RATIO = 0.18;
+const DEFAULT_LAYER_STYLE: Required<LayerStyleConfig> = {
+  fillColor: "#64748b",
+  strokeColor: "#475569",
+  fillOpacity: 0.18,
+  strokeOpacity: 0.74,
+  strokeWidth: 1.2,
+};
+const LAYER_COLOR_PRESETS = ["#64748b", "#0ea5e9", "#10b981", "#f97316", "#8b5cf6", "#ef4444", "#f59e0b", "#111827"];
 
 const statusMeta: Record<string, { label: string; color: string; fill: string; border: string }> = {
   todo: { label: "Pendiente", color: "#64748b", fill: "rgba(100,116,139,.18)", border: "#64748b" },
@@ -146,6 +174,33 @@ const normalizeKey = (value: any) =>
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase();
+
+const clampNumber = (value: any, min: number, max: number, fallback: number) => {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return fallback;
+  return Math.min(max, Math.max(min, numericValue));
+};
+
+const normalizeLayerStyle = (style?: LayerStyleConfig | null): Required<LayerStyleConfig> => ({
+  fillColor: style?.fillColor || DEFAULT_LAYER_STYLE.fillColor,
+  strokeColor: style?.strokeColor || style?.fillColor || DEFAULT_LAYER_STYLE.strokeColor,
+  fillOpacity: clampNumber(style?.fillOpacity, 0.04, 0.8, DEFAULT_LAYER_STYLE.fillOpacity),
+  strokeOpacity: clampNumber(style?.strokeOpacity, 0.1, 1, DEFAULT_LAYER_STYLE.strokeOpacity),
+  strokeWidth: clampNumber(style?.strokeWidth, 0.5, 6, DEFAULT_LAYER_STYLE.strokeWidth),
+});
+
+const colorToRgba = (color: string, opacity: number) => {
+  const normalized = color.replace("#", "");
+  const fullHex = normalized.length === 3
+    ? normalized.split("").map((char) => `${char}${char}`).join("")
+    : normalized;
+  const value = Number.parseInt(fullHex, 16);
+  if (!Number.isFinite(value)) return `rgba(100,116,139,${opacity})`;
+  const red = (value >> 16) & 255;
+  const green = (value >> 8) & 255;
+  const blue = value & 255;
+  return `rgba(${red},${green},${blue},${opacity})`;
+};
 
 const safeFilePart = (value: string) =>
   value
@@ -179,6 +234,7 @@ const mapSpatialLayerRow = (row: SpatialLayerRow): SpatialLayer => ({
   featureCount: Number(row.feature_count || 0),
   attributes: Array.isArray(row.attributes) ? row.attributes : [],
   visible: row.visible !== false,
+  styleConfig: normalizeLayerStyle(row.style_config),
   joinConfig: row.join_config || undefined,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -374,41 +430,115 @@ const getFittedView = (bounds: ReturnType<typeof getGeoJsonBounds>, width: numbe
   return { center, zoom };
 };
 
-const geometryToPaths = (geometry: GeoJsonGeometry | null, project: (coord: number[]) => ProjectedPoint) => {
-  if (!geometry?.coordinates) return [];
-
-  const ringToPath = (ring: number[][]) => {
-    const parts = ring
-      .map((coord, index) => {
-        const point = project(coord);
-        return `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
-      })
-      .join(" ");
-    return parts ? `${parts} Z` : "";
-  };
-
-  const lineToPath = (line: number[][]) =>
-    line
-      .map((coord, index) => {
-        const point = project(coord);
-        return `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
-      })
-      .join(" ");
-
-  if (geometry.type === "Polygon") return [geometry.coordinates.map(ringToPath).join(" ")].filter(Boolean);
-  if (geometry.type === "MultiPolygon") {
-    return geometry.coordinates.map((polygon: any) => polygon.map(ringToPath).join(" ")).filter(Boolean);
-  }
-  if (geometry.type === "LineString") return [lineToPath(geometry.coordinates)].filter(Boolean);
-  if (geometry.type === "MultiLineString") return geometry.coordinates.map(lineToPath).filter(Boolean);
-  return [];
-};
-
 const getPointCoordinates = (geometry: GeoJsonGeometry | null) => {
   if (!geometry?.coordinates) return [];
   if (geometry.type === "Point") return [geometry.coordinates];
   if (geometry.type === "MultiPoint") return geometry.coordinates;
   return [];
+};
+
+const getCanvasSimplificationTolerance = (zoom: number) => {
+  if (zoom <= 10) return 6;
+  if (zoom <= 12) return 3.5;
+  if (zoom <= 14) return 1.8;
+  if (zoom <= 16) return 0.9;
+  return 0.35;
+};
+
+const appendLineToCanvasPath = (
+  path: Path2D,
+  line: number[][],
+  project: (coord: number[]) => ProjectedPoint,
+  tolerance: number,
+  closePath = false
+) => {
+  if (!Array.isArray(line) || line.length === 0) return false;
+
+  let started = false;
+  let lastX = Number.NaN;
+  let lastY = Number.NaN;
+  let firstX = Number.NaN;
+  let firstY = Number.NaN;
+  let pointCount = 0;
+
+  line.forEach((coord, index) => {
+    if (!Array.isArray(coord) || typeof coord[0] !== "number" || typeof coord[1] !== "number") return;
+    const point = project(coord);
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+
+    const isLast = index === line.length - 1;
+    const hasLastPoint = Number.isFinite(lastX) && Number.isFinite(lastY);
+    const shouldKeep =
+      !hasLastPoint ||
+      isLast ||
+      Math.hypot(point.x - lastX, point.y - lastY) >= tolerance;
+
+    if (!shouldKeep) return;
+
+    if (!started) {
+      path.moveTo(point.x, point.y);
+      firstX = point.x;
+      firstY = point.y;
+      started = true;
+    } else {
+      path.lineTo(point.x, point.y);
+    }
+
+    lastX = point.x;
+    lastY = point.y;
+    pointCount += 1;
+  });
+
+  if (closePath && started) {
+    if (
+      Number.isFinite(firstX) &&
+      Number.isFinite(firstY) &&
+      Number.isFinite(lastX) &&
+      Number.isFinite(lastY) &&
+      Math.hypot(firstX - lastX, firstY - lastY) >= 0.25
+    ) {
+      path.lineTo(firstX, firstY);
+    }
+    path.closePath();
+  }
+
+  return pointCount > 1;
+};
+
+const appendGeometryToCanvasPath = (
+  path: Path2D,
+  geometry: GeoJsonGeometry | null,
+  project: (coord: number[]) => ProjectedPoint,
+  tolerance: number
+) => {
+  if (!geometry?.coordinates) return { hasFill: false, hasStroke: false };
+
+  if (geometry.type === "Polygon") {
+    const hasPath = geometry.coordinates.some((ring: number[][]) => appendLineToCanvasPath(path, ring, project, tolerance, true));
+    return { hasFill: hasPath, hasStroke: hasPath };
+  }
+
+  if (geometry.type === "MultiPolygon") {
+    let hasPath = false;
+    geometry.coordinates.forEach((polygon: any) => {
+      polygon.forEach((ring: number[][]) => {
+        if (appendLineToCanvasPath(path, ring, project, tolerance, true)) hasPath = true;
+      });
+    });
+    return { hasFill: hasPath, hasStroke: hasPath };
+  }
+
+  if (geometry.type === "LineString") {
+    const hasPath = appendLineToCanvasPath(path, geometry.coordinates, project, tolerance, false);
+    return { hasFill: false, hasStroke: hasPath };
+  }
+
+  if (geometry.type === "MultiLineString") {
+    const hasPath = geometry.coordinates.some((line: number[][]) => appendLineToCanvasPath(path, line, project, tolerance, false));
+    return { hasFill: false, hasStroke: hasPath };
+  }
+
+  return { hasFill: false, hasStroke: false };
 };
 
 const loadShapefileParser = () =>
@@ -471,8 +601,14 @@ export function ProjectSpatialMap({
   const [selectedLayerId, setSelectedLayerId] = useState("");
   const [layerGeojsons, setLayerGeojsons] = useState<Record<string, GeoJsonFeatureCollection>>({});
   const [loadingLayerData, setLoadingLayerData] = useState(false);
-  const [uploadName, setUploadName] = useState("");
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [uploadDraftFile, setUploadDraftFile] = useState<File | null>(null);
+  const [uploadDraftName, setUploadDraftName] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [layerEditName, setLayerEditName] = useState("");
+  const [layerEditStyle, setLayerEditStyle] = useState<Required<LayerStyleConfig>>(DEFAULT_LAYER_STYLE);
+  const [layerEditVisible, setLayerEditVisible] = useState(true);
+  const [savingLayerSettings, setSavingLayerSettings] = useState(false);
   const [layerAttribute, setLayerAttribute] = useState("");
   const [taskAttribute, setTaskAttribute] = useState("externalWorkflowId");
   const [customTaskAttribute, setCustomTaskAttribute] = useState("");
@@ -483,7 +619,11 @@ export function ProjectSpatialMap({
   const [mapView, setMapView] = useState({ center: { lon: -74.2973, lat: 4.5709 }, zoom: 5 });
   const [isDragging, setIsDragging] = useState(false);
   const mapRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const hitRegionsRef = useRef<CanvasHitRegion[]>([]);
   const dragRef = useRef<{ x: number; y: number; center: { lon: number; lat: number } } | null>(null);
+  const pendingPanCenterRef = useRef<{ lon: number; lat: number } | null>(null);
+  const panFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
@@ -564,6 +704,12 @@ export function ProjectSpatialMap({
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (panFrameRef.current != null) cancelAnimationFrame(panFrameRef.current);
+    };
+  }, []);
+
   const selectedLayer = useMemo(
     () => layers.find((layer) => layer.id === selectedLayerId) || null,
     [layers, selectedLayerId]
@@ -604,11 +750,17 @@ export function ProjectSpatialMap({
       setLayerAttribute("");
       setTaskAttribute("externalWorkflowId");
       setCustomTaskAttribute("");
+      setLayerEditName("");
+      setLayerEditStyle(DEFAULT_LAYER_STYLE);
+      setLayerEditVisible(true);
       setSelectedFeatureIndex(null);
       return;
     }
 
     const firstAttribute = selectedLayer.attributes?.[0] || "";
+    setLayerEditName(selectedLayer.name || selectedLayer.fileName || "");
+    setLayerEditStyle(normalizeLayerStyle(selectedLayer.styleConfig));
+    setLayerEditVisible(selectedLayer.visible !== false);
     setLayerAttribute(selectedLayer.joinConfig?.layerAttribute || firstAttribute);
     setTaskAttribute(selectedLayer.joinConfig?.taskAttribute || "externalWorkflowId");
     setCustomTaskAttribute(
@@ -686,6 +838,8 @@ export function ProjectSpatialMap({
     const features: FeatureWithBounds[] = [];
     let matchedCount = 0;
 
+    if (selectedLayer?.visible === false) return { features, matchedCount };
+
     boundedFeatures.forEach((item) => {
       if (mapViewportBounds && !boundsIntersect(item.bounds, mapViewportBounds)) return;
       matchedCount += 1;
@@ -693,16 +847,17 @@ export function ProjectSpatialMap({
     });
 
     return { features, matchedCount };
-  }, [boundedFeatures, mapViewportBounds]);
+  }, [boundedFeatures, mapViewportBounds, selectedLayer?.visible]);
 
   const featureJoins = useMemo<FeatureJoin[]>(() => {
-    return visibleFeatureWindow.features.map(({ feature }) => {
+    return visibleFeatureWindow.features.map(({ feature, sourceIndex }) => {
       const rawKey = feature.properties?.[layerAttribute];
       const key = normalizeKey(rawKey);
       return {
         feature,
         key: String(rawKey ?? ""),
         tasks: key ? tasksByJoinKey.get(key) || [] : [],
+        sourceIndex,
       };
     });
   }, [layerAttribute, tasksByJoinKey, visibleFeatureWindow.features]);
@@ -743,6 +898,7 @@ export function ProjectSpatialMap({
   }, [featureJoins, selectedLayer?.featureCount, spatializedTasks, visibleFeatureWindow.features.length, visibleFeatureWindow.matchedCount]);
 
   const selectedFeatureJoin = selectedFeatureIndex == null ? null : featureJoins[selectedFeatureIndex] || null;
+  const selectedLayerStyle = useMemo(() => normalizeLayerStyle(selectedLayer?.styleConfig), [selectedLayer?.styleConfig]);
 
   const centerPx = projectLonLat(mapView.center.lon, mapView.center.lat, mapView.zoom);
   const topLeft = {
@@ -750,13 +906,99 @@ export function ProjectSpatialMap({
     y: centerPx.y - mapSize.height / 2,
   };
 
-  const projectCoordinate = (coord: number[]) => {
+  const projectCoordinate = useCallback((coord: number[]) => {
     const projected = projectLonLat(Number(coord[0]), Number(coord[1]), mapView.zoom);
     return {
       x: projected.x - topLeft.x,
       y: projected.y - topLeft.y,
     };
-  };
+  }, [mapView.zoom, topLeft.x, topLeft.y]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    const frame = requestAnimationFrame(() => {
+      const pixelRatio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      const width = Math.max(1, mapSize.width);
+      const height = Math.max(1, mapSize.height);
+
+      canvas.width = Math.round(width * pixelRatio);
+      canvas.height = Math.round(height * pixelRatio);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.clearRect(0, 0, width, height);
+      context.lineJoin = "round";
+      context.lineCap = "round";
+
+      const tolerance = getCanvasSimplificationTolerance(mapView.zoom);
+      const hitRegions: CanvasHitRegion[] = [];
+
+      featureJoins.forEach((join, index) => {
+        const primaryTask = join.tasks[0];
+        const meta = primaryTask ? getStatusMeta(primaryTask) : null;
+        const isSelected = selectedFeatureIndex === index;
+        const baseStyle = selectedLayerStyle;
+        const fillStyle = meta?.fill || colorToRgba(baseStyle.fillColor, baseStyle.fillOpacity);
+        const strokeStyle = meta?.border || colorToRgba(baseStyle.strokeColor, baseStyle.strokeOpacity);
+        const strokeWidth = isSelected ? Math.max(baseStyle.strokeWidth + 1.8, 3) : baseStyle.strokeWidth;
+        const path = new Path2D();
+        const drawState = appendGeometryToCanvasPath(path, join.feature.geometry, projectCoordinate, tolerance);
+        const points: CanvasHitRegion["points"] = getPointCoordinates(join.feature.geometry)
+          .map((coord: number[]) => {
+            const point = projectCoordinate(coord);
+            return {
+              x: point.x,
+              y: point.y,
+              radius: isSelected ? 7 : 4.5,
+            };
+          })
+          .filter((point: CanvasHitRegion["points"][number]) => Number.isFinite(point.x) && Number.isFinite(point.y));
+
+        context.globalAlpha = 1;
+        if (drawState.hasFill) {
+          context.fillStyle = fillStyle;
+          context.fill(path, "evenodd");
+        }
+
+        if (drawState.hasStroke) {
+          context.strokeStyle = isSelected ? "#1d4ed8" : strokeStyle;
+          context.lineWidth = strokeWidth;
+          context.stroke(path);
+        }
+
+        points.forEach((point) => {
+          context.beginPath();
+          context.arc(point.x, point.y, point.radius, 0, Math.PI * 2);
+          context.fillStyle = meta?.border || baseStyle.strokeColor;
+          context.fill();
+          context.lineWidth = isSelected ? 2.5 : 1.5;
+          context.strokeStyle = "#fff";
+          context.stroke();
+        });
+
+        if (drawState.hasFill || drawState.hasStroke || points.length > 0) {
+          hitRegions.push({ index, path, strokeWidth: Math.max(strokeWidth + 5, 8), points });
+        }
+      });
+
+      hitRegionsRef.current = hitRegions;
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [
+    featureJoins,
+    mapSize.height,
+    mapSize.width,
+    mapView.zoom,
+    projectCoordinate,
+    selectedFeatureIndex,
+    selectedLayerStyle,
+  ]);
 
   const tiles = useMemo(() => {
     const maxTile = Math.pow(2, mapView.zoom);
@@ -781,15 +1023,21 @@ export function ProjectSpatialMap({
     return nextTiles;
   }, [mapSize.height, mapSize.width, mapView.zoom, topLeft.x, topLeft.y]);
 
-  const handleUploadFile = async (file: File | null) => {
-    if (!file || !canManage) return;
+  const handleUploadFile = async (file: File | null, explicitName?: string) => {
+    if (!file || !canManage) return false;
 
     const extension = file.name.split(".").pop()?.toLowerCase() || "";
     const sourceType = extension === "zip" ? "shapefile" : "geojson";
 
     if (!["zip", "geojson", "json"].includes(extension)) {
       toast.warning("Sube un shapefile comprimido .zip o un archivo .geojson.");
-      return;
+      return false;
+    }
+
+    const name = (explicitName || file.name.replace(/\.[^.]+$/, "")).trim();
+    if (!name) {
+      toast.warning("Escribe un nombre para identificar la capa.");
+      return false;
     }
 
     setUploading(true);
@@ -809,11 +1057,11 @@ export function ProjectSpatialMap({
       }
 
       const attributes = extractAttributes(geojson);
-      const name = uploadName.trim() || file.name.replace(/\.[^.]+$/, "");
       const firstAttribute = attributes[0] || "";
       const bounds = getGeoJsonBounds(geojson);
       const storagePath = makeSpatialLayerStoragePath(projectId, file.name);
       const geoJsonRef = ref(storage, storagePath);
+      const styleConfig = normalizeLayerStyle(DEFAULT_LAYER_STYLE);
 
       await uploadBytes(geoJsonRef, makeGeoJsonFile(geojson, file.name));
       uploadedStoragePath = storagePath;
@@ -831,6 +1079,7 @@ export function ProjectSpatialMap({
           attributes,
           bounds,
           visible: true,
+          style_config: styleConfig,
           join_config: {
             layerAttribute: firstAttribute,
             taskAttribute: "externalWorkflowId",
@@ -867,6 +1116,7 @@ export function ProjectSpatialMap({
           attributes,
           bounds,
           visible: true,
+          styleConfig,
           joinConfig: {
             layerAttribute: firstAttribute,
             taskAttribute: "externalWorkflowId",
@@ -877,11 +1127,15 @@ export function ProjectSpatialMap({
       ]);
 
       setSelectedLayerId(layerId || storagePath);
-      setUploadName("");
+      setIsUploadModalOpen(false);
+      setUploadDraftFile(null);
+      setUploadDraftName("");
       toast.success(`Capa "${name}" cargada con ${geojson.features.length} entidades.`);
+      return true;
     } catch (error: any) {
       console.error("Error uploading spatial layer:", error);
       toast.error(error?.message || "No se pudo procesar la capa espacial.");
+      return false;
     } finally {
       setUploading(false);
     }
@@ -924,6 +1178,51 @@ export function ProjectSpatialMap({
     } catch (error) {
       console.error("Error saving spatial join:", error);
       toast.error("No se pudo guardar la unión espacial.");
+    }
+  };
+
+  const handleSaveLayerSettings = async () => {
+    if (!selectedLayer || !canManage) return;
+    const nextName = layerEditName.trim();
+    if (!nextName) {
+      toast.warning("Escribe un nombre para la capa.");
+      return;
+    }
+
+    const nextStyle = normalizeLayerStyle(layerEditStyle);
+    setSavingLayerSettings(true);
+    try {
+      const { error } = await supabase
+        .from(SPATIAL_LAYERS_TABLE)
+        .update({
+          name: nextName,
+          visible: layerEditVisible,
+          style_config: nextStyle,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", selectedLayer.id)
+        .eq("project_id", projectId);
+
+      if (error) throw error;
+
+      setLayers((current) =>
+        current.map((layer) =>
+          layer.id === selectedLayer.id
+            ? {
+                ...layer,
+                name: nextName,
+                visible: layerEditVisible,
+                styleConfig: nextStyle,
+              }
+            : layer
+        )
+      );
+      toast.success("Capa actualizada.");
+    } catch (error) {
+      console.error("Error saving spatial layer settings:", error);
+      toast.error("No se pudo guardar la configuración de la capa.");
+    } finally {
+      setSavingLayerSettings(false);
     }
   };
 
@@ -975,12 +1274,54 @@ export function ProjectSpatialMap({
     const dx = event.clientX - dragRef.current.x;
     const dy = event.clientY - dragRef.current.y;
     const nextCenter = unprojectPoint({ x: startCenterPx.x - dx, y: startCenterPx.y - dy }, mapView.zoom);
-    setMapView((current) => ({ ...current, center: nextCenter }));
+    pendingPanCenterRef.current = nextCenter;
+    if (panFrameRef.current != null) return;
+    panFrameRef.current = requestAnimationFrame(() => {
+      const pendingCenter = pendingPanCenterRef.current;
+      if (pendingCenter) {
+        setMapView((current) => ({ ...current, center: pendingCenter }));
+      }
+      panFrameRef.current = null;
+    });
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = dragRef.current;
+    if (pendingPanCenterRef.current) {
+      const pendingCenter = pendingPanCenterRef.current;
+      setMapView((current) => ({ ...current, center: pendingCenter }));
+      pendingPanCenterRef.current = null;
+    }
+    if (panFrameRef.current != null) {
+      cancelAnimationFrame(panFrameRef.current);
+      panFrameRef.current = null;
+    }
     dragRef.current = null;
     setIsDragging(false);
+
+    if (!dragState) return;
+    const movedDistance = Math.hypot(event.clientX - dragState.x, event.clientY - dragState.y);
+    if (movedDistance > 6) return;
+
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    const mapElement = mapRef.current;
+    if (!canvas || !context || !mapElement) return;
+
+    const rect = mapElement.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const hitRegions = hitRegionsRef.current;
+
+    for (let index = hitRegions.length - 1; index >= 0; index -= 1) {
+      const region = hitRegions[index];
+      const pointHit = region.points.some((point) => Math.hypot(point.x - x, point.y - y) <= point.radius + 5);
+      context.lineWidth = region.strokeWidth;
+      if (pointHit || context.isPointInPath(region.path, x, y, "evenodd") || context.isPointInStroke(region.path, x, y)) {
+        setSelectedFeatureIndex(region.index);
+        return;
+      }
+    }
   };
 
   const recenterLayer = () => {
@@ -1002,20 +1343,19 @@ export function ProjectSpatialMap({
         </div>
 
         {canManage && (
-          <label className="inline-flex cursor-pointer items-center justify-center rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700">
+          <Button
+            type="button"
+            onClick={() => {
+              setUploadDraftFile(null);
+              setUploadDraftName("");
+              setIsUploadModalOpen(true);
+            }}
+            disabled={uploading}
+            className="bg-emerald-600 text-white hover:bg-emerald-700"
+          >
             {uploading ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Upload size={16} className="mr-2" />}
             Subir capa
-            <input
-              type="file"
-              accept=".zip,.geojson,.json,application/geo+json,application/json"
-              className="hidden"
-              disabled={uploading}
-              onChange={(event) => {
-                void handleUploadFile(event.target.files?.[0] || null);
-                event.currentTarget.value = "";
-              }}
-            />
-          </label>
+          </Button>
         )}
       </div>
 
@@ -1061,8 +1401,8 @@ export function ProjectSpatialMap({
         </div>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="self-start overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50/70 p-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="grid flex-1 gap-3 md:grid-cols-3">
               <div>
@@ -1150,7 +1490,7 @@ export function ProjectSpatialMap({
             </div>
           )}
 
-          <div className="relative h-[62vh] min-h-[460px] bg-slate-100">
+          <div className="relative min-h-[560px] bg-slate-100" style={{ height: "min(72vh, 760px)" }}>
             <div
               ref={mapRef}
               className={`absolute inset-0 overflow-hidden ${isDragging ? "cursor-grabbing" : "cursor-grab"}`}
@@ -1174,49 +1514,11 @@ export function ProjectSpatialMap({
                 />
               ))}
 
-              <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${mapSize.width} ${mapSize.height}`}>
-                {featureJoins.map((join, index) => {
-                  const primaryTask = join.tasks[0];
-                  const meta = primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
-                  const paths = geometryToPaths(join.feature.geometry, projectCoordinate);
-                  const points = getPointCoordinates(join.feature.geometry);
-                  const isSelected = selectedFeatureIndex === index;
-
-                  return (
-                    <g key={`${join.key}-${index}`}>
-                      {paths.map((path: string, pathIndex: number) => (
-                        <path
-                          key={pathIndex}
-                          d={path}
-                          fill={join.tasks.length > 0 ? meta.fill : "rgba(148,163,184,.12)"}
-                          stroke={join.tasks.length > 0 ? meta.border : "#94a3b8"}
-                          strokeWidth={isSelected ? 3 : 1.6}
-                          vectorEffect="non-scaling-stroke"
-                          opacity={join.tasks.length > 0 ? 0.95 : 0.55}
-                          className="pointer-events-auto cursor-pointer transition-opacity hover:opacity-100"
-                          onClick={() => setSelectedFeatureIndex(index)}
-                        />
-                      ))}
-                      {points.map((coord: number[], pointIndex: number) => {
-                        const point = projectCoordinate(coord);
-                        return (
-                          <circle
-                            key={pointIndex}
-                            cx={point.x}
-                            cy={point.y}
-                            r={isSelected ? 8 : 6}
-                            fill={join.tasks.length > 0 ? meta.border : "#94a3b8"}
-                            stroke="#fff"
-                            strokeWidth={2}
-                            className="pointer-events-auto cursor-pointer"
-                            onClick={() => setSelectedFeatureIndex(index)}
-                          />
-                        );
-                      })}
-                    </g>
-                  );
-                })}
-              </svg>
+              <canvas
+                ref={canvasRef}
+                className="pointer-events-none absolute inset-0 h-full w-full"
+                aria-label="Capa espacial renderizada"
+              />
 
               {!selectedLayer && (
                 <div className="absolute inset-0 flex items-center justify-center bg-white/80 p-6 text-center backdrop-blur-sm">
@@ -1294,26 +1596,122 @@ export function ProjectSpatialMap({
                 <span> en {tasks.length} tareas del proyecto.</span>
               </div>
             </div>
-
-            {canManage && selectedLayer && (
-              <Button type="button" variant="outline" onClick={() => setLayerPendingDelete(selectedLayer)} className="mt-4 w-full border-red-100 text-red-700 hover:bg-red-50">
-                <Trash2 size={15} className="mr-2" />
-                Eliminar capa
-              </Button>
-            )}
           </div>
 
-          {canManage && (
+          {canManage && selectedLayer && (
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Nombre antes de subir</p>
+              <div className="flex items-center gap-2">
+                <Settings2 size={16} className="text-indigo-600" />
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Gestionar capa</p>
+              </div>
+
+              <label className="mt-4 block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Nombre</label>
               <input
-                value={uploadName}
-                onChange={(event) => setUploadName(event.target.value)}
-                placeholder="Ej: Predios operativos, Barrios, Manzanas"
+                value={layerEditName}
+                onChange={(event) => setLayerEditName(event.target.value)}
+                placeholder="Ej: Predios operativos"
                 className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
               />
-              <div className="mt-3 rounded-xl bg-cyan-50 p-3 text-xs font-semibold leading-5 text-cyan-800">
-                Para shapefile sube un .zip con .shp, .shx, .dbf y, si existe, .prj. El mapa también acepta GeoJSON.
+
+              <div className="mt-4">
+                <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                  <Palette size={14} />
+                  Estilo visual
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {LAYER_COLOR_PRESETS.map((color) => {
+                    const isActive = layerEditStyle.fillColor.toLowerCase() === color.toLowerCase();
+                    return (
+                      <button
+                        type="button"
+                        key={color}
+                        title={`Usar color ${color}`}
+                        onClick={() => setLayerEditStyle((current) => ({ ...current, fillColor: color, strokeColor: color }))}
+                        className={`h-8 w-8 rounded-full border-2 shadow-sm transition ${
+                          isActive ? "border-slate-950 ring-2 ring-slate-950/10" : "border-white hover:scale-105"
+                        }`}
+                        style={{ backgroundColor: color }}
+                        aria-label={`Usar color ${color}`}
+                      />
+                    );
+                  })}
+                  <input
+                    type="color"
+                    value={layerEditStyle.fillColor}
+                    onChange={(event) =>
+                      setLayerEditStyle((current) => ({
+                        ...current,
+                        fillColor: event.target.value,
+                        strokeColor: event.target.value,
+                      }))
+                    }
+                    className="h-8 w-10 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
+                    aria-label="Color personalizado"
+                  />
+                </div>
+              </div>
+
+              <label className="mt-4 block text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                Opacidad {Math.round(layerEditStyle.fillOpacity * 100)}%
+              </label>
+              <input
+                type="range"
+                min={0.04}
+                max={0.8}
+                step={0.02}
+                value={layerEditStyle.fillOpacity}
+                onChange={(event) =>
+                  setLayerEditStyle((current) => ({
+                    ...current,
+                    fillOpacity: Number(event.target.value),
+                    strokeOpacity: Math.min(1, Math.max(0.35, Number(event.target.value) + 0.45)),
+                  }))
+                }
+                className="mt-2 w-full accent-emerald-600"
+              />
+
+              <label className="mt-4 block text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                Borde {layerEditStyle.strokeWidth.toFixed(1)} px
+              </label>
+              <input
+                type="range"
+                min={0.5}
+                max={6}
+                step={0.1}
+                value={layerEditStyle.strokeWidth}
+                onChange={(event) =>
+                  setLayerEditStyle((current) => ({
+                    ...current,
+                    strokeWidth: Number(event.target.value),
+                  }))
+                }
+                className="mt-2 w-full accent-indigo-600"
+              />
+
+              <label className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700">
+                Mostrar capa en el mapa
+                <input
+                  type="checkbox"
+                  checked={layerEditVisible}
+                  onChange={(event) => setLayerEditVisible(event.target.checked)}
+                  className="h-5 w-5 accent-emerald-600"
+                />
+              </label>
+
+              <div className="mt-4 grid gap-2">
+                <Button
+                  type="button"
+                  onClick={handleSaveLayerSettings}
+                  disabled={savingLayerSettings}
+                  className="bg-slate-950 text-white hover:bg-slate-800"
+                >
+                  {savingLayerSettings ? <Loader2 size={15} className="mr-2 animate-spin" /> : <Save size={15} className="mr-2" />}
+                  Guardar estilo
+                </Button>
+                <Button type="button" variant="outline" onClick={() => setLayerPendingDelete(selectedLayer)} className="border-red-100 text-red-700 hover:bg-red-50">
+                  <Trash2 size={15} className="mr-2" />
+                  Eliminar capa
+                </Button>
               </div>
             </div>
           )}
@@ -1488,6 +1886,107 @@ export function ProjectSpatialMap({
           </div>
         </div>
       </div>
+
+      {isUploadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+          <form
+            className="w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleUploadFile(uploadDraftFile, uploadDraftName);
+            }}
+          >
+            <div className="border-b border-slate-100 p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-black uppercase tracking-[0.16em] text-emerald-700">
+                    <Upload size={14} />
+                    Nueva capa espacial
+                  </div>
+                  <h3 className="text-xl font-black text-slate-900">Subir capa al mapa</h3>
+                  <p className="mt-1 text-sm font-medium leading-6 text-slate-500">
+                    Dale un nombre operativo antes de cargarla. Ese nombre aparecerá en el selector y en los reportes espaciales.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (uploading) return;
+                    setIsUploadModalOpen(false);
+                    setUploadDraftFile(null);
+                    setUploadDraftName("");
+                  }}
+                  className="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                  aria-label="Cerrar"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-4 bg-slate-50 p-5">
+              <div>
+                <label className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Nombre de la capa</label>
+                <input
+                  value={uploadDraftName}
+                  onChange={(event) => setUploadDraftName(event.target.value)}
+                  placeholder="Ej: Predios operativos, Barrios, Manzanas"
+                  className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Archivo espacial</label>
+                <label className="flex min-h-32 cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-emerald-300 bg-white px-5 py-6 text-center transition hover:border-emerald-500 hover:bg-emerald-50/40">
+                  <Upload className="h-8 w-8 text-emerald-600" />
+                  <span className="mt-3 text-sm font-black text-slate-900">
+                    {uploadDraftFile ? uploadDraftFile.name : "Seleccionar shapefile .zip o GeoJSON"}
+                  </span>
+                  <span className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                    Para shapefile sube un .zip con .shp, .shx, .dbf y, si existe, .prj.
+                  </span>
+                  <input
+                    type="file"
+                    accept=".zip,.geojson,.json,application/geo+json,application/json"
+                    className="hidden"
+                    disabled={uploading}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0] || null;
+                      setUploadDraftFile(file);
+                      if (file && !uploadDraftName.trim()) setUploadDraftName(file.name.replace(/\.[^.]+$/, ""));
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+
+              <div className="rounded-xl border border-cyan-100 bg-cyan-50 p-3 text-xs font-semibold leading-5 text-cyan-800">
+                El archivo se normaliza a GeoJSON liviano en Storage. La base guarda solo metadatos, estilos y la unión con tareas para proteger el rendimiento.
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 border-t border-slate-100 p-5">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={uploading}
+                onClick={() => {
+                  setIsUploadModalOpen(false);
+                  setUploadDraftFile(null);
+                  setUploadDraftName("");
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={uploading || !uploadDraftFile || !uploadDraftName.trim()} className="bg-emerald-600 text-white hover:bg-emerald-700">
+                {uploading ? <Loader2 size={15} className="mr-2 animate-spin" /> : <Upload size={15} className="mr-2" />}
+                Subir capa
+              </Button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {layerPendingDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
