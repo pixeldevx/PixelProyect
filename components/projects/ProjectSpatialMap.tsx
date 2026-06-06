@@ -261,35 +261,43 @@ const extractAttributes = (geojson?: GeoJsonFeatureCollection) => {
   return Array.from(attributes).sort((left, right) => left.localeCompare(right));
 };
 
-const collectCoordinates = (geometry: GeoJsonGeometry | null): number[][] => {
-  if (!geometry?.coordinates) return [];
-
-  const coordinates: number[][] = [];
-  const walk = (value: any) => {
-    if (!Array.isArray(value)) return;
-    if (typeof value[0] === "number" && typeof value[1] === "number") {
-      coordinates.push([value[0], value[1]]);
-      return;
-    }
-    value.forEach(walk);
-  };
-
-  walk(geometry.coordinates);
-  return coordinates.filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat));
-};
-
 const getGeoJsonBounds = (geojson?: GeoJsonFeatureCollection) => {
-  const coords = (geojson?.features || []).flatMap((feature) => collectCoordinates(feature.geometry));
-  if (coords.length === 0) return null;
+  let west = Number.POSITIVE_INFINITY;
+  let south = Number.POSITIVE_INFINITY;
+  let east = Number.NEGATIVE_INFINITY;
+  let north = Number.NEGATIVE_INFINITY;
 
-  const lons = coords.map(([lon]) => lon);
-  const lats = coords.map(([, lat]) => lat);
-  return {
-    west: Math.min(...lons),
-    south: Math.min(...lats),
-    east: Math.max(...lons),
-    north: Math.max(...lats),
+  const includeCoordinate = (value: any) => {
+    if (!Array.isArray(value) || typeof value[0] !== "number" || typeof value[1] !== "number") return false;
+    const lon = value[0];
+    const lat = value[1];
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return true;
+    if (lon < west) west = lon;
+    if (lon > east) east = lon;
+    if (lat < south) south = lat;
+    if (lat > north) north = lat;
+    return true;
   };
+
+  (geojson?.features || []).forEach((feature) => {
+    const coordinates = feature.geometry?.coordinates;
+    if (!Array.isArray(coordinates)) return;
+
+    const stack = [coordinates];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!Array.isArray(current) || includeCoordinate(current)) continue;
+      for (let index = 0; index < current.length; index += 1) {
+        stack.push(current[index]);
+      }
+    }
+  });
+
+  if (!Number.isFinite(west) || !Number.isFinite(south) || !Number.isFinite(east) || !Number.isFinite(north)) {
+    return null;
+  }
+
+  return { west, south, east, north };
 };
 
 const projectLonLat = (lon: number, lat: number, zoom: number): ProjectedPoint => {
