@@ -6,7 +6,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen, BarChart3, Package } from 'lucide-react';
+import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen, BarChart3, Package, Map as MapIcon } from 'lucide-react';
 import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment, Timestamp } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
@@ -20,6 +20,7 @@ import { ProjectGantt } from '@/components/projects/ProjectGantt';
 import { ProjectDocumentsTree } from '@/components/projects/ProjectDocumentsTree';
 import { ProjectDriveRepositories } from '@/components/projects/ProjectDriveRepositories';
 import { ProjectInventory } from '@/components/projects/ProjectInventory';
+import { ProjectSpatialMap } from '@/components/projects/ProjectSpatialMap';
 import { ProjectQuality } from '@/components/projects/ProjectQuality';
 import { ProjectLogbook } from '@/components/projects/ProjectLogbook';
 import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
@@ -192,7 +193,7 @@ export default function ProjectDetailsPage() {
   const [userProfiles, setUserProfiles] = useState<any[]>([]);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'inventory' | 'tasks' | 'logbook' | 'quality' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
+  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'inventory' | 'map' | 'tasks' | 'logbook' | 'quality' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
   const [showDocumentIssueAlert, setShowDocumentIssueAlert] = useState(false);
   const canAccessProjectBudget = PROJECT_BUDGET_ACCESS_ROLES.has(userRole || '');
 
@@ -202,7 +203,7 @@ export default function ProjectDetailsPage() {
       setActiveTab('tasks');
       return;
     }
-    if (tabParam && ['documents', 'drive', 'inventory', 'tasks', 'logbook', 'quality', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
+    if (tabParam && ['documents', 'drive', 'inventory', 'map', 'tasks', 'logbook', 'quality', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
       setActiveTab(tabParam as any);
     }
   }, [searchParams]);
@@ -2143,6 +2144,19 @@ export default function ProjectDetailsPage() {
             </div>
           </button>
           <button
+            onClick={() => setActiveTab('map')}
+            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
+              activeTab === 'map'
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <MapIcon size={16} />
+              Mapa
+            </div>
+          </button>
+          <button
             onClick={() => setActiveTab('logbook')}
             className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
               activeTab === 'logbook'
@@ -2286,6 +2300,17 @@ export default function ProjectDetailsPage() {
           teamMembers={projectAssignableTeamMembers}
           currentUser={user}
           canManage={canManageInventory}
+        />
+      )}
+
+      {activeTab === 'map' && (
+        <ProjectSpatialMap
+          projectId={projectId}
+          project={project}
+          tasks={tasks}
+          teamMembers={projectAssignableTeamMembers}
+          currentUser={user}
+          canManage={canEditTaskDetails}
         />
       )}
 
