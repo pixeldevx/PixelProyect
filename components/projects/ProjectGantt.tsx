@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Gantt, Task, ViewMode } from 'gantt-task-react';
 import "gantt-task-react/dist/index.css";
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
-import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw, ClipboardList, Search, X } from 'lucide-react';
+import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw, ClipboardList, Search, X, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -197,6 +197,11 @@ const getTaskScheduleState = (task: any) => {
   return msUntilDue <= 2 * 24 * 60 * 60 * 1000 ? 'due_soon' : 'ok';
 };
 
+const isTaskFinished = (task: any) => {
+  const status = task?.status || '';
+  return status === 'completed' || status === 'completed_late' || status === 'listo';
+};
+
 const getScheduleRailColor = (task: any) => {
   const scheduleState = getTaskScheduleState(task);
   if (scheduleState === 'overdue') return 'bg-red-600';
@@ -281,6 +286,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [openActionMenuTaskId, setOpenActionMenuTaskId] = useState<string | null>(null);
   const [taskForDateEdit, setTaskForDateEdit] = useState<any>(null);
   const [scheduleFilter, setScheduleFilter] = useState<ScheduleFilter>(null);
+  const [hideCompletedTasks, setHideCompletedTasks] = useState(true);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
@@ -400,6 +406,32 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     });
   }, [tasks]);
 
+  const completionFilteredTasks = useMemo(() => {
+    if (!hideCompletedTasks) return sortedTasks;
+
+    const childrenByParentId = sortedTasks.reduce<Map<string, any[]>>((map, task) => {
+      if (!task.parentTaskId) return map;
+      const siblings = map.get(task.parentTaskId) || [];
+      siblings.push(task);
+      map.set(task.parentTaskId, siblings);
+      return map;
+    }, new Map<string, any[]>());
+
+    const hasOpenDescendant = (taskId: string): boolean => {
+      const children = childrenByParentId.get(taskId) || [];
+      return children.some((child) => !isTaskFinished(child) || hasOpenDescendant(child.id));
+    };
+
+    return sortedTasks.filter((task) => !isTaskFinished(task) || hasOpenDescendant(task.id));
+  }, [hideCompletedTasks, sortedTasks]);
+
+  const completedTaskCount = useMemo(
+    () => sortedTasks.filter((task) => isTaskFinished(task) && !task.isWorkflowStep).length,
+    [sortedTasks]
+  );
+
+  const hiddenCompletedCount = hideCompletedTasks ? Math.max(0, sortedTasks.length - completionFilteredTasks.length) : 0;
+
   const scheduleStats = useMemo(() => {
     const realTasks = sortedTasks.filter((task) => !task.isWorkflowStep);
     return {
@@ -411,13 +443,13 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
   const filteredSortedTasks = useMemo(() => {
     const scheduleFilteredTasks = scheduleFilter
-      ? sortedTasks.filter((task) => getTaskScheduleState(task) === scheduleFilter)
-      : sortedTasks;
+      ? completionFilteredTasks.filter((task) => getTaskScheduleState(task) === scheduleFilter)
+      : completionFilteredTasks;
 
     if (taskSearchTokens.length === 0) return scheduleFilteredTasks;
 
-    const tasksById = new Map(sortedTasks.map((task) => [task.id, task]));
-    const childTasksByParentId = sortedTasks.reduce<Map<string, any[]>>((map, task) => {
+    const tasksById = new Map(completionFilteredTasks.map((task) => [task.id, task]));
+    const childTasksByParentId = completionFilteredTasks.reduce<Map<string, any[]>>((map, task) => {
       if (!task.parentTaskId) return map;
       const siblings = map.get(task.parentTaskId) || [];
       siblings.push(task);
@@ -499,13 +531,13 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       appendDescendants(task);
     });
 
-    return sortedTasks.filter((task) => includedIds.has(task.id));
-  }, [assigneeSearchMap, groupSearchMap, scheduleFilter, sortedTasks, taskSearchTokens]);
+    return completionFilteredTasks.filter((task) => includedIds.has(task.id));
+  }, [assigneeSearchMap, completionFilteredTasks, groupSearchMap, scheduleFilter, taskSearchTokens]);
 
-  const shouldShowTaskGroups = sortedTaskGroups.length > 0 || sortedTasks.some((task) => task.groupId);
+  const shouldShowTaskGroups = sortedTaskGroups.length > 0 || completionFilteredTasks.some((task) => task.groupId);
 
   const visibleRows = useMemo<VisibleTaskRow[]>(() => {
-    const sourceTasks = hasActiveTaskFilter ? filteredSortedTasks : sortedTasks;
+    const sourceTasks = hasActiveTaskFilter ? filteredSortedTasks : completionFilteredTasks;
     const sourceTaskIds = new Set(sourceTasks.map((task) => task.id));
     const rows: VisibleTaskRow[] = [];
 
@@ -601,7 +633,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     });
 
     return rows;
-  }, [collapsedGroups, expandedParents, filteredSortedTasks, hasActiveTaskFilter, hasActiveTaskSearch, shouldShowTaskGroups, sortedTaskGroups, sortedTasks]);
+  }, [collapsedGroups, completionFilteredTasks, expandedParents, filteredSortedTasks, hasActiveTaskFilter, hasActiveTaskSearch, shouldShowTaskGroups, sortedTaskGroups]);
 
   const visibleTasks = useMemo(
     () => visibleRows.filter((row): row is Extract<VisibleTaskRow, { type: 'task' }> => row.type === 'task').map((row) => row.task),
@@ -764,6 +796,9 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   };
 
   const toggleScheduleFilter = (filter: Exclude<ScheduleFilter, null>) => {
+    if (filter === 'completed_late') {
+      setHideCompletedTasks(false);
+    }
     setScheduleFilter((current) => current === filter ? null : filter);
   };
 
@@ -874,6 +909,29 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             )}
             {isTimelineCollapsed ? "Mostrar Gantt" : "Solo tareas"}
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setHideCompletedTasks((current) => !current)}
+            className={`h-8 px-3 text-[11px] font-bold transition-all ${
+              hideCompletedTasks
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+            title={hideCompletedTasks ? 'Mostrar tareas finalizadas' : 'Ocultar tareas finalizadas'}
+            aria-pressed={hideCompletedTasks}
+          >
+            <EyeOff size={14} className="mr-1.5" />
+            {hideCompletedTasks ? 'Finalizadas ocultas' : 'Ocultar finalizadas'}
+            {completedTaskCount > 0 && (
+              <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[9px] ${
+                hideCompletedTasks ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
+              }`}>
+                {completedTaskCount}
+              </span>
+            )}
+          </Button>
         </div>
         <div className="relative min-w-[260px] flex-1">
           <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -936,7 +994,13 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               Limpiar busqueda
             </button>
           )}
-          <span>{hasActiveTaskFilter ? `${filteredSortedTasks.length} resultado${filteredSortedTasks.length === 1 ? '' : 's'}` : `${tasks.length} tareas en total`}</span>
+          <span>
+            {hasActiveTaskFilter
+              ? `${filteredSortedTasks.length} resultado${filteredSortedTasks.length === 1 ? '' : 's'}`
+              : hideCompletedTasks
+                ? `${completionFilteredTasks.length} visibles · ${hiddenCompletedCount} finalizadas ocultas`
+                : `${tasks.length} tareas en total`}
+          </span>
         </div>
       </div>
 
@@ -961,16 +1025,24 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                   ref={provided.innerRef}
                   className="w-full overflow-visible"
                 >
-                  {visibleTasks.length === 0 && hasActiveTaskFilter ? (
+                  {visibleTasks.length === 0 && (hasActiveTaskFilter || hideCompletedTasks) ? (
                     <div className="flex min-h-[180px] flex-col items-center justify-center border-b border-slate-100 px-4 text-center">
                       <ListTodo className="mb-2 text-slate-300" size={28} />
-                      <p className="text-sm font-semibold text-slate-700">No hay tareas con esta busqueda o filtro.</p>
+                      <p className="text-sm font-semibold text-slate-700">
+                        {hideCompletedTasks && !hasActiveTaskFilter ? 'Todas las tareas visibles estan finalizadas.' : 'No hay tareas con esta busqueda o filtro.'}
+                      </p>
                       <button
                         type="button"
-                        onClick={clearTaskFilters}
+                        onClick={() => {
+                          if (hideCompletedTasks && !hasActiveTaskFilter) {
+                            setHideCompletedTasks(false);
+                            return;
+                          }
+                          clearTaskFilters();
+                        }}
                         className="mt-2 rounded-md bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 transition-colors hover:bg-indigo-100"
                       >
-                        Ver todas las tareas
+                        {hideCompletedTasks && !hasActiveTaskFilter ? 'Mostrar finalizadas' : 'Ver todas las tareas'}
                       </button>
                     </div>
                   ) : visibleRows.map((row, rowIndex) => {
@@ -1038,7 +1110,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const scheduleState = getTaskScheduleState(task);
                     const isQuantitative = task.type === 'quantitative';
                     const isMeeting = isMeetingTask(task);
-                    const isParent = task.isParentTask || sortedTasks.some(t => t.parentTaskId === task.id);
+                    const isParent = task.isParentTask || completionFilteredTasks.some(t => t.parentTaskId === task.id);
                     const isSubTask = !!task.parentTaskId;
                     const isExpanded = expandedParents[task.id];
                     const isEditingTitle = editingTaskId === task.id;

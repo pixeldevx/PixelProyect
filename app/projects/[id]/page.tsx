@@ -1308,16 +1308,115 @@ export default function ProjectDetailsPage() {
     setIsDeleting(true);
     try {
       const task = tasks.find(t => t.id === taskToDelete.id);
+      if (!task) {
+        setTaskToDelete(null);
+        toast.error('No se encontró la tarea para eliminar.');
+        return;
+      }
+
       const batch = writeBatch(db);
+      const storageDeletionPromises: Promise<void>[] = [];
+
+      const collectTaskTreeFromDatabase = async (rootTask: any) => {
+        const taskMap = new Map<string, any>();
+        const taskRefs = new Map<string, ReturnType<typeof doc>>();
+        const pendingIds: string[] = [];
+
+        collectDependentTaskIds(rootTask.id).forEach((taskId) => {
+          const loadedTask = tasks.find((candidate) => candidate.id === taskId);
+          if (!loadedTask) return;
+          taskMap.set(taskId, loadedTask);
+          taskRefs.set(taskId, doc(db, 'projects', projectId, 'tasks', taskId));
+          pendingIds.push(taskId);
+        });
+
+        if (!taskMap.has(rootTask.id)) {
+          taskMap.set(rootTask.id, rootTask);
+          taskRefs.set(rootTask.id, doc(db, 'projects', projectId, 'tasks', rootTask.id));
+          pendingIds.push(rootTask.id);
+        }
+
+        const visitedParents = new Set<string>();
+        while (pendingIds.length > 0) {
+          const parentId = pendingIds.shift();
+          if (!parentId || visitedParents.has(parentId)) continue;
+          visitedParents.add(parentId);
+
+          const childrenSnapshot = await getDocs(query(
+            collection(db, 'projects', projectId, 'tasks'),
+            where('parentTaskId', '==', parentId)
+          ));
+
+          childrenSnapshot.docs.forEach((docSnap) => {
+            if (taskMap.has(docSnap.id)) return;
+            taskMap.set(docSnap.id, { id: docSnap.id, ...docSnap.data() });
+            taskRefs.set(docSnap.id, docSnap.ref);
+            pendingIds.push(docSnap.id);
+          });
+        }
+
+        return { taskMap, taskRefs };
+      };
 
       const deleteTaskLinkedData = async (taskId: string) => {
-        const [qualitySnapshot, commentsSnapshot] = await Promise.all([
+        const [qualitySnapshot, commentsSnapshot, documentsSnapshot] = await Promise.all([
           getDocs(query(collection(db, 'projects', projectId, 'qualityEvents'), where('taskId', '==', taskId))),
           getDocs(query(collection(db, 'projects', projectId, 'tasks', taskId, 'comments'))),
+          getDocs(query(collection(db, 'projects', projectId, 'documents'), where('taskId', '==', taskId))),
         ]);
 
         qualitySnapshot.docs.forEach((docSnap) => batch.delete(docSnap.ref));
         commentsSnapshot.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+        documentsSnapshot.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (data?.storagePath) {
+            storageDeletionPromises.push(
+              deleteObject(ref(storage, data.storagePath)).catch((storageError) => {
+                console.warn('No se pudo eliminar el archivo asociado a la tarea:', storageError);
+              })
+            );
+          }
+          batch.delete(docSnap.ref);
+        });
+      };
+
+      const cleanLogbookTaskLinks = async (deletedTaskIds: Set<string>) => {
+        const logbookSnapshot = await getDocs(collection(db, 'projects', projectId, 'logbookEntries'));
+
+        logbookSnapshot.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          let hasChanges = false;
+
+          const derivedLinks = Array.isArray(data.derivedLinks)
+            ? data.derivedLinks.filter((link: any) => !deletedTaskIds.has(link?.taskId))
+            : data.derivedLinks;
+
+          if (Array.isArray(data.derivedLinks) && derivedLinks.length !== data.derivedLinks.length) {
+            hasChanges = true;
+          }
+
+          const actionCandidates = Array.isArray(data.actionCandidates)
+            ? data.actionCandidates.map((candidate: any) => {
+                if (!candidate?.linkedTaskId || !deletedTaskIds.has(candidate.linkedTaskId)) return candidate;
+                hasChanges = true;
+                return {
+                  ...candidate,
+                  status: 'open',
+                  linkedTaskId: null,
+                  linkedTaskTitle: null,
+                  relationType: null,
+                };
+              })
+            : data.actionCandidates;
+
+          if (!hasChanges) return;
+
+          batch.update(docSnap.ref, {
+            derivedLinks,
+            actionCandidates,
+            updatedAt: serverTimestamp(),
+          });
+        });
       };
 
       const revertRateCard = (t: any) => {
@@ -1356,37 +1455,27 @@ export default function ProjectDetailsPage() {
         }
       };
 
-      if (task?.isParentTask) {
-        const subtasksQuery = query(
-          collection(db, 'projects', projectId, 'tasks'),
-          where('parentTaskId', '==', task.id)
-        );
-        const snapshot = await getDocs(subtasksQuery);
-        const taskIdsToDelete: string[] = [task.id];
-        snapshot.docs.forEach(d => {
-          const subtask = { id: d.id, ...d.data() };
-          revertRateCard(subtask);
-          taskIdsToDelete.push(d.id);
-          batch.delete(d.ref);
-        });
-        revertRateCard(task);
-        batch.delete(doc(db, 'projects', projectId, 'tasks', task.id));
-        await Promise.all(taskIdsToDelete.map(deleteTaskLinkedData));
-      } else if (task) {
-        revertRateCard(task);
-        batch.delete(doc(db, 'projects', projectId, 'tasks', task.id));
-        await deleteTaskLinkedData(task.id);
-      }
+      const { taskMap, taskRefs } = await collectTaskTreeFromDatabase(task);
+      const taskIdsToDelete = new Set(taskMap.keys());
+
+      taskMap.forEach((taskToRemove, taskId) => {
+        revertRateCard(taskToRemove);
+        batch.delete(taskRefs.get(taskId) || doc(db, 'projects', projectId, 'tasks', taskId));
+      });
+
+      await Promise.all(Array.from(taskIdsToDelete).map(deleteTaskLinkedData));
+      await cleanLogbookTaskLinks(taskIdsToDelete);
+      await Promise.all(storageDeletionPromises);
 
       await batch.commit();
 
-      if (task?.parentTaskId) {
+      if (task?.parentTaskId && !taskIdsToDelete.has(task.parentTaskId)) {
         const { updateParentTaskStatus } = await import('@/lib/taskUtils');
         await updateParentTaskStatus(projectId, task.parentTaskId);
       }
 
       setTaskToDelete(null);
-      toast.success("Tarea eliminada correctamente");
+      toast.success(taskIdsToDelete.size > 1 ? "Tarea y dependientes eliminados correctamente" : "Tarea eliminada correctamente");
     } catch (error: any) {
       console.error("Error deleting task:", error);
       toast.error(`Error al eliminar la tarea: ${error.message}`);
