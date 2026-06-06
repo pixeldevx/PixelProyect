@@ -4,8 +4,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   Database,
+  Eraser,
   Eye,
   Layers,
   Loader2,
@@ -51,6 +53,8 @@ type GeoJsonBounds = {
   north: number;
 };
 
+type LayerThemeMode = "task_status" | "attribute";
+
 type SpatialStyleKey = "unlinked" | "pending" | "not_started" | "in_progress" | "completed" | "completed_late" | "stuck";
 
 type LayerStateStyleConfig = {
@@ -66,11 +70,15 @@ type LayerStyleConfig = {
   strokeWidth?: number;
   labelAttribute?: string;
   labelsVisible?: boolean;
+  themeMode?: LayerThemeMode;
+  themeAttribute?: string;
+  attributeStyles?: Record<string, LayerStateStyleConfig>;
   statusStyles?: Partial<Record<SpatialStyleKey, LayerStateStyleConfig>>;
 };
 
-type NormalizedLayerStyleConfig = Required<Omit<LayerStyleConfig, "statusStyles">> & {
+type NormalizedLayerStyleConfig = Required<Omit<LayerStyleConfig, "statusStyles" | "attributeStyles">> & {
   statusStyles: Record<SpatialStyleKey, Required<LayerStateStyleConfig>>;
+  attributeStyles: Record<string, Required<LayerStateStyleConfig>>;
 };
 
 type SpatialLayer = {
@@ -147,6 +155,13 @@ type CanvasHitRegion = {
   points: Array<{ x: number; y: number; radius: number }>;
 };
 
+type ScreenSelectionRect = {
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+};
+
 type SpatialLayerRow = {
   id: string;
   project_id: string;
@@ -184,6 +199,20 @@ const DEFAULT_STATUS_STYLES: Record<SpatialStyleKey, Required<LayerStateStyleCon
   completed_late: { fillColor: "#c2410c", strokeColor: "#9a3412" },
   stuck: { fillColor: "#ef4444", strokeColor: "#dc2626" },
 };
+const ATTRIBUTE_STYLE_PALETTE = [
+  "#2563eb",
+  "#10b981",
+  "#f97316",
+  "#8b5cf6",
+  "#ec4899",
+  "#06b6d4",
+  "#84cc16",
+  "#f59e0b",
+  "#ef4444",
+  "#14b8a6",
+  "#6366f1",
+  "#0f172a",
+];
 const DEFAULT_LAYER_STYLE: NormalizedLayerStyleConfig = {
   fillColor: "#64748b",
   strokeColor: "#475569",
@@ -192,6 +221,9 @@ const DEFAULT_LAYER_STYLE: NormalizedLayerStyleConfig = {
   strokeWidth: 1.2,
   labelAttribute: "",
   labelsVisible: false,
+  themeMode: "task_status",
+  themeAttribute: "",
+  attributeStyles: {},
   statusStyles: DEFAULT_STATUS_STYLES,
 };
 const SPATIAL_STATUS_STYLE_OPTIONS: Array<{ key: SpatialStyleKey; label: string; helper: string }> = [
@@ -230,6 +262,24 @@ const clampNumber = (value: any, min: number, max: number, fallback: number) => 
   return Math.min(max, Math.max(min, numericValue));
 };
 
+const getAttributeCategory = (value: any) => {
+  const text = String(value ?? "").trim();
+  return text || "Sin valor";
+};
+
+const hashString = (value: string) => {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+};
+
+const getGeneratedAttributeStyle = (category: string): Required<LayerStateStyleConfig> => {
+  const color = ATTRIBUTE_STYLE_PALETTE[hashString(category) % ATTRIBUTE_STYLE_PALETTE.length];
+  return { fillColor: color, strokeColor: color };
+};
+
 const normalizeLayerStyle = (style?: LayerStyleConfig | null): NormalizedLayerStyleConfig => {
   const fillColor = style?.fillColor || DEFAULT_LAYER_STYLE.fillColor;
   const strokeColor = style?.strokeColor || style?.fillColor || DEFAULT_LAYER_STYLE.strokeColor;
@@ -246,6 +296,17 @@ const normalizeLayerStyle = (style?: LayerStyleConfig | null): NormalizedLayerSt
     },
     {} as Record<SpatialStyleKey, Required<LayerStateStyleConfig>>
   );
+  const attributeStyles = Object.entries(style?.attributeStyles || {}).reduce<Record<string, Required<LayerStateStyleConfig>>>(
+    (styles, [category, savedStyle]) => {
+      const fallbackStyle = getGeneratedAttributeStyle(category);
+      styles[category] = {
+        fillColor: savedStyle?.fillColor || fallbackStyle.fillColor,
+        strokeColor: savedStyle?.strokeColor || savedStyle?.fillColor || fallbackStyle.strokeColor,
+      };
+      return styles;
+    },
+    {}
+  );
 
   return {
     fillColor,
@@ -255,8 +316,20 @@ const normalizeLayerStyle = (style?: LayerStyleConfig | null): NormalizedLayerSt
     strokeWidth: clampNumber(style?.strokeWidth, 0.5, 6, DEFAULT_LAYER_STYLE.strokeWidth),
     labelAttribute: style?.labelAttribute || "",
     labelsVisible: style?.labelsVisible === true,
+    themeMode: style?.themeMode === "attribute" ? "attribute" : "task_status",
+    themeAttribute: style?.themeAttribute || "",
+    attributeStyles,
     statusStyles,
   };
+};
+
+const getFeatureVisualStyle = (join: LayerFeatureJoin): Required<LayerStateStyleConfig> => {
+  if (join.style.themeMode === "attribute" && join.style.themeAttribute) {
+    const category = getAttributeCategory(join.feature.properties?.[join.style.themeAttribute]);
+    return join.style.attributeStyles[category] || getGeneratedAttributeStyle(category);
+  }
+
+  return join.style.statusStyles[getSpatialStyleKeyForTask(join.tasks[0])];
 };
 
 const colorToRgba = (color: string, opacity: number) => {
@@ -338,6 +411,35 @@ const formatDate = (value: any) => {
   if (!date) return "Sin fecha";
   return new Intl.DateTimeFormat("es-CO", { day: "2-digit", month: "short" }).format(date);
 };
+
+const formatMetricNumber = (value: number, fractionDigits = 0) =>
+  new Intl.NumberFormat("es-CO", {
+    maximumFractionDigits: fractionDigits,
+    minimumFractionDigits: fractionDigits,
+  }).format(value);
+
+const parseNumericAttribute = (value: any) => {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const cleaned = text.replace(/[^\d,.-]/g, "");
+  if (!cleaned) return null;
+  const lastComma = cleaned.lastIndexOf(",");
+  const lastDot = cleaned.lastIndexOf(".");
+  const normalized =
+    lastComma > lastDot
+      ? cleaned.replace(/\./g, "").replace(",", ".")
+      : cleaned.replace(/,/g, "");
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const normalizeScreenRect = (rect: ScreenSelectionRect) => ({
+  left: Math.min(rect.startX, rect.endX),
+  top: Math.min(rect.startY, rect.endY),
+  width: Math.abs(rect.endX - rect.startX),
+  height: Math.abs(rect.endY - rect.startY),
+});
 
 const getScheduleState = (task: any) => {
   if (isCompletedTaskStatus(task?.status)) return { label: "Cerrada", className: "bg-emerald-50 text-emerald-700" };
@@ -747,6 +849,10 @@ export function ProjectSpatialMap({
   const [customTaskAttribute, setCustomTaskAttribute] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
+  const [analysisAttribute, setAnalysisAttribute] = useState("");
+  const [analysisBounds, setAnalysisBounds] = useState<GeoJsonBounds | null>(null);
+  const [analysisDraftRect, setAnalysisDraftRect] = useState<ScreenSelectionRect | null>(null);
+  const [isDrawingAnalysis, setIsDrawingAnalysis] = useState(false);
   const [layerPendingDelete, setLayerPendingDelete] = useState<SpatialLayer | null>(null);
   const [mapSize, setMapSize] = useState({ width: 960, height: 560 });
   const [mapView, setMapView] = useState({ center: { lon: -74.2973, lat: 4.5709 }, zoom: 5 });
@@ -900,6 +1006,10 @@ export function ProjectSpatialMap({
       setLayerEditStyle(DEFAULT_LAYER_STYLE);
       setLayerEditVisible(true);
       setSelectedFeatureId(null);
+      setAnalysisAttribute("");
+      setAnalysisBounds(null);
+      setAnalysisDraftRect(null);
+      setIsDrawingAnalysis(false);
       return;
     }
 
@@ -908,6 +1018,10 @@ export function ProjectSpatialMap({
     setLayerEditStyle(normalizeLayerStyle(selectedLayer.styleConfig));
     setLayerEditVisible(selectedLayer.visible !== false);
     setLayerAttribute(selectedLayer.joinConfig?.layerAttribute || firstAttribute);
+    setAnalysisAttribute(selectedLayer.joinConfig?.layerAttribute || firstAttribute);
+    setAnalysisBounds(null);
+    setAnalysisDraftRect(null);
+    setIsDrawingAnalysis(false);
     setTaskAttribute(selectedLayer.joinConfig?.taskAttribute || "externalWorkflowId");
     setCustomTaskAttribute(
       selectedLayer.joinConfig?.taskAttribute &&
@@ -972,6 +1086,23 @@ export function ProjectSpatialMap({
     });
     return map;
   }, [layerGeojsons]);
+
+  const selectedLayerThemeCategories = useMemo(() => {
+    if (!selectedLayer || !layerEditStyle.themeAttribute) return [];
+    const counts = new Map<string, number>();
+    (boundedFeaturesByLayerId.get(selectedLayer.id) || []).forEach(({ feature }) => {
+      const category = getAttributeCategory(feature.properties?.[layerEditStyle.themeAttribute]);
+      counts.set(category, (counts.get(category) || 0) + 1);
+    });
+
+    return Array.from(counts.entries())
+      .map(([category, count]) => ({
+        category,
+        count,
+        style: layerEditStyle.attributeStyles[category] || getGeneratedAttributeStyle(category),
+      }))
+      .sort((left, right) => right.count - left.count || left.category.localeCompare(right.category));
+  }, [boundedFeaturesByLayerId, layerEditStyle.attributeStyles, layerEditStyle.themeAttribute, selectedLayer]);
 
   const mapViewportBounds = useMemo(() => {
     if (mapSize.width <= 0 || mapSize.height <= 0) return null;
@@ -1092,6 +1223,75 @@ export function ProjectSpatialMap({
     ? renderedFeatureJoins.find((join) => join.featureId === selectedFeatureId) || null
     : null;
 
+  const selectedLayerLegend = useMemo(() => {
+    if (!selectedLayer) return [];
+    const style = normalizeLayerStyle(selectedLayer.styleConfig);
+
+    if (style.themeMode === "attribute" && style.themeAttribute) {
+      const counts = new Map<string, number>();
+      (boundedFeaturesByLayerId.get(selectedLayer.id) || []).forEach(({ feature }) => {
+        const category = getAttributeCategory(feature.properties?.[style.themeAttribute]);
+        counts.set(category, (counts.get(category) || 0) + 1);
+      });
+
+      return Array.from(counts.entries())
+        .map(([category, count]) => ({
+          key: category,
+          label: category,
+          count,
+          color: (style.attributeStyles[category] || getGeneratedAttributeStyle(category)).fillColor,
+        }))
+        .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+    }
+
+    return SPATIAL_STATUS_STYLE_OPTIONS.map((option) => ({
+      key: option.key,
+      label: option.label,
+      count: featureJoins.filter((join) => getSpatialStyleKeyForTask(join.tasks[0]) === option.key).length,
+      color: style.statusStyles[option.key].fillColor,
+    })).filter((item) => item.count > 0 || item.key === "unlinked");
+  }, [boundedFeaturesByLayerId, featureJoins, selectedLayer]);
+
+  const analysisFeatures = useMemo(() => {
+    if (!analysisBounds || !selectedLayer) return [];
+    return (boundedFeaturesByLayerId.get(selectedLayer.id) || []).filter(({ bounds }) => boundsIntersect(bounds, analysisBounds));
+  }, [analysisBounds, boundedFeaturesByLayerId, selectedLayer]);
+
+  const analysisStats = useMemo(() => {
+    const counts = new Map<string, number>();
+    const numericValues: number[] = [];
+
+    analysisFeatures.forEach(({ feature }) => {
+      const value = feature.properties?.[analysisAttribute];
+      const category = getAttributeCategory(value);
+      counts.set(category, (counts.get(category) || 0) + 1);
+
+      const numeric = parseNumericAttribute(value);
+      if (numeric != null) numericValues.push(numeric);
+    });
+
+    const categories = Array.from(counts.entries())
+      .map(([category, count]) => ({
+        category,
+        count,
+        percent: analysisFeatures.length > 0 ? Math.round((count / analysisFeatures.length) * 100) : 0,
+        color: getGeneratedAttributeStyle(category).fillColor,
+      }))
+      .sort((left, right) => right.count - left.count || left.category.localeCompare(right.category));
+
+    const sum = numericValues.reduce((total, value) => total + value, 0);
+    return {
+      total: analysisFeatures.length,
+      distinct: categories.length,
+      numericCount: numericValues.length,
+      sum,
+      average: numericValues.length ? sum / numericValues.length : 0,
+      min: numericValues.length ? Math.min(...numericValues) : 0,
+      max: numericValues.length ? Math.max(...numericValues) : 0,
+      categories,
+    };
+  }, [analysisAttribute, analysisFeatures]);
+
   const centerPx = projectLonLat(mapView.center.lon, mapView.center.lat, mapView.zoom);
   const topLeft = {
     x: centerPx.x - mapSize.width / 2,
@@ -1105,6 +1305,19 @@ export function ProjectSpatialMap({
       y: projected.y - topLeft.y,
     };
   }, [mapView.zoom, topLeft.x, topLeft.y]);
+
+  const analysisOverlayRect = useMemo(() => {
+    if (!analysisBounds) return null;
+    const northWest = projectLonLat(analysisBounds.west, analysisBounds.north, mapView.zoom);
+    const southEast = projectLonLat(analysisBounds.east, analysisBounds.south, mapView.zoom);
+    return normalizeScreenRect({
+      startX: northWest.x - topLeft.x,
+      startY: northWest.y - topLeft.y,
+      endX: southEast.x - topLeft.x,
+      endY: southEast.y - topLeft.y,
+    });
+  }, [analysisBounds, mapView.zoom, topLeft.x, topLeft.y]);
+  const visibleAnalysisRect = analysisDraftRect ? normalizeScreenRect(analysisDraftRect) : analysisOverlayRect;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1131,9 +1344,8 @@ export function ProjectSpatialMap({
       const hitRegions: CanvasHitRegion[] = [];
 
       renderedFeatureJoins.forEach((join) => {
-        const primaryTask = join.tasks[0];
         const baseStyle = join.style;
-        const stateStyle = baseStyle.statusStyles[getSpatialStyleKeyForTask(primaryTask)];
+        const stateStyle = getFeatureVisualStyle(join);
         const isSelected = selectedFeatureId === join.featureId;
         const fillStyle = colorToRgba(stateStyle.fillColor, baseStyle.fillOpacity);
         const strokeStyle = colorToRgba(stateStyle.strokeColor, baseStyle.strokeOpacity);
@@ -1192,7 +1404,7 @@ export function ProjectSpatialMap({
           const labelPoint = projectCoordinate(labelCoordinate);
           if (!Number.isFinite(labelPoint.x) || !Number.isFinite(labelPoint.y)) return;
 
-          const stateStyle = join.style.statusStyles[getSpatialStyleKeyForTask(join.tasks[0])];
+          const stateStyle = getFeatureVisualStyle(join);
           drawCanvasLabel(context, join.label, labelPoint, stateStyle.strokeColor);
         });
       }
@@ -1500,12 +1712,43 @@ export function ProjectSpatialMap({
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (isDrawingAnalysis) {
+      const mapElement = mapRef.current;
+      if (!mapElement) return;
+      const rect = mapElement.getBoundingClientRect();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setAnalysisDraftRect({
+        startX: event.clientX - rect.left,
+        startY: event.clientY - rect.top,
+        endX: event.clientX - rect.left,
+        endY: event.clientY - rect.top,
+      });
+      setSelectedFeatureId(null);
+      return;
+    }
+
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = { x: event.clientX, y: event.clientY, center: mapView.center };
     setIsDragging(true);
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (analysisDraftRect) {
+      const mapElement = mapRef.current;
+      if (!mapElement) return;
+      const rect = mapElement.getBoundingClientRect();
+      setAnalysisDraftRect((current) =>
+        current
+          ? {
+              ...current,
+              endX: event.clientX - rect.left,
+              endY: event.clientY - rect.top,
+            }
+          : current
+      );
+      return;
+    }
+
     if (!dragRef.current) return;
     const startCenterPx = projectLonLat(dragRef.current.center.lon, dragRef.current.center.lat, mapView.zoom);
     const dx = event.clientX - dragRef.current.x;
@@ -1523,6 +1766,48 @@ export function ProjectSpatialMap({
   };
 
   const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (analysisDraftRect) {
+      const mapElement = mapRef.current;
+      if (!mapElement) return;
+      const rect = mapElement.getBoundingClientRect();
+      const completedRect = normalizeScreenRect({
+        ...analysisDraftRect,
+        endX: event.clientX - rect.left,
+        endY: event.clientY - rect.top,
+      });
+
+      setAnalysisDraftRect(null);
+      setIsDrawingAnalysis(false);
+
+      if (completedRect.width < 14 || completedRect.height < 14) {
+        toast.warning("Dibuja un área más amplia para calcular estadísticas.");
+        return;
+      }
+
+      const northWest = unprojectPoint(
+        {
+          x: topLeft.x + completedRect.left,
+          y: topLeft.y + completedRect.top,
+        },
+        mapView.zoom
+      );
+      const southEast = unprojectPoint(
+        {
+          x: topLeft.x + completedRect.left + completedRect.width,
+          y: topLeft.y + completedRect.top + completedRect.height,
+        },
+        mapView.zoom
+      );
+
+      setAnalysisBounds({
+        west: Math.min(northWest.lon, southEast.lon),
+        south: Math.min(northWest.lat, southEast.lat),
+        east: Math.max(northWest.lon, southEast.lon),
+        north: Math.max(northWest.lat, southEast.lat),
+      });
+      return;
+    }
+
     const dragState = dragRef.current;
     if (pendingPanCenterRef.current) {
       const pendingCenter = pendingPanCenterRef.current;
@@ -1751,7 +2036,7 @@ export function ProjectSpatialMap({
           <div className="relative min-h-[560px] bg-slate-100" style={{ height: "min(72vh, 760px)" }}>
             <div
               ref={mapRef}
-              className={`absolute inset-0 overflow-hidden ${isDragging ? "cursor-grabbing" : "cursor-grab"}`}
+              className={`absolute inset-0 overflow-hidden ${isDrawingAnalysis ? "cursor-crosshair" : isDragging ? "cursor-grabbing" : "cursor-grab"}`}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
@@ -1800,6 +2085,18 @@ export function ProjectSpatialMap({
               )}
             </div>
 
+            {visibleAnalysisRect && (
+              <div
+                className="pointer-events-none absolute z-10 rounded-xl border-2 border-dashed border-cyan-600 bg-cyan-400/15 shadow-[0_0_0_9999px_rgba(15,23,42,0.04)]"
+                style={{
+                  left: visibleAnalysisRect.left,
+                  top: visibleAnalysisRect.top,
+                  width: visibleAnalysisRect.width,
+                  height: visibleAnalysisRect.height,
+                }}
+              />
+            )}
+
             {selectedFeatureJoin && (
               <div className="absolute bottom-14 right-4 z-10 w-[min(380px,calc(100%-2rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur">
                 <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-4">
@@ -1847,6 +2144,38 @@ export function ProjectSpatialMap({
               </button>
               <button type="button" onClick={() => setZoom(mapView.zoom - 1)} className="border-l border-slate-100 p-2 text-slate-700 hover:bg-slate-50" aria-label="Alejar">
                 <ZoomOut size={18} />
+              </button>
+            </div>
+
+            <div className="absolute left-4 top-16 flex overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!selectedLayer) return;
+                  setIsDrawingAnalysis((current) => !current);
+                  setAnalysisDraftRect(null);
+                }}
+                disabled={!selectedLayer}
+                className={`inline-flex items-center gap-2 px-3 py-2 text-xs font-black transition ${
+                  isDrawingAnalysis ? "bg-cyan-600 text-white" : "text-slate-700 hover:bg-slate-50"
+                } disabled:cursor-not-allowed disabled:opacity-50`}
+                aria-label="Dibujar área de análisis"
+              >
+                <MousePointer2 size={15} />
+                Analizar área
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAnalysisBounds(null);
+                  setAnalysisDraftRect(null);
+                  setIsDrawingAnalysis(false);
+                }}
+                disabled={!analysisBounds && !analysisDraftRect}
+                className="border-l border-slate-100 p-2 text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label="Limpiar área de análisis"
+              >
+                <Eraser size={16} />
               </button>
             </div>
 
@@ -1971,6 +2300,180 @@ export function ProjectSpatialMap({
             </div>
           </div>
 
+          {selectedLayer && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Palette size={16} className="text-indigo-600" />
+                    <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Leyenda activa</p>
+                  </div>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">
+                    {normalizeLayerStyle(selectedLayer.styleConfig).themeMode === "attribute"
+                      ? `Categorías por ${normalizeLayerStyle(selectedLayer.styleConfig).themeAttribute || "atributo"}`
+                      : "Estados de tareas vinculadas"}
+                  </p>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">
+                  {selectedLayerLegend.length}
+                </span>
+              </div>
+
+              <div className="mt-4 max-h-64 space-y-2 overflow-y-auto pr-1">
+                {selectedLayerLegend.length === 0 ? (
+                  <div className="rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-500">
+                    No hay elementos de leyenda para la capa seleccionada.
+                  </div>
+                ) : (
+                  selectedLayerLegend.slice(0, 80).map((item) => (
+                    <div key={item.key} className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                      <span className="h-4 w-4 shrink-0 rounded-full border border-white shadow-sm" style={{ backgroundColor: item.color }} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-black text-slate-800">{item.label}</p>
+                        <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-white">
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${stats.visibleFeatures ? Math.max(4, Math.round((item.count / stats.visibleFeatures) * 100)) : 0}%`,
+                              backgroundColor: item.color,
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-600">
+                        {item.count}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {selectedLayer && (
+            <div className="rounded-2xl border border-cyan-200 bg-white p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <BarChart3 size={16} className="text-cyan-700" />
+                    <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700">Análisis por área</p>
+                  </div>
+                  <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                    Dibuja un rectángulo y resume cualquier atributo de la capa.
+                  </p>
+                </div>
+                <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-black text-cyan-700">
+                  {analysisStats.total} entidades
+                </span>
+              </div>
+
+              <label className="mt-4 block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Atributo estadístico</label>
+              <select
+                value={analysisAttribute}
+                onChange={(event) => setAnalysisAttribute(event.target.value)}
+                className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20"
+              >
+                {(selectedLayer.attributes || []).length === 0 && <option value="">Sin atributos</option>}
+                {(selectedLayer.attributes || []).map((attribute) => (
+                  <option key={attribute} value={attribute}>
+                    {attribute}
+                  </option>
+                ))}
+              </select>
+
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant={isDrawingAnalysis ? "default" : "outline"}
+                  onClick={() => {
+                    setIsDrawingAnalysis((current) => !current);
+                    setAnalysisDraftRect(null);
+                  }}
+                  className={isDrawingAnalysis ? "bg-cyan-600 text-white hover:bg-cyan-700" : ""}
+                >
+                  <MousePointer2 size={15} className="mr-2" />
+                  Dibujar
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setAnalysisBounds(null);
+                    setAnalysisDraftRect(null);
+                    setIsDrawingAnalysis(false);
+                  }}
+                  disabled={!analysisBounds && !analysisDraftRect}
+                >
+                  <Eraser size={15} className="mr-2" />
+                  Limpiar
+                </Button>
+              </div>
+
+              {!analysisBounds ? (
+                <div className="mt-4 rounded-xl border border-dashed border-cyan-200 bg-cyan-50 p-4 text-sm font-semibold leading-6 text-cyan-900">
+                  Activa “Dibujar” y arrastra sobre el mapa para crear el área de análisis.
+                </div>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl bg-slate-50 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Categorías</p>
+                      <p className="mt-1 text-2xl font-black text-slate-900">{analysisStats.distinct}</p>
+                    </div>
+                    <div className="rounded-xl bg-emerald-50 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-emerald-700">Numéricos</p>
+                      <p className="mt-1 text-2xl font-black text-emerald-800">{analysisStats.numericCount}</p>
+                    </div>
+                  </div>
+
+                  {analysisStats.numericCount > 0 && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-xl bg-indigo-50 p-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-700">Promedio</p>
+                        <p className="mt-1 text-lg font-black text-indigo-900">{formatMetricNumber(analysisStats.average, 2)}</p>
+                      </div>
+                      <div className="rounded-xl bg-orange-50 p-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-orange-700">Suma</p>
+                        <p className="mt-1 text-lg font-black text-orange-900">{formatMetricNumber(analysisStats.sum, 2)}</p>
+                      </div>
+                      <div className="rounded-xl bg-slate-50 p-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Mínimo</p>
+                        <p className="mt-1 text-lg font-black text-slate-900">{formatMetricNumber(analysisStats.min, 2)}</p>
+                      </div>
+                      <div className="rounded-xl bg-slate-50 p-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Máximo</p>
+                        <p className="mt-1 text-lg font-black text-slate-900">{formatMetricNumber(analysisStats.max, 2)}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                    {analysisStats.categories.length === 0 ? (
+                      <div className="rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-500">
+                        El área no contiene entidades de la capa seleccionada.
+                      </div>
+                    ) : (
+                      analysisStats.categories.slice(0, 50).map((item) => (
+                        <div key={item.category} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-black text-slate-900">{item.category}</p>
+                              <p className="mt-0.5 text-[11px] font-semibold text-slate-500">{item.percent}% del área</p>
+                            </div>
+                            <span className="rounded-full bg-white px-2 py-1 text-xs font-black text-slate-700">{item.count}</span>
+                          </div>
+                          <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
+                            <div className="h-full rounded-full" style={{ width: `${Math.max(3, item.percent)}%`, backgroundColor: item.color }} />
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {canManage && selectedLayer && (
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center gap-2">
@@ -2026,33 +2529,117 @@ export function ProjectSpatialMap({
                 </p>
               </div>
 
+              <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+                <label className="block text-xs font-black uppercase tracking-[0.16em] text-indigo-700">Modo de simbología</label>
+                <select
+                  value={layerEditStyle.themeMode}
+                  onChange={(event) =>
+                    setLayerEditStyle((current) => ({
+                      ...current,
+                      themeMode: event.target.value as LayerThemeMode,
+                      themeAttribute: event.target.value === "attribute" ? current.themeAttribute || selectedLayer.attributes?.[0] || "" : current.themeAttribute,
+                    }))
+                  }
+                  className="mt-2 h-10 w-full rounded-xl border border-indigo-100 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                >
+                  <option value="task_status">Por estado de tarea</option>
+                  <option value="attribute">Por atributo de capa</option>
+                </select>
+
+                {layerEditStyle.themeMode === "attribute" && (
+                  <div className="mt-3">
+                    <label className="block text-xs font-black uppercase tracking-[0.16em] text-indigo-700">Atributo de categorías</label>
+                    <select
+                      value={layerEditStyle.themeAttribute}
+                      onChange={(event) =>
+                        setLayerEditStyle((current) => ({
+                          ...current,
+                          themeAttribute: event.target.value,
+                        }))
+                      }
+                      className="mt-2 h-10 w-full rounded-xl border border-indigo-100 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                    >
+                      <option value="">Selecciona atributo</option>
+                      {(selectedLayer.attributes || []).map((attribute) => (
+                        <option key={attribute} value={attribute}>
+                          {attribute}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
               <div className="mt-4">
                 <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
                   <Palette size={14} />
-                  Visualización por estado
+                  {layerEditStyle.themeMode === "attribute" ? "Visualización por atributo" : "Visualización por estado"}
                 </div>
                 <div className="mt-3 space-y-2">
-                  {SPATIAL_STATUS_STYLE_OPTIONS.map((option) => {
-                    const stateStyle = layerEditStyle.statusStyles[option.key];
-                    return (
-                      <div key={option.key} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                        <div className="flex min-w-0 items-center gap-3">
-                          <span className="h-5 w-5 shrink-0 rounded-full border border-white shadow-sm" style={{ backgroundColor: stateStyle.fillColor }} />
-                          <div className="min-w-0">
-                            <p className="text-xs font-black uppercase tracking-[0.12em] text-slate-700">{option.label}</p>
-                            <p className="truncate text-[11px] font-semibold text-slate-400">{option.helper}</p>
-                          </div>
-                        </div>
-                        <input
-                          type="color"
-                          value={stateStyle.fillColor}
-                          onChange={(event) => updateLayerStatusColor(option.key, event.target.value)}
-                          className="h-8 w-10 shrink-0 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
-                          aria-label={`Color para ${option.label}`}
-                        />
+                  {layerEditStyle.themeMode === "attribute" ? (
+                    !layerEditStyle.themeAttribute ? (
+                      <div className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50 p-3 text-sm font-semibold text-indigo-800">
+                        Selecciona un atributo para generar sus categorías.
                       </div>
-                    );
-                  })}
+                    ) : selectedLayerThemeCategories.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm font-semibold text-slate-500">
+                        Cargando categorías de la capa seleccionada...
+                      </div>
+                    ) : (
+                      selectedLayerThemeCategories.slice(0, 80).map((item) => (
+                        <div key={item.category} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span className="h-5 w-5 shrink-0 rounded-full border border-white shadow-sm" style={{ backgroundColor: item.style.fillColor }} />
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-black uppercase tracking-[0.12em] text-slate-700">{item.category}</p>
+                              <p className="text-[11px] font-semibold text-slate-400">{item.count.toLocaleString("es-CO")} entidades</p>
+                            </div>
+                          </div>
+                          <input
+                            type="color"
+                            value={item.style.fillColor}
+                            onChange={(event) => {
+                              const color = event.target.value;
+                              setLayerEditStyle((current) => ({
+                                ...current,
+                                attributeStyles: {
+                                  ...current.attributeStyles,
+                                  [item.category]: {
+                                    fillColor: color,
+                                    strokeColor: color,
+                                  },
+                                },
+                              }));
+                            }}
+                            className="h-8 w-10 shrink-0 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
+                            aria-label={`Color para ${item.category}`}
+                          />
+                        </div>
+                      ))
+                    )
+                  ) : (
+                    SPATIAL_STATUS_STYLE_OPTIONS.map((option) => {
+                      const stateStyle = layerEditStyle.statusStyles[option.key];
+                      return (
+                        <div key={option.key} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span className="h-5 w-5 shrink-0 rounded-full border border-white shadow-sm" style={{ backgroundColor: stateStyle.fillColor }} />
+                            <div className="min-w-0">
+                              <p className="text-xs font-black uppercase tracking-[0.12em] text-slate-700">{option.label}</p>
+                              <p className="truncate text-[11px] font-semibold text-slate-400">{option.helper}</p>
+                            </div>
+                          </div>
+                          <input
+                            type="color"
+                            value={stateStyle.fillColor}
+                            onChange={(event) => updateLayerStatusColor(option.key, event.target.value)}
+                            className="h-8 w-10 shrink-0 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
+                            aria-label={`Color para ${option.label}`}
+                          />
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
 
