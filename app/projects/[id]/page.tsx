@@ -186,7 +186,7 @@ export default function ProjectDetailsPage() {
   const [documentSearchQuery, setDocumentSearchQuery] = useState('');
 
   const [documentToDelete, setDocumentToDelete] = useState<{id: string, storagePath: string, name: string} | null>(null);
-  const [taskToDelete, setTaskToDelete] = useState<{id: string, title: string} | null>(null);
+  const [taskToDelete, setTaskToDelete] = useState<{ ids: string[], title: string, isBulk?: boolean } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
@@ -1299,18 +1299,51 @@ export default function ProjectDetailsPage() {
 
     const task = tasks.find(t => t.id === taskId);
     if (task) {
-      setTaskToDelete({ id: taskId, title: getTaskTitle(task) });
+      setTaskToDelete({ ids: [taskId], title: getTaskTitle(task), isBulk: false });
     }
+  };
+
+  const handleDeleteTasks = (taskIds: string[]) => {
+    if (!canDeleteTasks) {
+      toast.error('No tienes permisos para eliminar tareas.');
+      return;
+    }
+
+    const uniqueIds = Array.from(new Set(taskIds)).filter((taskId) => tasks.some((task) => task.id === taskId));
+    if (uniqueIds.length === 0) {
+      toast.error('No se encontraron tareas para eliminar.');
+      return;
+    }
+
+    if (uniqueIds.length === 1) {
+      handleDeleteTask(uniqueIds[0]);
+      return;
+    }
+
+    const previewTitles = uniqueIds
+      .map((taskId) => tasks.find((task) => task.id === taskId))
+      .filter(Boolean)
+      .slice(0, 3)
+      .map((task) => getTaskTitle(task));
+
+    setTaskToDelete({
+      ids: uniqueIds,
+      title: `${uniqueIds.length} tareas seleccionadas${previewTitles.length ? `: ${previewTitles.join(', ')}${uniqueIds.length > previewTitles.length ? '...' : ''}` : ''}`,
+      isBulk: true,
+    });
   };
 
   const executeDeleteTask = async () => {
     if (!taskToDelete) return;
     setIsDeleting(true);
     try {
-      const task = tasks.find(t => t.id === taskToDelete.id);
-      if (!task) {
+      const rootTasks = taskToDelete.ids
+        .map((taskId) => tasks.find((task) => task.id === taskId))
+        .filter(Boolean);
+
+      if (rootTasks.length === 0) {
         setTaskToDelete(null);
-        toast.error('No se encontró la tarea para eliminar.');
+        toast.error('No se encontraron tareas para eliminar.');
         return;
       }
 
@@ -1455,8 +1488,25 @@ export default function ProjectDetailsPage() {
         }
       };
 
-      const { taskMap, taskRefs } = await collectTaskTreeFromDatabase(task);
+      const taskMap = new Map<string, any>();
+      const taskRefs = new Map<string, ReturnType<typeof doc>>();
+
+      for (const rootTask of rootTasks) {
+        const collected = await collectTaskTreeFromDatabase(rootTask);
+        collected.taskMap.forEach((taskToRemove, taskId) => {
+          taskMap.set(taskId, taskToRemove);
+        });
+        collected.taskRefs.forEach((taskRef, taskId) => {
+          taskRefs.set(taskId, taskRef);
+        });
+      }
+
       const taskIdsToDelete = new Set(taskMap.keys());
+      const parentTaskIdsToRefresh = new Set(
+        rootTasks
+          .map((rootTask: any) => rootTask.parentTaskId)
+          .filter((parentTaskId: string | undefined): parentTaskId is string => typeof parentTaskId === 'string' && !taskIdsToDelete.has(parentTaskId))
+      );
 
       taskMap.forEach((taskToRemove, taskId) => {
         revertRateCard(taskToRemove);
@@ -1469,13 +1519,13 @@ export default function ProjectDetailsPage() {
 
       await batch.commit();
 
-      if (task?.parentTaskId && !taskIdsToDelete.has(task.parentTaskId)) {
+      if (parentTaskIdsToRefresh.size > 0) {
         const { updateParentTaskStatus } = await import('@/lib/taskUtils');
-        await updateParentTaskStatus(projectId, task.parentTaskId);
+        await Promise.all(Array.from(parentTaskIdsToRefresh).map((parentTaskId) => updateParentTaskStatus(projectId, parentTaskId)));
       }
 
       setTaskToDelete(null);
-      toast.success(taskIdsToDelete.size > 1 ? "Tarea y dependientes eliminados correctamente" : "Tarea eliminada correctamente");
+      toast.success(taskIdsToDelete.size > 1 ? `${taskIdsToDelete.size} tareas y dependientes eliminados correctamente` : "Tarea eliminada correctamente");
     } catch (error: any) {
       console.error("Error deleting task:", error);
       toast.error(`Error al eliminar la tarea: ${error.message}`);
@@ -2472,6 +2522,7 @@ export default function ProjectDetailsPage() {
                 onUpdateTaskAssignee={canEditTaskDetails ? handleUpdateTaskAssignee : undefined}
                 onUpdateTaskGroup={canEditTaskDetails ? handleUpdateTaskGroup : undefined}
                 onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
+                onDeleteTasks={canDeleteTasks ? handleDeleteTasks : undefined}
                 onSyncTask={canEditTaskDetails ? handleSyncTaskValue : undefined}
                 onReorderTasks={canEditTaskDetails ? handleReorderTasks : undefined}
                 onUpdateTaskDates={canEditTaskDates ? handleUpdateTaskDates : undefined}
@@ -2726,12 +2777,23 @@ export default function ProjectDetailsPage() {
               <div className="p-2 bg-red-100 rounded-full">
                 <AlertCircle className="w-6 h-6" />
               </div>
-              <h3 className="text-lg font-semibold text-slate-900">Eliminar Tarea</h3>
+              <h3 className="text-lg font-semibold text-slate-900">
+                {taskToDelete.isBulk ? 'Eliminar tareas' : 'Eliminar Tarea'}
+              </h3>
             </div>
 
             <p className="text-slate-600 mb-6">
-              ¿Estás seguro de que deseas eliminar la tarea <strong className="text-slate-900">&quot;{taskToDelete.title}&quot;</strong>?
-              Esta acción no se puede deshacer.
+              {taskToDelete.isBulk ? (
+                <>
+                  ¿Estás seguro de que deseas eliminar <strong className="text-slate-900">{taskToDelete.ids.length} tareas seleccionadas</strong>?
+                  {' '}También se eliminarán sus subtareas, workflows y datos asociados. Esta acción no se puede deshacer.
+                </>
+              ) : (
+                <>
+                  ¿Estás seguro de que deseas eliminar la tarea <strong className="text-slate-900">&quot;{taskToDelete.title}&quot;</strong>?
+                  {' '}Esta acción no se puede deshacer.
+                </>
+              )}
             </p>
 
             <div className="flex justify-end gap-3">
@@ -2748,7 +2810,7 @@ export default function ProjectDetailsPage() {
                 disabled={isDeleting}
                 className="bg-red-600 hover:bg-red-700 text-white"
               >
-                {isDeleting ? 'Eliminando...' : 'Sí, eliminar tarea'}
+                {isDeleting ? 'Eliminando...' : taskToDelete.isBulk ? 'Sí, eliminar tareas' : 'Sí, eliminar tarea'}
               </Button>
             </div>
           </div>

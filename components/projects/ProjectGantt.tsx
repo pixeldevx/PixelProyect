@@ -38,6 +38,7 @@ interface ProjectGanttProps {
   onUpdateTaskAssignee?: (taskId: string, assigneeId: string, task: any) => void;
   onUpdateTaskGroup?: (taskId: string, groupId: string, task: any) => void | Promise<void>;
   onDeleteTask?: (taskId: string) => void;
+  onDeleteTasks?: (taskIds: string[]) => void;
   onSyncTask?: (taskId: string, task: any) => void;
   onReorderTasks?: (newTasks: any[]) => void;
   onUpdateTaskDates?: (taskId: string, start: Date, end: Date, task: any) => void;
@@ -256,6 +257,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onUpdateTaskAssignee,
   onUpdateTaskGroup,
   onDeleteTask,
+  onDeleteTasks,
   onSyncTask,
   onReorderTasks,
   onUpdateTaskDates,
@@ -287,6 +289,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [taskForDateEdit, setTaskForDateEdit] = useState<any>(null);
   const [scheduleFilter, setScheduleFilter] = useState<ScheduleFilter>(null);
   const [hideCompletedTasks, setHideCompletedTasks] = useState(true);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
@@ -298,7 +301,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
   const canChangeTaskAssignee = Boolean(canModifyTaskDetails && onUpdateTaskAssignee);
   const canCreateSubtasks = Boolean(canAddSubtasks && onAddSubtask);
-  const canRemoveTasks = Boolean(canDeleteTasks && onDeleteTask);
+  const canRemoveTasks = Boolean(canDeleteTasks && (onDeleteTask || onDeleteTasks));
   const canManageTaskGroups = Boolean(canModifyTaskDetails && (onCreateTaskGroup || onUpdateTaskGroup || onUpdateTaskGroupDefinition || onDeleteTaskGroup));
   const sortedTaskGroups = useMemo(() => {
     const validGroups = [...taskGroups].filter((group) => group?.id && group?.name);
@@ -640,6 +643,50 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     [visibleRows]
   );
 
+  const selectedTaskIdSet = useMemo(() => new Set(selectedTaskIds), [selectedTaskIds]);
+
+  const visibleSelectableTaskIds = useMemo(
+    () => visibleTasks.filter((task) => !task.isWorkflowStep).map((task) => task.id),
+    [visibleTasks]
+  );
+
+  const selectedVisibleTaskCount = visibleSelectableTaskIds.filter((taskId) => selectedTaskIdSet.has(taskId)).length;
+  const hasSelectedTasks = selectedTaskIds.length > 0;
+  const areAllVisibleTasksSelected = visibleSelectableTaskIds.length > 0 && selectedVisibleTaskCount === visibleSelectableTaskIds.length;
+
+  const toggleTaskSelection = (taskId: string) => {
+    setSelectedTaskIds((current) =>
+      current.includes(taskId)
+        ? current.filter((selectedId) => selectedId !== taskId)
+        : [...current, taskId]
+    );
+  };
+
+  const toggleAllVisibleTasks = () => {
+    setSelectedTaskIds((current) => {
+      const visibleIds = new Set(visibleSelectableTaskIds);
+      if (visibleIds.size === 0) return current;
+
+      if (visibleSelectableTaskIds.every((taskId) => current.includes(taskId))) {
+        return current.filter((taskId) => !visibleIds.has(taskId));
+      }
+
+      return Array.from(new Set([...current, ...visibleSelectableTaskIds]));
+    });
+  };
+
+  const requestDeleteSelectedTasks = () => {
+    const persistedSelectedIds = selectedTaskIds.filter((taskId) => tasks.some((task) => task.id === taskId));
+    if (persistedSelectedIds.length === 0) return;
+
+    if (onDeleteTasks) {
+      onDeleteTasks(persistedSelectedIds);
+    } else if (persistedSelectedIds.length === 1) {
+      onDeleteTask?.(persistedSelectedIds[0]);
+    }
+    setSelectedTaskIds([]);
+  };
+
   // Map Supabase tasks to gantt-task-react tasks
   const ganttTasks: Task[] = useMemo(() => {
     if (visibleRows.length === 0) return [];
@@ -857,6 +904,29 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               Nueva Tarea
             </Button>
           )}
+          {canRemoveTasks && hasSelectedTasks && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={requestDeleteSelectedTasks}
+              className="h-8 border-red-200 bg-red-50 px-3 text-[11px] font-bold text-red-700 hover:bg-red-100"
+            >
+              <Trash2 size={14} className="mr-1.5" />
+              Eliminar {selectedTaskIds.length}
+            </Button>
+          )}
+          {hasSelectedTasks && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setSelectedTaskIds([])}
+              className="h-8 border-slate-200 px-3 text-[11px] font-bold text-slate-500 hover:bg-slate-50"
+            >
+              Limpiar selección
+            </Button>
+          )}
           {canManageTaskGroups && (
             <Button
               type="button"
@@ -1008,7 +1078,18 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         {/* Left side: Task List (Monday Style) */}
         <div className={`${isTimelineCollapsed ? 'w-full border-r-0' : 'w-[760px] border-r'} shrink-0 border-slate-200 flex flex-col`}>
           <div className="h-10 flex items-center px-4 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white">
-            <div className="w-10"></div>
+            <div className="w-10 flex justify-center">
+              {canRemoveTasks && visibleSelectableTaskIds.length > 0 && (
+                <input
+                  type="checkbox"
+                  checked={areAllVisibleTasksSelected}
+                  onChange={toggleAllVisibleTasks}
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  title={areAllVisibleTasksSelected ? 'Quitar selección visible' : 'Seleccionar tareas visibles'}
+                  aria-label={areAllVisibleTasksSelected ? 'Quitar selección visible' : 'Seleccionar tareas visibles'}
+                />
+              )}
+            </div>
             <div className="flex-1 min-w-[220px]">Tarea</div>
             <div className="w-24 px-2 text-center">Persona</div>
             <div className="w-28 px-2 text-center">Estado</div>
@@ -1171,8 +1252,26 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               </>
                             )}
 
-                            <div {...provided.dragHandleProps} className={`w-10 flex justify-center text-slate-300 group-hover:text-slate-400 ${isSubTask ? 'invisible' : 'cursor-grab active:cursor-grabbing'}`}>
-                              <GripVertical size={14} />
+                            <div className="w-10 flex items-center justify-center gap-1 text-slate-300 group-hover:text-slate-400">
+                              {canRemoveTasks && !task.isWorkflowStep ? (
+                                <input
+                                  type="checkbox"
+                                  checked={selectedTaskIdSet.has(task.id)}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onChange={() => toggleTaskSelection(task.id)}
+                                  className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                  title={`Seleccionar ${taskTitle}`}
+                                  aria-label={`Seleccionar ${taskTitle}`}
+                                />
+                              ) : null}
+                              {!isSubTask && (
+                                <span
+                                  {...provided.dragHandleProps}
+                                  className={`flex ${canRemoveTasks ? 'hidden xl:flex' : ''} ${canModifyTaskDetails ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}`}
+                                >
+                                  <GripVertical size={14} />
+                                </span>
+                              )}
                             </div>
 
                             <div className={`flex-1 min-w-[220px] px-2 flex items-center gap-2 ${task.isWorkflowStep ? 'pl-10' : isSubTask ? 'pl-6' : ''}`}>
@@ -1646,6 +1745,10 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         type="button"
                                         onClick={() => {
                                           setOpenActionMenuTaskId(null);
+                                          if (onDeleteTasks) {
+                                            onDeleteTasks([task.id]);
+                                            return;
+                                          }
                                           onDeleteTask?.(task.id);
                                         }}
                                         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50"
