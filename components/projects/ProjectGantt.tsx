@@ -847,7 +847,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   }
 
   return (
-    <div translate="no" className="flex flex-col h-full bg-white rounded-lg overflow-hidden border border-slate-200 shadow-sm">
+    <div translate="no" className="flex flex-col h-full bg-white rounded-lg overflow-visible border border-slate-200 shadow-sm">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-slate-200 bg-white">
         <div className="flex shrink-0 items-center gap-2">
@@ -1134,6 +1134,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                       task.type === 'workflow' &&
                       !task.isWorkflowStep
                     );
+                    const taskRowsCount = visibleRows.filter((visibleRow) => visibleRow.type === 'task').length;
+                    const shouldOpenActionMenuUp = taskRowsCount <= 4 || rowIndex >= visibleRows.length - 3;
                     const hasActionItems = Boolean(
                       !task.isWorkflowStep &&
                       (
@@ -1472,7 +1474,11 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 </button>
 
                                 {openActionMenuTaskId === task.id && (
-                                  <div className="absolute right-0 top-8 z-40 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl">
+                                  <div
+                                    className={`absolute right-0 z-40 max-h-80 w-56 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl ${
+                                      shouldOpenActionMenuUp ? 'bottom-8' : 'top-8'
+                                    }`}
+                                  >
                                     {canManageTaskGroups && onUpdateTaskGroup && assignableTaskGroups.length > 0 && !task.parentTaskId && !task.isWorkflowStep && (
                                       <div className="border-b border-slate-100 px-3 py-2">
                                         <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">
