@@ -289,6 +289,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [taskForDateEdit, setTaskForDateEdit] = useState<any>(null);
   const [scheduleFilter, setScheduleFilter] = useState<ScheduleFilter>(null);
   const [hideCompletedTasks, setHideCompletedTasks] = useState(true);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [isGroupManagerOpen, setIsGroupManagerOpen] = useState(false);
@@ -685,6 +686,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       onDeleteTask?.(persistedSelectedIds[0]);
     }
     setSelectedTaskIds([]);
+    setIsSelectionMode(false);
+  };
+
+  const exitSelectionMode = () => {
+    setSelectedTaskIds([]);
+    setIsSelectionMode(false);
   };
 
   // Map Supabase tasks to gantt-task-react tasks
@@ -904,7 +911,19 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               Nueva Tarea
             </Button>
           )}
-          {canRemoveTasks && hasSelectedTasks && (
+          {canRemoveTasks && !isSelectionMode && visibleSelectableTaskIds.length > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsSelectionMode(true)}
+              className="h-8 border-slate-200 px-3 text-[11px] font-bold text-slate-600 hover:bg-slate-50 hover:text-indigo-700"
+            >
+              <ClipboardList size={14} className="mr-1.5" />
+              Seleccionar
+            </Button>
+          )}
+          {canRemoveTasks && isSelectionMode && hasSelectedTasks && (
             <Button
               type="button"
               variant="outline"
@@ -916,15 +935,15 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               Eliminar {selectedTaskIds.length}
             </Button>
           )}
-          {hasSelectedTasks && (
+          {isSelectionMode && (
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => setSelectedTaskIds([])}
+              onClick={exitSelectionMode}
               className="h-8 border-slate-200 px-3 text-[11px] font-bold text-slate-500 hover:bg-slate-50"
             >
-              Limpiar selección
+              Cancelar selección
             </Button>
           )}
           {canManageTaskGroups && (
@@ -1079,7 +1098,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         <div className={`${isTimelineCollapsed ? 'w-full border-r-0' : 'w-[760px] border-r'} shrink-0 border-slate-200 flex flex-col`}>
           <div className="h-10 flex items-center px-4 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white">
             <div className="w-10 flex justify-center">
-              {canRemoveTasks && visibleSelectableTaskIds.length > 0 && (
+              {canRemoveTasks && isSelectionMode && visibleSelectableTaskIds.length > 0 && (
                 <input
                   type="checkbox"
                   checked={areAllVisibleTasksSelected}
@@ -1253,7 +1272,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             )}
 
                             <div className="w-10 flex items-center justify-center gap-1 text-slate-300 group-hover:text-slate-400">
-                              {canRemoveTasks && !task.isWorkflowStep ? (
+                              {canRemoveTasks && isSelectionMode && !task.isWorkflowStep ? (
                                 <input
                                   type="checkbox"
                                   checked={selectedTaskIdSet.has(task.id)}
@@ -1267,7 +1286,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               {!isSubTask && (
                                 <span
                                   {...provided.dragHandleProps}
-                                  className={`flex ${canRemoveTasks ? 'hidden xl:flex' : ''} ${canModifyTaskDetails ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}`}
+                                  className={`${isSelectionMode ? 'hidden' : 'flex'} ${canModifyTaskDetails ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}`}
                                 >
                                   <GripVertical size={14} />
                                 </span>
