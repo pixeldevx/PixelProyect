@@ -99,13 +99,33 @@ const normalizeAssignToProfessional = (item: any) =>
   normalizeAssigneeMode(item) !== "default";
 
 export const getStaticRateCardAssignee = (
-  source: Pick<StaticRateCardSource, "assigneeMode" | "assignedTo">,
+  source: { assigneeMode?: StaticRateCardSource["assigneeMode"] | null; assignedTo?: string | null },
   fallbackAssignee?: string | null,
   runtimeAssignee?: string | null,
 ) => {
   if (source.assigneeMode === "fixed" && source.assignedTo) return source.assignedTo;
   if (source.assigneeMode === "runtime") return normalizeAssignee(runtimeAssignee) || source.assignedTo || normalizeAssignee(fallbackAssignee);
   return normalizeAssignee(fallbackAssignee);
+};
+
+export const getStaticRateCardAssignmentKey = (
+  source: {
+    rateCardId?: string | null;
+    assigneeMode?: StaticRateCardSource["assigneeMode"] | null;
+    assignedTo?: string | null;
+    key?: string;
+    id?: string;
+    itemIndex?: number | null;
+  },
+  fallbackAssignee?: string | null,
+  runtimeAssignee?: string | null,
+) => {
+  const assignedUser = getStaticRateCardAssignee(source, fallbackAssignee, runtimeAssignee);
+  const runtimeIdentifier = source.key || source.id || source.itemIndex;
+  const pendingRuntimeKey = source.assigneeMode === "runtime"
+    ? `runtime:${runtimeIdentifier ?? "pending"}`
+    : "unassigned";
+  return `${source.rateCardId || ""}::${assignedUser || pendingRuntimeKey}`;
 };
 
 export const getStaticRateCardSources = (step: any): StaticRateCardSource[] => {

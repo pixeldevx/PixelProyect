@@ -11,7 +11,7 @@ import {
   getWorkflowTemplateScopeLabel,
   loadWorkflowTemplatesForScope,
 } from '@/lib/workflow-templates';
-import { isInvalidRateCardUnits, normalizeRateCardUnits } from '@/lib/rate-card-config';
+import { getStaticRateCardAssignmentKey, isInvalidRateCardUnits, normalizeRateCardUnits } from '@/lib/rate-card-config';
 
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
@@ -345,17 +345,6 @@ export function CreateTaskModal({
       return false;
     }
 
-    const hasDuplicatedStaticRateCards = workflowSteps.some((step) => {
-      const cards = cleanStepRateCards(step);
-      return cards.some(
-        (item, itemIndex) => cards.findIndex((candidate) => candidate.rateCardId === item.rateCardId) !== itemIndex
-      );
-    });
-    if (hasDuplicatedStaticRateCards) {
-      toast.warning("No repitas el mismo Rate Card dentro de un paso.");
-      return false;
-    }
-
     const hasInvalidStepUnits = workflowSteps.some((step) => {
       if (step.dynamicRateCard) return isInvalidRateCardUnits(step.unitsToAdd);
       return cleanStepRateCards(step).some((item) => isInvalidRateCardUnits(item.unitsToAdd));
@@ -370,6 +359,21 @@ export function CreateTaskModal({
     );
     if (hasMissingStepRateCardAssignee) {
       toast.warning("Selecciona el profesional para cada Rate Card fijo asignable.");
+      return false;
+    }
+
+    const hasDuplicatedStaticRateCardAssignments = workflowSteps.some((step) => {
+      const cards = cleanStepRateCards(step);
+      return cards.some(
+        (item, itemIndex) =>
+          cards.findIndex(
+            (candidate) =>
+              getStaticRateCardAssignmentKey(candidate, step.assignedTo) === getStaticRateCardAssignmentKey(item, step.assignedTo)
+          ) !== itemIndex
+      );
+    });
+    if (hasDuplicatedStaticRateCardAssignments) {
+      toast.warning("Puedes repetir un Rate Card solo si se carga a profesionales diferentes.");
       return false;
     }
 

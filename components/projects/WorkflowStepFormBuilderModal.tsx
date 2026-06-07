@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { X, Plus, Trash2, GripVertical, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { isInvalidRateCardUnits, normalizeRateCardUnits } from '@/lib/rate-card-config';
+import { getStaticRateCardAssignmentKey, isInvalidRateCardUnits, normalizeRateCardUnits } from '@/lib/rate-card-config';
 
 export interface FormField {
   id: string;
@@ -260,14 +260,6 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
       return;
     }
 
-    const duplicateStaticRateCards = cleanedStaticRateCards.some((item, index) =>
-      cleanedStaticRateCards.findIndex((candidate) => candidate.rateCardId === item.rateCardId) !== index
-    );
-    if (duplicateStaticRateCards) {
-      toast.warning('No repitas el mismo Rate Card en el formulario.');
-      return;
-    }
-
     const hasInvalidStaticUnits = cleanedStaticRateCards.some((item) => isInvalidRateCardUnits(item.unitsToAdd));
     if (formRateCardMode === 'static' && hasInvalidStaticUnits) {
       toast.warning('Define unidades de Rate Card en cero o mayores.');
@@ -279,6 +271,16 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
     );
     if (formRateCardMode === 'static' && hasMissingStaticAssignee) {
       toast.warning('Selecciona el profesional para cada Rate Card fijo asignable.');
+      return;
+    }
+
+    const duplicateStaticRateCardAssignments = cleanedStaticRateCards.some((item, index) =>
+      cleanedStaticRateCards.findIndex(
+        (candidate) => getStaticRateCardAssignmentKey(candidate) === getStaticRateCardAssignmentKey(item)
+      ) !== index
+    );
+    if (duplicateStaticRateCardAssignments) {
+      toast.warning('Puedes repetir un Rate Card solo si se carga a profesionales diferentes.');
       return;
     }
 

@@ -26,6 +26,7 @@ import { canLoadProjectForUser } from '@/lib/project-access';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import {
   getStaticRateCardAssignee,
+  getStaticRateCardAssignmentKey,
   getStaticRateCardSources,
   isInvalidRateCardUnits,
   normalizeRateCardUnits,
@@ -1145,6 +1146,23 @@ export default function WorkflowTray() {
     ) {
       toast.warning("Selecciona el profesional para cada Rate Card fijo que se asigna al ejecutar.");
       return;
+    }
+
+    if (action === 'approve' || action === 'return') {
+      const staticRateCardAssignmentKeys = staticRateCardSources.map((source) =>
+        getStaticRateCardAssignmentKey(
+          source,
+          currentStep.assignedTo || task.assignedTo || user?.uid,
+          staticRateCardAssignees[source.key]
+        )
+      );
+      const hasDuplicateStaticRateCardAssignments = staticRateCardAssignmentKeys.some(
+        (assignmentKey, index) => staticRateCardAssignmentKeys.indexOf(assignmentKey) !== index
+      );
+      if (hasDuplicateStaticRateCardAssignments) {
+        toast.warning("El mismo Rate Card solo puede cargarse una vez por profesional en este paso.");
+        return;
+      }
     }
 
     if (currentStepIsQualityGate && action === 'return' && !qualityCauseId) {
