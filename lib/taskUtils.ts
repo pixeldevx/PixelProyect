@@ -1,6 +1,10 @@
 import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp } from '@/lib/supabase/document-store';
 import { db } from './backend';
 
+const COMPLETED_STATUSES = new Set(['completed', 'completed_late', 'listo']);
+const ACTIVE_STATUSES = new Set(['in_progress', 'en_curso', 'trabajando', 'reproceso']);
+const PENDING_STATUSES = new Set(['todo', 'pending', 'not_started']);
+
 export const updateParentTaskStatus = async (projectId: string, parentTaskId: string) => {
   try {
     // Get all subtasks for this parent
@@ -23,9 +27,9 @@ export const updateParentTaskStatus = async (projectId: string, parentTaskId: st
 
     subtasks.forEach(task => {
       const status = task.status || 'todo';
-      if (status !== 'completed' && status !== 'completed_late') allDone = false;
-      if (status === 'in_progress' || status === 'completed' || status === 'completed_late') anyStarted = true;
-      if (status === 'todo' || status === 'pending') anyPending = true;
+      if (!COMPLETED_STATUSES.has(status)) allDone = false;
+      if (ACTIVE_STATUSES.has(status) || COMPLETED_STATUSES.has(status)) anyStarted = true;
+      if (PENDING_STATUSES.has(status)) anyPending = true;
       
       totalProgress += (task.progress || 0);
     });

@@ -410,6 +410,11 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     });
   }, [tasks]);
 
+  const tasksById = useMemo(
+    () => new Map(sortedTasks.map((task) => [task.id, task])),
+    [sortedTasks]
+  );
+
   const completionFilteredTasks = useMemo(() => {
     if (!hideCompletedTasks) return sortedTasks;
 
@@ -541,14 +546,40 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const shouldShowTaskGroups = sortedTaskGroups.length > 0 || completionFilteredTasks.some((task) => task.groupId);
 
   const visibleRows = useMemo<VisibleTaskRow[]>(() => {
-    const sourceTasks = hasActiveTaskFilter ? filteredSortedTasks : completionFilteredTasks;
+    const baseSourceTasks = hasActiveTaskFilter ? filteredSortedTasks : completionFilteredTasks;
+    const sourceTaskMap = new Map(baseSourceTasks.map((task) => [task.id, task]));
+    const contextualParentIds = new Set<string>();
+
+    baseSourceTasks.forEach((task) => {
+      const visitedParentIds = new Set<string>();
+      let parentId = task.parentTaskId;
+
+      while (parentId && !visitedParentIds.has(parentId)) {
+        visitedParentIds.add(parentId);
+        const parentTask = sourceTaskMap.get(parentId) || tasksById.get(parentId);
+        if (!parentTask) break;
+
+        if (!sourceTaskMap.has(parentId)) {
+          sourceTaskMap.set(parentId, parentTask);
+          contextualParentIds.add(parentId);
+        }
+
+        parentId = parentTask.parentTaskId;
+      }
+    });
+
+    const sourceTasks = sortedTasks.filter((task) => sourceTaskMap.has(task.id));
     const sourceTaskIds = new Set(sourceTasks.map((task) => task.id));
     const rows: VisibleTaskRow[] = [];
 
     const appendTaskTree = (task: any) => {
       rows.push({ type: 'task', id: task.id, task });
       const subTasks = sortChildTasks(sourceTasks.filter(t => t.parentTaskId === task.id));
-      const shouldShowChildren = Boolean(expandedParents[task.id] || hasActiveTaskSearch);
+      const shouldShowChildren = Boolean(
+        expandedParents[task.id] ||
+        hasActiveTaskSearch ||
+        contextualParentIds.has(task.id)
+      );
       if (subTasks.length > 0 && shouldShowChildren) {
         subTasks.forEach(subTask => {
           rows.push({ type: 'task', id: subTask.id, task: subTask });
@@ -637,7 +668,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     });
 
     return rows;
-  }, [collapsedGroups, completionFilteredTasks, expandedParents, filteredSortedTasks, hasActiveTaskFilter, hasActiveTaskSearch, shouldShowTaskGroups, sortedTaskGroups]);
+  }, [collapsedGroups, completionFilteredTasks, expandedParents, filteredSortedTasks, hasActiveTaskFilter, hasActiveTaskSearch, shouldShowTaskGroups, sortedTaskGroups, sortedTasks, tasksById]);
 
   const visibleTasks = useMemo(
     () => visibleRows.filter((row): row is Extract<VisibleTaskRow, { type: 'task' }> => row.type === 'task').map((row) => row.task),
@@ -1210,7 +1241,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const scheduleState = getTaskScheduleState(task);
                     const isQuantitative = task.type === 'quantitative';
                     const isMeeting = isMeetingTask(task);
-                    const isParent = task.isParentTask || completionFilteredTasks.some(t => t.parentTaskId === task.id);
+                    const isParent = task.isParentTask || tasks.some(t => t.parentTaskId === task.id);
                     const isSubTask = !!task.parentTaskId;
                     const isExpanded = expandedParents[task.id];
                     const isEditingTitle = editingTaskId === task.id;

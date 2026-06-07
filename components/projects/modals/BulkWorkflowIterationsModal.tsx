@@ -326,6 +326,25 @@ const getExistingWorkflowIdsForTask = (tasks: any[], task: any) =>
       .map((value) => foldText(value))
   );
 
+const BULK_ITERATION_CHUNK_SIZE = 75;
+const NOTIFICATION_CHUNK_SIZE = 25;
+
+type CreationProgress = {
+  total: number;
+  completed: number;
+  stage: string;
+  skipped: number;
+};
+
+const yieldToBrowser = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+const sendNotificationsInChunks = async (notifications: TaskAssignmentNotificationPayload[]) => {
+  for (let index = 0; index < notifications.length; index += NOTIFICATION_CHUNK_SIZE) {
+    const chunk = notifications.slice(index, index + NOTIFICATION_CHUNK_SIZE);
+    await Promise.allSettled(chunk.map((notification) => notifyTaskAssignment(notification)));
+  }
+};
+
 export function BulkWorkflowIterationsModal({
   isOpen,
   onClose,
@@ -340,6 +359,7 @@ export function BulkWorkflowIterationsModal({
   const [endDate, setEndDate] = useState("");
   const [firstStepAssignee, setFirstStepAssignee] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const [creationProgress, setCreationProgress] = useState<CreationProgress | null>(null);
 
   useEffect(() => {
     if (!isOpen || !task) return;
@@ -348,6 +368,7 @@ export function BulkWorkflowIterationsModal({
     setStartDate(toDateInputValue(task.startDate || task.start));
     setEndDate(toDateInputValue(task.endDate || task.end));
     setFirstStepAssignee("");
+    setCreationProgress(null);
   }, [isOpen, task]);
 
   const firstStepIsDynamic = task?.workflowSteps?.[0]?.assignedTo === "DYNAMIC";
@@ -434,6 +455,12 @@ export function BulkWorkflowIterationsModal({
     }
 
     setIsCreating(true);
+    setCreationProgress({
+      total: validIterations.length,
+      completed: 0,
+      stage: "Revisando IDs existentes",
+      skipped: existingIterations.length,
+    });
 
     try {
       const currentChildrenSnapshot = await getDocs(
@@ -455,7 +482,6 @@ export function BulkWorkflowIterationsModal({
         toast.warning(`${skippedExistingCount} ID(s) ya existían y no se reescribieron.`);
       }
 
-      const batch = writeBatch(db);
       const now = new Date();
       const sourceTitle = task.originalTitle || getTaskTitle(task);
       const existingChildCount = currentChildTasks.length;
@@ -469,125 +495,162 @@ export function BulkWorkflowIterationsModal({
       );
       const notifications: TaskAssignmentNotificationPayload[] = [];
 
-      iterationsToCreate.forEach((iteration, index) => {
-        const iterationRef = doc(collection(db, "projects", projectId, "tasks"));
-        const cleanWorkflowId = iteration.externalWorkflowId.trim();
-        const cleanObservation = iteration.observation.trim();
-        const cleanMunicipality = iteration.municipality.trim();
-        const iterationStartDate = dateFromInputValue(iteration.startDate || startDate) || parsedStartDate;
-        const iterationEndDate = dateFromInputValue(iteration.endDate || endDate) || parsedEndDate;
-        const workflowSteps = task.workflowSteps.map((step: any, stepIndex: number) => {
-          const cleanStep: any = {
-            ...stripWorkflowStepRuntime(step),
-            status: stepIndex === 0 ? "en_curso" : "not_started",
-            completed: false,
-          };
+      for (let chunkStart = 0; chunkStart < iterationsToCreate.length; chunkStart += BULK_ITERATION_CHUNK_SIZE) {
+        const chunk = iterationsToCreate.slice(chunkStart, chunkStart + BULK_ITERATION_CHUNK_SIZE);
+        const batch = writeBatch(db);
 
-          if (stepIndex === 0) {
-            cleanStep.startedAt = now.toISOString();
-            cleanStep.startedBy = user.uid;
-            if (cleanStep.assignedTo === "DYNAMIC" && firstStepAssignee) {
-              cleanStep.assignedTo = firstStepAssignee;
+        setCreationProgress({
+          total: iterationsToCreate.length,
+          completed: chunkStart,
+          stage: `Creando iteraciones ${chunkStart + 1}-${chunkStart + chunk.length}`,
+          skipped: skippedExistingCount,
+        });
+
+        chunk.forEach((iteration, chunkIndex) => {
+          const index = chunkStart + chunkIndex;
+          const iterationRef = doc(collection(db, "projects", projectId, "tasks"));
+          const cleanWorkflowId = iteration.externalWorkflowId.trim();
+          const cleanObservation = iteration.observation.trim();
+          const cleanMunicipality = iteration.municipality.trim();
+          const iterationStartDate = dateFromInputValue(iteration.startDate || startDate) || parsedStartDate;
+          const iterationEndDate = dateFromInputValue(iteration.endDate || endDate) || parsedEndDate;
+          const workflowSteps = task.workflowSteps.map((step: any, stepIndex: number) => {
+            const cleanStep: any = {
+              ...stripWorkflowStepRuntime(step),
+              status: stepIndex === 0 ? "en_curso" : "not_started",
+              completed: false,
+            };
+
+            if (stepIndex === 0) {
+              cleanStep.startedAt = now.toISOString();
+              cleanStep.startedBy = user.uid;
+              if (cleanStep.assignedTo === "DYNAMIC" && firstStepAssignee) {
+                cleanStep.assignedTo = firstStepAssignee;
+              }
             }
-          }
 
-          Object.keys(cleanStep).forEach((key) => {
-            if (cleanStep[key] === undefined) cleanStep[key] = null;
+            Object.keys(cleanStep).forEach((key) => {
+              if (cleanStep[key] === undefined) cleanStep[key] = null;
+            });
+
+            return cleanStep;
+          });
+          const resolvedFirstStepAssignee = workflowSteps[0]?.assignedTo;
+          const iterationAssignee =
+            firstStepIsDynamic && resolvedFirstStepAssignee && resolvedFirstStepAssignee !== "DYNAMIC"
+              ? resolvedFirstStepAssignee
+              : task.assignedTo || "";
+          notifications.push({
+            projectId,
+            taskId: iterationRef.id,
+            assigneeId: workflowSteps[0]?.assignedTo,
+            stepIndex: 0,
+            eventType: "workflow_step_assigned",
+            source: "bulk_iteration",
           });
 
-          return cleanStep;
-        });
-        const resolvedFirstStepAssignee = workflowSteps[0]?.assignedTo;
-        const iterationAssignee =
-          firstStepIsDynamic && resolvedFirstStepAssignee && resolvedFirstStepAssignee !== "DYNAMIC"
-            ? resolvedFirstStepAssignee
-            : task.assignedTo || "";
-        notifications.push({
-          projectId,
-          taskId: iterationRef.id,
-          assigneeId: workflowSteps[0]?.assignedTo,
-          stepIndex: 0,
-          eventType: "workflow_step_assigned",
-          source: "bulk_iteration",
+          batch.set(iterationRef, {
+            projectId,
+            title: cleanWorkflowId,
+            name: cleanWorkflowId,
+            originalTitle: sourceTitle,
+            description: task.description || "",
+            startDate: iterationStartDate,
+            endDate: iterationEndDate,
+            start: iterationStartDate,
+            end: iterationEndDate,
+            municipality: cleanMunicipality,
+            workflowMunicipality: cleanMunicipality,
+            assignedTo: iterationAssignee,
+            indicator: null,
+            indicatorValue: null,
+            status: "in_progress",
+            progress: 10,
+            type: "workflow",
+            requiresDocument: Boolean(task.requiresDocument),
+            linkedDocumentId: null,
+            isRateCardTask: Boolean(task.isRateCardTask),
+            rateCardMode: task.rateCardMode || null,
+            dynamicRateCard: Boolean(task.dynamicRateCard),
+            dynamicRateCardConfig: task.dynamicRateCardConfig || null,
+            rateCardId: task.rateCardId || null,
+            unitsToAdd: task.unitsToAdd || null,
+            autoAddUnits: task.autoAddUnits !== false,
+            syncExternal: Boolean(task.syncExternal),
+            priority: task.priority || "medium",
+            groupId: task.groupId || null,
+            currentValue: 0,
+            parentTaskId: task.id,
+            cycleNumber: existingChildCount + index + 1,
+            displayOrder: displayOrderBase + index + 1,
+            workflowSteps,
+            currentStepIndex: 0,
+            workflowHistory: [
+              {
+                stepIndex: 0,
+                userId: user.uid,
+                action: "start",
+                comment: cleanObservation || "Workflow iniciado por carga masiva",
+                timestamp: now.toISOString(),
+                workflowId: cleanWorkflowId,
+                municipality: cleanMunicipality,
+                plannedStartDate: iterationStartDate.toISOString(),
+                plannedEndDate: iterationEndDate.toISOString(),
+                source: "bulk_iteration",
+              },
+            ],
+            workflowCycles: 1,
+            currentCycle: 1,
+            externalWorkflowId: cleanWorkflowId,
+            initialObservation: cleanObservation,
+            startDocumentId: null,
+            bulkCreated: true,
+            bulkCreatedAt: now.toISOString(),
+            bulkSourceTaskId: task.id,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+            createdBy: user.uid,
+          });
         });
 
-        batch.set(iterationRef, {
-          projectId,
-          title: cleanWorkflowId,
-          name: cleanWorkflowId,
-          originalTitle: sourceTitle,
-          description: task.description || "",
-          startDate: iterationStartDate,
-          endDate: iterationEndDate,
-          start: iterationStartDate,
-          end: iterationEndDate,
-          municipality: cleanMunicipality,
-          workflowMunicipality: cleanMunicipality,
-          assignedTo: iterationAssignee,
-          indicator: null,
-          indicatorValue: null,
-          status: "in_progress",
-          progress: 10,
-          type: "workflow",
-          requiresDocument: Boolean(task.requiresDocument),
-          linkedDocumentId: null,
-          isRateCardTask: Boolean(task.isRateCardTask),
-          rateCardMode: task.rateCardMode || null,
-          dynamicRateCard: Boolean(task.dynamicRateCard),
-          dynamicRateCardConfig: task.dynamicRateCardConfig || null,
-          rateCardId: task.rateCardId || null,
-          unitsToAdd: task.unitsToAdd || null,
-          autoAddUnits: task.autoAddUnits !== false,
-          syncExternal: Boolean(task.syncExternal),
-          priority: task.priority || "medium",
-          groupId: task.groupId || null,
-          currentValue: 0,
-          parentTaskId: task.id,
-          cycleNumber: existingChildCount + index + 1,
-          displayOrder: displayOrderBase + index + 1,
-          workflowSteps,
-          currentStepIndex: 0,
-          workflowHistory: [
-            {
-              stepIndex: 0,
-              userId: user.uid,
-              action: "start",
-              comment: cleanObservation || "Workflow iniciado por carga masiva",
-              timestamp: now.toISOString(),
-              workflowId: cleanWorkflowId,
-              municipality: cleanMunicipality,
-              plannedStartDate: iterationStartDate.toISOString(),
-              plannedEndDate: iterationEndDate.toISOString(),
-              source: "bulk_iteration",
-            },
-          ],
-          workflowCycles: 1,
-          currentCycle: 1,
-          externalWorkflowId: cleanWorkflowId,
-          initialObservation: cleanObservation,
-          startDocumentId: null,
-          bulkCreated: true,
-          bulkCreatedAt: now.toISOString(),
-          bulkSourceTaskId: task.id,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          createdBy: user.uid,
+        await batch.commit();
+
+        setCreationProgress({
+          total: iterationsToCreate.length,
+          completed: Math.min(chunkStart + chunk.length, iterationsToCreate.length),
+          stage: "Guardando interacciones iniciales",
+          skipped: skippedExistingCount,
         });
+        await yieldToBrowser();
+      }
+
+      setCreationProgress({
+        total: iterationsToCreate.length,
+        completed: iterationsToCreate.length,
+        stage: "Actualizando tarea matriz",
+        skipped: skippedExistingCount,
       });
 
-      batch.update(doc(db, "projects", projectId, "tasks", task.id), {
+      const parentBatch = writeBatch(db);
+      parentBatch.update(doc(db, "projects", projectId, "tasks", task.id), {
         isParentTask: true,
+        status: "in_progress",
         totalSubtasks: nextTotalSubtasks,
         totalCycles: Math.max(Number(task.totalCycles || 0), nextTotalSubtasks),
         updatedAt: serverTimestamp(),
       });
-
-      await batch.commit();
-
-      void Promise.allSettled(notifications.map((notification) => notifyTaskAssignment(notification)));
+      await parentBatch.commit();
 
       const { updateParentTaskStatus } = await import("@/lib/taskUtils");
       await updateParentTaskStatus(projectId, task.id);
+
+      setCreationProgress({
+        total: iterationsToCreate.length,
+        completed: iterationsToCreate.length,
+        stage: "Programando notificaciones",
+        skipped: skippedExistingCount,
+      });
+      void sendNotificationsInChunks(notifications);
 
       toast.success(`${iterationsToCreate.length} iteraciones iniciadas correctamente.`);
       if (skippedExistingCount > 0) {
@@ -599,8 +662,13 @@ export function BulkWorkflowIterationsModal({
       toast.error(error?.message || "No se pudieron crear las iteraciones.");
     } finally {
       setIsCreating(false);
+      setCreationProgress(null);
     }
   };
+
+  const progressPercent = creationProgress?.total
+    ? Math.min(100, Math.round((creationProgress.completed / creationProgress.total) * 100))
+    : 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
@@ -771,8 +839,31 @@ export function BulkWorkflowIterationsModal({
         </div>
 
         <div className="flex flex-col gap-3 border-t border-slate-100 bg-white p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-xs text-slate-500">
-            Se crearán como subtareas en curso y entrarán al primer paso del workflow.
+          <div className="min-w-0 flex-1 text-xs text-slate-500">
+            {creationProgress ? (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2 font-semibold text-slate-700">
+                  <Loader2 size={14} className="animate-spin text-indigo-600" />
+                  <span>{creationProgress.stage}</span>
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">
+                    {creationProgress.completed}/{creationProgress.total}
+                  </span>
+                  {creationProgress.skipped > 0 && (
+                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                      {creationProgress.skipped} existentes omitidas
+                    </span>
+                  )}
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full rounded-full bg-indigo-600 transition-all duration-300"
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
+              </div>
+            ) : (
+              "Se crearán como subtareas en curso y entrarán al primer paso del workflow."
+            )}
           </div>
           <div className="flex justify-end gap-3">
             <Button type="button" variant="outline" onClick={handleClose} disabled={isCreating}>
@@ -787,7 +878,7 @@ export function BulkWorkflowIterationsModal({
               {isCreating ? (
                 <>
                   <Loader2 size={16} className="mr-2 animate-spin" />
-                  Creando...
+                  Creando {creationProgress ? `${creationProgress.completed}/${creationProgress.total}` : "..."}
                 </>
               ) : (
                 <>
