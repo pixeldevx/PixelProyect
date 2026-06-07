@@ -39,6 +39,7 @@ interface ProjectGanttProps {
   onUpdateTaskGroup?: (taskId: string, groupId: string, task: any) => void | Promise<void>;
   onDeleteTask?: (taskId: string) => void;
   onDeleteTasks?: (taskIds: string[]) => void;
+  onDeleteTaskTree?: (taskId: string, task: any) => void;
   onSyncTask?: (taskId: string, task: any) => void;
   onReorderTasks?: (newTasks: any[]) => void;
   onUpdateTaskDates?: (taskId: string, start: Date, end: Date, task: any) => void;
@@ -258,6 +259,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onUpdateTaskGroup,
   onDeleteTask,
   onDeleteTasks,
+  onDeleteTaskTree,
   onSyncTask,
   onReorderTasks,
   onUpdateTaskDates,
@@ -302,7 +304,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const canChangeTaskStatus = Boolean(canEditTaskStatus && onUpdateTaskStatus);
   const canChangeTaskAssignee = Boolean(canModifyTaskDetails && onUpdateTaskAssignee);
   const canCreateSubtasks = Boolean(canAddSubtasks && onAddSubtask);
-  const canRemoveTasks = Boolean(canDeleteTasks && (onDeleteTask || onDeleteTasks));
+  const canRemoveTasks = Boolean(canDeleteTasks && (onDeleteTask || onDeleteTasks || onDeleteTaskTree));
   const canManageTaskGroups = Boolean(canModifyTaskDetails && (onCreateTaskGroup || onUpdateTaskGroup || onUpdateTaskGroupDefinition || onDeleteTaskGroup));
   const sortedTaskGroups = useMemo(() => {
     const validGroups = [...taskGroups].filter((group) => group?.id && group?.name);
@@ -414,6 +416,16 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     () => new Map(sortedTasks.map((task) => [task.id, task])),
     [sortedTasks]
   );
+
+  const allChildrenByParentId = useMemo(() => {
+    return tasks.reduce<Map<string, any[]>>((map, task) => {
+      if (!task.parentTaskId) return map;
+      const children = map.get(task.parentTaskId) || [];
+      children.push(task);
+      map.set(task.parentTaskId, children);
+      return map;
+    }, new Map<string, any[]>());
+  }, [tasks]);
 
   const completionFilteredTasks = useMemo(() => {
     if (!hideCompletedTasks) return sortedTasks;
@@ -1241,7 +1253,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const scheduleState = getTaskScheduleState(task);
                     const isQuantitative = task.type === 'quantitative';
                     const isMeeting = isMeetingTask(task);
-                    const isParent = task.isParentTask || tasks.some(t => t.parentTaskId === task.id);
+                    const hasDependentTasks = allChildrenByParentId.has(task.id);
+                    const isParent = task.isParentTask || hasDependentTasks;
                     const isSubTask = !!task.parentTaskId;
                     const isExpanded = expandedParents[task.id];
                     const isEditingTitle = editingTaskId === task.id;
@@ -1790,7 +1803,20 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         Reiniciar flujo
                                       </button>
                                     )}
-                                    {canRemoveTasks && (
+                                    {canRemoveTasks && hasDependentTasks && onDeleteTaskTree && !task.isWorkflowStep && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          onDeleteTaskTree(task.id, task);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-red-700 hover:bg-red-50"
+                                      >
+                                        <Trash2 size={14} />
+                                        Eliminar matriz y subtareas
+                                      </button>
+                                    )}
+                                    {canRemoveTasks && (!hasDependentTasks || !onDeleteTaskTree) && (
                                       <button
                                         type="button"
                                         onClick={() => {

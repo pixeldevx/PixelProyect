@@ -62,6 +62,27 @@ const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
 const DEFAULT_TASK_GROUP_COLOR = '#94a3b8';
 const PROJECT_BUDGET_ACCESS_ROLES = new Set(['admin', 'org_admin', 'manager', 'coordinador']);
+const DELETE_LINKED_DATA_CHUNK_SIZE = 25;
+const DELETE_TASK_CHUNK_SIZE = 100;
+
+type TaskDeleteMode = 'single' | 'bulk' | 'tree';
+
+type TaskDeleteRequest = {
+  ids: string[];
+  title: string;
+  isBulk?: boolean;
+  mode?: TaskDeleteMode;
+  dependentHint?: number;
+};
+
+type DeletionProgress = {
+  stage: string;
+  processed: number;
+  total: number;
+  detail?: string;
+};
+
+const yieldToBrowser = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const toDateInputValue = (value: any) => {
   const date = getTaskDateValue(value);
@@ -186,8 +207,9 @@ export default function ProjectDetailsPage() {
   const [documentSearchQuery, setDocumentSearchQuery] = useState('');
 
   const [documentToDelete, setDocumentToDelete] = useState<{id: string, storagePath: string, name: string} | null>(null);
-  const [taskToDelete, setTaskToDelete] = useState<{ ids: string[], title: string, isBulk?: boolean } | null>(null);
+  const [taskToDelete, setTaskToDelete] = useState<TaskDeleteRequest | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deletionProgress, setDeletionProgress] = useState<DeletionProgress | null>(null);
 
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [userProfiles, setUserProfiles] = useState<any[]>([]);
@@ -1299,8 +1321,30 @@ export default function ProjectDetailsPage() {
 
     const task = tasks.find(t => t.id === taskId);
     if (task) {
-      setTaskToDelete({ ids: [taskId], title: getTaskTitle(task), isBulk: false });
+      setTaskToDelete({ ids: [taskId], title: getTaskTitle(task), isBulk: false, mode: 'single' });
     }
+  };
+
+  const handleDeleteTaskTree = (taskId: string) => {
+    if (!canDeleteTasks) {
+      toast.error('No tienes permisos para eliminar tareas.');
+      return;
+    }
+
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) {
+      toast.error('No se encontró la tarea matriz para eliminar.');
+      return;
+    }
+
+    const dependentIds = collectDependentTaskIds(taskId);
+    setTaskToDelete({
+      ids: [taskId],
+      title: getTaskTitle(task),
+      isBulk: false,
+      mode: 'tree',
+      dependentHint: Math.max(0, dependentIds.size - 1),
+    });
   };
 
   const handleDeleteTasks = (taskIds: string[]) => {
@@ -1330,12 +1374,20 @@ export default function ProjectDetailsPage() {
       ids: uniqueIds,
       title: `${uniqueIds.length} tareas seleccionadas${previewTitles.length ? `: ${previewTitles.join(', ')}${uniqueIds.length > previewTitles.length ? '...' : ''}` : ''}`,
       isBulk: true,
+      mode: 'bulk',
     });
   };
 
   const executeDeleteTask = async () => {
     if (!taskToDelete) return;
     setIsDeleting(true);
+    setDeletionProgress({
+      stage: 'Preparando eliminación',
+      processed: 0,
+      total: Math.max(taskToDelete.ids.length, 1),
+      detail: 'Validando tareas seleccionadas',
+    });
+
     try {
       const rootTasks = taskToDelete.ids
         .map((taskId) => tasks.find((task) => task.id === taskId))
@@ -1347,33 +1399,36 @@ export default function ProjectDetailsPage() {
         return;
       }
 
-      const batch = writeBatch(db);
-      const storageDeletionPromises: Promise<void>[] = [];
-
-      const collectTaskTreeFromDatabase = async (rootTask: any) => {
+      const collectTaskTreeFromDatabase = async (rootTask: any, rootIndex: number) => {
         const taskMap = new Map<string, any>();
         const taskRefs = new Map<string, ReturnType<typeof doc>>();
-        const pendingIds: string[] = [];
+        const pendingParentIds: string[] = [rootTask.id];
+        const localDependentIds = collectDependentTaskIds(rootTask.id);
 
-        collectDependentTaskIds(rootTask.id).forEach((taskId) => {
+        localDependentIds.forEach((taskId) => {
           const loadedTask = tasks.find((candidate) => candidate.id === taskId);
           if (!loadedTask) return;
           taskMap.set(taskId, loadedTask);
           taskRefs.set(taskId, doc(db, 'projects', projectId, 'tasks', taskId));
-          pendingIds.push(taskId);
         });
 
         if (!taskMap.has(rootTask.id)) {
           taskMap.set(rootTask.id, rootTask);
           taskRefs.set(rootTask.id, doc(db, 'projects', projectId, 'tasks', rootTask.id));
-          pendingIds.push(rootTask.id);
         }
 
         const visitedParents = new Set<string>();
-        while (pendingIds.length > 0) {
-          const parentId = pendingIds.shift();
+        while (pendingParentIds.length > 0) {
+          const parentId = pendingParentIds.shift();
           if (!parentId || visitedParents.has(parentId)) continue;
           visitedParents.add(parentId);
+
+          setDeletionProgress({
+            stage: 'Identificando dependientes',
+            processed: rootIndex,
+            total: rootTasks.length,
+            detail: `${getTaskTitle(rootTask)} · ${taskMap.size} encontradas`,
+          });
 
           const childrenSnapshot = await getDocs(query(
             collection(db, 'projects', projectId, 'tasks'),
@@ -1381,25 +1436,36 @@ export default function ProjectDetailsPage() {
           ));
 
           childrenSnapshot.docs.forEach((docSnap) => {
-            if (taskMap.has(docSnap.id)) return;
-            taskMap.set(docSnap.id, { id: docSnap.id, ...docSnap.data() });
-            taskRefs.set(docSnap.id, docSnap.ref);
-            pendingIds.push(docSnap.id);
+            const childWasLoaded = taskMap.has(docSnap.id);
+            if (!childWasLoaded) {
+              taskMap.set(docSnap.id, { id: docSnap.id, ...docSnap.data() });
+              taskRefs.set(docSnap.id, docSnap.ref);
+            }
+
+            if (!localDependentIds.has(docSnap.id)) {
+              pendingParentIds.push(docSnap.id);
+            }
           });
+
+          await yieldToBrowser();
         }
 
         return { taskMap, taskRefs };
       };
 
-      const deleteTaskLinkedData = async (taskId: string) => {
+      const deleteTaskLinkedData = async (
+        taskId: string,
+        batchToUse: ReturnType<typeof writeBatch>,
+        storageDeletionPromises: Promise<void>[]
+      ) => {
         const [qualitySnapshot, commentsSnapshot, documentsSnapshot] = await Promise.all([
           getDocs(query(collection(db, 'projects', projectId, 'qualityEvents'), where('taskId', '==', taskId))),
           getDocs(query(collection(db, 'projects', projectId, 'tasks', taskId, 'comments'))),
           getDocs(query(collection(db, 'projects', projectId, 'documents'), where('taskId', '==', taskId))),
         ]);
 
-        qualitySnapshot.docs.forEach((docSnap) => batch.delete(docSnap.ref));
-        commentsSnapshot.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+        qualitySnapshot.docs.forEach((docSnap) => batchToUse.delete(docSnap.ref));
+        commentsSnapshot.docs.forEach((docSnap) => batchToUse.delete(docSnap.ref));
         documentsSnapshot.docs.forEach((docSnap) => {
           const data = docSnap.data();
           if (data?.storagePath) {
@@ -1409,12 +1475,14 @@ export default function ProjectDetailsPage() {
               })
             );
           }
-          batch.delete(docSnap.ref);
+          batchToUse.delete(docSnap.ref);
         });
       };
 
       const cleanLogbookTaskLinks = async (deletedTaskIds: Set<string>) => {
         const logbookSnapshot = await getDocs(collection(db, 'projects', projectId, 'logbookEntries'));
+        const logbookBatch = writeBatch(db);
+        let changeCount = 0;
 
         logbookSnapshot.docs.forEach((docSnap) => {
           const data = docSnap.data();
@@ -1444,15 +1512,20 @@ export default function ProjectDetailsPage() {
 
           if (!hasChanges) return;
 
-          batch.update(docSnap.ref, {
+          changeCount += 1;
+          logbookBatch.update(docSnap.ref, {
             derivedLinks,
             actionCandidates,
             updatedAt: serverTimestamp(),
           });
         });
+
+        if (changeCount > 0) {
+          await logbookBatch.commit();
+        }
       };
 
-      const revertRateCard = (t: any) => {
+      const revertRateCard = (t: any, batchToUse: ReturnType<typeof writeBatch>) => {
         if (t.isRateCardTask && t.rateCardId && t.unitsToAdd) {
           const rcRef = doc(db, 'projects', projectId, 'rateCards', t.rateCardId);
           if (t.type !== 'workflow') {
@@ -1460,13 +1533,13 @@ export default function ProjectDetailsPage() {
             if (units !== 0) {
               const updateData: any = { currentValue: increment(-units) };
               if (t.assignedTo) updateData[`userStats.${t.assignedTo}`] = increment(-units);
-              batch.update(rcRef, updateData);
+              batchToUse.update(rcRef, updateData);
             }
           } else if (t.status === 'completed' || t.status === 'completed_late') {
             const units = normalizeRateCardUnits(t.unitsToAdd);
             const updateData: any = { currentValue: increment(-units) };
             if (t.assignedTo) updateData[`userStats.${t.assignedTo}`] = increment(-units);
-            batch.update(rcRef, updateData);
+            batchToUse.update(rcRef, updateData);
           }
         }
 
@@ -1481,7 +1554,7 @@ export default function ProjectDetailsPage() {
                 const updateData: any = { currentValue: increment(-units) };
                 const stepAssignee = getStaticRateCardAssignee(stepRateCardSource, step.assignedTo);
                 if (stepAssignee) updateData[`userStats.${stepAssignee}`] = increment(-units);
-                batch.update(rcRef, updateData);
+                batchToUse.update(rcRef, updateData);
               });
             }
           });
@@ -1491,35 +1564,86 @@ export default function ProjectDetailsPage() {
       const taskMap = new Map<string, any>();
       const taskRefs = new Map<string, ReturnType<typeof doc>>();
 
-      for (const rootTask of rootTasks) {
-        const collected = await collectTaskTreeFromDatabase(rootTask);
+      for (let index = 0; index < rootTasks.length; index += 1) {
+        const rootTask = rootTasks[index];
+        const collected = await collectTaskTreeFromDatabase(rootTask, index);
         collected.taskMap.forEach((taskToRemove, taskId) => {
           taskMap.set(taskId, taskToRemove);
         });
         collected.taskRefs.forEach((taskRef, taskId) => {
           taskRefs.set(taskId, taskRef);
         });
+
+        setDeletionProgress({
+          stage: 'Identificando dependientes',
+          processed: index + 1,
+          total: rootTasks.length,
+          detail: `${taskMap.size} tareas y subtareas encontradas`,
+        });
       }
 
       const taskIdsToDelete = new Set(taskMap.keys());
+      const taskIdsToDeleteArray = Array.from(taskIdsToDelete);
       const parentTaskIdsToRefresh = new Set(
         rootTasks
           .map((rootTask: any) => rootTask.parentTaskId)
           .filter((parentTaskId: string | undefined): parentTaskId is string => typeof parentTaskId === 'string' && !taskIdsToDelete.has(parentTaskId))
       );
 
-      taskMap.forEach((taskToRemove, taskId) => {
-        revertRateCard(taskToRemove);
-        batch.delete(taskRefs.get(taskId) || doc(db, 'projects', projectId, 'tasks', taskId));
+      for (let index = 0; index < taskIdsToDeleteArray.length; index += DELETE_LINKED_DATA_CHUNK_SIZE) {
+        const chunk = taskIdsToDeleteArray.slice(index, index + DELETE_LINKED_DATA_CHUNK_SIZE);
+        const linkedDataBatch = writeBatch(db);
+        const storageDeletionPromises: Promise<void>[] = [];
+
+        setDeletionProgress({
+          stage: 'Limpiando datos asociados',
+          processed: Math.min(index + chunk.length, taskIdsToDeleteArray.length),
+          total: taskIdsToDeleteArray.length,
+          detail: `Comentarios, documentos y calidad · ${Math.min(index + chunk.length, taskIdsToDeleteArray.length)}/${taskIdsToDeleteArray.length}`,
+        });
+
+        await Promise.all(chunk.map((taskId) => deleteTaskLinkedData(taskId, linkedDataBatch, storageDeletionPromises)));
+        await Promise.all(storageDeletionPromises);
+        await linkedDataBatch.commit();
+        await yieldToBrowser();
+      }
+
+      setDeletionProgress({
+        stage: 'Limpiando bitácora',
+        processed: 0,
+        total: 1,
+        detail: 'Quitando enlaces hacia tareas eliminadas',
       });
-
-      await Promise.all(Array.from(taskIdsToDelete).map(deleteTaskLinkedData));
       await cleanLogbookTaskLinks(taskIdsToDelete);
-      await Promise.all(storageDeletionPromises);
 
-      await batch.commit();
+      const taskEntriesToDelete = Array.from(taskMap.entries());
+      for (let index = 0; index < taskEntriesToDelete.length; index += DELETE_TASK_CHUNK_SIZE) {
+        const chunk = taskEntriesToDelete.slice(index, index + DELETE_TASK_CHUNK_SIZE);
+        const deleteBatch = writeBatch(db);
+
+        chunk.forEach(([taskId, taskToRemove]) => {
+          revertRateCard(taskToRemove, deleteBatch);
+          deleteBatch.delete(taskRefs.get(taskId) || doc(db, 'projects', projectId, 'tasks', taskId));
+        });
+
+        setDeletionProgress({
+          stage: 'Eliminando tareas',
+          processed: Math.min(index + chunk.length, taskEntriesToDelete.length),
+          total: taskEntriesToDelete.length,
+          detail: `${Math.min(index + chunk.length, taskEntriesToDelete.length)}/${taskEntriesToDelete.length} eliminadas`,
+        });
+
+        await deleteBatch.commit();
+        await yieldToBrowser();
+      }
 
       if (parentTaskIdsToRefresh.size > 0) {
+        setDeletionProgress({
+          stage: 'Recalculando tareas padre',
+          processed: 0,
+          total: parentTaskIdsToRefresh.size,
+          detail: 'Actualizando progreso de matrices afectadas',
+        });
         const { updateParentTaskStatus } = await import('@/lib/taskUtils');
         await Promise.all(Array.from(parentTaskIdsToRefresh).map((parentTaskId) => updateParentTaskStatus(projectId, parentTaskId)));
       }
@@ -1531,6 +1655,7 @@ export default function ProjectDetailsPage() {
       toast.error(`Error al eliminar la tarea: ${error.message}`);
     } finally {
       setIsDeleting(false);
+      setDeletionProgress(null);
     }
   };
 
@@ -2520,10 +2645,11 @@ export default function ProjectDetailsPage() {
                 onUpdateTaskStatus={canEditTaskStatus ? handleUpdateTaskStatus : undefined}
                 onUpdateTaskPriority={canEditTaskDetails ? handleUpdateTaskPriority : undefined}
                 onUpdateTaskAssignee={canEditTaskDetails ? handleUpdateTaskAssignee : undefined}
-                onUpdateTaskGroup={canEditTaskDetails ? handleUpdateTaskGroup : undefined}
-                onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
-                onDeleteTasks={canDeleteTasks ? handleDeleteTasks : undefined}
-                onSyncTask={canEditTaskDetails ? handleSyncTaskValue : undefined}
+	                onUpdateTaskGroup={canEditTaskDetails ? handleUpdateTaskGroup : undefined}
+	                onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
+	                onDeleteTasks={canDeleteTasks ? handleDeleteTasks : undefined}
+	                onDeleteTaskTree={canDeleteTasks ? handleDeleteTaskTree : undefined}
+	                onSyncTask={canEditTaskDetails ? handleSyncTaskValue : undefined}
                 onReorderTasks={canEditTaskDetails ? handleReorderTasks : undefined}
                 onUpdateTaskDates={canEditTaskDates ? handleUpdateTaskDates : undefined}
                 onUpdateTaskTitle={canEditTaskDetails ? handleUpdateTaskTitle : undefined}
@@ -2770,52 +2896,83 @@ export default function ProjectDetailsPage() {
       )}
 
       {/* Delete Task Modal */}
-      {taskToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center gap-3 text-red-600 mb-4">
-              <div className="p-2 bg-red-100 rounded-full">
-                <AlertCircle className="w-6 h-6" />
-              </div>
-              <h3 className="text-lg font-semibold text-slate-900">
-                {taskToDelete.isBulk ? 'Eliminar tareas' : 'Eliminar Tarea'}
-              </h3>
-            </div>
+	      {taskToDelete && (
+	        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+	          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
+	            <div className="flex items-center gap-3 text-red-600 mb-4">
+	              <div className="p-2 bg-red-100 rounded-full">
+	                <AlertCircle className="w-6 h-6" />
+	              </div>
+	              <h3 className="text-lg font-semibold text-slate-900">
+	                {taskToDelete.mode === 'tree' ? 'Eliminar matriz y dependientes' : taskToDelete.isBulk ? 'Eliminar tareas' : 'Eliminar Tarea'}
+	              </h3>
+	            </div>
 
-            <p className="text-slate-600 mb-6">
-              {taskToDelete.isBulk ? (
-                <>
-                  ¿Estás seguro de que deseas eliminar <strong className="text-slate-900">{taskToDelete.ids.length} tareas seleccionadas</strong>?
-                  {' '}También se eliminarán sus subtareas, workflows y datos asociados. Esta acción no se puede deshacer.
-                </>
-              ) : (
-                <>
-                  ¿Estás seguro de que deseas eliminar la tarea <strong className="text-slate-900">&quot;{taskToDelete.title}&quot;</strong>?
-                  {' '}Esta acción no se puede deshacer.
-                </>
-              )}
-            </p>
+	            <p className="text-slate-600 mb-6">
+	              {taskToDelete.mode === 'tree' ? (
+	                <>
+	                  ¿Eliminar la tarea matriz <strong className="text-slate-900">&quot;{taskToDelete.title}&quot;</strong>
+	                  {taskToDelete.dependentHint ? <> y sus <strong className="text-slate-900">{taskToDelete.dependentHint} dependientes detectadas</strong></> : null}?
+	                  {' '}Se limpiarán subtareas, workflows, comentarios, documentos, calidad y enlaces de bitácora. Esta acción no se puede deshacer.
+	                </>
+	              ) : taskToDelete.isBulk ? (
+	                <>
+	                  ¿Estás seguro de que deseas eliminar <strong className="text-slate-900">{taskToDelete.ids.length} tareas seleccionadas</strong>?
+	                  {' '}También se eliminarán sus subtareas, workflows y datos asociados. Esta acción no se puede deshacer.
+	                </>
+	              ) : (
+	                <>
+	                  ¿Estás seguro de que deseas eliminar la tarea <strong className="text-slate-900">&quot;{taskToDelete.title}&quot;</strong>?
+	                  {' '}Esta acción no se puede deshacer.
+	                </>
+	              )}
+	            </p>
 
-            <div className="flex justify-end gap-3">
-              <Button
-                variant="outline"
-                onClick={() => setTaskToDelete(null)}
-                disabled={isDeleting}
-                className="border-slate-200 text-slate-700 hover:bg-slate-50"
-              >
-                Cancelar
-              </Button>
-              <Button
-                onClick={executeDeleteTask}
-                disabled={isDeleting}
-                className="bg-red-600 hover:bg-red-700 text-white"
-              >
-                {isDeleting ? 'Eliminando...' : taskToDelete.isBulk ? 'Sí, eliminar tareas' : 'Sí, eliminar tarea'}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+	            {isDeleting && deletionProgress && (
+	              <div className="mb-6 rounded-xl border border-red-100 bg-red-50/70 p-3">
+	                <div className="mb-2 flex items-center justify-between gap-3">
+	                  <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-red-700">
+	                    <Loader2 size={16} className="shrink-0 animate-spin" />
+	                    <span className="truncate">{deletionProgress.stage}</span>
+	                  </div>
+	                  <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[11px] font-bold text-red-700">
+	                    {deletionProgress.total > 0 ? `${Math.min(deletionProgress.processed, deletionProgress.total)}/${deletionProgress.total}` : '...'}
+	                  </span>
+	                </div>
+	                <div className="h-2 overflow-hidden rounded-full bg-white">
+	                  <div
+	                    className="h-full rounded-full bg-red-600 transition-all duration-300"
+	                    style={{
+	                      width: `${deletionProgress.total > 0 ? Math.min(100, Math.round((deletionProgress.processed / deletionProgress.total) * 100)) : 12}%`,
+	                    }}
+	                  />
+	                </div>
+	                {deletionProgress.detail && (
+	                  <p className="mt-2 text-xs font-medium text-red-700/80">{deletionProgress.detail}</p>
+	                )}
+	              </div>
+	            )}
+
+	            <div className="flex justify-end gap-3">
+	              <Button
+	                variant="outline"
+	                onClick={() => setTaskToDelete(null)}
+	                disabled={isDeleting}
+	                className="border-slate-200 text-slate-700 hover:bg-slate-50"
+	              >
+	                Cancelar
+	              </Button>
+	              <Button
+	                onClick={executeDeleteTask}
+	                disabled={isDeleting}
+	                className="bg-red-600 hover:bg-red-700 text-white"
+	              >
+	                {isDeleting ? 'Eliminando...' : taskToDelete.mode === 'tree' ? 'Sí, eliminar matriz' : taskToDelete.isBulk ? 'Sí, eliminar tareas' : 'Sí, eliminar tarea'}
+	              </Button>
+	            </div>
+	          </div>
+	        </div>
+	      )}
 
       {/* Remove Member Modal */}
       <RemoveMemberModal
