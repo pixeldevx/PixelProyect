@@ -1048,6 +1048,8 @@ export function ProjectSpatialMap({
   const [analysisBounds, setAnalysisBounds] = useState<GeoJsonBounds | null>(null);
   const [analysisDraftRect, setAnalysisDraftRect] = useState<ScreenSelectionRect | null>(null);
   const [isDrawingAnalysis, setIsDrawingAnalysis] = useState(false);
+  const [isAreaAnalysisOpen, setIsAreaAnalysisOpen] = useState(false);
+  const [isLayerManagerOpen, setIsLayerManagerOpen] = useState(false);
   const [spatialViewMode, setSpatialViewMode] = useState<SpatialViewMode>("current");
   const [simulationDateValue, setSimulationDateValue] = useState(() => formatDateInputValue(new Date()));
   const [isSimulationPlaying, setIsSimulationPlaying] = useState(false);
@@ -2439,6 +2441,11 @@ export function ProjectSpatialMap({
             })}
           </div>
 
+          <Button type="button" variant="outline" onClick={() => setIsLayerManagerOpen(true)} disabled={layers.length === 0}>
+            <Settings2 size={16} className="mr-2" />
+            Configuración
+          </Button>
+
           {canManage && (
             <Button
               type="button"
@@ -2713,37 +2720,170 @@ export function ProjectSpatialMap({
               </button>
             </div>
 
-            <div className="absolute left-4 top-16 flex overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="absolute left-4 top-16 z-20">
               <button
                 type="button"
                 onClick={() => {
                   if (!selectedLayer) return;
-                  setIsDrawingAnalysis((current) => !current);
-                  setAnalysisDraftRect(null);
+                  setIsAreaAnalysisOpen(true);
                 }}
                 disabled={!selectedLayer}
-                className={`inline-flex items-center gap-2 px-3 py-2 text-xs font-black transition ${
-                  isDrawingAnalysis ? "bg-cyan-600 text-white" : "text-slate-700 hover:bg-slate-50"
+                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-black shadow-sm transition ${
+                  isAreaAnalysisOpen || isDrawingAnalysis
+                    ? "border-cyan-500 bg-cyan-600 text-white"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                 } disabled:cursor-not-allowed disabled:opacity-50`}
-                aria-label="Dibujar área de análisis"
+                aria-label="Abrir análisis por área"
               >
                 <MousePointer2 size={15} />
                 Analizar área
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAnalysisBounds(null);
-                  setAnalysisDraftRect(null);
-                  setIsDrawingAnalysis(false);
-                }}
-                disabled={!analysisBounds && !analysisDraftRect}
-                className="border-l border-slate-100 p-2 text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                aria-label="Limpiar área de análisis"
-              >
-                <Eraser size={16} />
+                {analysisBounds && (
+                  <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px]">
+                    {analysisStats.total}
+                  </span>
+                )}
               </button>
             </div>
+
+            {isAreaAnalysisOpen && selectedLayer && (
+              <div className="absolute left-4 top-28 z-30 w-[min(420px,calc(100%-2rem))] overflow-hidden rounded-2xl border border-cyan-200 bg-white/95 shadow-2xl backdrop-blur">
+                <div className="flex items-start justify-between gap-3 border-b border-cyan-100 bg-cyan-50/80 p-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <BarChart3 size={16} className="text-cyan-700" />
+                      <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700">Análisis por área</p>
+                    </div>
+                    <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">
+                      Dibuja un rectángulo y resume cualquier atributo sin abandonar el mapa.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAreaAnalysisOpen(false);
+                      setIsDrawingAnalysis(false);
+                      setAnalysisDraftRect(null);
+                    }}
+                    className="rounded-full p-1.5 text-slate-400 transition hover:bg-white hover:text-slate-700"
+                    aria-label="Cerrar análisis por área"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="max-h-[min(70vh,620px)] overflow-y-auto p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="min-w-0 flex-1">
+                      <span className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                        Atributo estadístico
+                      </span>
+                      <select
+                        value={analysisAttribute}
+                        onChange={(event) => setAnalysisAttribute(event.target.value)}
+                        className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20"
+                      >
+                        {(selectedLayer.attributes || []).length === 0 && <option value="">Sin atributos</option>}
+                        {(selectedLayer.attributes || []).map((attribute) => (
+                          <option key={attribute} value={attribute}>
+                            {attribute}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <span className="mt-6 shrink-0 rounded-full bg-cyan-50 px-3 py-1 text-xs font-black text-cyan-700">
+                      {analysisStats.total} entidades
+                    </span>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <Button
+                      type="button"
+                      variant={isDrawingAnalysis ? "default" : "outline"}
+                      onClick={() => {
+                        setIsDrawingAnalysis((current) => !current);
+                        setAnalysisDraftRect(null);
+                      }}
+                      className={isDrawingAnalysis ? "bg-cyan-600 text-white hover:bg-cyan-700" : ""}
+                    >
+                      <MousePointer2 size={15} className="mr-2" />
+                      {isDrawingAnalysis ? "Dibujando" : "Dibujar"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setAnalysisBounds(null);
+                        setAnalysisDraftRect(null);
+                        setIsDrawingAnalysis(false);
+                      }}
+                      disabled={!analysisBounds && !analysisDraftRect}
+                    >
+                      <Eraser size={15} className="mr-2" />
+                      Limpiar
+                    </Button>
+                  </div>
+
+                  {!analysisBounds ? (
+                    <div className="mt-4 rounded-xl border border-dashed border-cyan-200 bg-cyan-50 p-4 text-sm font-semibold leading-6 text-cyan-900">
+                      Activa “Dibujar” y arrastra sobre el mapa para crear el área de análisis.
+                    </div>
+                  ) : (
+                    <div className="mt-4 space-y-3">
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="rounded-xl bg-slate-50 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Categorías</p>
+                          <p className="mt-1 text-2xl font-black text-slate-900">{analysisStats.distinct}</p>
+                        </div>
+                        <div className="rounded-xl bg-emerald-50 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.14em] text-emerald-700">Num.</p>
+                          <p className="mt-1 text-2xl font-black text-emerald-800">{analysisStats.numericCount}</p>
+                        </div>
+                        <div className="rounded-xl bg-cyan-50 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700">Área</p>
+                          <p className="mt-1 text-2xl font-black text-cyan-800">{analysisStats.total}</p>
+                        </div>
+                      </div>
+
+                      {analysisStats.numericCount > 0 && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="rounded-xl bg-indigo-50 p-3">
+                            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-700">Promedio</p>
+                            <p className="mt-1 text-lg font-black text-indigo-900">{formatMetricNumber(analysisStats.average, 2)}</p>
+                          </div>
+                          <div className="rounded-xl bg-orange-50 p-3">
+                            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-orange-700">Suma</p>
+                            <p className="mt-1 text-lg font-black text-orange-900">{formatMetricNumber(analysisStats.sum, 2)}</p>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
+                        {analysisStats.categories.length === 0 ? (
+                          <div className="rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-500">
+                            El área no contiene entidades de la capa seleccionada.
+                          </div>
+                        ) : (
+                          analysisStats.categories.slice(0, 50).map((item) => (
+                            <div key={item.category} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="truncate text-xs font-black text-slate-900">{item.category}</p>
+                                  <p className="mt-0.5 text-[11px] font-semibold text-slate-500">{item.percent}% del área</p>
+                                </div>
+                                <span className="rounded-full bg-white px-2 py-1 text-xs font-black text-slate-700">{item.count}</span>
+                              </div>
+                              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
+                                <div className="h-full rounded-full" style={{ width: `${Math.max(3, item.percent)}%`, backgroundColor: item.color }} />
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {spatialViewMode === "simulation" && (
               <div className="absolute bottom-4 left-20 right-4 z-20 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur">
@@ -2838,12 +2978,11 @@ export function ProjectSpatialMap({
                 </span>
               </div>
 
-              <div className="mt-4 grid grid-cols-5 gap-1 rounded-xl bg-white/10 p-1">
+              <div className="mt-4 grid grid-cols-4 gap-1 rounded-xl bg-white/10 p-1">
                 {[
                   { key: "summary", label: "Resumen", icon: Layers },
                   { key: "simulation", label: "Tiempo", icon: Play },
                   { key: "analysis", label: "Análisis", icon: BarChart3 },
-                  { key: "style", label: "Estilo", icon: Palette },
                   { key: "search", label: "Buscar", icon: Search },
                 ].map((tab) => {
                   const Icon = tab.icon;
@@ -3135,72 +3274,6 @@ export function ProjectSpatialMap({
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-cyan-100 bg-cyan-50/60 p-3">
-                    <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700">Análisis por área</p>
-                    <label className="mt-3 block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Atributo estadístico</label>
-                    <select
-                      value={analysisAttribute}
-                      onChange={(event) => setAnalysisAttribute(event.target.value)}
-                      disabled={!selectedLayer}
-                      className="mt-2 h-10 w-full rounded-xl border border-cyan-100 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 disabled:bg-slate-100"
-                    >
-                      {(selectedLayer?.attributes || []).length === 0 && <option value="">Sin atributos</option>}
-                      {(selectedLayer?.attributes || []).map((attribute) => (
-                        <option key={attribute} value={attribute}>
-                          {attribute}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      <Button
-                        type="button"
-                        variant={isDrawingAnalysis ? "default" : "outline"}
-                        disabled={!selectedLayer}
-                        onClick={() => {
-                          setIsDrawingAnalysis((current) => !current);
-                          setAnalysisDraftRect(null);
-                        }}
-                        className={isDrawingAnalysis ? "bg-cyan-600 text-white hover:bg-cyan-700" : ""}
-                      >
-                        <MousePointer2 size={15} className="mr-2" />
-                        Dibujar
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => {
-                          setAnalysisBounds(null);
-                          setAnalysisDraftRect(null);
-                          setIsDrawingAnalysis(false);
-                        }}
-                        disabled={!analysisBounds && !analysisDraftRect}
-                      >
-                        <Eraser size={15} className="mr-2" />
-                        Limpiar
-                      </Button>
-                    </div>
-                    <div className="mt-3 grid grid-cols-3 gap-2">
-                      <div className="rounded-xl bg-white p-3 text-cyan-800">
-                        <p className="text-[9px] font-black uppercase tracking-[0.14em]">Área</p>
-                        <p className="mt-1 text-xl font-black">{analysisStats.total}</p>
-                      </div>
-                      <div className="rounded-xl bg-white p-3 text-indigo-800">
-                        <p className="text-[9px] font-black uppercase tracking-[0.14em]">Categorías</p>
-                        <p className="mt-1 text-xl font-black">{analysisStats.distinct}</p>
-                      </div>
-                      <div className="rounded-xl bg-white p-3 text-emerald-800">
-                        <p className="text-[9px] font-black uppercase tracking-[0.14em]">Num.</p>
-                        <p className="mt-1 text-xl font-black">{analysisStats.numericCount}</p>
-                      </div>
-                    </div>
-                    {analysisStats.numericCount > 0 && (
-                      <div className="mt-3 rounded-xl border border-cyan-100 bg-white p-3 text-xs font-bold text-slate-600">
-                        Promedio <span className="font-black text-slate-900">{formatMetricNumber(analysisStats.average, 2)}</span>
-                        <span className="mx-2 text-slate-300">•</span>
-                        Suma <span className="font-black text-slate-900">{formatMetricNumber(analysisStats.sum, 2)}</span>
-                      </div>
-                    )}
-                  </div>
                 </div>
               )}
 
@@ -3384,120 +3457,6 @@ export function ProjectSpatialMap({
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Layers size={16} className="text-indigo-600" />
-                  <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Capas del mapa</p>
-                </div>
-                <p className="mt-1 text-xs font-semibold text-slate-500">
-                  Mantén varias capas prendidas y elige cuál configurar.
-                </p>
-              </div>
-              <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-black text-indigo-700">
-                {visibleLayers.length}/{layers.length}
-              </span>
-            </div>
-
-            <div className="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1">
-              {layers.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-sm font-semibold text-slate-500">
-                  No hay capas cargadas todavía.
-                </div>
-              ) : (
-                layers.map((layer) => {
-                  const style = normalizeLayerStyle(layer.styleConfig);
-                  const isVisible = layer.visible !== false;
-                  const isActive = layer.id === selectedLayerId;
-                  return (
-                    <div
-                      key={layer.id}
-                      className={`rounded-xl border p-2 transition ${
-                        isActive ? "border-indigo-300 bg-indigo-50/70" : "border-slate-200 bg-white hover:bg-slate-50"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <label className="relative inline-flex h-6 w-10 shrink-0 cursor-pointer items-center">
-                          <input
-                            type="checkbox"
-                            checked={isVisible}
-                            disabled={!canManage}
-                            onChange={(event) => void handleToggleLayerVisibility(layer, event.target.checked)}
-                            className="peer sr-only"
-                            aria-label={isVisible ? `Apagar ${layer.name}` : `Encender ${layer.name}`}
-                          />
-                          <span className="absolute inset-0 rounded-full bg-slate-200 transition peer-checked:bg-emerald-500 peer-disabled:opacity-50" />
-                          <span className="absolute left-1 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4" />
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedLayerId(layer.id);
-                            setSelectedFeatureId(null);
-                          }}
-                          className="min-w-0 flex-1 text-left"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span
-                              className="h-3 w-3 shrink-0 rounded-full"
-                              style={{ backgroundColor: style.statusStyles.unlinked.fillColor }}
-                            />
-                            <p className="truncate text-sm font-black text-slate-900">{layer.name || layer.fileName || "Capa sin nombre"}</p>
-                          </div>
-                          <p className="mt-1 truncate text-[11px] font-semibold text-slate-500">
-                            {(layer.featureCount || 0).toLocaleString("es-CO")} entidades
-                            {style.labelsVisible && style.labelAttribute ? ` · etiqueta: ${style.labelAttribute}` : ""}
-                          </p>
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-600">Lectura espacial</p>
-                <h3 className="mt-1 text-lg font-black text-slate-900">{selectedLayer?.name || "Sin capa activa"}</h3>
-              </div>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{stats.coverage}% unión</span>
-            </div>
-
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              {[
-                ["Totales", stats.features, "bg-slate-50 text-slate-700"],
-                ["En mapa", stats.visibleFeatures, "bg-cyan-50 text-cyan-700"],
-                ["Vinculadas", stats.linkedFeatures, "bg-emerald-50 text-emerald-700"],
-                ["Tareas", stats.linkedTasks, "bg-indigo-50 text-indigo-700"],
-                ["Trabajando", stats.inProgress, "bg-orange-50 text-orange-700"],
-                ["Finalizadas", stats.completed, "bg-emerald-50 text-emerald-700"],
-                ["Estancadas", stats.stuck, "bg-red-50 text-red-700"],
-              ].map(([label, value, className]) => (
-                <div key={String(label)} className={`rounded-xl p-3 ${className}`}>
-                  <p className="text-[10px] font-black uppercase tracking-[0.16em] opacity-70">{label}</p>
-                  <p className="mt-1 text-2xl font-black">{value}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-4 space-y-2">
-              <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
-                <Database size={14} />
-                Unión activa
-              </div>
-              <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs font-semibold leading-5 text-slate-600">
-                <span className="font-black text-slate-900">{layerAttribute || "atributo capa"}</span>
-                <span> se compara con </span>
-                <span className="font-black text-slate-900">{effectiveTaskAttribute || "atributo tarea"}</span>
-                <span> en {tasks.length} tareas del proyecto.</span>
-              </div>
-            </div>
-          </div>
-
           {selectedLayer && (
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-start justify-between gap-3">
@@ -3552,8 +3511,8 @@ export function ProjectSpatialMap({
             </div>
           )}
 
-          {selectedLayer && (
-            <div className="rounded-2xl border border-cyan-200 bg-white p-4 shadow-sm">
+          {selectedLayer ? false && (
+            <div className="hidden rounded-2xl border border-cyan-200 bg-white p-4 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-2">
@@ -3575,8 +3534,8 @@ export function ProjectSpatialMap({
                 onChange={(event) => setAnalysisAttribute(event.target.value)}
                 className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20"
               >
-                {(selectedLayer.attributes || []).length === 0 && <option value="">Sin atributos</option>}
-                {(selectedLayer.attributes || []).map((attribute) => (
+                {(selectedLayer!.attributes || []).length === 0 && <option value="">Sin atributos</option>}
+                {(selectedLayer!.attributes || []).map((attribute) => (
                   <option key={attribute} value={attribute}>
                     {attribute}
                   </option>
@@ -3674,10 +3633,10 @@ export function ProjectSpatialMap({
                 </div>
               )}
             </div>
-          )}
+          ) : null}
 
-          {canManage && selectedLayer && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          {canManage && selectedLayer ? false && (
+            <div className="hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center gap-2">
                 <Settings2 size={16} className="text-indigo-600" />
                 <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Gestionar capa</p>
@@ -3705,7 +3664,7 @@ export function ProjectSpatialMap({
                   className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
                 >
                   <option value="">Sin etiqueta</option>
-                  {(selectedLayer.attributes || []).map((attribute) => (
+                  {(selectedLayer!.attributes || []).map((attribute) => (
                     <option key={attribute} value={attribute}>
                       {attribute}
                     </option>
@@ -3739,7 +3698,7 @@ export function ProjectSpatialMap({
                     setLayerEditStyle((current) => ({
                       ...current,
                       themeMode: event.target.value as LayerThemeMode,
-                      themeAttribute: event.target.value === "attribute" ? current.themeAttribute || selectedLayer.attributes?.[0] || "" : current.themeAttribute,
+                      themeAttribute: event.target.value === "attribute" ? current.themeAttribute || selectedLayer!.attributes?.[0] || "" : current.themeAttribute,
                     }))
                   }
                   className="mt-2 h-10 w-full rounded-xl border border-indigo-100 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
@@ -3762,7 +3721,7 @@ export function ProjectSpatialMap({
                       className="mt-2 h-10 w-full rounded-xl border border-indigo-100 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
                     >
                       <option value="">Selecciona atributo</option>
-                      {(selectedLayer.attributes || []).map((attribute) => (
+                      {(selectedLayer!.attributes || []).map((attribute) => (
                         <option key={attribute} value={attribute}>
                           {attribute}
                         </option>
@@ -3908,7 +3867,7 @@ export function ProjectSpatialMap({
                 </Button>
               </div>
             </div>
-          )}
+          ) : null}
 
           <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 p-4">
@@ -4110,6 +4069,354 @@ export function ProjectSpatialMap({
           </div>
         </div>
       </div>
+
+      {isLayerManagerOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 p-5">
+              <div>
+                <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-black uppercase tracking-[0.16em] text-indigo-700">
+                  <Settings2 size={14} />
+                  Configuración espacial
+                </div>
+                <h3 className="text-xl font-black text-slate-900">Capas, etiquetas y simbología</h3>
+                <p className="mt-1 text-sm font-medium leading-6 text-slate-500">
+                  Administra capas sin ocupar el panel lateral. Enciende varias capas y configura la capa activa en un solo lugar.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsLayerManagerOpen(false)}
+                className="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Cerrar configuración de capas"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto bg-slate-50 p-5 lg:grid-cols-[340px_minmax(0,1fr)]">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Layers size={16} className="text-indigo-600" />
+                      <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Capas del mapa</p>
+                    </div>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">
+                      Selecciona cuál configurar y cuáles se mantienen visibles.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-black text-indigo-700">
+                    {visibleLayers.length}/{layers.length}
+                  </span>
+                </div>
+
+                <div className="mt-4 max-h-[58vh] space-y-2 overflow-y-auto pr-1">
+                  {layers.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-center text-sm font-semibold text-slate-500">
+                      No hay capas cargadas todavía.
+                    </div>
+                  ) : (
+                    layers.map((layer) => {
+                      const style = normalizeLayerStyle(layer.styleConfig);
+                      const isVisible = layer.visible !== false;
+                      const isActive = layer.id === selectedLayerId;
+                      return (
+                        <div
+                          key={layer.id}
+                          className={`rounded-xl border p-2 transition ${
+                            isActive ? "border-indigo-300 bg-indigo-50/70" : "border-slate-200 bg-white hover:bg-slate-50"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <label className="relative inline-flex h-6 w-10 shrink-0 cursor-pointer items-center">
+                              <input
+                                type="checkbox"
+                                checked={isVisible}
+                                disabled={!canManage}
+                                onChange={(event) => void handleToggleLayerVisibility(layer, event.target.checked)}
+                                className="peer sr-only"
+                                aria-label={isVisible ? `Apagar ${layer.name}` : `Encender ${layer.name}`}
+                              />
+                              <span className="absolute inset-0 rounded-full bg-slate-200 transition peer-checked:bg-emerald-500 peer-disabled:opacity-50" />
+                              <span className="absolute left-1 h-4 w-4 rounded-full bg-white shadow transition peer-checked:translate-x-4" />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedLayerId(layer.id);
+                                setSelectedFeatureId(null);
+                              }}
+                              className="min-w-0 flex-1 text-left"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className="h-3 w-3 shrink-0 rounded-full"
+                                  style={{ backgroundColor: style.statusStyles.unlinked.fillColor }}
+                                />
+                                <p className="truncate text-sm font-black text-slate-900">{layer.name || layer.fileName || "Capa sin nombre"}</p>
+                              </div>
+                              <p className="mt-1 truncate text-[11px] font-semibold text-slate-500">
+                                {(layer.featureCount || 0).toLocaleString("es-CO")} entidades
+                                {style.labelsVisible && style.labelAttribute ? ` · etiqueta: ${style.labelAttribute}` : ""}
+                              </p>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                {!selectedLayer ? (
+                  <div className="flex min-h-72 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center">
+                    <div>
+                      <Layers className="mx-auto h-10 w-10 text-slate-300" />
+                      <p className="mt-3 text-sm font-black text-slate-700">Selecciona una capa para configurarla.</p>
+                    </div>
+                  </div>
+                ) : !canManage ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-5 text-sm font-semibold leading-6 text-slate-500">
+                    Puedes consultar la configuración de la capa, pero solo los administradores pueden editar nombres, estilos o visibilidad.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
+                      <label className="block">
+                        <span className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Nombre</span>
+                        <input
+                          value={layerEditName}
+                          onChange={(event) => setLayerEditName(event.target.value)}
+                          placeholder="Ej: Predios operativos"
+                          className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
+                        />
+                      </label>
+                      <label className="mt-6 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 md:mt-auto">
+                        Mostrar capa
+                        <input
+                          type="checkbox"
+                          checked={layerEditVisible}
+                          onChange={(event) => setLayerEditVisible(event.target.checked)}
+                          className="h-5 w-5 accent-emerald-600"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <label className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Etiqueta visible</label>
+                        <select
+                          value={layerEditStyle.labelAttribute}
+                          onChange={(event) =>
+                            setLayerEditStyle((current) => ({
+                              ...current,
+                              labelAttribute: event.target.value,
+                              labelsVisible: event.target.value ? current.labelsVisible : false,
+                            }))
+                          }
+                          className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
+                        >
+                          <option value="">Sin etiqueta</option>
+                          {(selectedLayer.attributes || []).map((attribute) => (
+                            <option key={attribute} value={attribute}>
+                              {attribute}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="mt-3 flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-sm font-bold text-slate-700">
+                          Mostrar etiquetas en el mapa
+                          <input
+                            type="checkbox"
+                            checked={layerEditStyle.labelsVisible}
+                            disabled={!layerEditStyle.labelAttribute}
+                            onChange={(event) =>
+                              setLayerEditStyle((current) => ({
+                                ...current,
+                                labelsVisible: event.target.checked,
+                              }))
+                            }
+                            className="h-5 w-5 accent-emerald-600 disabled:opacity-50"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+                        <label className="block text-xs font-black uppercase tracking-[0.16em] text-indigo-700">Modo de simbología</label>
+                        <select
+                          value={layerEditStyle.themeMode}
+                          onChange={(event) =>
+                            setLayerEditStyle((current) => ({
+                              ...current,
+                              themeMode: event.target.value as LayerThemeMode,
+                              themeAttribute: event.target.value === "attribute" ? current.themeAttribute || selectedLayer.attributes?.[0] || "" : current.themeAttribute,
+                            }))
+                          }
+                          className="mt-2 h-10 w-full rounded-xl border border-indigo-100 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                        >
+                          <option value="task_status">Por estado de tarea</option>
+                          <option value="attribute">Por atributo de capa</option>
+                        </select>
+
+                        {layerEditStyle.themeMode === "attribute" && (
+                          <label className="mt-3 block">
+                            <span className="block text-xs font-black uppercase tracking-[0.16em] text-indigo-700">Atributo de categorías</span>
+                            <select
+                              value={layerEditStyle.themeAttribute}
+                              onChange={(event) =>
+                                setLayerEditStyle((current) => ({
+                                  ...current,
+                                  themeAttribute: event.target.value,
+                                }))
+                              }
+                              className="mt-2 h-10 w-full rounded-xl border border-indigo-100 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                            >
+                              <option value="">Selecciona atributo</option>
+                              {(selectedLayer.attributes || []).map((attribute) => (
+                                <option key={attribute} value={attribute}>
+                                  {attribute}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                      <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                        <Palette size={14} />
+                        {layerEditStyle.themeMode === "attribute" ? "Colores por atributo" : "Colores por estado"}
+                      </div>
+                      <div className="mt-3 grid max-h-72 gap-2 overflow-y-auto pr-1 lg:grid-cols-2">
+                        {layerEditStyle.themeMode === "attribute" ? (
+                          !layerEditStyle.themeAttribute ? (
+                            <div className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50 p-3 text-sm font-semibold text-indigo-800">
+                              Selecciona un atributo para generar sus categorías.
+                            </div>
+                          ) : selectedLayerThemeCategories.length === 0 ? (
+                            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm font-semibold text-slate-500">
+                              Cargando categorías de la capa seleccionada...
+                            </div>
+                          ) : (
+                            selectedLayerThemeCategories.slice(0, 80).map((item) => (
+                              <div key={item.category} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="flex min-w-0 items-center gap-3">
+                                  <span className="h-5 w-5 shrink-0 rounded-full border border-white shadow-sm" style={{ backgroundColor: item.style.fillColor }} />
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-black uppercase tracking-[0.12em] text-slate-700">{item.category}</p>
+                                    <p className="text-[11px] font-semibold text-slate-400">{item.count.toLocaleString("es-CO")} entidades</p>
+                                  </div>
+                                </div>
+                                <input
+                                  type="color"
+                                  value={item.style.fillColor}
+                                  onChange={(event) => {
+                                    const color = event.target.value;
+                                    setLayerEditStyle((current) => ({
+                                      ...current,
+                                      attributeStyles: {
+                                        ...current.attributeStyles,
+                                        [item.category]: {
+                                          fillColor: color,
+                                          strokeColor: color,
+                                        },
+                                      },
+                                    }));
+                                  }}
+                                  className="h-8 w-10 shrink-0 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
+                                  aria-label={`Color para ${item.category}`}
+                                />
+                              </div>
+                            ))
+                          )
+                        ) : (
+                          SPATIAL_STATUS_STYLE_OPTIONS.map((option) => {
+                            const stateStyle = layerEditStyle.statusStyles[option.key];
+                            return (
+                              <div key={option.key} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                <div className="flex min-w-0 items-center gap-3">
+                                  <span className="h-5 w-5 shrink-0 rounded-full border border-white shadow-sm" style={{ backgroundColor: stateStyle.fillColor }} />
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-black uppercase tracking-[0.12em] text-slate-700">{option.label}</p>
+                                    <p className="truncate text-[11px] font-semibold text-slate-400">{option.helper}</p>
+                                  </div>
+                                </div>
+                                <input
+                                  type="color"
+                                  value={stateStyle.fillColor}
+                                  onChange={(event) => updateLayerStatusColor(option.key, event.target.value)}
+                                  className="h-8 w-10 shrink-0 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
+                                  aria-label={`Color para ${option.label}`}
+                                />
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                        Opacidad {Math.round(layerEditStyle.fillOpacity * 100)}%
+                        <input
+                          type="range"
+                          min={0.04}
+                          max={0.8}
+                          step={0.02}
+                          value={layerEditStyle.fillOpacity}
+                          onChange={(event) =>
+                            setLayerEditStyle((current) => ({
+                              ...current,
+                              fillOpacity: Number(event.target.value),
+                              strokeOpacity: Math.min(1, Math.max(0.35, Number(event.target.value) + 0.45)),
+                            }))
+                          }
+                          className="mt-2 w-full accent-emerald-600"
+                        />
+                      </label>
+                      <label className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                        Borde {layerEditStyle.strokeWidth.toFixed(1)} px
+                        <input
+                          type="range"
+                          min={0.5}
+                          max={6}
+                          step={0.1}
+                          value={layerEditStyle.strokeWidth}
+                          onChange={(event) =>
+                            setLayerEditStyle((current) => ({
+                              ...current,
+                              strokeWidth: Number(event.target.value),
+                            }))
+                          }
+                          className="mt-2 w-full accent-indigo-600"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-between">
+                      <Button type="button" variant="outline" onClick={() => setLayerPendingDelete(selectedLayer)} className="border-red-100 text-red-700 hover:bg-red-50">
+                        <Trash2 size={15} className="mr-2" />
+                        Eliminar capa
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={handleSaveLayerSettings}
+                        disabled={savingLayerSettings}
+                        className="bg-slate-950 text-white hover:bg-slate-800"
+                      >
+                        {savingLayerSettings ? <Loader2 size={15} className="mr-2 animate-spin" /> : <Save size={15} className="mr-2" />}
+                        Guardar configuración
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isUploadModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
