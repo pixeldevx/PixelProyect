@@ -60,8 +60,9 @@ type GeoJsonBounds = {
 type LayerThemeMode = "task_status" | "attribute";
 
 type SpatialStyleKey = "unlinked" | "pending" | "not_started" | "in_progress" | "completed" | "completed_late" | "stuck";
-type SpatialViewMode = "current" | "simulation";
+type SpatialViewMode = "current" | "simulation" | "audit";
 type TemporalStateKey = "unlinked" | "not_started" | "active" | "completed" | "overdue" | "stuck";
+type PlanAuditRiskLevel = "ok" | "watch" | "risk" | "critical";
 
 type LayerStateStyleConfig = {
   fillColor?: string;
@@ -140,11 +141,23 @@ type LayerFeatureJoin = FeatureJoin & {
   layerId: string;
   layerName: string;
   layer: SpatialLayer;
+  bounds: GeoJsonBounds;
   label: string;
   labelAttribute: string;
   layerAttribute: string;
   taskAttribute: string;
   style: NormalizedLayerStyleConfig;
+};
+
+type SpatialPlanIssue = {
+  id: string;
+  level: PlanAuditRiskLevel;
+  title: string;
+  detail: string;
+  metric?: string;
+  featureId?: string;
+  taskId?: string;
+  day?: string;
 };
 
 type FeatureWithBounds = {
@@ -250,6 +263,29 @@ const TEMPORAL_STATUS_OPTIONS: Array<{ key: TemporalStateKey; label: string; hel
   { key: "overdue", label: "Atrasada", helper: "Escenario futuro para simulaciones con incumplimientos reales." },
   { key: "stuck", label: "Pausada", helper: "Escenario futuro para simulaciones con pausas reales." },
 ];
+const PLAN_AUDIT_STYLES: Record<PlanAuditRiskLevel, Required<LayerStateStyleConfig>> = {
+  ok: { fillColor: "#10b981", strokeColor: "#059669" },
+  watch: { fillColor: "#f59e0b", strokeColor: "#d97706" },
+  risk: { fillColor: "#f97316", strokeColor: "#ea580c" },
+  critical: { fillColor: "#ef4444", strokeColor: "#dc2626" },
+};
+const PLAN_AUDIT_OPTIONS: Array<{ key: PlanAuditRiskLevel; label: string; helper: string }> = [
+  { key: "ok", label: "Plan consistente", helper: "Geometrías con tarea, fecha y carga razonable." },
+  { key: "watch", label: "Vigilancia", helper: "Hay un punto que conviene revisar antes de ejecutar." },
+  { key: "risk", label: "Riesgo operativo", helper: "El plan muestra sobrecarga, dispersión o datos incompletos." },
+  { key: "critical", label: "Crítico", helper: "La planificación puede fallar si no se ajusta." },
+];
+const planAuditMeta = Object.fromEntries(
+  PLAN_AUDIT_OPTIONS.map((option) => [
+    option.key,
+    {
+      label: option.label,
+      color: PLAN_AUDIT_STYLES[option.key].fillColor,
+      fill: PLAN_AUDIT_STYLES[option.key].fillColor,
+      border: PLAN_AUDIT_STYLES[option.key].strokeColor,
+    },
+  ])
+) as Record<PlanAuditRiskLevel, { label: string; color: string; fill: string; border: string }>;
 const temporalStatusMeta = Object.fromEntries(
   TEMPORAL_STATUS_OPTIONS.map((option) => [
     option.key,
@@ -360,8 +396,13 @@ const normalizeLayerStyle = (style?: LayerStyleConfig | null): NormalizedLayerSt
 
 const getFeatureVisualStyle = (
   join: LayerFeatureJoin,
-  temporalContext?: { enabled: boolean; date: Date | null }
+  temporalContext?: { enabled: boolean; date: Date | null },
+  auditContext?: { enabled: boolean; riskByFeatureId: Map<string, PlanAuditRiskLevel> }
 ): Required<LayerStateStyleConfig> => {
+  if (auditContext?.enabled) {
+    return PLAN_AUDIT_STYLES[auditContext.riskByFeatureId.get(join.featureId) || "watch"];
+  }
+
   if (temporalContext?.enabled && temporalContext.date) {
     return TEMPORAL_STATUS_STYLES[getTemporalStateForJoin(join, temporalContext.date)];
   }
@@ -473,6 +514,57 @@ const parseDateInputValue = (value: string) => {
 
 const getDayOffset = (date: Date, startDate: Date) =>
   Math.max(0, Math.round((startOfDay(date).getTime() - startOfDay(startDate).getTime()) / DAY_IN_MS));
+
+const getTaskPlanStartDate = (task: any) => getTaskDateValue(task?.startDate || task?.start || task?.plannedStartDate);
+
+const getTaskPlanEndDate = (task: any) => getTaskDateValue(task?.endDate || task?.end || task?.dueDate || task?.plannedEndDate);
+
+const getBoundsCenter = (bounds: GeoJsonBounds) => ({
+  lon: (bounds.west + bounds.east) / 2,
+  lat: (bounds.south + bounds.north) / 2,
+});
+
+const getDistanceKm = (left: { lon: number; lat: number }, right: { lon: number; lat: number }) => {
+  const toRadians = (value: number) => (value * Math.PI) / 180;
+  const earthRadiusKm = 6371;
+  const deltaLat = toRadians(right.lat - left.lat);
+  const deltaLon = toRadians(right.lon - left.lon);
+  const leftLat = toRadians(left.lat);
+  const rightLat = toRadians(right.lat);
+  const haversine =
+    Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(leftLat) * Math.cos(rightLat) * Math.sin(deltaLon / 2) ** 2;
+  return 2 * earthRadiusKm * Math.asin(Math.min(1, Math.sqrt(haversine)));
+};
+
+const formatDistanceKm = (value: number) =>
+  `${new Intl.NumberFormat("es-CO", { maximumFractionDigits: value >= 10 ? 0 : 1 }).format(value)} km`;
+
+const riskRank: Record<PlanAuditRiskLevel, number> = {
+  ok: 0,
+  watch: 1,
+  risk: 2,
+  critical: 3,
+};
+
+const getHigherRisk = (current: PlanAuditRiskLevel, next: PlanAuditRiskLevel) =>
+  riskRank[next] > riskRank[current] ? next : current;
+
+const getTaskDateSpan = (task: any) => {
+  const startDate = getTaskPlanStartDate(task);
+  const endDate = getTaskPlanEndDate(task);
+  if (!startDate && !endDate) return null;
+  const start = startOfDay(startDate || endDate || new Date());
+  const end = startOfDay(endDate || startDate || start);
+  return start.getTime() <= end.getTime() ? { start, end } : { start: end, end: start };
+};
+
+const enumerateTaskPlanDays = (task: any, maxDays = 180) => {
+  const span = getTaskDateSpan(task);
+  if (!span) return [];
+  const totalDays = Math.min(maxDays, getDayOffset(span.end, span.start) + 1);
+  return Array.from({ length: Math.max(1, totalDays) }, (_, index) => formatDateInputValue(addDays(span.start, index)));
+};
 
 const getTemporalStateForTask = (task: any, simulationDate: Date): TemporalStateKey => {
   if (!task) return "unlinked";
@@ -960,6 +1052,8 @@ export function ProjectSpatialMap({
   const [simulationDateValue, setSimulationDateValue] = useState(() => formatDateInputValue(new Date()));
   const [isSimulationPlaying, setIsSimulationPlaying] = useState(false);
   const [simulationSpeedDays, setSimulationSpeedDays] = useState(1);
+  const [planAuditLoadLimit, setPlanAuditLoadLimit] = useState(35);
+  const [planAuditDistanceKm, setPlanAuditDistanceKm] = useState(6);
   const [spatialPanelTab, setSpatialPanelTab] = useState<SpatialPanelTab>("summary");
   const [layerPendingDelete, setLayerPendingDelete] = useState<SpatialLayer | null>(null);
   const [mapSize, setMapSize] = useState({ width: 960, height: 560 });
@@ -1261,6 +1355,7 @@ export function ProjectSpatialMap({
           layerId: layer.id,
           layerName: layer.name || layer.fileName || "Capa sin nombre",
           layer,
+          bounds,
           feature,
           key: String(rawKey ?? ""),
           tasks: key ? taskMap.get(key) || [] : [],
@@ -1392,6 +1487,179 @@ export function ProjectSpatialMap({
     };
   }, [renderedFeatureJoins, simulationDate]);
 
+  const planAudit = useMemo(() => {
+    const riskByFeatureId = new Map<string, PlanAuditRiskLevel>();
+    const issues: SpatialPlanIssue[] = [];
+    const linkedTaskIds = new Set<string>();
+    const visibleLayerKeys = new Set<string>();
+    const dayGroups = new Map<string, Array<{ join: LayerFeatureJoin; task: any; center: { lon: number; lat: number } }>>();
+    const responsibleDayGroups = new Map<string, Array<{ join: LayerFeatureJoin; task: any; center: { lon: number; lat: number } }>>();
+    const openTasks = tasks.filter((task) => !isCompletedTaskStatus(task?.status));
+
+    const setFeatureRisk = (featureId: string, level: PlanAuditRiskLevel) => {
+      riskByFeatureId.set(featureId, getHigherRisk(riskByFeatureId.get(featureId) || "ok", level));
+    };
+
+    renderedFeatureJoins.forEach((join) => {
+      visibleLayerKeys.add(normalizeKey(join.key));
+
+      if (join.tasks.length === 0) {
+        setFeatureRisk(join.featureId, "watch");
+        return;
+      }
+
+      const center = getBoundsCenter(join.bounds);
+      join.tasks.forEach((task) => {
+        if (task?.id) linkedTaskIds.add(task.id);
+        const span = getTaskDateSpan(task);
+        if (!span) {
+          setFeatureRisk(join.featureId, "risk");
+          issues.push({
+            id: `task-no-dates-${join.featureId}-${task?.id || join.sourceIndex}`,
+            level: "risk",
+            title: "Tarea espacializada sin cronograma",
+            detail: `${getTaskTitle(task)} no tiene fechas suficientes para auditar su ventana de ejecución.`,
+            featureId: join.featureId,
+            taskId: task?.id,
+          });
+          return;
+        }
+
+        enumerateTaskPlanDays(task).forEach((day) => {
+          const event = { join, task, center };
+          const currentDayGroup = dayGroups.get(day) || [];
+          currentDayGroup.push(event);
+          dayGroups.set(day, currentDayGroup);
+
+          const responsibleKey = `${day}:${task?.assignedTo || "sin-responsable"}`;
+          const currentResponsibleGroup = responsibleDayGroups.get(responsibleKey) || [];
+          currentResponsibleGroup.push(event);
+          responsibleDayGroups.set(responsibleKey, currentResponsibleGroup);
+        });
+      });
+    });
+
+    const unlinkedFeatures = renderedFeatureJoins.filter((join) => join.tasks.length === 0).length;
+    if (unlinkedFeatures > 0) {
+      issues.push({
+        id: "unlinked-visible-features",
+        level: unlinkedFeatures > Math.max(25, renderedFeatureJoins.length * 0.25) ? "risk" : "watch",
+        title: "Geometrías sin tarea visible",
+        detail: `${unlinkedFeatures.toLocaleString("es-CO")} entidades visibles no tienen una tarea asociada con la unión actual.`,
+        metric: `${unlinkedFeatures.toLocaleString("es-CO")} entidades`,
+      });
+    }
+
+    const tasksWithoutVisibleGeometry = openTasks.filter((task) => {
+      const key = normalizeKey(getTaskAttributeValue(task, effectiveTaskAttribute));
+      return key && !visibleLayerKeys.has(key) && !linkedTaskIds.has(task.id);
+    });
+    if (tasksWithoutVisibleGeometry.length > 0) {
+      issues.push({
+        id: "tasks-without-visible-geometry",
+        level: tasksWithoutVisibleGeometry.length > Math.max(10, openTasks.length * 0.18) ? "risk" : "watch",
+        title: "Tareas sin geometría visible",
+        detail: `${tasksWithoutVisibleGeometry.length.toLocaleString("es-CO")} tareas abiertas tienen clave espacial, pero no aparecen unidas en la vista actual.`,
+        metric: `${tasksWithoutVisibleGeometry.length.toLocaleString("es-CO")} tareas`,
+      });
+    }
+
+    Array.from(dayGroups.entries()).forEach(([day, events]) => {
+      if (events.length <= planAuditLoadLimit) return;
+      const level: PlanAuditRiskLevel = events.length >= planAuditLoadLimit * 2 ? "critical" : "risk";
+      events.forEach((event) => setFeatureRisk(event.join.featureId, level));
+      issues.push({
+        id: `day-overload-${day}`,
+        level,
+        title: "Jornada sobrecargada",
+        detail: `El ${formatDate(day)} concentra ${events.length.toLocaleString("es-CO")} entidades planificadas. El umbral actual es ${planAuditLoadLimit}.`,
+        metric: `${events.length.toLocaleString("es-CO")} entidades`,
+        day,
+      });
+    });
+
+    Array.from(responsibleDayGroups.entries()).forEach(([key, events]) => {
+      const responsibleLimit = Math.max(8, Math.ceil(planAuditLoadLimit / 2));
+      if (events.length <= responsibleLimit) return;
+      const [day, responsibleId] = key.split(":");
+      const level: PlanAuditRiskLevel = events.length >= responsibleLimit * 2 ? "critical" : "risk";
+      events.forEach((event) => setFeatureRisk(event.join.featureId, level));
+      issues.push({
+        id: `responsible-overload-${key}`,
+        level,
+        title: "Responsable con carga concentrada",
+        detail: `${getMemberName(memberById, responsibleId)} tiene ${events.length.toLocaleString("es-CO")} entidades programadas el ${formatDate(day)}.`,
+        metric: `${events.length.toLocaleString("es-CO")} entidades`,
+        day,
+      });
+    });
+
+    Array.from(responsibleDayGroups.entries()).forEach(([key, events]) => {
+      if (events.length < 3) return;
+      const center = events.reduce(
+        (summary, event) => ({
+          lon: summary.lon + event.center.lon / events.length,
+          lat: summary.lat + event.center.lat / events.length,
+        }),
+        { lon: 0, lat: 0 }
+      );
+      const distances = events.map((event) => getDistanceKm(center, event.center));
+      const maxDistance = Math.max(...distances);
+      const averageDistance = distances.reduce((total, value) => total + value, 0) / distances.length;
+      if (maxDistance <= planAuditDistanceKm && averageDistance <= planAuditDistanceKm * 0.55) return;
+
+      const [day, responsibleId] = key.split(":");
+      const level: PlanAuditRiskLevel = maxDistance > planAuditDistanceKm * 2.5 ? "critical" : "risk";
+      events.forEach((event) => setFeatureRisk(event.join.featureId, level));
+      issues.push({
+        id: `spatial-dispersion-${key}`,
+        level,
+        title: "Ruta espacial dispersa",
+        detail: `${getMemberName(memberById, responsibleId)} tiene geometrías separadas hasta ${formatDistanceKm(maxDistance)} el ${formatDate(day)}.`,
+        metric: `Máx. ${formatDistanceKm(maxDistance)} · prom. ${formatDistanceKm(averageDistance)}`,
+        day,
+      });
+    });
+
+    const counts = PLAN_AUDIT_OPTIONS.reduce<Record<PlanAuditRiskLevel, number>>((summary, option) => {
+      summary[option.key] = 0;
+      return summary;
+    }, {} as Record<PlanAuditRiskLevel, number>);
+
+    renderedFeatureJoins.forEach((join) => {
+      counts[riskByFeatureId.get(join.featureId) || "ok"] += 1;
+    });
+
+    const total = Math.max(1, renderedFeatureJoins.length);
+    const score = Math.max(
+      0,
+      Math.round(100 - (counts.critical / total) * 85 - (counts.risk / total) * 50 - (counts.watch / total) * 18)
+    );
+
+    const sortedIssues = issues
+      .sort((left, right) => riskRank[right.level] - riskRank[left.level] || String(left.day || "").localeCompare(String(right.day || "")))
+      .slice(0, 12);
+
+    return {
+      riskByFeatureId,
+      counts,
+      issues: sortedIssues,
+      score,
+      unlinkedFeatures,
+      tasksWithoutVisibleGeometry: tasksWithoutVisibleGeometry.length,
+      overloadedDays: Array.from(dayGroups.values()).filter((events) => events.length > planAuditLoadLimit).length,
+      dispersedGroups: issues.filter((issue) => issue.id.startsWith("spatial-dispersion")).length,
+      auditedFeatures: renderedFeatureJoins.length,
+    };
+  }, [
+    effectiveTaskAttribute,
+    memberById,
+    planAuditDistanceKm,
+    planAuditLoadLimit,
+    renderedFeatureJoins,
+    tasks,
+  ]);
+
   useEffect(() => {
     const currentDate = parseDateInputValue(simulationDateValue);
     if (!currentDate) {
@@ -1485,7 +1753,18 @@ export function ProjectSpatialMap({
     [temporalFeatureStats.counts]
   );
 
-  const activeLegend = spatialViewMode === "simulation" ? temporalLegend : selectedLayerLegend;
+  const auditLegend = useMemo(
+    () =>
+      PLAN_AUDIT_OPTIONS.map((option) => ({
+        key: option.key,
+        label: option.label,
+        count: planAudit.counts[option.key],
+        color: PLAN_AUDIT_STYLES[option.key].fillColor,
+      })).filter((item) => item.count > 0 || item.key === "ok"),
+    [planAudit.counts]
+  );
+
+  const activeLegend = spatialViewMode === "audit" ? auditLegend : spatialViewMode === "simulation" ? temporalLegend : selectedLayerLegend;
   const activeLegendTotal = activeLegend.reduce((total, item) => total + item.count, 0);
 
   const analysisFeatures = useMemo(() => {
@@ -1580,10 +1859,11 @@ export function ProjectSpatialMap({
       const hitRegions: CanvasHitRegion[] = [];
 
       const temporalContext = { enabled: spatialViewMode === "simulation", date: simulationDate };
+      const auditContext = { enabled: spatialViewMode === "audit", riskByFeatureId: planAudit.riskByFeatureId };
 
       renderedFeatureJoins.forEach((join) => {
         const baseStyle = join.style;
-        const stateStyle = getFeatureVisualStyle(join, temporalContext);
+        const stateStyle = getFeatureVisualStyle(join, temporalContext, auditContext);
         const isSelected = selectedFeatureId === join.featureId;
         const fillStyle = colorToRgba(stateStyle.fillColor, baseStyle.fillOpacity);
         const strokeStyle = colorToRgba(stateStyle.strokeColor, baseStyle.strokeOpacity);
@@ -1642,7 +1922,7 @@ export function ProjectSpatialMap({
           const labelPoint = projectCoordinate(labelCoordinate);
           if (!Number.isFinite(labelPoint.x) || !Number.isFinite(labelPoint.y)) return;
 
-          const stateStyle = getFeatureVisualStyle(join, temporalContext);
+          const stateStyle = getFeatureVisualStyle(join, temporalContext, auditContext);
           drawCanvasLabel(context, join.label, labelPoint, stateStyle.strokeColor);
         });
       }
@@ -1655,6 +1935,7 @@ export function ProjectSpatialMap({
     mapSize.height,
     mapSize.width,
     mapView.zoom,
+    planAudit.riskByFeatureId,
     projectCoordinate,
     renderedFeatureJoins,
     selectedFeatureId,
@@ -2136,6 +2417,7 @@ export function ProjectSpatialMap({
             {[
               { key: "current", label: "Estado actual" },
               { key: "simulation", label: "Simulación" },
+              { key: "audit", label: "Auditoría" },
             ].map((option) => {
               const isActive = spatialViewMode === option.key;
               return (
@@ -2145,6 +2427,7 @@ export function ProjectSpatialMap({
                   onClick={() => {
                     setSpatialViewMode(option.key as SpatialViewMode);
                     if (option.key === "simulation") setSpatialPanelTab("simulation");
+                    if (option.key === "audit") setSpatialPanelTab("analysis");
                   }}
                   className={`rounded-lg px-3 py-2 text-xs font-black transition ${
                     isActive ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-slate-50"
@@ -2383,6 +2666,14 @@ export function ProjectSpatialMap({
                       <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-slate-600">
                         {selectedFeatureJoin.tasks.length} tareas
                       </span>
+                      {spatialViewMode === "audit" && (
+                        <span
+                          className="rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white"
+                          style={{ backgroundColor: planAuditMeta[planAudit.riskByFeatureId.get(selectedFeatureJoin.featureId) || "ok"].color }}
+                        >
+                          {planAuditMeta[planAudit.riskByFeatureId.get(selectedFeatureJoin.featureId) || "ok"].label}
+                        </span>
+                      )}
                     </div>
                     <h4 className="mt-2 truncate text-lg font-black text-slate-900">
                       {selectedFeatureJoin.label || selectedFeatureJoin.key || "Entidad sin etiqueta"}
@@ -2722,70 +3013,194 @@ export function ProjectSpatialMap({
               )}
 
               {spatialPanelTab === "analysis" && (
-                <div className="space-y-3">
-                  <label className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Atributo estadístico</label>
-                  <select
-                    value={analysisAttribute}
-                    onChange={(event) => setAnalysisAttribute(event.target.value)}
-                    disabled={!selectedLayer}
-                    className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 disabled:bg-slate-100"
-                  >
-                    {(selectedLayer?.attributes || []).length === 0 && <option value="">Sin atributos</option>}
-                    {(selectedLayer?.attributes || []).map((attribute) => (
-                      <option key={attribute} value={attribute}>
-                        {attribute}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      type="button"
-                      variant={isDrawingAnalysis ? "default" : "outline"}
+                <div className="space-y-4">
+                  <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 text-white">
+                    <div className="p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-cyan-300">Auditoría del plan</p>
+                          <h4 className="mt-1 text-lg font-black">Salud espacial {planAudit.score}%</h4>
+                          <p className="mt-1 text-xs font-semibold leading-5 text-slate-300">
+                            Revisa carga diaria, dispersión y entidades sin unión en la vista visible.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setSpatialViewMode((current) => (current === "audit" ? "current" : "audit"))}
+                          className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-black transition ${
+                            spatialViewMode === "audit" ? "bg-cyan-300 text-slate-950" : "bg-white/10 text-white hover:bg-white/20"
+                          }`}
+                        >
+                          {spatialViewMode === "audit" ? "Ver mapa normal" : "Pintar riesgo"}
+                        </button>
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-2 gap-2">
+                        <div className="rounded-xl bg-white/10 p-3">
+                          <p className="text-[9px] font-black uppercase tracking-[0.16em] text-slate-300">Auditadas</p>
+                          <p className="mt-1 text-2xl font-black">{planAudit.auditedFeatures.toLocaleString("es-CO")}</p>
+                        </div>
+                        <div className="rounded-xl bg-red-400/15 p-3 text-red-100">
+                          <p className="text-[9px] font-black uppercase tracking-[0.16em]">Riesgo</p>
+                          <p className="mt-1 text-2xl font-black">{(planAudit.counts.risk + planAudit.counts.critical).toLocaleString("es-CO")}</p>
+                        </div>
+                        <div className="rounded-xl bg-amber-400/15 p-3 text-amber-100">
+                          <p className="text-[9px] font-black uppercase tracking-[0.16em]">Sin unión</p>
+                          <p className="mt-1 text-2xl font-black">{planAudit.unlinkedFeatures.toLocaleString("es-CO")}</p>
+                        </div>
+                        <div className="rounded-xl bg-cyan-400/15 p-3 text-cyan-100">
+                          <p className="text-[9px] font-black uppercase tracking-[0.16em]">Sin geometría</p>
+                          <p className="mt-1 text-2xl font-black">{planAudit.tasksWithoutVisibleGeometry.toLocaleString("es-CO")}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-white/10 bg-white/[0.03] p-4">
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                        <label className="block">
+                          <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-300">Carga diaria</span>
+                          <input
+                            type="number"
+                            min={5}
+                            max={500}
+                            value={planAuditLoadLimit}
+                            onChange={(event) => setPlanAuditLoadLimit(clampNumber(event.target.value, 5, 500, 35))}
+                            className="mt-2 h-10 w-full rounded-xl border border-white/10 bg-white/10 px-3 text-sm font-black text-white outline-none focus:border-cyan-300"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-300">Distancia km</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={200}
+                            value={planAuditDistanceKm}
+                            onChange={(event) => setPlanAuditDistanceKm(clampNumber(event.target.value, 1, 200, 6))}
+                            className="mt-2 h-10 w-full rounded-xl border border-white/10 bg-white/10 px-3 text-sm font-black text-white outline-none focus:border-cyan-300"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Hallazgos</p>
+                        <p className="mt-1 text-xs font-semibold text-slate-500">
+                          {planAudit.overloadedDays} días sobrecargados · {planAudit.dispersedGroups} rutas dispersas
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">
+                        {planAudit.issues.length}
+                      </span>
+                    </div>
+                    <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
+                      {planAudit.issues.length === 0 ? (
+                        <div className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">
+                          No se detectaron riesgos fuertes con los umbrales actuales.
+                        </div>
+                      ) : (
+                        planAudit.issues.map((issue) => {
+                          const meta = planAuditMeta[issue.level];
+                          return (
+                            <button
+                              key={issue.id}
+                              type="button"
+                              onClick={() => {
+                                if (!issue.featureId) return;
+                                setSpatialViewMode("audit");
+                                setSelectedFeatureId(issue.featureId);
+                              }}
+                              className="block w-full rounded-xl border border-slate-100 bg-slate-50 p-3 text-left transition hover:border-slate-200 hover:bg-white"
+                            >
+                              <div className="flex items-start gap-2">
+                                <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: meta.color }} />
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-xs font-black text-slate-900">{issue.title}</p>
+                                    {issue.metric && (
+                                      <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-slate-600">
+                                        {issue.metric}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">{issue.detail}</p>
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-cyan-100 bg-cyan-50/60 p-3">
+                    <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700">Análisis por área</p>
+                    <label className="mt-3 block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Atributo estadístico</label>
+                    <select
+                      value={analysisAttribute}
+                      onChange={(event) => setAnalysisAttribute(event.target.value)}
                       disabled={!selectedLayer}
-                      onClick={() => {
-                        setIsDrawingAnalysis((current) => !current);
-                        setAnalysisDraftRect(null);
-                      }}
-                      className={isDrawingAnalysis ? "bg-cyan-600 text-white hover:bg-cyan-700" : ""}
+                      className="mt-2 h-10 w-full rounded-xl border border-cyan-100 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 disabled:bg-slate-100"
                     >
-                      <MousePointer2 size={15} className="mr-2" />
-                      Dibujar
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => {
-                        setAnalysisBounds(null);
-                        setAnalysisDraftRect(null);
-                        setIsDrawingAnalysis(false);
-                      }}
-                      disabled={!analysisBounds && !analysisDraftRect}
-                    >
-                      <Eraser size={15} className="mr-2" />
-                      Limpiar
-                    </Button>
+                      {(selectedLayer?.attributes || []).length === 0 && <option value="">Sin atributos</option>}
+                      {(selectedLayer?.attributes || []).map((attribute) => (
+                        <option key={attribute} value={attribute}>
+                          {attribute}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <Button
+                        type="button"
+                        variant={isDrawingAnalysis ? "default" : "outline"}
+                        disabled={!selectedLayer}
+                        onClick={() => {
+                          setIsDrawingAnalysis((current) => !current);
+                          setAnalysisDraftRect(null);
+                        }}
+                        className={isDrawingAnalysis ? "bg-cyan-600 text-white hover:bg-cyan-700" : ""}
+                      >
+                        <MousePointer2 size={15} className="mr-2" />
+                        Dibujar
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setAnalysisBounds(null);
+                          setAnalysisDraftRect(null);
+                          setIsDrawingAnalysis(false);
+                        }}
+                        disabled={!analysisBounds && !analysisDraftRect}
+                      >
+                        <Eraser size={15} className="mr-2" />
+                        Limpiar
+                      </Button>
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-2">
+                      <div className="rounded-xl bg-white p-3 text-cyan-800">
+                        <p className="text-[9px] font-black uppercase tracking-[0.14em]">Área</p>
+                        <p className="mt-1 text-xl font-black">{analysisStats.total}</p>
+                      </div>
+                      <div className="rounded-xl bg-white p-3 text-indigo-800">
+                        <p className="text-[9px] font-black uppercase tracking-[0.14em]">Categorías</p>
+                        <p className="mt-1 text-xl font-black">{analysisStats.distinct}</p>
+                      </div>
+                      <div className="rounded-xl bg-white p-3 text-emerald-800">
+                        <p className="text-[9px] font-black uppercase tracking-[0.14em]">Num.</p>
+                        <p className="mt-1 text-xl font-black">{analysisStats.numericCount}</p>
+                      </div>
+                    </div>
+                    {analysisStats.numericCount > 0 && (
+                      <div className="mt-3 rounded-xl border border-cyan-100 bg-white p-3 text-xs font-bold text-slate-600">
+                        Promedio <span className="font-black text-slate-900">{formatMetricNumber(analysisStats.average, 2)}</span>
+                        <span className="mx-2 text-slate-300">•</span>
+                        Suma <span className="font-black text-slate-900">{formatMetricNumber(analysisStats.sum, 2)}</span>
+                      </div>
+                    )}
                   </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <div className="rounded-xl bg-cyan-50 p-3 text-cyan-800">
-                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Área</p>
-                      <p className="mt-1 text-xl font-black">{analysisStats.total}</p>
-                    </div>
-                    <div className="rounded-xl bg-indigo-50 p-3 text-indigo-800">
-                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Categorías</p>
-                      <p className="mt-1 text-xl font-black">{analysisStats.distinct}</p>
-                    </div>
-                    <div className="rounded-xl bg-emerald-50 p-3 text-emerald-800">
-                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Num.</p>
-                      <p className="mt-1 text-xl font-black">{analysisStats.numericCount}</p>
-                    </div>
-                  </div>
-                  {analysisStats.numericCount > 0 && (
-                    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-xs font-bold text-slate-600">
-                      Promedio <span className="font-black text-slate-900">{formatMetricNumber(analysisStats.average, 2)}</span>
-                      <span className="mx-2 text-slate-300">•</span>
-                      Suma <span className="font-black text-slate-900">{formatMetricNumber(analysisStats.sum, 2)}</span>
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -2940,7 +3355,8 @@ export function ProjectSpatialMap({
                       filteredFeatureJoins.slice(0, 8).map((join) => {
                         const primaryTask = join.tasks[0];
                         const temporalMeta = temporalStatusMeta[getTemporalStateForJoin(join, simulationDate)];
-                        const meta = spatialViewMode === "simulation" ? temporalMeta : primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
+                        const auditMeta = planAuditMeta[planAudit.riskByFeatureId.get(join.featureId) || "ok"];
+                        const meta = spatialViewMode === "audit" ? auditMeta : spatialViewMode === "simulation" ? temporalMeta : primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
                         return (
                           <button
                             type="button"
@@ -3091,7 +3507,9 @@ export function ProjectSpatialMap({
                     <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Leyenda activa</p>
                   </div>
                   <p className="mt-1 text-xs font-semibold text-slate-500">
-                    {spatialViewMode === "simulation"
+                    {spatialViewMode === "audit"
+                      ? "Riesgo operativo de la planificación"
+                      : spatialViewMode === "simulation"
                       ? "Estados temporales de la simulación"
                       : normalizeLayerStyle(selectedLayer.styleConfig).themeMode === "attribute"
                       ? `Categorías por ${normalizeLayerStyle(selectedLayer.styleConfig).themeAttribute || "atributo"}`
@@ -3523,7 +3941,8 @@ export function ProjectSpatialMap({
                 filteredFeatureJoins.slice(0, 80).map((join) => {
                   const primaryTask = join.tasks[0];
                   const temporalMeta = temporalStatusMeta[getTemporalStateForJoin(join, simulationDate)];
-                  const meta = spatialViewMode === "simulation" ? temporalMeta : primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
+                  const auditMeta = planAuditMeta[planAudit.riskByFeatureId.get(join.featureId) || "ok"];
+                  const meta = spatialViewMode === "audit" ? auditMeta : spatialViewMode === "simulation" ? temporalMeta : primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
                   const schedule = primaryTask ? getScheduleState(primaryTask) : null;
                   const isSelected = selectedFeatureId === join.featureId;
 
@@ -3596,6 +4015,14 @@ export function ProjectSpatialMap({
               <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-600">
                 {selectedFeatureJoin.tasks.length} tareas vinculadas
               </span>
+              {spatialViewMode === "audit" && (
+                <span
+                  className="rounded-full px-3 py-1 text-white"
+                  style={{ backgroundColor: planAuditMeta[planAudit.riskByFeatureId.get(selectedFeatureJoin.featureId) || "ok"].color }}
+                >
+                  {planAuditMeta[planAudit.riskByFeatureId.get(selectedFeatureJoin.featureId) || "ok"].label}
+                </span>
+              )}
               {selectedFeatureJoin.tasks.length === 0 && (
                 <span className="inline-flex items-center rounded-full bg-amber-50 px-3 py-1 text-amber-700">
                   <AlertTriangle size={13} className="mr-1" />
@@ -3613,7 +4040,9 @@ export function ProjectSpatialMap({
                 </div>
               ) : (
                 selectedFeatureJoin.tasks.map((task) => {
-                  const meta = spatialViewMode === "simulation"
+                  const meta = spatialViewMode === "audit"
+                    ? planAuditMeta[planAudit.riskByFeatureId.get(selectedFeatureJoin.featureId) || "ok"]
+                    : spatialViewMode === "simulation"
                     ? temporalStatusMeta[getTemporalStateForTask(task, simulationDate)]
                     : getStatusMeta(task);
                   const schedule = getScheduleState(task);
