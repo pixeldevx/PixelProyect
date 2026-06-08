@@ -14,10 +14,14 @@ import {
   MapPin,
   MousePointer2,
   Palette,
+  Pause,
+  Play,
   RefreshCw,
   Save,
   Search,
   Settings2,
+  SkipBack,
+  SkipForward,
   Trash2,
   Upload,
   X,
@@ -56,6 +60,8 @@ type GeoJsonBounds = {
 type LayerThemeMode = "task_status" | "attribute";
 
 type SpatialStyleKey = "unlinked" | "pending" | "not_started" | "in_progress" | "completed" | "completed_late" | "stuck";
+type SpatialViewMode = "current" | "simulation";
+type TemporalStateKey = "unlinked" | "not_started" | "active" | "completed" | "overdue" | "stuck";
 
 type LayerStateStyleConfig = {
   fillColor?: string;
@@ -162,7 +168,7 @@ type ScreenSelectionRect = {
   endY: number;
 };
 
-type SpatialPanelTab = "summary" | "analysis" | "style" | "search";
+type SpatialPanelTab = "summary" | "simulation" | "analysis" | "style" | "search";
 
 type SpatialLayerRow = {
   id: string;
@@ -228,6 +234,33 @@ const DEFAULT_LAYER_STYLE: NormalizedLayerStyleConfig = {
   attributeStyles: {},
   statusStyles: DEFAULT_STATUS_STYLES,
 };
+const TEMPORAL_STATUS_STYLES: Record<TemporalStateKey, Required<LayerStateStyleConfig>> = {
+  unlinked: { fillColor: "#94a3b8", strokeColor: "#64748b" },
+  not_started: { fillColor: "#cbd5e1", strokeColor: "#94a3b8" },
+  active: { fillColor: "#2563eb", strokeColor: "#1d4ed8" },
+  completed: { fillColor: "#10b981", strokeColor: "#059669" },
+  overdue: { fillColor: "#ef4444", strokeColor: "#dc2626" },
+  stuck: { fillColor: "#7c3aed", strokeColor: "#6d28d9" },
+};
+const TEMPORAL_STATUS_OPTIONS: Array<{ key: TemporalStateKey; label: string; helper: string }> = [
+  { key: "unlinked", label: "Sin tarea", helper: "Geometrías sin tarea vinculada." },
+  { key: "not_started", label: "Aún no inicia", helper: "La fecha simulada está antes del inicio planificado." },
+  { key: "active", label: "En ventana", helper: "La tarea debería estar ejecutándose en la fecha simulada." },
+  { key: "completed", label: "Finalizada", helper: "La tarea ya aparece cerrada para esa fecha." },
+  { key: "overdue", label: "Atrasada", helper: "La fecha simulada supera el cierre y la tarea no está terminada." },
+  { key: "stuck", label: "Pausada", helper: "La tarea está estancada o bloqueada dentro del periodo." },
+];
+const temporalStatusMeta = Object.fromEntries(
+  TEMPORAL_STATUS_OPTIONS.map((option) => [
+    option.key,
+    {
+      label: option.label,
+      color: TEMPORAL_STATUS_STYLES[option.key].fillColor,
+      fill: TEMPORAL_STATUS_STYLES[option.key].fillColor,
+      border: TEMPORAL_STATUS_STYLES[option.key].strokeColor,
+    },
+  ])
+) as Record<TemporalStateKey, { label: string; color: string; fill: string; border: string }>;
 const SPATIAL_STATUS_STYLE_OPTIONS: Array<{ key: SpatialStyleKey; label: string; helper: string }> = [
   { key: "unlinked", label: "Sin tarea", helper: "Predios sin tarea vinculada." },
   { key: "pending", label: "Pendiente", helper: "Tareas pendientes o por gestionar." },
@@ -325,7 +358,14 @@ const normalizeLayerStyle = (style?: LayerStyleConfig | null): NormalizedLayerSt
   };
 };
 
-const getFeatureVisualStyle = (join: LayerFeatureJoin): Required<LayerStateStyleConfig> => {
+const getFeatureVisualStyle = (
+  join: LayerFeatureJoin,
+  temporalContext?: { enabled: boolean; date: Date | null }
+): Required<LayerStateStyleConfig> => {
+  if (temporalContext?.enabled && temporalContext.date) {
+    return TEMPORAL_STATUS_STYLES[getTemporalStateForJoin(join, temporalContext.date)];
+  }
+
   if (join.style.themeMode === "attribute" && join.style.themeAttribute) {
     const category = getAttributeCategory(join.feature.properties?.[join.style.themeAttribute]);
     return join.style.attributeStyles[category] || getGeneratedAttributeStyle(category);
@@ -400,6 +440,72 @@ const getSpatialStyleKeyForTask = (task?: any): SpatialStyleKey => {
   if (["not_started", "no_iniciado", "sin_iniciar"].includes(status)) return "not_started";
   if (["stuck", "estancada", "estancado", "blocked", "bloqueada", "bloqueado"].includes(status)) return "stuck";
   return "pending";
+};
+
+const DAY_IN_MS = 86400000;
+
+const startOfDay = (date: Date) => {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+};
+
+const addDays = (date: Date, days: number) => {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  next.setHours(0, 0, 0, 0);
+  return next;
+};
+
+const formatDateInputValue = (date: Date) => {
+  const safeDate = startOfDay(date);
+  const year = safeDate.getFullYear();
+  const month = String(safeDate.getMonth() + 1).padStart(2, "0");
+  const day = String(safeDate.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const parseDateInputValue = (value: string) => {
+  if (!value) return null;
+  const parsed = new Date(`${value}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : startOfDay(parsed);
+};
+
+const getDayOffset = (date: Date, startDate: Date) =>
+  Math.max(0, Math.round((startOfDay(date).getTime() - startOfDay(startDate).getTime()) / DAY_IN_MS));
+
+const getTemporalStateForTask = (task: any, simulationDate: Date): TemporalStateKey => {
+  if (!task) return "unlinked";
+
+  const status = getTaskStatus(task);
+  const simulatedDay = startOfDay(simulationDate);
+  const startDate = getTaskDateValue(task?.startDate || task?.start || task?.plannedStartDate);
+  const endDate = getTaskDateValue(task?.endDate || task?.end || task?.dueDate || task?.plannedEndDate);
+  const completedAt = getTaskDateValue(task?.completedAt || task?.finishedAt || task?.updatedAt);
+  const isCompleted = isCompletedTaskStatus(status);
+  const isStuck = ["stuck", "estancada", "estancado", "blocked", "bloqueada", "bloqueado"].includes(status);
+
+  if (startDate && simulatedDay < startOfDay(startDate)) return "not_started";
+  if (isCompleted && completedAt && simulatedDay >= startOfDay(completedAt)) return "completed";
+  if (endDate && simulatedDay > startOfDay(endDate)) return isCompleted ? "completed" : "overdue";
+  if (isStuck) return "stuck";
+  if (isCompleted && !completedAt && endDate && simulatedDay >= startOfDay(endDate)) return "completed";
+  if (startDate && endDate && simulatedDay >= startOfDay(startDate) && simulatedDay <= startOfDay(endDate)) return "active";
+  if (startDate && !endDate && simulatedDay >= startOfDay(startDate)) return isCompleted ? "completed" : "active";
+  if (!startDate && endDate && simulatedDay <= startOfDay(endDate)) return isCompleted ? "completed" : "active";
+  return isCompleted ? "completed" : "not_started";
+};
+
+const getTemporalStateForJoin = (join: LayerFeatureJoin, simulationDate: Date): TemporalStateKey => {
+  if (join.tasks.length === 0) return "unlinked";
+
+  const states = join.tasks.map((task) => getTemporalStateForTask(task, simulationDate));
+  if (states.includes("overdue")) return "overdue";
+  if (states.includes("stuck")) return "stuck";
+  if (states.includes("active")) return "active";
+  if (states.every((state) => state === "completed")) return "completed";
+  if (states.some((state) => state === "completed")) return "completed";
+  return "not_started";
 };
 
 const getMemberName = (memberById: Map<string, any>, memberId?: string) => {
@@ -855,6 +961,10 @@ export function ProjectSpatialMap({
   const [analysisBounds, setAnalysisBounds] = useState<GeoJsonBounds | null>(null);
   const [analysisDraftRect, setAnalysisDraftRect] = useState<ScreenSelectionRect | null>(null);
   const [isDrawingAnalysis, setIsDrawingAnalysis] = useState(false);
+  const [spatialViewMode, setSpatialViewMode] = useState<SpatialViewMode>("current");
+  const [simulationDateValue, setSimulationDateValue] = useState(() => formatDateInputValue(new Date()));
+  const [isSimulationPlaying, setIsSimulationPlaying] = useState(false);
+  const [simulationSpeedDays, setSimulationSpeedDays] = useState(1);
   const [spatialPanelTab, setSpatialPanelTab] = useState<SpatialPanelTab>("summary");
   const [layerPendingDelete, setLayerPendingDelete] = useState<SpatialLayer | null>(null);
   const [mapSize, setMapSize] = useState({ width: 960, height: 560 });
@@ -1208,6 +1318,120 @@ export function ProjectSpatialMap({
     return Array.from(map.values());
   }, [featureJoins]);
 
+  const renderedSpatializedTasks = useMemo(() => {
+    const map = new Map<string, any>();
+    renderedFeatureJoins.forEach((join) => {
+      join.tasks.forEach((task) => map.set(task.id, task));
+    });
+    return Array.from(map.values());
+  }, [renderedFeatureJoins]);
+
+  const simulationDate = useMemo(
+    () => parseDateInputValue(simulationDateValue) || startOfDay(new Date()),
+    [simulationDateValue]
+  );
+
+  const simulationRange = useMemo(() => {
+    const dateValues = renderedSpatializedTasks.flatMap((task) =>
+      [
+        getTaskDateValue(task.startDate || task.start || task.plannedStartDate),
+        getTaskDateValue(task.endDate || task.end || task.dueDate || task.plannedEndDate),
+        getTaskDateValue(task.completedAt || task.finishedAt),
+      ].filter((date): date is Date => Boolean(date))
+    );
+
+    const today = startOfDay(new Date());
+    if (dateValues.length === 0) {
+      const start = today;
+      const end = addDays(today, 30);
+      return {
+        start,
+        end,
+        startInput: formatDateInputValue(start),
+        endInput: formatDateInputValue(end),
+        totalDays: 30,
+      };
+    }
+
+    const minTime = Math.min(...dateValues.map((date) => startOfDay(date).getTime()), today.getTime());
+    const maxTime = Math.max(...dateValues.map((date) => startOfDay(date).getTime()), addDays(today, 7).getTime());
+    const start = new Date(minTime);
+    const end = new Date(maxTime);
+    const totalDays = Math.max(1, getDayOffset(end, start));
+
+    return {
+      start,
+      end,
+      startInput: formatDateInputValue(start),
+      endInput: formatDateInputValue(end),
+      totalDays,
+    };
+  }, [renderedSpatializedTasks]);
+
+  const simulationDayOffset = useMemo(
+    () => Math.min(simulationRange.totalDays, getDayOffset(simulationDate, simulationRange.start)),
+    [simulationDate, simulationRange.start, simulationRange.totalDays]
+  );
+
+  const temporalFeatureStats = useMemo(() => {
+    const counts = TEMPORAL_STATUS_OPTIONS.reduce<Record<TemporalStateKey, number>>((summary, option) => {
+      summary[option.key] = 0;
+      return summary;
+    }, {} as Record<TemporalStateKey, number>);
+
+    renderedFeatureJoins.forEach((join) => {
+      counts[getTemporalStateForJoin(join, simulationDate)] += 1;
+    });
+
+    const linked = renderedFeatureJoins.filter((join) => join.tasks.length > 0).length;
+    const completed = counts.completed;
+    const active = counts.active;
+    const overdue = counts.overdue;
+    return {
+      counts,
+      linked,
+      completed,
+      active,
+      overdue,
+      progress: linked > 0 ? Math.round((completed / linked) * 100) : 0,
+    };
+  }, [renderedFeatureJoins, simulationDate]);
+
+  useEffect(() => {
+    const currentDate = parseDateInputValue(simulationDateValue);
+    if (!currentDate) {
+      setSimulationDateValue(simulationRange.startInput);
+      return;
+    }
+
+    if (currentDate < simulationRange.start) {
+      setSimulationDateValue(simulationRange.startInput);
+      return;
+    }
+
+    if (currentDate > simulationRange.end) {
+      setSimulationDateValue(simulationRange.endInput);
+    }
+  }, [simulationDateValue, simulationRange.end, simulationRange.endInput, simulationRange.start, simulationRange.startInput]);
+
+  useEffect(() => {
+    if (spatialViewMode !== "simulation" || !isSimulationPlaying) return;
+
+    const timer = window.setInterval(() => {
+      setSimulationDateValue((currentValue) => {
+        const currentDate = parseDateInputValue(currentValue) || simulationRange.start;
+        const nextDate = addDays(currentDate, simulationSpeedDays);
+        if (nextDate > simulationRange.end) {
+          setIsSimulationPlaying(false);
+          return simulationRange.endInput;
+        }
+        return formatDateInputValue(nextDate);
+      });
+    }, 850);
+
+    return () => window.clearInterval(timer);
+  }, [isSimulationPlaying, simulationRange.end, simulationRange.endInput, simulationRange.start, simulationSpeedDays, spatialViewMode]);
+
   const stats = useMemo(() => {
     const linkedFeatures = featureJoins.filter((join) => join.tasks.length > 0);
     const taskStatusCounts = statusCountsFromTasks(spatializedTasks);
@@ -1254,6 +1478,20 @@ export function ProjectSpatialMap({
       color: style.statusStyles[option.key].fillColor,
     })).filter((item) => item.count > 0 || item.key === "unlinked");
   }, [boundedFeaturesByLayerId, featureJoins, selectedLayer]);
+
+  const temporalLegend = useMemo(
+    () =>
+      TEMPORAL_STATUS_OPTIONS.map((option) => ({
+        key: option.key,
+        label: option.label,
+        count: temporalFeatureStats.counts[option.key],
+        color: TEMPORAL_STATUS_STYLES[option.key].fillColor,
+      })).filter((item) => item.count > 0 || item.key === "unlinked"),
+    [temporalFeatureStats.counts]
+  );
+
+  const activeLegend = spatialViewMode === "simulation" ? temporalLegend : selectedLayerLegend;
+  const activeLegendTotal = activeLegend.reduce((total, item) => total + item.count, 0);
 
   const analysisFeatures = useMemo(() => {
     if (!analysisBounds || !selectedLayer) return [];
@@ -1346,9 +1584,11 @@ export function ProjectSpatialMap({
       const tolerance = getCanvasSimplificationTolerance(mapView.zoom);
       const hitRegions: CanvasHitRegion[] = [];
 
+      const temporalContext = { enabled: spatialViewMode === "simulation", date: simulationDate };
+
       renderedFeatureJoins.forEach((join) => {
         const baseStyle = join.style;
-        const stateStyle = getFeatureVisualStyle(join);
+        const stateStyle = getFeatureVisualStyle(join, temporalContext);
         const isSelected = selectedFeatureId === join.featureId;
         const fillStyle = colorToRgba(stateStyle.fillColor, baseStyle.fillOpacity);
         const strokeStyle = colorToRgba(stateStyle.strokeColor, baseStyle.strokeOpacity);
@@ -1407,7 +1647,7 @@ export function ProjectSpatialMap({
           const labelPoint = projectCoordinate(labelCoordinate);
           if (!Number.isFinite(labelPoint.x) || !Number.isFinite(labelPoint.y)) return;
 
-          const stateStyle = getFeatureVisualStyle(join);
+          const stateStyle = getFeatureVisualStyle(join, temporalContext);
           drawCanvasLabel(context, join.label, labelPoint, stateStyle.strokeColor);
         });
       }
@@ -1423,6 +1663,8 @@ export function ProjectSpatialMap({
     projectCoordinate,
     renderedFeatureJoins,
     selectedFeatureId,
+    simulationDate,
+    spatialViewMode,
   ]);
 
   const tiles = useMemo(() => {
@@ -1872,6 +2114,15 @@ export function ProjectSpatialMap({
     }));
   };
 
+  const setSimulationOffset = (offset: number) => {
+    const safeOffset = Math.min(simulationRange.totalDays, Math.max(0, Math.round(offset)));
+    setSimulationDateValue(formatDateInputValue(addDays(simulationRange.start, safeOffset)));
+  };
+
+  const shiftSimulationDate = (days: number) => {
+    setSimulationOffset(simulationDayOffset + days);
+  };
+
   return (
     <section className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -1885,21 +2136,47 @@ export function ProjectSpatialMap({
           </p>
         </div>
 
-        {canManage && (
-          <Button
-            type="button"
-            onClick={() => {
-              setUploadDraftFile(null);
-              setUploadDraftName("");
-              setIsUploadModalOpen(true);
-            }}
-            disabled={uploading}
-            className="bg-emerald-600 text-white hover:bg-emerald-700"
-          >
-            {uploading ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Upload size={16} className="mr-2" />}
-            Subir capa
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+            {[
+              { key: "current", label: "Estado actual" },
+              { key: "simulation", label: "Simulación" },
+            ].map((option) => {
+              const isActive = spatialViewMode === option.key;
+              return (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => {
+                    setSpatialViewMode(option.key as SpatialViewMode);
+                    if (option.key === "simulation") setSpatialPanelTab("simulation");
+                  }}
+                  className={`rounded-lg px-3 py-2 text-xs font-black transition ${
+                    isActive ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {canManage && (
+            <Button
+              type="button"
+              onClick={() => {
+                setUploadDraftFile(null);
+                setUploadDraftName("");
+                setIsUploadModalOpen(true);
+              }}
+              disabled={uploading}
+              className="bg-emerald-600 text-white hover:bg-emerald-700"
+            >
+              {uploading ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Upload size={16} className="mr-2" />}
+              Subir capa
+            </Button>
+          )}
+        </div>
       </div>
 
       {spatialStoreError && (
@@ -2101,7 +2378,7 @@ export function ProjectSpatialMap({
             )}
 
             {selectedFeatureJoin && (
-              <div className="absolute bottom-14 right-4 z-10 w-[min(380px,calc(100%-2rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur">
+              <div className={`absolute right-4 z-10 w-[min(380px,calc(100%-2rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-xl backdrop-blur ${spatialViewMode === "simulation" ? "bottom-32" : "bottom-14"}`}>
                 <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-4">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
@@ -2182,6 +2459,77 @@ export function ProjectSpatialMap({
               </button>
             </div>
 
+            {spatialViewMode === "simulation" && (
+              <div className="absolute bottom-4 left-20 right-4 z-20 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSimulationOffset(0)}
+                      className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-600 transition hover:bg-slate-50"
+                      aria-label="Volver al inicio de la simulación"
+                    >
+                      <SkipBack size={17} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsSimulationPlaying((current) => !current)}
+                      className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-sm transition hover:bg-slate-800"
+                      aria-label={isSimulationPlaying ? "Pausar simulación" : "Reproducir simulación"}
+                    >
+                      {isSimulationPlaying ? <Pause size={17} /> : <Play size={17} />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => shiftSimulationDate(simulationSpeedDays)}
+                      className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-600 transition hover:bg-slate-50"
+                      aria-label="Avanzar simulación"
+                    >
+                      <SkipForward size={17} />
+                    </button>
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-indigo-600">Simulación temporal</p>
+                      <p className="truncate text-sm font-black text-slate-900">
+                        {new Intl.DateTimeFormat("es-CO", { weekday: "short", day: "2-digit", month: "long", year: "numeric" }).format(simulationDate)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid flex-1 gap-2 sm:grid-cols-[1fr_140px_110px] sm:items-center">
+                    <input
+                      type="range"
+                      min={0}
+                      max={simulationRange.totalDays}
+                      value={simulationDayOffset}
+                      onChange={(event) => setSimulationOffset(Number(event.target.value))}
+                      className="w-full accent-indigo-600"
+                    />
+                    <input
+                      type="date"
+                      value={simulationDateValue}
+                      min={simulationRange.startInput}
+                      max={simulationRange.endInput}
+                      onChange={(event) => {
+                        setIsSimulationPlaying(false);
+                        setSimulationDateValue(event.target.value);
+                      }}
+                      className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                    <select
+                      value={simulationSpeedDays}
+                      onChange={(event) => setSimulationSpeedDays(Number(event.target.value))}
+                      className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                    >
+                      <option value={1}>1 dia</option>
+                      <option value={3}>3 dias</option>
+                      <option value={7}>1 semana</option>
+                      <option value={15}>15 dias</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="absolute bottom-3 left-3 rounded-lg bg-white/90 px-2 py-1 text-[10px] font-semibold text-slate-500 shadow-sm">
               © OpenStreetMap contributors
             </div>
@@ -2204,9 +2552,10 @@ export function ProjectSpatialMap({
                 </span>
               </div>
 
-              <div className="mt-4 grid grid-cols-4 gap-1 rounded-xl bg-white/10 p-1">
+              <div className="mt-4 grid grid-cols-5 gap-1 rounded-xl bg-white/10 p-1">
                 {[
                   { key: "summary", label: "Resumen", icon: Layers },
+                  { key: "simulation", label: "Tiempo", icon: Play },
                   { key: "analysis", label: "Análisis", icon: BarChart3 },
                   { key: "style", label: "Estilo", icon: Palette },
                   { key: "search", label: "Buscar", icon: Search },
@@ -2266,6 +2615,113 @@ export function ProjectSpatialMap({
                     <span className="font-black text-slate-900">{layerAttribute || "atributo capa"}</span>
                     <span> se compara con </span>
                     <span className="font-black text-slate-900">{effectiveTaskAttribute || "atributo tarea"}</span>
+                  </div>
+                </div>
+              )}
+
+              {spatialPanelTab === "simulation" && (
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-indigo-700">Modo temporal</p>
+                        <p className="mt-1 text-sm font-black text-slate-900">
+                          {spatialViewMode === "simulation" ? "Simulación activa" : "Simulación apagada"}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSpatialViewMode((current) => (current === "simulation" ? "current" : "simulation"))}
+                        className={`rounded-full px-3 py-1.5 text-xs font-black transition ${
+                          spatialViewMode === "simulation" ? "bg-indigo-600 text-white" : "bg-white text-indigo-700"
+                        }`}
+                      >
+                        {spatialViewMode === "simulation" ? "Ver estado" : "Simular"}
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs font-semibold leading-5 text-indigo-800">
+                      Usa las fechas ya programadas en tareas y workflows vinculados a la capa. Pixel no reparte ni crea cronograma nuevo.
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-white p-3">
+                    <label className="block text-xs font-black uppercase tracking-[0.16em] text-slate-400">Fecha simulada</label>
+                    <input
+                      type="date"
+                      value={simulationDateValue}
+                      min={simulationRange.startInput}
+                      max={simulationRange.endInput}
+                      onChange={(event) => {
+                        setIsSimulationPlaying(false);
+                        setSimulationDateValue(event.target.value);
+                        setSpatialViewMode("simulation");
+                      }}
+                      className="mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                    <input
+                      type="range"
+                      min={0}
+                      max={simulationRange.totalDays}
+                      value={simulationDayOffset}
+                      onChange={(event) => {
+                        setSpatialViewMode("simulation");
+                        setSimulationOffset(Number(event.target.value));
+                      }}
+                      className="mt-3 w-full accent-indigo-600"
+                    />
+                    <div className="mt-2 flex items-center justify-between text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
+                      <span>{formatDate(simulationRange.start)}</span>
+                      <span>{formatDate(simulationRange.end)}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSimulationOffset(0)}
+                      className="inline-flex items-center justify-center rounded-xl border border-slate-200 px-3 py-2 text-xs font-black text-slate-700 transition hover:bg-slate-50"
+                    >
+                      <SkipBack size={14} className="mr-1" />
+                      Inicio
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSpatialViewMode("simulation");
+                        setIsSimulationPlaying((current) => !current);
+                      }}
+                      className="inline-flex items-center justify-center rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white transition hover:bg-slate-800"
+                    >
+                      {isSimulationPlaying ? <Pause size={14} className="mr-1" /> : <Play size={14} className="mr-1" />}
+                      {isSimulationPlaying ? "Pausa" : "Play"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => shiftSimulationDate(simulationSpeedDays)}
+                      className="inline-flex items-center justify-center rounded-xl border border-slate-200 px-3 py-2 text-xs font-black text-slate-700 transition hover:bg-slate-50"
+                    >
+                      <SkipForward size={14} className="mr-1" />
+                      Avanzar
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl bg-emerald-50 p-3 text-emerald-800">
+                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Avance</p>
+                      <p className="mt-1 text-2xl font-black">{temporalFeatureStats.progress}%</p>
+                    </div>
+                    <div className="rounded-xl bg-red-50 p-3 text-red-800">
+                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Atrasadas</p>
+                      <p className="mt-1 text-2xl font-black">{temporalFeatureStats.overdue}</p>
+                    </div>
+                    <div className="rounded-xl bg-blue-50 p-3 text-blue-800">
+                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">En ventana</p>
+                      <p className="mt-1 text-2xl font-black">{temporalFeatureStats.active}</p>
+                    </div>
+                    <div className="rounded-xl bg-slate-50 p-3 text-slate-700">
+                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Vinculadas</p>
+                      <p className="mt-1 text-2xl font-black">{temporalFeatureStats.linked}</p>
+                    </div>
                   </div>
                 </div>
               )}
@@ -2488,7 +2944,8 @@ export function ProjectSpatialMap({
                     ) : (
                       filteredFeatureJoins.slice(0, 8).map((join) => {
                         const primaryTask = join.tasks[0];
-                        const meta = primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
+                        const temporalMeta = temporalStatusMeta[getTemporalStateForJoin(join, simulationDate)];
+                        const meta = spatialViewMode === "simulation" ? temporalMeta : primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
                         return (
                           <button
                             type="button"
@@ -2639,23 +3096,25 @@ export function ProjectSpatialMap({
                     <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Leyenda activa</p>
                   </div>
                   <p className="mt-1 text-xs font-semibold text-slate-500">
-                    {normalizeLayerStyle(selectedLayer.styleConfig).themeMode === "attribute"
+                    {spatialViewMode === "simulation"
+                      ? "Estados temporales de la simulación"
+                      : normalizeLayerStyle(selectedLayer.styleConfig).themeMode === "attribute"
                       ? `Categorías por ${normalizeLayerStyle(selectedLayer.styleConfig).themeAttribute || "atributo"}`
                       : "Estados de tareas vinculadas"}
                   </p>
                 </div>
                 <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">
-                  {selectedLayerLegend.length}
+                  {activeLegend.length}
                 </span>
               </div>
 
               <div className="mt-4 max-h-64 space-y-2 overflow-y-auto pr-1">
-                {selectedLayerLegend.length === 0 ? (
+                {activeLegend.length === 0 ? (
                   <div className="rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-500">
                     No hay elementos de leyenda para la capa seleccionada.
                   </div>
                 ) : (
-                  selectedLayerLegend.slice(0, 80).map((item) => (
+                  activeLegend.slice(0, 80).map((item) => (
                     <div key={item.key} className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
                       <span className="h-4 w-4 shrink-0 rounded-full border border-white shadow-sm" style={{ backgroundColor: item.color }} />
                       <div className="min-w-0 flex-1">
@@ -2664,7 +3123,7 @@ export function ProjectSpatialMap({
                           <div
                             className="h-full rounded-full"
                             style={{
-                              width: `${stats.visibleFeatures ? Math.max(4, Math.round((item.count / stats.visibleFeatures) * 100)) : 0}%`,
+                              width: `${activeLegendTotal ? Math.max(4, Math.round((item.count / activeLegendTotal) * 100)) : 0}%`,
                               backgroundColor: item.color,
                             }}
                           />
@@ -3068,7 +3527,8 @@ export function ProjectSpatialMap({
               ) : (
                 filteredFeatureJoins.slice(0, 80).map((join) => {
                   const primaryTask = join.tasks[0];
-                  const meta = primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
+                  const temporalMeta = temporalStatusMeta[getTemporalStateForJoin(join, simulationDate)];
+                  const meta = spatialViewMode === "simulation" ? temporalMeta : primaryTask ? getStatusMeta(primaryTask) : statusMeta.todo;
                   const schedule = primaryTask ? getScheduleState(primaryTask) : null;
                   const isSelected = selectedFeatureId === join.featureId;
 
@@ -3158,7 +3618,9 @@ export function ProjectSpatialMap({
                 </div>
               ) : (
                 selectedFeatureJoin.tasks.map((task) => {
-                  const meta = getStatusMeta(task);
+                  const meta = spatialViewMode === "simulation"
+                    ? temporalStatusMeta[getTemporalStateForTask(task, simulationDate)]
+                    : getStatusMeta(task);
                   const schedule = getScheduleState(task);
                   return (
                     <div key={task.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
