@@ -1808,14 +1808,17 @@ export default function ProjectDetailsPage() {
       : hasPausedChild ? 'stuck'
         : hasStartedChild ? 'in_progress'
           : 'todo';
+    const repairToastId = toast.loading(`Reparando matriz "${title}"...`);
 
     try {
       const parentRef = doc(db, 'projects', projectId, 'tasks', matrixTaskId);
       const existingParent = await getDoc(parentRef);
+      const existingParentData = existingParent.exists() ? existingParent.data() || {} : {};
       const structuralWorkflowSteps = Array.isArray(firstChild.workflowSteps)
         ? firstChild.workflowSteps.map(stripWorkflowStepRuntime)
         : [];
-      const matrixPayload: any = {
+      const nowIso = new Date().toISOString();
+      const matrixBase: any = {
         projectId,
         title,
         name: title,
@@ -1850,15 +1853,18 @@ export default function ProjectDetailsPage() {
         totalCycles: Math.max(childTasks.length, Number(matrixTask.totalCycles || firstChild.totalCycles || 0)),
         workflowSteps: structuralWorkflowSteps,
         currentStepIndex: 0,
-        workflowHistory: [],
+        workflowHistory: Array.isArray(existingParentData.workflowHistory) ? existingParentData.workflowHistory : [],
         workflowCycles: Math.max(childTasks.length, Number(matrixTask.totalCycles || firstChild.totalCycles || 1)),
         currentCycle: 1,
         externalWorkflowId: null,
         recoveredMatrix: true,
         recoveredChildCount: childTasks.length,
-        recoveredAt: serverTimestamp(),
         recoveredBy: user?.uid || null,
         displayOrder: Math.min(...childTasks.map((childTask) => Number(childTask.displayOrder || 0)).filter((value) => Number.isFinite(value)), tasks.length) - 1,
+      };
+      const matrixPayload: any = {
+        ...matrixBase,
+        recoveredAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
 
@@ -1867,11 +1873,43 @@ export default function ProjectDetailsPage() {
         matrixPayload.createdBy = user?.uid || null;
       }
 
+      toast.loading(`Guardando matriz padre de ${childTasks.length} subtareas...`, { id: repairToastId });
       await setDoc(parentRef, matrixPayload, { merge: true });
-      toast.success(`Matriz "${title}" reparada con ${childTasks.length} subtareas.`);
+
+      toast.loading('Verificando reparación en Supabase...', { id: repairToastId });
+      const savedParent = await getDoc(parentRef);
+      if (!savedParent.exists()) {
+        throw new Error('Supabase no confirmó la creación del documento matriz.');
+      }
+
+      const localMatrixTask = {
+        id: matrixTaskId,
+        ...existingParentData,
+        ...matrixBase,
+        recoveredAt: nowIso,
+        updatedAt: nowIso,
+        createdAt: existingParentData.createdAt || nowIso,
+        createdBy: existingParentData.createdBy || user?.uid || null,
+      };
+
+      setTasks((currentTasks) => {
+        if (currentTasks.some((currentTask) => currentTask.id === matrixTaskId)) {
+          return currentTasks.map((currentTask) =>
+            currentTask.id === matrixTaskId ? { ...currentTask, ...localMatrixTask } : currentTask
+          );
+        }
+
+        return [localMatrixTask, ...currentTasks];
+      });
+
+      toast.loading('Recalculando progreso de la matriz...', { id: repairToastId });
+      const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+      await updateParentTaskStatus(projectId, matrixTaskId);
+
+      toast.success(`Matriz "${title}" reparada con ${childTasks.length} subtareas.`, { id: repairToastId });
     } catch (error: any) {
       console.error('Error repairing missing task matrix:', error);
-      toast.error(error?.message || 'No se pudo reparar la matriz de tareas.');
+      toast.error(error?.message || 'No se pudo reparar la matriz de tareas.', { id: repairToastId });
     }
   };
 

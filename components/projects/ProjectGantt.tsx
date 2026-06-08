@@ -363,6 +363,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupColor, setNewGroupColor] = useState(TASK_GROUP_COLORS[0]);
   const [taskSearchQuery, setTaskSearchQuery] = useState("");
+  const [repairingMatrixIds, setRepairingMatrixIds] = useState<string[]>([]);
   const taskAssigneeOptions = assigneeOptions || teamMembers;
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
@@ -443,6 +444,19 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     await onCreateTaskGroup(cleanName, newGroupColor);
     setNewGroupName("");
     setNewGroupColor(TASK_GROUP_COLORS[0]);
+  };
+
+  const handleRepairRecoveredMatrix = async (task: any) => {
+    if (!task?.id || !onRepairMissingTaskMatrix) return;
+
+    setOpenActionMenuTaskId(null);
+    setRepairingMatrixIds((current) => Array.from(new Set([...current, task.id])));
+
+    try {
+      await onRepairMissingTaskMatrix(task);
+    } finally {
+      setRepairingMatrixIds((current) => current.filter((taskId) => taskId !== task.id));
+    }
   };
 
   const startEditingTitle = (task: any) => {
@@ -1356,6 +1370,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const task = row.task;
                     const index = rowIndex;
                     const isRecoveredMatrix = Boolean(task.isRecoveredMatrix);
+                    const isRepairingMatrix = repairingMatrixIds.includes(task.id);
                     const assignedMember = teamMembers.find(m => m.id === task.assignedTo);
                     const taskTitle = getTaskTitle(task);
                     const taskDisplayTitle = getTaskDisplayTitle(task);
@@ -1525,8 +1540,9 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                 </span>
                               )}
                               {isRecoveredMatrix && (
-                                <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-tight text-amber-700 border border-amber-200">
-                                  Matriz recuperada
+                                <span className="inline-flex shrink-0 items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-tight text-amber-700 border border-amber-200">
+                                  {isRepairingMatrix && <RefreshCw size={10} className="animate-spin" />}
+                                  {isRepairingMatrix ? 'Reparando matriz' : 'Matriz recuperada'}
                                 </span>
                               )}
                               {task.isRateCardTask && (
@@ -1765,14 +1781,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                     {isRecoveredMatrix && onRepairMissingTaskMatrix && (
                                       <button
                                         type="button"
-                                        onClick={() => {
-                                          setOpenActionMenuTaskId(null);
-                                          void onRepairMissingTaskMatrix(task);
-                                        }}
-                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-amber-700 hover:bg-amber-50"
+                                        disabled={isRepairingMatrix}
+                                        onClick={() => void handleRepairRecoveredMatrix(task)}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-amber-700 hover:bg-amber-50 disabled:cursor-wait disabled:opacity-70"
                                       >
-                                        <RefreshCw size={14} />
-                                        Reparar matriz
+                                        <RefreshCw size={14} className={isRepairingMatrix ? 'animate-spin' : ''} />
+                                        {isRepairingMatrix ? 'Reparando...' : 'Reparar matriz'}
                                       </button>
                                     )}
                                     {canManageTaskGroups && onUpdateTaskGroup && assignableTaskGroups.length > 0 && !task.parentTaskId && !task.isWorkflowStep && !isRecoveredMatrix && (
