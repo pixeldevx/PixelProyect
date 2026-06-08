@@ -142,7 +142,7 @@ function ResetPasswordContent() {
         )}
 
         <div className="mt-6 text-center text-sm">
-          <Link href="/dashboard" className="text-indigo-600 hover:text-indigo-800 font-medium">
+          <Link href="/login" className="text-indigo-600 hover:text-indigo-800 font-medium">
             Volver al inicio de sesión
           </Link>
         </div>

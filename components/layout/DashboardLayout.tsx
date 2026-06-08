@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { 
   LayoutDashboard, 
@@ -14,8 +14,6 @@ import {
   Search,
   ChevronDown,
   LogOut,
-  Mail,
-  Lock,
   ChevronLeft,
   ChevronRight,
   Inbox,
@@ -36,16 +34,11 @@ const INVENTORY_OVERVIEW_ROLES = new Set(['admin', 'org_admin', 'manager']);
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { user, userRole, loading, accessError, loginWithEmail, requestPasswordReset, logout } = useAuth();
+  const router = useRouter();
+  const { user, userRole, loading, logout } = useAuth();
   const { permissions: rolePermissions } = useRolePermissions(userRole);
   const inboxPendingCount = useInboxPendingCount();
   
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [isRecoveringPassword, setIsRecoveringPassword] = useState(false);
-  const [authError, setAuthError] = useState('');
-  const [authMessage, setAuthMessage] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [showLoadingRecovery, setShowLoadingRecovery] = useState(false);
@@ -56,8 +49,13 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const canAccessInventoryOverview = INVENTORY_OVERVIEW_ROLES.has(userRole || '') && rolePermissions.inventoryOverview;
 
   useEffect(() => {
+    if (!loading && !user) {
+      router.replace('/');
+    }
+  }, [loading, router, user]);
+
+  useEffect(() => {
     if (!isInitialAuthLoading) {
-      setShowLoadingRecovery(false);
       return;
     }
 
@@ -67,8 +65,6 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!user) {
-      setBrandName(DEFAULT_BRAND_NAME);
-      setBrandLogoUrl('');
       return;
     }
 
@@ -88,46 +84,6 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
 
     return () => unsubscribe();
   }, [user]);
-
-  const handleEmailAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError('');
-    setAuthMessage('');
-    setIsSubmitting(true);
-    
-    try {
-      if (isRecoveringPassword) {
-        await requestPasswordReset(email);
-        setAuthMessage('Te enviamos un enlace para restablecer tu contraseña. Revisa tu correo.');
-      } else {
-        await loginWithEmail(email, password);
-      }
-    } catch (error: any) {
-      console.error("Auth error:", error);
-      const message = String(error.message || '');
-      if (
-        error.code === 'auth/invalid-credential' ||
-        error.code === 'auth/user-not-found' ||
-        error.code === 'auth/wrong-password' ||
-        error.code === 'invalid_credentials' ||
-        /invalid login credentials/i.test(message)
-      ) {
-        setAuthError('Correo o contraseña incorrectos.');
-      } else if (error.code === 'email_not_confirmed' || /email not confirmed/i.test(message)) {
-        setAuthError('El correo todavía no está confirmado en Supabase.');
-      } else if (error.code === 'auth/email-already-in-use' || /already registered/i.test(message)) {
-        setAuthError('El correo ya está registrado. Por favor, inicia sesión.');
-      } else if (error.code === 'auth/weak-password') {
-        setAuthError('La contraseña debe tener al menos 6 caracteres.');
-      } else if (error.code === 'auth/operation-not-allowed') {
-        setAuthError('El inicio de sesión con correo no está habilitado en Supabase. Por favor, habilítalo en la consola de Supabase.');
-      } else {
-        setAuthError(error.message || 'Ocurrió un error en la autenticación.');
-      }
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
 
   if (isInitialAuthLoading) {
     return (
@@ -164,89 +120,9 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
-    const visibleAuthError = authError || accessError;
-
     return (
-      <div className="flex h-screen w-full items-center justify-center bg-slate-50 p-4">
-        <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8">
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-2xl font-bold mx-auto mb-6 shadow-md">
-              PX
-            </div>
-            <h1 className="text-2xl font-bold text-slate-900 mb-2">Bienvenido a Pixel Project</h1>
-            <p className="text-slate-500">Inicia sesión para gestionar tus proyectos y documentos.</p>
-          </div>
-
-          {authMessage && (
-            <div className="mb-6 p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm rounded-lg text-center">
-              {authMessage}
-            </div>
-          )}
-
-          {visibleAuthError && (
-            <div className="mb-6 p-3 bg-red-50 border border-red-200 text-red-600 text-sm rounded-lg text-center">
-              {visibleAuthError}
-            </div>
-          )}
-
-          <form onSubmit={handleEmailAuth} className="space-y-4 mb-6">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Correo Electrónico</label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Mail className="h-5 w-5 text-slate-400" />
-                </div>
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                  placeholder="tu@email.com"
-                />
-              </div>
-            </div>
-            {!isRecoveringPassword && (
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <Lock className="h-5 w-5 text-slate-400" />
-                  </div>
-                  <input
-                    type="password"
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                    placeholder="••••••••"
-                  />
-                </div>
-              </div>
-            )}
-            <Button 
-              type="submit" 
-              disabled={isSubmitting}
-              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5"
-            >
-              {isSubmitting ? 'Procesando...' : isRecoveringPassword ? 'Enviar enlace' : 'Iniciar sesión'}
-            </Button>
-          </form>
-
-          <div className="mt-6 text-center text-sm text-slate-600">
-            {isRecoveringPassword ? '¿Recordaste tu contraseña?' : '¿Olvidaste tu contraseña?'}
-            <button 
-              onClick={() => {
-                setIsRecoveringPassword(!isRecoveringPassword);
-                setAuthError('');
-                setAuthMessage('');
-              }}
-              className="ml-1 text-indigo-600 hover:text-indigo-800 font-medium"
-            >
-              {isRecoveringPassword ? 'Inicia sesión' : 'Enviar enlace'}
-            </button>
-          </div>
-        </div>
+      <div className="flex h-screen w-full items-center justify-center bg-slate-50 px-4">
+        <div className="text-center text-slate-900">Redirigiendo al inicio...</div>
       </div>
     );
   }
