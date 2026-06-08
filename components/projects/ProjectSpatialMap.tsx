@@ -245,10 +245,10 @@ const TEMPORAL_STATUS_STYLES: Record<TemporalStateKey, Required<LayerStateStyleC
 const TEMPORAL_STATUS_OPTIONS: Array<{ key: TemporalStateKey; label: string; helper: string }> = [
   { key: "unlinked", label: "Sin tarea", helper: "Geometrías sin tarea vinculada." },
   { key: "not_started", label: "Aún no inicia", helper: "La fecha simulada está antes del inicio planificado." },
-  { key: "active", label: "En ventana", helper: "La tarea debería estar ejecutándose en la fecha simulada." },
-  { key: "completed", label: "Finalizada", helper: "La tarea ya aparece cerrada para esa fecha." },
-  { key: "overdue", label: "Atrasada", helper: "La fecha simulada supera el cierre y la tarea no está terminada." },
-  { key: "stuck", label: "Pausada", helper: "La tarea está estancada o bloqueada dentro del periodo." },
+  { key: "active", label: "Trabajando según plan", helper: "La tarea debería estar ejecutándose en la fecha simulada." },
+  { key: "completed", label: "Cumplida en plan", helper: "La tarea ya debería estar cerrada según su cronograma." },
+  { key: "overdue", label: "Atrasada", helper: "Escenario futuro para simulaciones con incumplimientos reales." },
+  { key: "stuck", label: "Pausada", helper: "Escenario futuro para simulaciones con pausas reales." },
 ];
 const temporalStatusMeta = Object.fromEntries(
   TEMPORAL_STATUS_OPTIONS.map((option) => [
@@ -481,18 +481,13 @@ const getTemporalStateForTask = (task: any, simulationDate: Date): TemporalState
   const simulatedDay = startOfDay(simulationDate);
   const startDate = getTaskDateValue(task?.startDate || task?.start || task?.plannedStartDate);
   const endDate = getTaskDateValue(task?.endDate || task?.end || task?.dueDate || task?.plannedEndDate);
-  const completedAt = getTaskDateValue(task?.completedAt || task?.finishedAt || task?.updatedAt);
   const isCompleted = isCompletedTaskStatus(status);
-  const isStuck = ["stuck", "estancada", "estancado", "blocked", "bloqueada", "bloqueado"].includes(status);
 
   if (startDate && simulatedDay < startOfDay(startDate)) return "not_started";
-  if (isCompleted && completedAt && simulatedDay >= startOfDay(completedAt)) return "completed";
-  if (endDate && simulatedDay > startOfDay(endDate)) return isCompleted ? "completed" : "overdue";
-  if (isStuck) return "stuck";
-  if (isCompleted && !completedAt && endDate && simulatedDay >= startOfDay(endDate)) return "completed";
+  if (endDate && simulatedDay > startOfDay(endDate)) return "completed";
   if (startDate && endDate && simulatedDay >= startOfDay(startDate) && simulatedDay <= startOfDay(endDate)) return "active";
   if (startDate && !endDate && simulatedDay >= startOfDay(startDate)) return isCompleted ? "completed" : "active";
-  if (!startDate && endDate && simulatedDay <= startOfDay(endDate)) return isCompleted ? "completed" : "active";
+  if (!startDate && endDate && simulatedDay <= startOfDay(endDate)) return "active";
   return isCompleted ? "completed" : "not_started";
 };
 
@@ -504,7 +499,7 @@ const getTemporalStateForJoin = (join: LayerFeatureJoin, simulationDate: Date): 
   if (states.includes("stuck")) return "stuck";
   if (states.includes("active")) return "active";
   if (states.every((state) => state === "completed")) return "completed";
-  if (states.some((state) => state === "completed")) return "completed";
+  if (states.some((state) => state === "completed")) return "active";
   return "not_started";
 };
 
@@ -2710,12 +2705,12 @@ export function ProjectSpatialMap({
                       <p className="text-[9px] font-black uppercase tracking-[0.14em]">Avance</p>
                       <p className="mt-1 text-2xl font-black">{temporalFeatureStats.progress}%</p>
                     </div>
-                    <div className="rounded-xl bg-red-50 p-3 text-red-800">
-                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Atrasadas</p>
-                      <p className="mt-1 text-2xl font-black">{temporalFeatureStats.overdue}</p>
+                    <div className="rounded-xl bg-emerald-50 p-3 text-emerald-800">
+                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Cumplidas</p>
+                      <p className="mt-1 text-2xl font-black">{temporalFeatureStats.completed}</p>
                     </div>
                     <div className="rounded-xl bg-blue-50 p-3 text-blue-800">
-                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">En ventana</p>
+                      <p className="text-[9px] font-black uppercase tracking-[0.14em]">Trabajando</p>
                       <p className="mt-1 text-2xl font-black">{temporalFeatureStats.active}</p>
                     </div>
                     <div className="rounded-xl bg-slate-50 p-3 text-slate-700">
