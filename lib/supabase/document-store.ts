@@ -36,6 +36,7 @@ type QueryConstraint = WhereConstraint | OrderConstraint | OrConstraint;
 
 const SERVER_TIMESTAMP = Symbol('serverTimestamp');
 const LOCAL_DOCUMENT_CHANGE_EVENT = 'pixel-project:document-store-change';
+const COLLECTION_FETCH_PAGE_SIZE = 1000;
 
 class IncrementTransform {
   constructor(public by: number) {}
@@ -478,17 +479,32 @@ const applyConstraints = (rows: Row[], constraints: QueryConstraint[]) => {
 };
 
 const fetchRowsForCollection = async (source: CollectionReference) => {
-  let request = supabase.from(SUPABASE_DOCUMENTS_TABLE).select('*');
+  const rows: Row[] = [];
+  let from = 0;
 
-  if (source.isCollectionGroup) {
-    request = request.like('collection_path', `%/${source.id}`);
-  } else {
-    request = request.eq('collection_path', source.collectionPath);
+  while (true) {
+    let request = supabase.from(SUPABASE_DOCUMENTS_TABLE).select('*');
+
+    if (source.isCollectionGroup) {
+      request = request.like('collection_path', `%/${source.id}`);
+    } else {
+      request = request.eq('collection_path', source.collectionPath);
+    }
+
+    const { data, error } = await request
+      .order('collection_path', { ascending: true })
+      .order('doc_id', { ascending: true })
+      .range(from, from + COLLECTION_FETCH_PAGE_SIZE - 1);
+    if (error) throw error;
+
+    const page = (data || []) as Row[];
+    rows.push(...page);
+
+    if (page.length < COLLECTION_FETCH_PAGE_SIZE) break;
+    from += COLLECTION_FETCH_PAGE_SIZE;
   }
 
-  const { data, error } = await request;
-  if (error) throw error;
-  return (data || []) as Row[];
+  return rows;
 };
 
 const fetchDocRow = async (ref: DocumentReference) => {

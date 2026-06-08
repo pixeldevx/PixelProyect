@@ -1759,7 +1759,21 @@ export default function ProjectDetailsPage() {
       return;
     }
 
-    const childTasks = tasks.filter((candidate) => candidate.parentTaskId === matrixTaskId);
+    const localChildTasks = tasks.filter((candidate) => candidate.parentTaskId === matrixTaskId);
+    let childTasks = localChildTasks;
+
+    try {
+      const childSnapshot = await getDocs(
+        query(collection(db, 'projects', projectId, 'tasks'), where('parentTaskId', '==', matrixTaskId))
+      );
+      const databaseChildTasks = childSnapshot.docs.map((childDoc) => ({ id: childDoc.id, ...childDoc.data() }));
+      if (databaseChildTasks.length > childTasks.length) {
+        childTasks = databaseChildTasks;
+      }
+    } catch (error) {
+      console.warn('Could not load full matrix children before repair:', error);
+    }
+
     if (childTasks.length === 0) {
       toast.error('No se encontraron subtareas asociadas a esta matriz.');
       return;
