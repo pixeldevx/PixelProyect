@@ -641,16 +641,12 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     };
 
     if (!shouldShowTaskGroups) {
-      const parentsAndNormal = hasActiveTaskFilter
-        ? sourceTasks.filter(t => !t.parentTaskId || !sourceTaskIds.has(t.parentTaskId))
-        : sourceTasks.filter(t => !t.parentTaskId);
+      const parentsAndNormal = sourceTasks.filter(t => !t.parentTaskId || !sourceTaskIds.has(t.parentTaskId));
       parentsAndNormal.forEach(appendTaskTree);
       return rows;
     }
 
-    const topLevelTasks = hasActiveTaskFilter
-      ? sourceTasks.filter(t => !t.parentTaskId || !sourceTaskIds.has(t.parentTaskId))
-      : sourceTasks.filter(t => !t.parentTaskId);
+    const topLevelTasks = sourceTasks.filter(t => !t.parentTaskId || !sourceTaskIds.has(t.parentTaskId));
     const knownGroupIds = new Set(sortedTaskGroups.map((group) => group.id));
     const groupedTasks = sortedTaskGroups.map((group) => ({
       group,
