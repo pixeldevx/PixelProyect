@@ -653,7 +653,9 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           const children = missingChildrenByParentId.get(parentId) || [];
           children.push(task);
           missingChildrenByParentId.set(parentId, children);
-          contextualParentIds.add(parentId);
+          if (hasActiveTaskFilter) {
+            contextualParentIds.add(parentId);
+          }
           break;
         }
 
@@ -717,8 +719,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       const shouldShowChildren = Boolean(
         expandedParents[task.id] ||
         hasActiveTaskSearch ||
-        contextualParentIds.has(task.id) ||
-        task.isRecoveredMatrix
+        contextualParentIds.has(task.id)
       );
       if (subTasks.length > 0 && shouldShowChildren) {
         subTasks.forEach(subTask => {
@@ -1369,7 +1370,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
                     const task = row.task;
                     const index = rowIndex;
-                    const isRecoveredMatrix = Boolean(task.isRecoveredMatrix);
+                    const isRecoveredMatrix = Boolean(task.isRecoveredMatrix && !tasksById.has(task.id));
                     const isRepairingMatrix = repairingMatrixIds.includes(task.id);
                     const assignedMember = teamMembers.find(m => m.id === task.assignedTo);
                     const taskTitle = getTaskTitle(task);

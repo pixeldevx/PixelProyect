@@ -1857,6 +1857,8 @@ export default function ProjectDetailsPage() {
         workflowCycles: Math.max(childTasks.length, Number(matrixTask.totalCycles || firstChild.totalCycles || 1)),
         currentCycle: 1,
         externalWorkflowId: null,
+        isRecoveredMatrix: false,
+        missingParentTaskId: null,
         recoveredMatrix: true,
         recoveredChildCount: childTasks.length,
         recoveredBy: user?.uid || null,
