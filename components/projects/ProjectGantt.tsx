@@ -60,6 +60,7 @@ interface ProjectGanttProps {
   onOpenTaskComments?: (task: any) => void;
   onResetWorkflowTask?: (task: any) => void | Promise<void>;
   onCreateBulkWorkflowIterations?: (task: any) => void;
+  onRepairMissingTaskMatrix?: (task: any) => void | Promise<void>;
   onCreateTask?: () => void;
 }
 
@@ -246,6 +247,69 @@ const sortChildTasks = (childTasks: any[]) => {
   });
 };
 
+const getRecoveredMatrixTitle = (children: any[]) => {
+  const firstChild = children[0] || {};
+  const candidate =
+    firstChild.matrixTaskTitle ||
+    firstChild.parentTaskTitle ||
+    firstChild.parentTitle ||
+    firstChild.originalTitle ||
+    getTaskDisplayTitle(firstChild, 'Tarea matriz recuperada');
+
+  return String(candidate || 'Tarea matriz recuperada').trim() || 'Tarea matriz recuperada';
+};
+
+const getRecoveredMatrixStatus = (children: any[]) => {
+  if (children.length > 0 && children.every(isTaskFinished)) {
+    return children.some((child) => child.status === 'completed_late') ? 'completed_late' : 'completed';
+  }
+
+  if (children.some((child) => child.status === 'stuck' || child.status === 'detenido')) return 'stuck';
+  if (children.some((child) => ['in_progress', 'en_curso', 'trabajando', 'reproceso'].includes(child.status))) return 'in_progress';
+  return 'todo';
+};
+
+const buildRecoveredMatrixTask = (parentId: string, children: any[]) => {
+  const firstChild = children[0] || {};
+  const dateRange = getGroupDateRange(children);
+  const title = getRecoveredMatrixTitle(children);
+  const workflowSteps = Array.isArray(firstChild.workflowSteps)
+    ? firstChild.workflowSteps.map((step: any) => ({
+        ...step,
+        status: 'not_started',
+        completed: false,
+      }))
+    : [];
+
+  return {
+    id: parentId,
+    title,
+    name: title,
+    originalTitle: title,
+    description: firstChild.description || '',
+    startDate: dateRange.start,
+    endDate: dateRange.end,
+    start: dateRange.start,
+    end: dateRange.end,
+    assignedTo: firstChild.assignedTo || '',
+    status: getRecoveredMatrixStatus(children),
+    progress: getGroupProgress(children),
+    type: firstChild.type === 'workflow' || workflowSteps.length > 0 ? 'workflow' : (firstChild.type || 'state'),
+    priority: firstChild.priority || 'medium',
+    groupId: getTaskGroupId(firstChild) === UNGROUPED_GROUP_ID ? null : getTaskGroupId(firstChild),
+    currentValue: 0,
+    isParentTask: true,
+    isRecoveredMatrix: true,
+    missingParentTaskId: parentId,
+    recoveredChildCount: children.length,
+    totalSubtasks: children.length,
+    totalCycles: Math.max(children.length, Number(firstChild.totalCycles || 0)),
+    workflowSteps,
+    currentStepIndex: 0,
+    displayOrder: Math.min(...children.map((child) => Number(child.displayOrder || 0)).filter((value) => Number.isFinite(value)), 0) - 1,
+  };
+};
+
 export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   tasks,
   teamMembers,
@@ -280,6 +344,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   onOpenTaskComments,
   onResetWorkflowTask,
   onCreateBulkWorkflowIterations,
+  onRepairMissingTaskMatrix,
   onCreateTask
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.Day);
@@ -561,6 +626,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     const baseSourceTasks = hasActiveTaskFilter ? filteredSortedTasks : completionFilteredTasks;
     const sourceTaskMap = new Map(baseSourceTasks.map((task) => [task.id, task]));
     const contextualParentIds = new Set<string>();
+    const missingChildrenByParentId = new Map<string, any[]>();
 
     baseSourceTasks.forEach((task) => {
       const visitedParentIds = new Set<string>();
@@ -569,7 +635,13 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       while (parentId && !visitedParentIds.has(parentId)) {
         visitedParentIds.add(parentId);
         const parentTask = sourceTaskMap.get(parentId) || tasksById.get(parentId);
-        if (!parentTask) break;
+        if (!parentTask) {
+          const children = missingChildrenByParentId.get(parentId) || [];
+          children.push(task);
+          missingChildrenByParentId.set(parentId, children);
+          contextualParentIds.add(parentId);
+          break;
+        }
 
         if (!sourceTaskMap.has(parentId)) {
           sourceTaskMap.set(parentId, parentTask);
@@ -580,17 +652,59 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       }
     });
 
-    const sourceTasks = sortedTasks.filter((task) => sourceTaskMap.has(task.id));
+    const recoveredParents = Array.from(missingChildrenByParentId.entries()).map(([parentId, children]) =>
+      buildRecoveredMatrixTask(parentId, sortChildTasks(children))
+    );
+    const recoveredParentMap = new Map(recoveredParents.map((task) => [task.id, task]));
+    recoveredParents.forEach((task) => {
+      sourceTaskMap.set(task.id, task);
+    });
+
+    const sourceTasks: any[] = [];
+    const insertedRecoveredParentIds = new Set<string>();
+    sortedTasks.forEach((task) => {
+      if (!sourceTaskMap.has(task.id)) return;
+
+      const recoveredParentId =
+        task.parentTaskId && recoveredParentMap.has(task.parentTaskId)
+          ? task.parentTaskId
+          : null;
+
+      if (recoveredParentId && !insertedRecoveredParentIds.has(recoveredParentId)) {
+        const recoveredParent = recoveredParentMap.get(recoveredParentId);
+        if (recoveredParent) {
+          sourceTasks.push(recoveredParent);
+          insertedRecoveredParentIds.add(recoveredParentId);
+        }
+      }
+
+      sourceTasks.push(task);
+    });
+
+    recoveredParents.forEach((task) => {
+      if (!insertedRecoveredParentIds.has(task.id)) {
+        sourceTasks.push(task);
+      }
+    });
+
     const sourceTaskIds = new Set(sourceTasks.map((task) => task.id));
+    const sourceChildrenByParentId = sourceTasks.reduce<Map<string, any[]>>((map, task) => {
+      if (!task.parentTaskId) return map;
+      const children = map.get(task.parentTaskId) || [];
+      children.push(task);
+      map.set(task.parentTaskId, children);
+      return map;
+    }, new Map<string, any[]>());
     const rows: VisibleTaskRow[] = [];
 
     const appendTaskTree = (task: any) => {
       rows.push({ type: 'task', id: task.id, task });
-      const subTasks = sortChildTasks(sourceTasks.filter(t => t.parentTaskId === task.id));
+      const subTasks = sortChildTasks(sourceChildrenByParentId.get(task.id) || []);
       const shouldShowChildren = Boolean(
         expandedParents[task.id] ||
         hasActiveTaskSearch ||
-        contextualParentIds.has(task.id)
+        contextualParentIds.has(task.id) ||
+        task.isRecoveredMatrix
       );
       if (subTasks.length > 0 && shouldShowChildren) {
         subTasks.forEach(subTask => {
@@ -1241,6 +1355,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
                     const task = row.task;
                     const index = rowIndex;
+                    const isRecoveredMatrix = Boolean(task.isRecoveredMatrix);
                     const assignedMember = teamMembers.find(m => m.id === task.assignedTo);
                     const taskTitle = getTaskTitle(task);
                     const taskDisplayTitle = getTaskDisplayTitle(task);
@@ -1251,20 +1366,21 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const isMeeting = isMeetingTask(task);
                     const hasDependentTasks = allChildrenByParentId.has(task.id);
                     const isParent = task.isParentTask || hasDependentTasks;
-                    const isSubTask = !!task.parentTaskId;
+                    const isSubTask = Boolean(task.parentTaskId && !isRecoveredMatrix);
                     const isExpanded = expandedParents[task.id];
                     const isEditingTitle = editingTaskId === task.id;
                     const taskPriority = getTaskPriority(task);
                     const commentCount = getTaskCommentCount(task);
-                    const canEditThisTaskDates = Boolean(canModifyTaskDates && !task.isWorkflowStep);
-                    const canEditThisTaskAssignee = Boolean(canChangeTaskAssignee && !task.isWorkflowStep && task.assignedTo !== 'DYNAMIC');
+                    const canEditThisTaskDates = Boolean(canModifyTaskDates && !task.isWorkflowStep && !isRecoveredMatrix);
+                    const canEditThisTaskAssignee = Boolean(canChangeTaskAssignee && !task.isWorkflowStep && task.assignedTo !== 'DYNAMIC' && !isRecoveredMatrix);
                     const isWorkflowTask = task.type === 'workflow' && !task.isWorkflowStep;
-                    const canUseStatusSelect = Boolean(canChangeTaskStatus && (!isWorkflowTask || (task.status || 'todo') === 'todo'));
-                    const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId && !task.isWorkflowStep);
+                    const canUseStatusSelect = Boolean(canChangeTaskStatus && !isRecoveredMatrix && (!isWorkflowTask || (task.status || 'todo') === 'todo'));
+                    const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId && !task.isWorkflowStep && !isRecoveredMatrix);
                     const canResetWorkflow = Boolean(
                       canModifyTaskDetails &&
                       onResetWorkflowTask &&
                       task.type === 'workflow' &&
+                      !isRecoveredMatrix &&
                       !task.isParentTask &&
                       (task.status !== 'todo' || (task.progress || 0) > 0 || task.externalWorkflowId)
                     );
@@ -1272,24 +1388,26 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                       canCreateSubtasks &&
                       onCreateBulkWorkflowIterations &&
                       task.type === 'workflow' &&
-                      !task.isWorkflowStep
+                      !task.isWorkflowStep &&
+                      !isRecoveredMatrix
                     );
                     const taskRowsCount = visibleRows.filter((visibleRow) => visibleRow.type === 'task').length;
                     const shouldOpenActionMenuUp = taskRowsCount <= 4 || rowIndex >= visibleRows.length - 3;
                     const hasActionItems = Boolean(
                       !task.isWorkflowStep &&
                       (
-                        (canModifyTaskDetails && onUpdateTaskTitle) ||
-                        onOpenTaskDocs ||
-                        (canEditTaskStructure && onEditTaskStructure) ||
+                        (isRecoveredMatrix && onRepairMissingTaskMatrix) ||
+                        (!isRecoveredMatrix && canModifyTaskDetails && onUpdateTaskTitle) ||
+                        (!isRecoveredMatrix && onOpenTaskDocs) ||
+                        (!isRecoveredMatrix && canEditTaskStructure && onEditTaskStructure) ||
                         canAddSubtask ||
                         isMeeting ||
-                        (canModifyTaskDetails && isQuantitative) ||
-                        (canModifyTaskDetails && task.syncExternal && onSyncTask) ||
+                        (!isRecoveredMatrix && canModifyTaskDetails && isQuantitative) ||
+                        (!isRecoveredMatrix && canModifyTaskDetails && task.syncExternal && onSyncTask) ||
                         canCreateBulkWorkflowIterations ||
                         canResetWorkflow ||
-                        (canManageTaskGroups && onUpdateTaskGroup && assignableTaskGroups.length > 0) ||
-                        canRemoveTasks
+                        (!isRecoveredMatrix && canManageTaskGroups && onUpdateTaskGroup && assignableTaskGroups.length > 0) ||
+                        (!isRecoveredMatrix && canRemoveTasks)
                       )
                     );
 
@@ -1299,7 +1417,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                           <div
                             ref={provided.innerRef}
                             {...provided.draggableProps}
-                            className={`flex items-center h-10 border-b transition-colors group relative ${snapshot.isDragging ? 'bg-white shadow-xl z-50 ring-1 ring-indigo-500/20' : ''} ${isSubTask ? 'bg-indigo-50/30 border-indigo-100 hover:bg-indigo-50/60' : 'border-slate-100 hover:bg-slate-50'}`}
+                            className={`flex items-center h-10 border-b transition-colors group relative ${snapshot.isDragging ? 'bg-white shadow-xl z-50 ring-1 ring-indigo-500/20' : ''} ${isRecoveredMatrix ? 'border-amber-100 bg-amber-50/40 hover:bg-amber-50/70' : isSubTask ? 'bg-indigo-50/30 border-indigo-100 hover:bg-indigo-50/60' : 'border-slate-100 hover:bg-slate-50'}`}
                           >
                             {/* Monday-style colored left bar */}
                             <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${getScheduleRailColor(task)}`} />
@@ -1368,9 +1486,11 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   )}
                                   <button
                                     type="button"
-                                    onDoubleClick={() => startEditingTitle(task)}
-                                    className={`min-w-0 flex-1 truncate text-left text-sm font-medium ${task.status === 'completed' || task.status === 'completed_late' || task.status === 'listo' ? 'text-slate-400 line-through' : isSubTask ? 'text-slate-600' : 'text-slate-700'}`}
-                                    title={taskDisplayTitle}
+                                    onDoubleClick={() => {
+                                      if (!isRecoveredMatrix) startEditingTitle(task);
+                                    }}
+                                    className={`min-w-0 flex-1 truncate text-left text-sm font-medium ${task.status === 'completed' || task.status === 'completed_late' || task.status === 'listo' ? 'text-slate-400 line-through' : isRecoveredMatrix ? 'font-black text-amber-800' : isSubTask ? 'text-slate-600' : 'text-slate-700'}`}
+                                    title={isRecoveredMatrix ? `${taskDisplayTitle} · matriz recuperada desde ${task.recoveredChildCount || 0} subtareas` : taskDisplayTitle}
                                   >
                                     {taskDisplayTitle}
                                   </button>
@@ -1402,6 +1522,11 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                               {isSubTask && (
                                 <span className="shrink-0 rounded bg-indigo-50 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tight text-indigo-500 border border-indigo-100">
                                   Subtarea
+                                </span>
+                              )}
+                              {isRecoveredMatrix && (
+                                <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-tight text-amber-700 border border-amber-200">
+                                  Matriz recuperada
                                 </span>
                               )}
                               {task.isRateCardTask && (
@@ -1545,7 +1670,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                             </div>
 
                             <div className="w-24 h-full relative group/priority">
-                              {canModifyTaskDetails && onUpdateTaskPriority ? (
+                              {canModifyTaskDetails && onUpdateTaskPriority && !isRecoveredMatrix ? (
                                 <select
                                   value={taskPriority}
                                   onChange={(e) => onUpdateTaskPriority(task.id, e.target.value, task)}
@@ -1637,7 +1762,20 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                       shouldOpenActionMenuUp ? 'bottom-8' : 'top-8'
                                     }`}
                                   >
-                                    {canManageTaskGroups && onUpdateTaskGroup && assignableTaskGroups.length > 0 && !task.parentTaskId && !task.isWorkflowStep && (
+                                    {isRecoveredMatrix && onRepairMissingTaskMatrix && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setOpenActionMenuTaskId(null);
+                                          void onRepairMissingTaskMatrix(task);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-amber-700 hover:bg-amber-50"
+                                      >
+                                        <RefreshCw size={14} />
+                                        Reparar matriz
+                                      </button>
+                                    )}
+                                    {canManageTaskGroups && onUpdateTaskGroup && assignableTaskGroups.length > 0 && !task.parentTaskId && !task.isWorkflowStep && !isRecoveredMatrix && (
                                       <div className="border-b border-slate-100 px-3 py-2">
                                         <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">
                                           Grupo
@@ -1662,7 +1800,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         </select>
                                       </div>
                                     )}
-                                    {canModifyTaskDetails && onUpdateTaskTitle && (
+                                    {canModifyTaskDetails && onUpdateTaskTitle && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -1675,7 +1813,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         Editar nombre
                                       </button>
                                     )}
-                                    {onOpenTaskDocs && (
+                                    {onOpenTaskDocs && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -1688,7 +1826,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         Detalles e iteraciones
                                       </button>
                                     )}
-                                    {canEditTaskStructure && onEditTaskStructure && (
+                                    {canEditTaskStructure && onEditTaskStructure && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -1701,7 +1839,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         Estructura y subtareas
                                       </button>
                                     )}
-                                    {canAddSubtask && (
+                                    {canAddSubtask && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -1742,7 +1880,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         </button>
                                       </>
                                     )}
-                                    {canCreateBulkWorkflowIterations && (
+                                    {canCreateBulkWorkflowIterations && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -1755,7 +1893,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         Iteraciones masivas
                                       </button>
                                     )}
-                                    {canModifyTaskDetails && isQuantitative && task.type !== 'workflow' && (
+                                    {canModifyTaskDetails && isQuantitative && task.type !== 'workflow' && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -1773,7 +1911,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         Registrar incremento
                                       </button>
                                     )}
-                                    {canModifyTaskDetails && task.syncExternal && onSyncTask && (
+                                    {canModifyTaskDetails && task.syncExternal && onSyncTask && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -1786,7 +1924,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         Sincronizar
                                       </button>
                                     )}
-                                    {canResetWorkflow && (
+                                    {canResetWorkflow && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -1799,7 +1937,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         Reiniciar flujo
                                       </button>
                                     )}
-                                    {canRemoveTasks && hasDependentTasks && onDeleteTaskTree && !task.isWorkflowStep && (
+                                    {canRemoveTasks && hasDependentTasks && onDeleteTaskTree && !task.isWorkflowStep && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -1812,7 +1950,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         Eliminar matriz y subtareas
                                       </button>
                                     )}
-                                    {canRemoveTasks && (!hasDependentTasks || !onDeleteTaskTree) && (
+                                    {canRemoveTasks && (!hasDependentTasks || !onDeleteTaskTree) && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {

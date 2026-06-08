@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen, BarChart3, Package, Map as MapIcon } from 'lucide-react';
-import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment, Timestamp } from '@/lib/supabase/document-store';
+import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, setDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment, Timestamp } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
@@ -1746,6 +1746,135 @@ export default function ProjectDetailsPage() {
     }
   };
 
+  const handleRepairMissingTaskMatrix = async (matrixTask: any) => {
+    if (!matrixTask?.isRecoveredMatrix) return;
+    if (!canEditTaskDetails && !canEditTaskStructure) {
+      toast.error('No tienes permisos para reparar matrices de tareas.');
+      return;
+    }
+
+    const matrixTaskId = matrixTask.missingParentTaskId || matrixTask.id;
+    if (!matrixTaskId) {
+      toast.error('No se encontró el identificador de la matriz.');
+      return;
+    }
+
+    const childTasks = tasks.filter((candidate) => candidate.parentTaskId === matrixTaskId);
+    if (childTasks.length === 0) {
+      toast.error('No se encontraron subtareas asociadas a esta matriz.');
+      return;
+    }
+
+    const firstChild = childTasks[0];
+    const title = sanitizeTaskTitleForSave(
+      { ...matrixTask, externalWorkflowId: null },
+      matrixTask.originalTitle ||
+        matrixTask.title ||
+        firstChild.matrixTaskTitle ||
+        firstChild.parentTaskTitle ||
+        firstChild.parentTitle ||
+        firstChild.originalTitle ||
+        getTaskTitle(firstChild)
+    );
+    if (!title) {
+      toast.warning('No fue posible inferir el nombre de la matriz.');
+      return;
+    }
+
+    const childStartDates = childTasks
+      .map((task) => getTaskDateValue(task.startDate || task.start))
+      .filter((date): date is Date => Boolean(date));
+    const childEndDates = childTasks
+      .map((task) => getTaskDateValue(task.endDate || task.end))
+      .filter((date): date is Date => Boolean(date));
+    const fallbackDate = new Date();
+    const startDate = childStartDates.length
+      ? new Date(Math.min(...childStartDates.map((date) => date.getTime())))
+      : getTaskDateValue(matrixTask.startDate || matrixTask.start) || fallbackDate;
+    const endDate = childEndDates.length
+      ? new Date(Math.max(...childEndDates.map((date) => date.getTime())))
+      : getTaskDateValue(matrixTask.endDate || matrixTask.end) || startDate;
+    const progress = Math.round(
+      childTasks.reduce((sum, childTask) => sum + Number(childTask.progress || 0), 0) / childTasks.length
+    );
+    const allChildrenCompleted = childTasks.every((childTask) => isCompletedTaskStatus(childTask.status));
+    const hasLateCompletion = childTasks.some((childTask) => childTask.status === 'completed_late');
+    const hasPausedChild = childTasks.some((childTask) => childTask.status === 'stuck' || childTask.status === 'detenido');
+    const hasStartedChild = childTasks.some((childTask) =>
+      ['in_progress', 'en_curso', 'trabajando', 'reproceso', 'completed', 'completed_late', 'listo'].includes(childTask.status)
+    );
+    const status = allChildrenCompleted
+      ? hasLateCompletion ? 'completed_late' : 'completed'
+      : hasPausedChild ? 'stuck'
+        : hasStartedChild ? 'in_progress'
+          : 'todo';
+
+    try {
+      const parentRef = doc(db, 'projects', projectId, 'tasks', matrixTaskId);
+      const existingParent = await getDoc(parentRef);
+      const structuralWorkflowSteps = Array.isArray(firstChild.workflowSteps)
+        ? firstChild.workflowSteps.map(stripWorkflowStepRuntime)
+        : [];
+      const matrixPayload: any = {
+        projectId,
+        title,
+        name: title,
+        originalTitle: title,
+        description: firstChild.description || matrixTask.description || '',
+        startDate,
+        endDate,
+        start: startDate,
+        end: endDate,
+        assignedTo: firstChild.assignedTo || matrixTask.assignedTo || '',
+        indicator: firstChild.indicator || null,
+        indicatorValue: firstChild.indicatorValue || null,
+        status,
+        progress,
+        type: firstChild.type === 'workflow' || structuralWorkflowSteps.length > 0 ? 'workflow' : (firstChild.type || 'state'),
+        requiresDocument: Boolean(firstChild.requiresDocument || matrixTask.requiresDocument),
+        linkedDocumentId: null,
+        isRateCardTask: Boolean(firstChild.isRateCardTask || matrixTask.isRateCardTask),
+        rateCardMode: firstChild.rateCardMode || matrixTask.rateCardMode || null,
+        dynamicRateCard: Boolean(firstChild.dynamicRateCard || matrixTask.dynamicRateCard),
+        dynamicRateCardConfig: firstChild.dynamicRateCardConfig || matrixTask.dynamicRateCardConfig || null,
+        rateCardId: firstChild.rateCardId || matrixTask.rateCardId || null,
+        unitsToAdd: firstChild.unitsToAdd ?? matrixTask.unitsToAdd ?? null,
+        autoAddUnits: firstChild.autoAddUnits !== false,
+        syncExternal: Boolean(firstChild.syncExternal || matrixTask.syncExternal),
+        priority: firstChild.priority || matrixTask.priority || 'medium',
+        groupId: firstChild.groupId || matrixTask.groupId || null,
+        currentValue: 0,
+        parentTaskId: null,
+        isParentTask: true,
+        totalSubtasks: childTasks.length,
+        totalCycles: Math.max(childTasks.length, Number(matrixTask.totalCycles || firstChild.totalCycles || 0)),
+        workflowSteps: structuralWorkflowSteps,
+        currentStepIndex: 0,
+        workflowHistory: [],
+        workflowCycles: Math.max(childTasks.length, Number(matrixTask.totalCycles || firstChild.totalCycles || 1)),
+        currentCycle: 1,
+        externalWorkflowId: null,
+        recoveredMatrix: true,
+        recoveredChildCount: childTasks.length,
+        recoveredAt: serverTimestamp(),
+        recoveredBy: user?.uid || null,
+        displayOrder: Math.min(...childTasks.map((childTask) => Number(childTask.displayOrder || 0)).filter((value) => Number.isFinite(value)), tasks.length) - 1,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (!existingParent.exists()) {
+        matrixPayload.createdAt = serverTimestamp();
+        matrixPayload.createdBy = user?.uid || null;
+      }
+
+      await setDoc(parentRef, matrixPayload, { merge: true });
+      toast.success(`Matriz "${title}" reparada con ${childTasks.length} subtareas.`);
+    } catch (error: any) {
+      console.error('Error repairing missing task matrix:', error);
+      toast.error(error?.message || 'No se pudo reparar la matriz de tareas.');
+    }
+  };
+
   const handleUpdateTaskPriority = async (taskId: string, priority: string, task: any) => {
     if (!task) return;
     if (!canEditTaskDetails) {
@@ -2672,6 +2801,7 @@ export default function ProjectDetailsPage() {
                 onOpenTaskComments={setSelectedTaskForComments}
                 onResetWorkflowTask={canEditTaskDetails ? handleResetWorkflowTask : undefined}
                 onCreateBulkWorkflowIterations={canCreateTasks && canAddSubtasks ? setTaskForBulkIterations : undefined}
+                onRepairMissingTaskMatrix={canEditTaskDetails || canEditTaskStructure ? handleRepairMissingTaskMatrix : undefined}
                 onCreateTask={canCreateTasks ? () => setIsCreateTaskModalOpen(true) : undefined}
               />
             </CardContent>
