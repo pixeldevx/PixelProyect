@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { collection, query, where, onSnapshot, addDoc, serverTimestamp, deleteDoc, doc } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
-import { X, Upload, FileText, Trash2, Loader2, Download } from 'lucide-react';
+import { X, Upload, FileText, Trash2, Loader2, Download, Eye, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { getTaskDisplayTitle } from '@/lib/task-title';
+import { ProjectDocumentViewer } from '@/components/projects/ProjectDocumentViewer';
 
 interface TaskDocumentsViewerProps {
   isOpen: boolean;
@@ -20,6 +21,7 @@ export const TaskDocumentsViewer: React.FC<TaskDocumentsViewerProps> = ({ isOpen
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [file, setFile] = useState<File | null>(null);
+  const [previewDocument, setPreviewDocument] = useState<any | null>(null);
 
   useEffect(() => {
     if (!isOpen || !task) return;
@@ -54,7 +56,10 @@ export const TaskDocumentsViewer: React.FC<TaskDocumentsViewerProps> = ({ isOpen
         url: downloadURL,
         storagePath: storageRef.fullPath,
         uploadedBy: userId,
-        uploadedAt: serverTimestamp()
+        uploadedAt: serverTimestamp(),
+        fileName: file.name,
+        fileSize: file.size,
+        contentType: file.type || null
       });
 
       setFile(null);
@@ -140,10 +145,26 @@ export const TaskDocumentsViewer: React.FC<TaskDocumentsViewerProps> = ({ isOpen
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <a 
+                    <button
+                      type="button"
+                      onClick={() => setPreviewDocument(doc)}
+                      className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                      title="Ver en Pixel"
+                    >
+                      <Eye size={18} />
+                    </button>
+                    <a
                       href={doc.url} 
                       target="_blank" 
                       rel="noopener noreferrer"
+                      className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                      title="Abrir"
+                    >
+                      <ExternalLink size={18} />
+                    </a>
+                    <a
+                      href={doc.url}
+                      download
                       className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
                       title="Descargar"
                     >
@@ -163,6 +184,11 @@ export const TaskDocumentsViewer: React.FC<TaskDocumentsViewerProps> = ({ isOpen
           )}
         </div>
       </div>
+      <ProjectDocumentViewer
+        document={previewDocument}
+        isOpen={!!previewDocument}
+        onClose={() => setPreviewDocument(null)}
+      />
     </div>
   );
 };

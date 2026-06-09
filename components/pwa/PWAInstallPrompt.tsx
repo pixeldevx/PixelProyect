@@ -17,6 +17,11 @@ const INSTALL_DISMISSED_KEY = 'pixel-project-pwa-install-dismissed';
 const PUSH_DISMISSED_KEY = 'pixel-project-pwa-push-dismissed';
 const WEB_PUSH_PUBLIC_KEY = process.env.NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY || '';
 
+const getPromptStorageKey = (baseKey: string, user: any) => {
+  const identity = user?.uid || user?.id || user?.email || 'anonymous';
+  return `${baseKey}:${identity}`;
+};
+
 const isIosDevice = () => {
   if (typeof navigator === 'undefined') return false;
   return /iphone|ipad|ipod/i.test(navigator.userAgent);
@@ -47,24 +52,51 @@ export function PWAInstallPrompt() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const legacyDismissed = window.localStorage.getItem(LEGACY_DISMISSED_KEY) === 'true';
-    setIsInstallDismissed(window.localStorage.getItem(INSTALL_DISMISSED_KEY) === 'true' || legacyDismissed);
-    setIsPushDismissed(window.localStorage.getItem(PUSH_DISMISSED_KEY) === 'true');
+    if (!user) {
+      setIsInstallDismissed(true);
+      setIsPushDismissed(true);
+      return;
+    }
+
+    const installKey = getPromptStorageKey(INSTALL_DISMISSED_KEY, user);
+    const pushKey = getPromptStorageKey(PUSH_DISMISSED_KEY, user);
+    const legacyInstallDismissed =
+      window.localStorage.getItem(LEGACY_DISMISSED_KEY) === 'true' ||
+      window.localStorage.getItem(INSTALL_DISMISSED_KEY) === 'true';
+    const legacyPushDismissed = window.localStorage.getItem(PUSH_DISMISSED_KEY) === 'true';
+
+    if (legacyInstallDismissed) {
+      window.localStorage.setItem(installKey, 'true');
+      window.localStorage.removeItem(LEGACY_DISMISSED_KEY);
+      window.localStorage.removeItem(INSTALL_DISMISSED_KEY);
+    }
+    if (legacyPushDismissed) {
+      window.localStorage.setItem(pushKey, 'true');
+      window.localStorage.removeItem(PUSH_DISMISSED_KEY);
+    }
+
+    setIsInstallDismissed(window.localStorage.getItem(installKey) === 'true' || legacyInstallDismissed);
+    setIsPushDismissed(window.localStorage.getItem(pushKey) === 'true' || legacyPushDismissed);
     setIsStandalone(isStandaloneMode());
     setIsIos(isIosDevice());
     if ('Notification' in window) {
       setNotificationPermission(Notification.permission);
     }
+  }, [user]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
     const onBeforeInstallPrompt = (event: Event) => {
       event.preventDefault();
       setDeferredPrompt(event as BeforeInstallPromptEvent);
-      setIsInstallDismissed(false);
     };
 
     const onAppInstalled = () => {
       setDeferredPrompt(null);
       setIsStandalone(true);
+      if (user) {
+        window.localStorage.setItem(getPromptStorageKey(INSTALL_DISMISSED_KEY, user), 'true');
+      }
       window.localStorage.removeItem(INSTALL_DISMISSED_KEY);
       window.localStorage.removeItem(LEGACY_DISMISSED_KEY);
       toast.success('Pixel Project quedo instalado.');
@@ -77,7 +109,7 @@ export function PWAInstallPrompt() {
       window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
       window.removeEventListener('appinstalled', onAppInstalled);
     };
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
@@ -97,7 +129,7 @@ export function PWAInstallPrompt() {
 
   const handleDismiss = (mode: 'install' | 'push') => {
     const key = mode === 'push' ? PUSH_DISMISSED_KEY : INSTALL_DISMISSED_KEY;
-    window.localStorage.setItem(key, 'true');
+    window.localStorage.setItem(getPromptStorageKey(key, user), 'true');
     if (mode === 'push') {
       setIsPushDismissed(true);
     } else {
@@ -112,7 +144,7 @@ export function PWAInstallPrompt() {
     setDeferredPrompt(null);
 
     if (choice.outcome === 'accepted') {
-      window.localStorage.removeItem(INSTALL_DISMISSED_KEY);
+      window.localStorage.setItem(getPromptStorageKey(INSTALL_DISMISSED_KEY, user), 'true');
       window.localStorage.removeItem(LEGACY_DISMISSED_KEY);
       toast.success('Pixel Project se esta instalando.');
     }
@@ -149,16 +181,27 @@ export function PWAInstallPrompt() {
     }
   };
 
-  if (!user) return null;
-
-  const shouldShowInstall = !isInstallDismissed && !isStandalone && (Boolean(deferredPrompt) || isIos);
+  const shouldShowInstall = Boolean(user) && !isInstallDismissed && !isStandalone && (Boolean(deferredPrompt) || isIos);
   const shouldShowPush =
+    Boolean(user) &&
     !isPushDismissed &&
     isStandalone &&
     canUseNotifications &&
     notificationPermission !== 'denied' &&
     hasPushKey &&
     (notificationPermission !== 'granted' || !hasActiveSubscription);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !user) return;
+    if (shouldShowInstall) {
+      window.localStorage.setItem(getPromptStorageKey(INSTALL_DISMISSED_KEY, user), 'true');
+    }
+    if (shouldShowPush) {
+      window.localStorage.setItem(getPromptStorageKey(PUSH_DISMISSED_KEY, user), 'true');
+    }
+  }, [shouldShowInstall, shouldShowPush, user]);
+
+  if (!user) return null;
 
   if (!shouldShowInstall && !shouldShowPush) return null;
 

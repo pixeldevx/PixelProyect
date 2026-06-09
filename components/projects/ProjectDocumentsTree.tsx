@@ -1,19 +1,20 @@
 import React, { useState, useMemo } from 'react';
-import { ChevronRight, ChevronDown, Folder, FileText, Download, Trash2, File } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, FileText, Download, Trash2, File, Eye, ExternalLink } from 'lucide-react';
 
 interface ProjectDocumentsTreeProps {
   documents: any[];
   tasks: any[];
   onDeleteDocument: (docId: string, storagePath: string, name: string) => void;
+  onViewDocument?: (doc: any) => void;
   searchQuery?: string;
 }
 
-const formatFileSize = (bytes: number) => {
-  if (bytes === 0) return '0 Bytes';
+const formatFileSize = (bytes?: number) => {
+  if (!Number(bytes)) return '';
   const k = 1024;
   const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  const i = Math.floor(Math.log(Number(bytes)) / Math.log(k));
+  return parseFloat((Number(bytes) / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
 const getDocTypeBadge = (type: string) => {
@@ -31,26 +32,46 @@ const getDocTypeBadge = (type: string) => {
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Sin título';
 
-const DocumentItem = ({ doc, onDeleteDocument }: { doc: any, onDeleteDocument: any }) => (
+const DocumentItem = ({ doc, onDeleteDocument, onViewDocument }: { doc: any, onDeleteDocument: any, onViewDocument?: (doc: any) => void }) => (
   <div className="flex items-center justify-between py-2 px-4 hover:bg-slate-50 border-b border-slate-100 last:border-0 group">
-    <div className="flex items-center gap-3">
+    <button
+      type="button"
+      onClick={() => onViewDocument?.(doc)}
+      className="min-w-0 flex flex-1 items-center gap-3 rounded-lg text-left outline-none transition hover:text-indigo-700 focus-visible:ring-2 focus-visible:ring-indigo-500/30"
+    >
       <FileText size={16} className="text-slate-400" />
-      <div>
+      <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-slate-700">{doc.name}</span>
+          <span className="truncate text-sm font-medium text-slate-700">{doc.name}</span>
           {getDocTypeBadge(doc.type)}
         </div>
         <div className="text-xs text-slate-400 mt-0.5">
-          {doc.fileName ? `${doc.fileName} (${formatFileSize(doc.fileSize)})` : ''}
+          {doc.fileName ? `${doc.fileName}${formatFileSize(doc.fileSize) ? ` (${formatFileSize(doc.fileSize)})` : ''}` : ''}
           {doc.uploadedAt ? ` • Subido el ${doc.uploadedAt.toDate().toLocaleDateString()}` : ''}
         </div>
       </div>
-    </div>
+    </button>
     <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-      <a 
+      <button
+        type="button"
+        onClick={() => onViewDocument?.(doc)}
+        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+        title="Ver en Pixel"
+      >
+        <Eye size={16} />
+      </button>
+      <a
         href={doc.url} 
         target="_blank" 
         rel="noopener noreferrer"
+        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+        title="Abrir"
+      >
+        <ExternalLink size={16} />
+      </a>
+      <a
+        href={doc.url}
+        download
         className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
         title="Descargar"
       >
@@ -93,6 +114,7 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
   documents,
   tasks,
   onDeleteDocument,
+  onViewDocument,
   searchQuery = ''
 }) => {
   // Filter documents based on search query
@@ -167,7 +189,7 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
         {docs.length > 0 && (
           <div className="py-1">
             {docs.map(doc => (
-              <DocumentItem key={doc.id} doc={doc} onDeleteDocument={onDeleteDocument} />
+              <DocumentItem key={doc.id} doc={doc} onDeleteDocument={onDeleteDocument} onViewDocument={onViewDocument} />
             ))}
           </div>
         )}
@@ -192,7 +214,7 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
         <FolderNode title="Documentos Generales" defaultOpen={true}>
           <div className="py-1">
             {generalDocs.map(doc => (
-              <DocumentItem key={doc.id} doc={doc} onDeleteDocument={onDeleteDocument} />
+              <DocumentItem key={doc.id} doc={doc} onDeleteDocument={onDeleteDocument} onViewDocument={onViewDocument} />
             ))}
           </div>
         </FolderNode>
@@ -207,7 +229,7 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
               <FolderNode title="Tareas Eliminadas (Huérfanos)" defaultOpen={false}>
                 <div className="py-1">
                   {orphanedDocs.map(doc => (
-                    <DocumentItem key={doc.id} doc={doc} onDeleteDocument={onDeleteDocument} />
+                    <DocumentItem key={doc.id} doc={doc} onDeleteDocument={onDeleteDocument} onViewDocument={onViewDocument} />
                   ))}
                 </div>
               </FolderNode>

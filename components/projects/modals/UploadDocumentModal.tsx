@@ -70,7 +70,8 @@ export function UploadDocumentModal({ isOpen, onClose, projectId, user }: Upload
         uploadedAt: serverTimestamp(),
         uploadedBy: user.uid,
         fileName: file.name,
-        fileSize: file.size
+        fileSize: file.size,
+        contentType: file.type || null
       });
       
       setUploadProgress(100);

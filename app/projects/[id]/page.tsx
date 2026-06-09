@@ -18,6 +18,7 @@ import { ProjectBudget } from '@/components/projects/ProjectBudget';
 import ProjectBilling from '@/components/projects/ProjectBilling';
 import { ProjectGantt } from '@/components/projects/ProjectGantt';
 import { ProjectDocumentsTree } from '@/components/projects/ProjectDocumentsTree';
+import { ProjectDocumentViewer } from '@/components/projects/ProjectDocumentViewer';
 import { ProjectDriveRepositories } from '@/components/projects/ProjectDriveRepositories';
 import { ProjectInventory } from '@/components/projects/ProjectInventory';
 import { ProjectSpatialMap } from '@/components/projects/ProjectSpatialMap';
@@ -205,6 +206,7 @@ export default function ProjectDetailsPage() {
   const [loading, setLoading] = useState(true);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [documentSearchQuery, setDocumentSearchQuery] = useState('');
+  const [previewDocument, setPreviewDocument] = useState<any | null>(null);
 
   const [documentToDelete, setDocumentToDelete] = useState<{id: string, storagePath: string, name: string} | null>(null);
   const [taskToDelete, setTaskToDelete] = useState<TaskDeleteRequest | null>(null);
@@ -2723,6 +2725,7 @@ export default function ProjectDetailsPage() {
                 documents={documents}
                 tasks={tasks}
                 onDeleteDocument={confirmDeleteDocument}
+                onViewDocument={setPreviewDocument}
                 searchQuery={documentSearchQuery}
               />
             </CardContent>
@@ -3515,6 +3518,11 @@ export default function ProjectDetailsPage() {
         onClose={() => setIsUploadModalOpen(false)}
         projectId={projectId}
         user={user}
+      />
+      <ProjectDocumentViewer
+        document={previewDocument}
+        isOpen={!!previewDocument}
+        onClose={() => setPreviewDocument(null)}
       />
 
     </DashboardLayout>
