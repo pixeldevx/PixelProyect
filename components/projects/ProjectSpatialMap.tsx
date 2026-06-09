@@ -57,7 +57,7 @@ type GeoJsonBounds = {
   north: number;
 };
 
-type LayerThemeMode = "task_status" | "attribute";
+type LayerThemeMode = "task_status" | "attribute" | "unique";
 
 type SpatialStyleKey = "unlinked" | "pending" | "not_started" | "in_progress" | "completed" | "completed_late" | "stuck";
 type SpatialViewMode = "current" | "simulation" | "audit";
@@ -181,6 +181,15 @@ type ScreenSelectionRect = {
   endY: number;
 };
 
+type ScreenRect = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+};
+
 type SpatialPanelTab = "summary" | "simulation" | "analysis" | "style" | "search";
 
 type SpatialLayerRow = {
@@ -208,9 +217,13 @@ const SHP_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/shpjs@6.1.0/dist/shp.min.js
 const SPATIAL_LAYERS_TABLE = "project_spatial_layers";
 const TILE_SIZE = 256;
 const MIN_ZOOM = 3;
-const MAX_ZOOM = 18;
+const MAX_ZOOM = 22;
+const MAX_TILE_ZOOM = 19;
 const MAX_RENDER_FEATURES = 20000;
 const VIEWPORT_BOUNDS_PADDING_RATIO = 0.18;
+const LABEL_HEIGHT = 20;
+const LABEL_PADDING_X = 7;
+const LABEL_COLLISION_PADDING = 4;
 const DEFAULT_STATUS_STYLES: Record<SpatialStyleKey, Required<LayerStateStyleConfig>> = {
   unlinked: { fillColor: "#64748b", strokeColor: "#475569" },
   pending: { fillColor: "#94a3b8", strokeColor: "#64748b" },
@@ -354,6 +367,8 @@ const getGeneratedAttributeStyle = (category: string): Required<LayerStateStyleC
 const normalizeLayerStyle = (style?: LayerStyleConfig | null): NormalizedLayerStyleConfig => {
   const fillColor = style?.fillColor || DEFAULT_LAYER_STYLE.fillColor;
   const strokeColor = style?.strokeColor || style?.fillColor || DEFAULT_LAYER_STYLE.strokeColor;
+  const themeMode: LayerThemeMode =
+    style?.themeMode === "attribute" ? "attribute" : style?.themeMode === "unique" ? "unique" : "task_status";
 
   const statusStyles = SPATIAL_STATUS_STYLE_OPTIONS.reduce<Record<SpatialStyleKey, Required<LayerStateStyleConfig>>>(
     (styles, option) => {
@@ -387,7 +402,7 @@ const normalizeLayerStyle = (style?: LayerStyleConfig | null): NormalizedLayerSt
     strokeWidth: clampNumber(style?.strokeWidth, 0.5, 6, DEFAULT_LAYER_STYLE.strokeWidth),
     labelAttribute: style?.labelAttribute || "",
     labelsVisible: style?.labelsVisible === true,
-    themeMode: style?.themeMode === "attribute" ? "attribute" : "task_status",
+    themeMode,
     themeAttribute: style?.themeAttribute || "",
     attributeStyles,
     statusStyles,
@@ -410,6 +425,10 @@ const getFeatureVisualStyle = (
   if (join.style.themeMode === "attribute" && join.style.themeAttribute) {
     const category = getAttributeCategory(join.feature.properties?.[join.style.themeAttribute]);
     return join.style.attributeStyles[category] || getGeneratedAttributeStyle(category);
+  }
+
+  if (join.style.themeMode === "unique") {
+    return { fillColor: join.style.fillColor, strokeColor: join.style.strokeColor };
   }
 
   return join.style.statusStyles[getSpatialStyleKeyForTask(join.tasks[0])];
@@ -636,6 +655,37 @@ const normalizeScreenRect = (rect: ScreenSelectionRect) => ({
   height: Math.abs(rect.endY - rect.startY),
 });
 
+const makeScreenRect = (left: number, top: number, width: number, height: number): ScreenRect => ({
+  left,
+  top,
+  width,
+  height,
+  right: left + width,
+  bottom: top + height,
+});
+
+const rectsIntersect = (left: ScreenRect, right: ScreenRect, padding = 0) =>
+  left.left < right.right + padding &&
+  left.right > right.left - padding &&
+  left.top < right.bottom + padding &&
+  left.bottom > right.top - padding;
+
+const clampRectInside = (rect: ScreenRect, container: ScreenRect, padding = 2) => {
+  const minLeft = container.left + padding;
+  const maxLeft = container.right - rect.width - padding;
+  const minTop = container.top + padding;
+  const maxTop = container.bottom - rect.height - padding;
+
+  if (maxLeft < minLeft || maxTop < minTop) return null;
+
+  return makeScreenRect(
+    clampNumber(rect.left, minLeft, maxLeft, rect.left),
+    clampNumber(rect.top, minTop, maxTop, rect.top),
+    rect.width,
+    rect.height
+  );
+};
+
 const getScheduleState = (task: any) => {
   if (isCompletedTaskStatus(task?.status)) return { label: "Cerrada", className: "bg-emerald-50 text-emerald-700" };
   const dueDate = getTaskDateValue(task?.endDate || task?.end);
@@ -815,6 +865,52 @@ const getPointCoordinates = (geometry: GeoJsonGeometry | null) => {
   return [];
 };
 
+const getRingCentroid = (ring: number[][]) => {
+  if (!Array.isArray(ring) || ring.length === 0) return null;
+
+  let twiceArea = 0;
+  let centroidLon = 0;
+  let centroidLat = 0;
+  const fallback = ring.reduce(
+    (acc: { lon: number; lat: number; count: number }, coord: number[]) => {
+      if (!Array.isArray(coord) || typeof coord[0] !== "number" || typeof coord[1] !== "number") return acc;
+      return { lon: acc.lon + coord[0], lat: acc.lat + coord[1], count: acc.count + 1 };
+    },
+    { lon: 0, lat: 0, count: 0 }
+  );
+
+  for (let index = 0; index < ring.length - 1; index += 1) {
+    const current = ring[index];
+    const next = ring[index + 1];
+    if (
+      !Array.isArray(current) ||
+      !Array.isArray(next) ||
+      typeof current[0] !== "number" ||
+      typeof current[1] !== "number" ||
+      typeof next[0] !== "number" ||
+      typeof next[1] !== "number"
+    ) {
+      continue;
+    }
+
+    const cross = current[0] * next[1] - next[0] * current[1];
+    twiceArea += cross;
+    centroidLon += (current[0] + next[0]) * cross;
+    centroidLat += (current[1] + next[1]) * cross;
+  }
+
+  if (Math.abs(twiceArea) < 1e-12) {
+    return fallback.count > 0
+      ? { coordinate: [fallback.lon / fallback.count, fallback.lat / fallback.count], area: 0 }
+      : null;
+  }
+
+  return {
+    coordinate: [centroidLon / (3 * twiceArea), centroidLat / (3 * twiceArea)],
+    area: Math.abs(twiceArea / 2),
+  };
+};
+
 const getLabelCoordinate = (geometry: GeoJsonGeometry | null): number[] | null => {
   if (!geometry?.coordinates) return null;
   if (geometry.type === "Point") return geometry.coordinates;
@@ -826,19 +922,18 @@ const getLabelCoordinate = (geometry: GeoJsonGeometry | null): number[] | null =
   }
   if (geometry.type === "Polygon") {
     const ring = geometry.coordinates?.[0] || [];
-    if (!ring.length) return null;
-    const summary = ring.reduce(
-      (acc: { lon: number; lat: number; count: number }, coord: number[]) => {
-        if (!Array.isArray(coord) || typeof coord[0] !== "number" || typeof coord[1] !== "number") return acc;
-        return { lon: acc.lon + coord[0], lat: acc.lat + coord[1], count: acc.count + 1 };
-      },
-      { lon: 0, lat: 0, count: 0 }
-    );
-    return summary.count > 0 ? [summary.lon / summary.count, summary.lat / summary.count] : null;
+    return getRingCentroid(ring)?.coordinate || null;
   }
   if (geometry.type === "MultiPolygon") {
-    const polygon = geometry.coordinates?.[0];
-    return getLabelCoordinate(polygon ? { type: "Polygon", coordinates: polygon } : null);
+    const largestPolygon = (geometry.coordinates || [])
+      .map((polygon: number[][][]) => ({
+        polygon,
+        centroid: getRingCentroid(polygon?.[0] || []),
+      }))
+      .sort((left: { centroid: ReturnType<typeof getRingCentroid> }, right: { centroid: ReturnType<typeof getRingCentroid> }) =>
+        (right.centroid?.area || 0) - (left.centroid?.area || 0)
+      )[0];
+    return largestPolygon?.centroid?.coordinate || null;
   }
   return null;
 };
@@ -851,28 +946,94 @@ const getCanvasSimplificationTolerance = (zoom: number) => {
   return 0.35;
 };
 
-const drawCanvasLabel = (
+const getMinimumLabelZoom = (featureCount: number) => {
+  if (featureCount > 8000) return 20;
+  if (featureCount > 3000) return 18;
+  if (featureCount > 1200) return 17;
+  if (featureCount > 450) return 16;
+  if (featureCount > 160) return 15;
+  return 14;
+};
+
+const getProjectedBoundsRect = (bounds: GeoJsonBounds, zoom: number, topLeft: ProjectedPoint) => {
+  const northWest = projectLonLat(bounds.west, bounds.north, zoom);
+  const southEast = projectLonLat(bounds.east, bounds.south, zoom);
+  const left = Math.min(northWest.x, southEast.x) - topLeft.x;
+  const top = Math.min(northWest.y, southEast.y) - topLeft.y;
+  const width = Math.abs(southEast.x - northWest.x);
+  const height = Math.abs(southEast.y - northWest.y);
+  return makeScreenRect(left, top, width, height);
+};
+
+const isPolygonalGeometry = (geometry: GeoJsonGeometry | null) =>
+  geometry?.type === "Polygon" || geometry?.type === "MultiPolygon";
+
+const fitCanvasLabelText = (context: CanvasRenderingContext2D, label: string, maxWidth: number) => {
+  const cleanLabel = label.trim().replace(/\s+/g, " ");
+  const maxTextWidth = Math.floor(maxWidth - LABEL_PADDING_X * 2);
+  if (!cleanLabel || maxTextWidth < 18) return null;
+
+  const maxSourceLength = 60;
+  const source = cleanLabel.length > maxSourceLength ? cleanLabel.slice(0, maxSourceLength) : cleanLabel;
+  if (context.measureText(source).width <= maxTextWidth) return source;
+
+  let low = 1;
+  let high = source.length;
+  let best = "";
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = `${source.slice(0, mid).trim()}...`;
+    if (context.measureText(candidate).width <= maxTextWidth) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return best || null;
+};
+
+const buildCanvasLabel = (
   context: CanvasRenderingContext2D,
   label: string,
   point: ProjectedPoint,
+  options: {
+    maxWidth: number;
+    placement: "above" | "inside";
+    containerRect?: ScreenRect;
+    viewportRect: ScreenRect;
+  }
+) => {
+  context.font = "700 11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const text = fitCanvasLabelText(context, label, Math.max(0, options.maxWidth));
+  if (!text) return null;
+
+  const width = Math.ceil(context.measureText(text).width + LABEL_PADDING_X * 2);
+  const initialRect =
+    options.placement === "inside"
+      ? makeScreenRect(Math.round(point.x - width / 2), Math.round(point.y - LABEL_HEIGHT / 2), width, LABEL_HEIGHT)
+      : makeScreenRect(Math.round(point.x - width / 2), Math.round(point.y - 28), width, LABEL_HEIGHT);
+  const rect = options.containerRect ? clampRectInside(initialRect, options.containerRect, 3) : initialRect;
+  if (!rect || !rectsIntersect(rect, options.viewportRect)) return null;
+
+  return { text, rect };
+};
+
+const drawCanvasLabel = (
+  context: CanvasRenderingContext2D,
+  text: string,
+  rect: ScreenRect,
   color: string
 ) => {
-  const text = label.length > 38 ? `${label.slice(0, 35)}...` : label;
-  const paddingX = 7;
-  const labelHeight = 20;
-
   context.font = "700 11px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
-  const width = Math.ceil(context.measureText(text).width + paddingX * 2);
-  const left = Math.round(point.x - width / 2);
-  const top = Math.round(point.y - 28);
-
   context.fillStyle = "rgba(255,255,255,0.9)";
   context.strokeStyle = colorToRgba(color, 0.55);
   context.lineWidth = 1;
-  context.fillRect(left, top, width, labelHeight);
-  context.strokeRect(left, top, width, labelHeight);
+  context.fillRect(rect.left, rect.top, rect.width, rect.height);
+  context.strokeRect(rect.left, rect.top, rect.width, rect.height);
   context.fillStyle = color;
-  context.fillText(text, left + paddingX, top + 14);
+  context.fillText(text, rect.left + LABEL_PADDING_X, rect.top + 14);
 };
 
 const appendLineToCanvasPath = (
@@ -1719,6 +1880,17 @@ export function ProjectSpatialMap({
     if (!selectedLayer) return [];
     const style = normalizeLayerStyle(selectedLayer.styleConfig);
 
+    if (style.themeMode === "unique") {
+      return [
+        {
+          key: "unique",
+          label: "Simbología única",
+          count: featureJoins.length,
+          color: style.fillColor,
+        },
+      ];
+    }
+
     if (style.themeMode === "attribute" && style.themeAttribute) {
       const counts = new Map<string, number>();
       (boundedFeaturesByLayerId.get(selectedLayer.id) || []).forEach(({ feature }) => {
@@ -1809,11 +1981,17 @@ export function ProjectSpatialMap({
     };
   }, [analysisAttribute, analysisFeatures]);
 
-  const centerPx = projectLonLat(mapView.center.lon, mapView.center.lat, mapView.zoom);
-  const topLeft = {
-    x: centerPx.x - mapSize.width / 2,
-    y: centerPx.y - mapSize.height / 2,
-  };
+  const centerPx = useMemo(
+    () => projectLonLat(mapView.center.lon, mapView.center.lat, mapView.zoom),
+    [mapView.center.lat, mapView.center.lon, mapView.zoom]
+  );
+  const topLeft = useMemo(
+    () => ({
+      x: centerPx.x - mapSize.width / 2,
+      y: centerPx.y - mapSize.height / 2,
+    }),
+    [centerPx.x, centerPx.y, mapSize.height, mapSize.width]
+  );
 
   const projectCoordinate = useCallback((coord: number[]) => {
     const projected = projectLonLat(Number(coord[0]), Number(coord[1]), mapView.zoom);
@@ -1916,7 +2094,10 @@ export function ProjectSpatialMap({
         }
       });
 
-      if (mapView.zoom >= 14 || renderedFeatureJoins.length <= 350) {
+      if (mapView.zoom >= getMinimumLabelZoom(renderedFeatureJoins.length)) {
+        const occupiedLabelRects: ScreenRect[] = [];
+        const viewportRect = makeScreenRect(0, 0, width, height);
+
         renderedFeatureJoins.forEach((join) => {
           if (!join.style.labelsVisible || !join.label) return;
           const labelCoordinate = getLabelCoordinate(join.feature.geometry);
@@ -1924,8 +2105,22 @@ export function ProjectSpatialMap({
           const labelPoint = projectCoordinate(labelCoordinate);
           if (!Number.isFinite(labelPoint.x) || !Number.isFinite(labelPoint.y)) return;
 
+          const isPolygonal = isPolygonalGeometry(join.feature.geometry);
+          const featureRect = getProjectedBoundsRect(join.bounds, mapView.zoom, topLeft);
+          if (isPolygonal && (featureRect.width < 36 || featureRect.height < LABEL_HEIGHT + 6)) return;
+
+          const label = buildCanvasLabel(context, join.label, labelPoint, {
+            maxWidth: isPolygonal ? Math.min(180, featureRect.width - 8) : 180,
+            placement: isPolygonal ? "inside" : "above",
+            containerRect: isPolygonal ? featureRect : undefined,
+            viewportRect,
+          });
+          if (!label) return;
+          if (occupiedLabelRects.some((rect) => rectsIntersect(label.rect, rect, LABEL_COLLISION_PADDING))) return;
+
           const stateStyle = getFeatureVisualStyle(join, temporalContext, auditContext);
-          drawCanvasLabel(context, join.label, labelPoint, stateStyle.strokeColor);
+          drawCanvasLabel(context, label.text, label.rect, stateStyle.strokeColor);
+          occupiedLabelRects.push(label.rect);
         });
       }
 
@@ -1943,24 +2138,32 @@ export function ProjectSpatialMap({
     selectedFeatureId,
     simulationDate,
     spatialViewMode,
+    topLeft,
   ]);
 
   const tiles = useMemo(() => {
-    const maxTile = Math.pow(2, mapView.zoom);
-    const startX = Math.floor(topLeft.x / TILE_SIZE);
-    const endX = Math.floor((topLeft.x + mapSize.width) / TILE_SIZE);
-    const startY = Math.max(0, Math.floor(topLeft.y / TILE_SIZE));
-    const endY = Math.min(maxTile - 1, Math.floor((topLeft.y + mapSize.height) / TILE_SIZE));
-    const nextTiles: Array<{ key: string; url: string; left: number; top: number }> = [];
+    const tileZoom = Math.min(mapView.zoom, MAX_TILE_ZOOM);
+    const tileScale = Math.pow(2, mapView.zoom - tileZoom);
+    const maxTile = Math.pow(2, tileZoom);
+    const tileTopLeft = {
+      x: topLeft.x / tileScale,
+      y: topLeft.y / tileScale,
+    };
+    const startX = Math.floor(tileTopLeft.x / TILE_SIZE);
+    const endX = Math.floor((tileTopLeft.x + mapSize.width / tileScale) / TILE_SIZE);
+    const startY = Math.max(0, Math.floor(tileTopLeft.y / TILE_SIZE));
+    const endY = Math.min(maxTile - 1, Math.floor((tileTopLeft.y + mapSize.height / tileScale) / TILE_SIZE));
+    const nextTiles: Array<{ key: string; url: string; left: number; top: number; size: number }> = [];
 
     for (let tileX = startX; tileX <= endX; tileX += 1) {
       for (let tileY = startY; tileY <= endY; tileY += 1) {
         const wrappedX = ((tileX % maxTile) + maxTile) % maxTile;
         nextTiles.push({
-          key: `${mapView.zoom}-${tileX}-${tileY}`,
-          url: `${OSM_TILE_URL}/${mapView.zoom}/${wrappedX}/${tileY}.png`,
-          left: tileX * TILE_SIZE - topLeft.x,
-          top: tileY * TILE_SIZE - topLeft.y,
+          key: `${mapView.zoom}-${tileZoom}-${tileX}-${tileY}`,
+          url: `${OSM_TILE_URL}/${tileZoom}/${wrappedX}/${tileY}.png`,
+          left: tileX * TILE_SIZE * tileScale - topLeft.x,
+          top: tileY * TILE_SIZE * tileScale - topLeft.y,
+          size: TILE_SIZE * tileScale,
         });
       }
     }
@@ -2230,9 +2433,69 @@ export function ProjectSpatialMap({
     }
   };
 
-  const setZoom = (nextZoom: number) => {
-    setMapView((current) => ({ ...current, zoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, nextZoom)) }));
-  };
+  const setZoom = useCallback(
+    (nextZoom: number | ((currentZoom: number) => number), anchorPoint?: ProjectedPoint) => {
+      setMapView((current) => {
+        const requestedZoom = typeof nextZoom === "function" ? nextZoom(current.zoom) : nextZoom;
+        const zoom = Math.round(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, requestedZoom)));
+        if (zoom === current.zoom) return current;
+        if (!anchorPoint || mapSize.width <= 0 || mapSize.height <= 0) return { ...current, zoom };
+
+        const currentCenterPx = projectLonLat(current.center.lon, current.center.lat, current.zoom);
+        const currentTopLeft = {
+          x: currentCenterPx.x - mapSize.width / 2,
+          y: currentCenterPx.y - mapSize.height / 2,
+        };
+        const anchorWorldAtCurrentZoom = {
+          x: currentTopLeft.x + anchorPoint.x,
+          y: currentTopLeft.y + anchorPoint.y,
+        };
+        const zoomScale = Math.pow(2, zoom - current.zoom);
+        const anchorWorldAtNextZoom = {
+          x: anchorWorldAtCurrentZoom.x * zoomScale,
+          y: anchorWorldAtCurrentZoom.y * zoomScale,
+        };
+        const nextTopLeft = {
+          x: anchorWorldAtNextZoom.x - anchorPoint.x,
+          y: anchorWorldAtNextZoom.y - anchorPoint.y,
+        };
+        const nextCenter = unprojectPoint(
+          {
+            x: nextTopLeft.x + mapSize.width / 2,
+            y: nextTopLeft.y + mapSize.height / 2,
+          },
+          zoom
+        );
+
+        return { center: nextCenter, zoom };
+      });
+    },
+    [mapSize.height, mapSize.width]
+  );
+
+  useEffect(() => {
+    const mapElement = mapRef.current;
+    if (!mapElement) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      const rect = mapElement.getBoundingClientRect();
+      const anchorPoint = {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      };
+      const zoomDelta = event.deltaY > 0 ? -1 : 1;
+      setZoom((currentZoom) => currentZoom + zoomDelta, anchorPoint);
+    };
+
+    mapElement.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      mapElement.removeEventListener("wheel", handleWheel);
+    };
+  }, [setZoom]);
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (isDrawingAnalysis) {
@@ -2389,6 +2652,14 @@ export function ProjectSpatialMap({
           strokeColor: color,
         },
       },
+    }));
+  };
+
+  const updateLayerUniqueColor = (color: string) => {
+    setLayerEditStyle((current) => ({
+      ...current,
+      fillColor: color,
+      strokeColor: color,
     }));
   };
 
@@ -2601,15 +2872,13 @@ export function ProjectSpatialMap({
           <div className="relative min-h-[560px] bg-slate-100" style={{ height: "min(72vh, 760px)" }}>
             <div
               ref={mapRef}
-              className={`absolute inset-0 overflow-hidden ${isDrawingAnalysis ? "cursor-crosshair" : isDragging ? "cursor-grabbing" : "cursor-grab"}`}
+              className={`absolute inset-0 touch-none overflow-hidden overscroll-contain ${
+                isDrawingAnalysis ? "cursor-crosshair" : isDragging ? "cursor-grabbing" : "cursor-grab"
+              }`}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onPointerCancel={handlePointerUp}
-              onWheel={(event) => {
-                event.preventDefault();
-                setZoom(mapView.zoom + (event.deltaY > 0 ? -1 : 1));
-              }}
             >
               {tiles.map((tile) => (
                 <img
@@ -2617,8 +2886,8 @@ export function ProjectSpatialMap({
                   src={tile.url}
                   alt=""
                   draggable={false}
-                  className="pointer-events-none absolute h-64 w-64 select-none"
-                  style={{ left: tile.left, top: tile.top }}
+                  className="pointer-events-none absolute select-none"
+                  style={{ left: tile.left, top: tile.top, width: tile.size, height: tile.size }}
                 />
               ))}
 
@@ -3301,6 +3570,7 @@ export function ProjectSpatialMap({
                           >
                             <option value="task_status">Estado tarea</option>
                             <option value="attribute">Atributo capa</option>
+                            <option value="unique">Simbología única</option>
                           </select>
                         </div>
                         <div>
@@ -3350,6 +3620,24 @@ export function ProjectSpatialMap({
                               <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-600">{item.count}</span>
                             </div>
                           ))
+                        ) : layerEditStyle.themeMode === "unique" ? (
+                          <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="text-xs font-black uppercase tracking-[0.14em] text-indigo-700">Color único</p>
+                                <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                                  Toda la capa se dibuja con este mismo color.
+                                </p>
+                              </div>
+                              <input
+                                type="color"
+                                value={layerEditStyle.fillColor}
+                                onChange={(event) => updateLayerUniqueColor(event.target.value)}
+                                className="h-9 w-12 shrink-0 cursor-pointer rounded-lg border border-indigo-100 bg-white p-1"
+                                aria-label="Color único de la capa"
+                              />
+                            </div>
+                          </div>
                         ) : (
                           SPATIAL_STATUS_STYLE_OPTIONS.map((option) => {
                             const stateStyle = layerEditStyle.statusStyles[option.key];
@@ -3472,6 +3760,8 @@ export function ProjectSpatialMap({
                       ? "Estados temporales de la simulación"
                       : normalizeLayerStyle(selectedLayer.styleConfig).themeMode === "attribute"
                       ? `Categorías por ${normalizeLayerStyle(selectedLayer.styleConfig).themeAttribute || "atributo"}`
+                      : normalizeLayerStyle(selectedLayer.styleConfig).themeMode === "unique"
+                      ? "Simbología única de la capa"
                       : "Estados de tareas vinculadas"}
                   </p>
                 </div>
@@ -3705,6 +3995,7 @@ export function ProjectSpatialMap({
                 >
                   <option value="task_status">Por estado de tarea</option>
                   <option value="attribute">Por atributo de capa</option>
+                  <option value="unique">Simbología única</option>
                 </select>
 
                 {layerEditStyle.themeMode === "attribute" && (
@@ -3734,7 +4025,11 @@ export function ProjectSpatialMap({
               <div className="mt-4">
                 <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
                   <Palette size={14} />
-                  {layerEditStyle.themeMode === "attribute" ? "Visualización por atributo" : "Visualización por estado"}
+                  {layerEditStyle.themeMode === "attribute"
+                    ? "Visualización por atributo"
+                    : layerEditStyle.themeMode === "unique"
+                    ? "Simbología única"
+                    : "Visualización por estado"}
                 </div>
                 <div className="mt-3 space-y-2">
                   {layerEditStyle.themeMode === "attribute" ? (
@@ -3778,6 +4073,24 @@ export function ProjectSpatialMap({
                         </div>
                       ))
                     )
+                  ) : layerEditStyle.themeMode === "unique" ? (
+                    <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-black text-slate-900">Color único de capa</p>
+                          <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                            Se aplica a todas las entidades visibles.
+                          </p>
+                        </div>
+                        <input
+                          type="color"
+                          value={layerEditStyle.fillColor}
+                          onChange={(event) => updateLayerUniqueColor(event.target.value)}
+                          className="h-8 w-10 shrink-0 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
+                          aria-label="Color único de la capa"
+                        />
+                      </div>
+                    </div>
                   ) : (
                     SPATIAL_STATUS_STYLE_OPTIONS.map((option) => {
                       const stateStyle = layerEditStyle.statusStyles[option.key];
@@ -4152,7 +4465,10 @@ export function ProjectSpatialMap({
                               <div className="flex items-center gap-2">
                                 <span
                                   className="h-3 w-3 shrink-0 rounded-full"
-                                  style={{ backgroundColor: style.statusStyles.unlinked.fillColor }}
+                                  style={{
+                                    backgroundColor:
+                                      style.themeMode === "unique" ? style.fillColor : style.statusStyles.unlinked.fillColor,
+                                  }}
                                 />
                                 <p className="truncate text-sm font-black text-slate-900">{layer.name || layer.fileName || "Capa sin nombre"}</p>
                               </div>
@@ -4257,6 +4573,7 @@ export function ProjectSpatialMap({
                         >
                           <option value="task_status">Por estado de tarea</option>
                           <option value="attribute">Por atributo de capa</option>
+                          <option value="unique">Simbología única</option>
                         </select>
 
                         {layerEditStyle.themeMode === "attribute" && (
@@ -4287,7 +4604,11 @@ export function ProjectSpatialMap({
                     <div className="rounded-xl border border-slate-200 bg-white p-3">
                       <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
                         <Palette size={14} />
-                        {layerEditStyle.themeMode === "attribute" ? "Colores por atributo" : "Colores por estado"}
+                        {layerEditStyle.themeMode === "attribute"
+                          ? "Colores por atributo"
+                          : layerEditStyle.themeMode === "unique"
+                          ? "Simbología única"
+                          : "Colores por estado"}
                       </div>
                       <div className="mt-3 grid max-h-72 gap-2 overflow-y-auto pr-1 lg:grid-cols-2">
                         {layerEditStyle.themeMode === "attribute" ? (
@@ -4331,6 +4652,27 @@ export function ProjectSpatialMap({
                               </div>
                             ))
                           )
+                        ) : layerEditStyle.themeMode === "unique" ? (
+                          <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-4 lg:col-span-2">
+                            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="min-w-0">
+                                <p className="text-sm font-black text-slate-900">Una sola simbología para toda la capa</p>
+                                <p className="mt-1 text-sm font-semibold leading-6 text-slate-500">
+                                  Usa este color cuando quieras revisar la capa completa sin clasificar por tarea o atributo.
+                                </p>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-3 rounded-xl border border-indigo-100 bg-white px-3 py-2">
+                                <span className="h-7 w-7 rounded-full border border-white shadow-sm" style={{ backgroundColor: layerEditStyle.fillColor }} />
+                                <input
+                                  type="color"
+                                  value={layerEditStyle.fillColor}
+                                  onChange={(event) => updateLayerUniqueColor(event.target.value)}
+                                  className="h-8 w-12 cursor-pointer rounded-lg border border-slate-200 bg-white p-1"
+                                  aria-label="Color único de la capa"
+                                />
+                              </div>
+                            </div>
+                          </div>
                         ) : (
                           SPATIAL_STATUS_STYLE_OPTIONS.map((option) => {
                             const stateStyle = layerEditStyle.statusStyles[option.key];
