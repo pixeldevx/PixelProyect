@@ -15,14 +15,19 @@ import {
   MousePointer2,
   Palette,
   Pause,
+  PenLine,
   Play,
+  Plus,
   RefreshCw,
+  RotateCw,
   Save,
   Search,
   Settings2,
   SkipBack,
   SkipForward,
   Trash2,
+  Type,
+  Undo2,
   Upload,
   X,
   ZoomIn,
@@ -109,6 +114,41 @@ type SpatialLayer = {
   updatedAt?: any;
 };
 
+type SpatialAnnotationType = "polygon" | "label";
+type SpatialAnnotationTool = SpatialAnnotationType | null;
+
+type SpatialAnnotationStyle = {
+  fillColor?: string;
+  strokeColor?: string;
+  textColor?: string;
+  fillOpacity?: number;
+  strokeOpacity?: number;
+  strokeWidth?: number;
+  fontSize?: number;
+  showHalo?: boolean;
+};
+
+type NormalizedAnnotationStyle = Required<SpatialAnnotationStyle>;
+
+type SpatialAnnotationGeometry =
+  | { type: "Polygon"; coordinates: number[][][] }
+  | { type: "Point"; coordinates: number[] };
+
+type SpatialAnnotation = {
+  id: string;
+  projectId?: string;
+  annotationType: SpatialAnnotationType;
+  title: string;
+  body?: string;
+  geometry: SpatialAnnotationGeometry;
+  styleConfig?: SpatialAnnotationStyle;
+  visible?: boolean;
+  rotation?: number;
+  createdBy?: string | null;
+  createdAt?: any;
+  updatedAt?: any;
+};
+
 type TaskAttributeOption = {
   value: string;
   label: string;
@@ -174,6 +214,13 @@ type CanvasHitRegion = {
   points: Array<{ x: number; y: number; radius: number }>;
 };
 
+type AnnotationHitRegion = {
+  annotationId: string;
+  path?: Path2D;
+  rect?: ScreenRect;
+  strokeWidth: number;
+};
+
 type ScreenSelectionRect = {
   startX: number;
   startY: number;
@@ -210,11 +257,27 @@ type SpatialLayerRow = {
   updated_at?: string | null;
 };
 
+type SpatialAnnotationRow = {
+  id: string;
+  project_id: string;
+  annotation_type: SpatialAnnotationType;
+  title?: string | null;
+  body?: string | null;
+  geometry: SpatialAnnotationGeometry;
+  style_config?: SpatialAnnotationStyle | null;
+  visible?: boolean | null;
+  rotation?: number | null;
+  created_by?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 const makeFeatureId = (layerId: string, sourceIndex: number) => `${layerId}:${sourceIndex}`;
 
 const OSM_TILE_URL = "https://tile.openstreetmap.org";
 const SHP_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/shpjs@6.1.0/dist/shp.min.js";
 const SPATIAL_LAYERS_TABLE = "project_spatial_layers";
+const SPATIAL_ANNOTATIONS_TABLE = "project_spatial_annotations";
 const TILE_SIZE = 256;
 const MIN_ZOOM = 3;
 const MAX_ZOOM = 22;
@@ -259,6 +322,16 @@ const DEFAULT_LAYER_STYLE: NormalizedLayerStyleConfig = {
   themeAttribute: "",
   attributeStyles: {},
   statusStyles: DEFAULT_STATUS_STYLES,
+};
+const DEFAULT_ANNOTATION_STYLE: NormalizedAnnotationStyle = {
+  fillColor: "#8b5cf6",
+  strokeColor: "#4f46e5",
+  textColor: "#111827",
+  fillOpacity: 0.2,
+  strokeOpacity: 0.95,
+  strokeWidth: 2,
+  fontSize: 14,
+  showHalo: true,
 };
 const TEMPORAL_STATUS_STYLES: Record<TemporalStateKey, Required<LayerStateStyleConfig>> = {
   unlinked: { fillColor: "#94a3b8", strokeColor: "#64748b" },
@@ -409,6 +482,17 @@ const normalizeLayerStyle = (style?: LayerStyleConfig | null): NormalizedLayerSt
   };
 };
 
+const normalizeAnnotationStyle = (style?: SpatialAnnotationStyle | null): NormalizedAnnotationStyle => ({
+  fillColor: style?.fillColor || DEFAULT_ANNOTATION_STYLE.fillColor,
+  strokeColor: style?.strokeColor || style?.fillColor || DEFAULT_ANNOTATION_STYLE.strokeColor,
+  textColor: style?.textColor || DEFAULT_ANNOTATION_STYLE.textColor,
+  fillOpacity: clampNumber(style?.fillOpacity, 0, 0.85, DEFAULT_ANNOTATION_STYLE.fillOpacity),
+  strokeOpacity: clampNumber(style?.strokeOpacity, 0.1, 1, DEFAULT_ANNOTATION_STYLE.strokeOpacity),
+  strokeWidth: clampNumber(style?.strokeWidth, 0.5, 10, DEFAULT_ANNOTATION_STYLE.strokeWidth),
+  fontSize: clampNumber(style?.fontSize, 10, 34, DEFAULT_ANNOTATION_STYLE.fontSize),
+  showHalo: style?.showHalo !== false,
+});
+
 const getFeatureVisualStyle = (
   join: LayerFeatureJoin,
   temporalContext?: { enabled: boolean; date: Date | null },
@@ -484,6 +568,35 @@ const mapSpatialLayerRow = (row: SpatialLayerRow): SpatialLayer => ({
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
+
+const isValidAnnotationGeometry = (geometry: any): geometry is SpatialAnnotationGeometry => {
+  if (!geometry || typeof geometry !== "object") return false;
+  if (geometry.type === "Point") {
+    return Array.isArray(geometry.coordinates) && typeof geometry.coordinates[0] === "number" && typeof geometry.coordinates[1] === "number";
+  }
+  if (geometry.type === "Polygon") {
+    return Array.isArray(geometry.coordinates?.[0]) && geometry.coordinates[0].length >= 4;
+  }
+  return false;
+};
+
+const mapSpatialAnnotationRow = (row: SpatialAnnotationRow): SpatialAnnotation | null => {
+  if (!isValidAnnotationGeometry(row.geometry)) return null;
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    annotationType: row.annotation_type === "label" ? "label" : "polygon",
+    title: row.title || (row.annotation_type === "label" ? "Etiqueta" : "Figura"),
+    body: row.body || "",
+    geometry: row.geometry,
+    styleConfig: normalizeAnnotationStyle(row.style_config),
+    visible: row.visible !== false,
+    rotation: Number(row.rotation || 0),
+    createdBy: row.created_by || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+};
 
 const getTaskTitle = (task: any) => task?.title || task?.name || task?.externalWorkflowId || "Tarea";
 
@@ -1036,6 +1149,76 @@ const drawCanvasLabel = (
   context.fillText(text, rect.left + LABEL_PADDING_X, rect.top + 14);
 };
 
+const getAnnotationCoordinate = (annotation: SpatialAnnotation) => {
+  if (annotation.annotationType === "label" && annotation.geometry.type === "Point") {
+    return annotation.geometry.coordinates;
+  }
+  if (annotation.geometry.type === "Polygon") {
+    return getRingCentroid(annotation.geometry.coordinates?.[0] || [])?.coordinate || annotation.geometry.coordinates?.[0]?.[0] || null;
+  }
+  return null;
+};
+
+const makeAnnotationPolygonPath = (
+  annotation: SpatialAnnotation,
+  project: (coord: number[]) => ProjectedPoint
+) => {
+  const path = new Path2D();
+  if (annotation.geometry.type !== "Polygon") return { path, hasPath: false };
+  const ring = annotation.geometry.coordinates?.[0] || [];
+  const hasPath = appendLineToCanvasPath(path, ring, project, 0.1, true);
+  return { path, hasPath };
+};
+
+const drawAnnotationLabel = (
+  context: CanvasRenderingContext2D,
+  text: string,
+  point: ProjectedPoint,
+  style: NormalizedAnnotationStyle,
+  rotation = 0
+): ScreenRect | null => {
+  const cleanText = text.trim();
+  if (!cleanText) return null;
+  const fontSize = style.fontSize;
+  context.save();
+  context.font = `800 ${fontSize}px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
+  const textWidth = Math.ceil(context.measureText(cleanText).width);
+  const width = textWidth + 18;
+  const height = Math.ceil(fontSize + 12);
+  const angle = (rotation * Math.PI) / 180;
+  context.translate(point.x, point.y);
+  context.rotate(angle);
+  if (style.showHalo) {
+    context.fillStyle = "rgba(255,255,255,0.9)";
+    context.strokeStyle = colorToRgba(style.textColor, 0.24);
+    context.lineWidth = 1;
+    context.beginPath();
+    context.roundRect(-width / 2, -height / 2, width, height, 8);
+    context.fill();
+    context.stroke();
+  }
+  context.fillStyle = style.textColor;
+  context.fillText(cleanText, -textWidth / 2, Math.round(fontSize / 2) - 1);
+  context.restore();
+
+  const radius = Math.sqrt(width * width + height * height) / 2;
+  return makeScreenRect(point.x - radius, point.y - radius, radius * 2, radius * 2);
+};
+
+const drawAnnotationPointHandle = (
+  context: CanvasRenderingContext2D,
+  point: ProjectedPoint,
+  color: string
+) => {
+  context.beginPath();
+  context.arc(point.x, point.y, 4.5, 0, Math.PI * 2);
+  context.fillStyle = color;
+  context.fill();
+  context.lineWidth = 2;
+  context.strokeStyle = "#fff";
+  context.stroke();
+};
+
 const appendLineToCanvasPath = (
   path: Path2D,
   line: number[][],
@@ -1187,8 +1370,10 @@ export function ProjectSpatialMap({
   canManage,
 }: ProjectSpatialMapProps) {
   const [layers, setLayers] = useState<SpatialLayer[]>([]);
+  const [annotations, setAnnotations] = useState<SpatialAnnotation[]>([]);
   const [loading, setLoading] = useState(true);
   const [spatialStoreError, setSpatialStoreError] = useState("");
+  const [annotationStoreError, setAnnotationStoreError] = useState("");
   const [selectedLayerId, setSelectedLayerId] = useState("");
   const [layerGeojsons, setLayerGeojsons] = useState<Record<string, GeoJsonFeatureCollection>>({});
   const [loadingLayerData, setLoadingLayerData] = useState(false);
@@ -1212,6 +1397,15 @@ export function ProjectSpatialMap({
   const [isAreaAnalysisOpen, setIsAreaAnalysisOpen] = useState(false);
   const [isLayerManagerOpen, setIsLayerManagerOpen] = useState(false);
   const [spatialViewMode, setSpatialViewMode] = useState<SpatialViewMode>("current");
+  const [annotationTool, setAnnotationTool] = useState<SpatialAnnotationTool>(null);
+  const [polygonDraftPoints, setPolygonDraftPoints] = useState<number[][]>([]);
+  const [labelDraftPoint, setLabelDraftPoint] = useState<number[] | null>(null);
+  const [annotationTitle, setAnnotationTitle] = useState("");
+  const [annotationBody, setAnnotationBody] = useState("");
+  const [annotationRotation, setAnnotationRotation] = useState(0);
+  const [annotationStyle, setAnnotationStyle] = useState<NormalizedAnnotationStyle>(DEFAULT_ANNOTATION_STYLE);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [savingAnnotation, setSavingAnnotation] = useState(false);
   const [simulationDateValue, setSimulationDateValue] = useState(() => formatDateInputValue(new Date()));
   const [isSimulationPlaying, setIsSimulationPlaying] = useState(false);
   const [simulationSpeedDays, setSimulationSpeedDays] = useState(1);
@@ -1225,6 +1419,7 @@ export function ProjectSpatialMap({
   const mapRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const hitRegionsRef = useRef<CanvasHitRegion[]>([]);
+  const annotationHitRegionsRef = useRef<AnnotationHitRegion[]>([]);
   const dragRef = useRef<{ x: number; y: number; center: { lon: number; lat: number } } | null>(null);
   const pendingPanCenterRef = useRef<{ lon: number; lat: number } | null>(null);
   const panFrameRef = useRef<number | null>(null);
@@ -1292,6 +1487,62 @@ export function ProjectSpatialMap({
   }, [projectId]);
 
   useEffect(() => {
+    if (!projectId) return;
+
+    let active = true;
+
+    const loadAnnotations = async () => {
+      const { data, error } = await supabase
+        .from(SPATIAL_ANNOTATIONS_TABLE)
+        .select("*")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false });
+
+      if (!active) return;
+
+      if (error) {
+        console.error("Error loading spatial annotations:", error);
+        setAnnotationStoreError(
+          error.code === "42P01"
+            ? "Falta aplicar la migración de anotaciones espaciales."
+            : "No se pudieron cargar las anotaciones del mapa."
+        );
+        setAnnotations([]);
+        return;
+      }
+
+      const nextAnnotations = ((data || []) as SpatialAnnotationRow[])
+        .map(mapSpatialAnnotationRow)
+        .filter((annotation): annotation is SpatialAnnotation => Boolean(annotation));
+      setAnnotations(nextAnnotations);
+      setAnnotationStoreError("");
+    };
+
+    void loadAnnotations();
+
+    const channel = supabase
+      .channel(`project_spatial_annotations_${projectId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: SPATIAL_ANNOTATIONS_TABLE,
+          filter: `project_id=eq.${projectId}`,
+        },
+        () => {
+          void loadAnnotations();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      active = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [projectId]);
+
+  useEffect(() => {
     const element = mapRef.current;
     if (!element || typeof ResizeObserver === "undefined") return;
 
@@ -1318,7 +1569,12 @@ export function ProjectSpatialMap({
     () => layers.find((layer) => layer.id === selectedLayerId) || null,
     [layers, selectedLayerId]
   );
+  const selectedAnnotation = useMemo(
+    () => annotations.find((annotation) => annotation.id === selectedAnnotationId) || null,
+    [annotations, selectedAnnotationId]
+  );
   const visibleLayers = useMemo(() => layers.filter((layer) => layer.visible !== false), [layers]);
+  const visibleAnnotations = useMemo(() => annotations.filter((annotation) => annotation.visible !== false), [annotations]);
   const activeRenderLayers = useMemo(() => {
     const layerMap = new Map<string, SpatialLayer>();
     visibleLayers.forEach((layer) => layerMap.set(layer.id, layer));
@@ -1326,6 +1582,17 @@ export function ProjectSpatialMap({
     return Array.from(layerMap.values());
   }, [selectedLayer, visibleLayers]);
   const selectedLayerGeojson = selectedLayer ? layerGeojsons[selectedLayer.id] : undefined;
+
+  useEffect(() => {
+    if (!selectedAnnotation) return;
+    setAnnotationTool(null);
+    setPolygonDraftPoints([]);
+    setLabelDraftPoint(null);
+    setAnnotationTitle(selectedAnnotation.title || "");
+    setAnnotationBody(selectedAnnotation.body || "");
+    setAnnotationRotation(Number(selectedAnnotation.rotation || 0));
+    setAnnotationStyle(normalizeAnnotationStyle(selectedAnnotation.styleConfig));
+  }, [selectedAnnotation]);
 
   useEffect(() => {
     const layersToLoad = activeRenderLayers.filter((layer) => layer.downloadUrl && !layerGeojsons[layer.id]);
@@ -2037,6 +2304,7 @@ export function ProjectSpatialMap({
 
       const tolerance = getCanvasSimplificationTolerance(mapView.zoom);
       const hitRegions: CanvasHitRegion[] = [];
+      const annotationHitRegions: AnnotationHitRegion[] = [];
 
       const temporalContext = { enabled: spatialViewMode === "simulation", date: simulationDate };
       const auditContext = { enabled: spatialViewMode === "audit", riskByFeatureId: planAudit.riskByFeatureId };
@@ -2094,6 +2362,108 @@ export function ProjectSpatialMap({
         }
       });
 
+      visibleAnnotations.forEach((annotation) => {
+        const style = normalizeAnnotationStyle(annotation.styleConfig);
+        const isSelected = selectedAnnotationId === annotation.id;
+        context.globalAlpha = 1;
+
+        if (annotation.annotationType === "polygon" && annotation.geometry.type === "Polygon") {
+          const { path, hasPath } = makeAnnotationPolygonPath(annotation, projectCoordinate);
+          if (!hasPath) return;
+
+          context.fillStyle = colorToRgba(style.fillColor, isSelected ? Math.min(0.7, style.fillOpacity + 0.15) : style.fillOpacity);
+          context.strokeStyle = isSelected ? "#111827" : colorToRgba(style.strokeColor, style.strokeOpacity);
+          context.lineWidth = isSelected ? Math.max(style.strokeWidth + 1.5, 3) : style.strokeWidth;
+          context.setLineDash(isSelected ? [8, 5] : []);
+          context.fill(path, "evenodd");
+          context.stroke(path);
+          context.setLineDash([]);
+
+          const ring = annotation.geometry.coordinates?.[0] || [];
+          ring.slice(0, -1).forEach((coordinate) => {
+            const point = projectCoordinate(coordinate);
+            if (Number.isFinite(point.x) && Number.isFinite(point.y)) {
+              drawAnnotationPointHandle(context, point, style.strokeColor);
+            }
+          });
+
+          const labelCoordinate = getAnnotationCoordinate(annotation);
+          if (labelCoordinate && annotation.title && mapView.zoom >= 12) {
+            const labelPoint = projectCoordinate(labelCoordinate);
+            if (Number.isFinite(labelPoint.x) && Number.isFinite(labelPoint.y)) {
+              drawAnnotationLabel(context, annotation.title, labelPoint, {
+                ...style,
+                textColor: style.strokeColor,
+                fontSize: Math.max(11, Math.min(16, style.fontSize - 1)),
+              }, 0);
+            }
+          }
+
+          annotationHitRegions.push({
+            annotationId: annotation.id,
+            path,
+            strokeWidth: Math.max(style.strokeWidth + 8, 12),
+          });
+          return;
+        }
+
+        if (annotation.annotationType === "label" && annotation.geometry.type === "Point") {
+          const point = projectCoordinate(annotation.geometry.coordinates);
+          if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+          const rect = drawAnnotationLabel(context, annotation.body || annotation.title, point, style, Number(annotation.rotation || 0));
+          if (rect) {
+            if (isSelected) {
+              context.save();
+              context.strokeStyle = "#4f46e5";
+              context.lineWidth = 2;
+              context.setLineDash([5, 4]);
+              context.strokeRect(rect.left, rect.top, rect.width, rect.height);
+              context.restore();
+            }
+            annotationHitRegions.push({
+              annotationId: annotation.id,
+              rect,
+              strokeWidth: 10,
+            });
+          }
+        }
+      });
+
+      if (polygonDraftPoints.length > 0) {
+        const style = annotationStyle;
+        const path = new Path2D();
+        polygonDraftPoints.forEach((coordinate, index) => {
+          const point = projectCoordinate(coordinate);
+          if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+          if (index === 0) path.moveTo(point.x, point.y);
+          else path.lineTo(point.x, point.y);
+        });
+        context.strokeStyle = colorToRgba(style.strokeColor, 0.95);
+        context.lineWidth = Math.max(2, style.strokeWidth);
+        context.setLineDash([7, 5]);
+        context.stroke(path);
+        context.setLineDash([]);
+        if (polygonDraftPoints.length >= 3) {
+          const closedPath = new Path2D(path);
+          closedPath.closePath();
+          context.fillStyle = colorToRgba(style.fillColor, Math.min(0.35, style.fillOpacity));
+          context.fill(closedPath, "evenodd");
+        }
+        polygonDraftPoints.forEach((coordinate) => {
+          const point = projectCoordinate(coordinate);
+          if (Number.isFinite(point.x) && Number.isFinite(point.y)) drawAnnotationPointHandle(context, point, style.strokeColor);
+        });
+      }
+
+      if (labelDraftPoint) {
+        const point = projectCoordinate(labelDraftPoint);
+        if (Number.isFinite(point.x) && Number.isFinite(point.y)) {
+          drawAnnotationLabel(context, annotationBody || annotationTitle || "Etiqueta", point, annotationStyle, annotationRotation);
+        }
+      }
+
+      annotationHitRegionsRef.current = annotationHitRegions;
+
       if (mapView.zoom >= getMinimumLabelZoom(renderedFeatureJoins.length)) {
         const occupiedLabelRects: ScreenRect[] = [];
         const viewportRect = makeScreenRect(0, 0, width, height);
@@ -2132,13 +2502,21 @@ export function ProjectSpatialMap({
     mapSize.height,
     mapSize.width,
     mapView.zoom,
+    annotationBody,
+    annotationRotation,
+    annotationStyle,
+    annotationTitle,
+    labelDraftPoint,
     planAudit.riskByFeatureId,
+    polygonDraftPoints,
     projectCoordinate,
     renderedFeatureJoins,
+    selectedAnnotationId,
     selectedFeatureId,
     simulationDate,
     spatialViewMode,
     topLeft,
+    visibleAnnotations,
   ]);
 
   const tiles = useMemo(() => {
@@ -2433,6 +2811,182 @@ export function ProjectSpatialMap({
     }
   };
 
+  const resetAnnotationDraft = useCallback(() => {
+    setAnnotationTool(null);
+    setPolygonDraftPoints([]);
+    setLabelDraftPoint(null);
+    setAnnotationTitle("");
+    setAnnotationBody("");
+    setAnnotationRotation(0);
+    setAnnotationStyle(DEFAULT_ANNOTATION_STYLE);
+  }, []);
+
+  const startAnnotationTool = (tool: SpatialAnnotationType) => {
+    if (!canManage) return;
+    setSelectedAnnotationId(null);
+    setSelectedFeatureId(null);
+    setAnnotationTool(tool);
+    setPolygonDraftPoints([]);
+    setLabelDraftPoint(null);
+    setAnnotationTitle(tool === "polygon" ? "Nueva figura" : "Etiqueta personalizada");
+    setAnnotationBody(tool === "label" ? "Nueva etiqueta" : "");
+    setAnnotationRotation(0);
+    setAnnotationStyle(DEFAULT_ANNOTATION_STYLE);
+    setSpatialPanelTab("style");
+  };
+
+  const getPointerLonLat = (event: React.PointerEvent<HTMLDivElement>) => {
+    const mapElement = mapRef.current;
+    if (!mapElement) return null;
+    const rect = mapElement.getBoundingClientRect();
+    return unprojectPoint(
+      {
+        x: topLeft.x + event.clientX - rect.left,
+        y: topLeft.y + event.clientY - rect.top,
+      },
+      mapView.zoom
+    );
+  };
+
+  const handleSaveAnnotation = async () => {
+    if (!canManage) return;
+
+    const styleConfig = normalizeAnnotationStyle(annotationStyle);
+    const title = annotationTitle.trim() || (annotationTool === "label" ? "Etiqueta personalizada" : "Figura personalizada");
+    const body = annotationBody.trim();
+    let annotationType: SpatialAnnotationType = selectedAnnotation?.annotationType || annotationTool || "polygon";
+    let geometry: SpatialAnnotationGeometry | null = selectedAnnotation?.geometry || null;
+
+    if (!selectedAnnotation) {
+      if (annotationTool === "polygon") {
+        if (polygonDraftPoints.length < 3) {
+          toast.warning("Dibuja al menos tres puntos para guardar el polígono.");
+          return;
+        }
+        const ring = [...polygonDraftPoints, polygonDraftPoints[0]];
+        annotationType = "polygon";
+        geometry = { type: "Polygon", coordinates: [ring] };
+      } else if (annotationTool === "label") {
+        if (!labelDraftPoint) {
+          toast.warning("Haz clic sobre el mapa para ubicar la etiqueta.");
+          return;
+        }
+        if (!body && !title) {
+          toast.warning("Escribe el texto de la etiqueta.");
+          return;
+        }
+        annotationType = "label";
+        geometry = { type: "Point", coordinates: labelDraftPoint };
+      }
+    }
+
+    if (!geometry) return;
+
+    setSavingAnnotation(true);
+    try {
+      if (selectedAnnotation) {
+        const { error } = await supabase
+          .from(SPATIAL_ANNOTATIONS_TABLE)
+          .update({
+            title,
+            body,
+            style_config: styleConfig,
+            rotation: annotationType === "label" ? annotationRotation : 0,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", selectedAnnotation.id)
+          .eq("project_id", projectId);
+
+        if (error) throw error;
+        setAnnotations((current) =>
+          current.map((annotation) =>
+            annotation.id === selectedAnnotation.id
+              ? {
+                  ...annotation,
+                  title,
+                  body,
+                  styleConfig,
+                  rotation: annotationType === "label" ? annotationRotation : 0,
+                }
+              : annotation
+          )
+        );
+        toast.success("Anotación actualizada.");
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from(SPATIAL_ANNOTATIONS_TABLE)
+        .insert({
+          project_id: projectId,
+          annotation_type: annotationType,
+          title,
+          body,
+          geometry,
+          style_config: styleConfig,
+          visible: true,
+          rotation: annotationType === "label" ? annotationRotation : 0,
+          created_by: currentUser?.uid || currentUser?.id || null,
+          updated_at: new Date().toISOString(),
+        })
+        .select("*")
+        .single();
+
+      if (error) throw error;
+
+      const created = mapSpatialAnnotationRow(data as SpatialAnnotationRow);
+      if (created) {
+        setAnnotations((current) => [created, ...current]);
+        setSelectedAnnotationId(created.id);
+      }
+      resetAnnotationDraft();
+      toast.success(annotationType === "label" ? "Etiqueta creada." : "Figura creada.");
+    } catch (error) {
+      console.error("Error saving spatial annotation:", error);
+      toast.error("No se pudo guardar la anotación espacial.");
+    } finally {
+      setSavingAnnotation(false);
+    }
+  };
+
+  const handleToggleAnnotationVisibility = async (annotation: SpatialAnnotation, visible: boolean) => {
+    if (!canManage) return;
+    setAnnotations((current) => current.map((item) => (item.id === annotation.id ? { ...item, visible } : item)));
+    try {
+      const { error } = await supabase
+        .from(SPATIAL_ANNOTATIONS_TABLE)
+        .update({ visible, updated_at: new Date().toISOString() })
+        .eq("id", annotation.id)
+        .eq("project_id", projectId);
+      if (error) throw error;
+    } catch (error) {
+      console.error("Error toggling spatial annotation:", error);
+      setAnnotations((current) => current.map((item) => (item.id === annotation.id ? { ...item, visible: annotation.visible !== false } : item)));
+      toast.error("No se pudo cambiar la visibilidad de la anotación.");
+    }
+  };
+
+  const handleDeleteAnnotation = async (annotation: SpatialAnnotation) => {
+    if (!canManage) return;
+    try {
+      const { error } = await supabase
+        .from(SPATIAL_ANNOTATIONS_TABLE)
+        .delete()
+        .eq("id", annotation.id)
+        .eq("project_id", projectId);
+      if (error) throw error;
+      setAnnotations((current) => current.filter((item) => item.id !== annotation.id));
+      if (selectedAnnotationId === annotation.id) {
+        setSelectedAnnotationId(null);
+        resetAnnotationDraft();
+      }
+      toast.success("Anotación eliminada.");
+    } catch (error) {
+      console.error("Error deleting spatial annotation:", error);
+      toast.error("No se pudo eliminar la anotación.");
+    }
+  };
+
   const setZoom = useCallback(
     (nextZoom: number | ((currentZoom: number) => number), anchorPoint?: ProjectedPoint) => {
       setMapView((current) => {
@@ -2498,6 +3052,11 @@ export function ProjectSpatialMap({
   }, [setZoom]);
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (annotationTool) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
+
     if (isDrawingAnalysis) {
       const mapElement = mapRef.current;
       if (!mapElement) return;
@@ -2552,6 +3111,18 @@ export function ProjectSpatialMap({
   };
 
   const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (annotationTool) {
+      const coordinate = getPointerLonLat(event);
+      if (!coordinate) return;
+      if (annotationTool === "polygon") {
+        setPolygonDraftPoints((current) => [...current, [coordinate.lon, coordinate.lat]]);
+      } else {
+        setLabelDraftPoint([coordinate.lon, coordinate.lat]);
+        toast.success("Etiqueta ubicada. Ajusta texto, color o rotación y guarda.");
+      }
+      return;
+    }
+
     if (analysisDraftRect) {
       const mapElement = mapRef.current;
       if (!mapElement) return;
@@ -2620,6 +3191,26 @@ export function ProjectSpatialMap({
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
     const hitRegions = hitRegionsRef.current;
+    const annotationHitRegions = annotationHitRegionsRef.current;
+
+    for (let index = annotationHitRegions.length - 1; index >= 0; index -= 1) {
+      const region = annotationHitRegions[index];
+      if (region.rect && x >= region.rect.left && x <= region.rect.right && y >= region.rect.top && y <= region.rect.bottom) {
+        setSelectedAnnotationId(region.annotationId);
+        setSelectedFeatureId(null);
+        setSpatialPanelTab("style");
+        return;
+      }
+      if (region.path) {
+        context.lineWidth = region.strokeWidth;
+        if (context.isPointInPath(region.path, x, y, "evenodd") || context.isPointInStroke(region.path, x, y)) {
+          setSelectedAnnotationId(region.annotationId);
+          setSelectedFeatureId(null);
+          setSpatialPanelTab("style");
+          return;
+        }
+      }
+    }
 
     for (let index = hitRegions.length - 1; index >= 0; index -= 1) {
       const region = hitRegions[index];
@@ -2717,6 +3308,18 @@ export function ProjectSpatialMap({
             Configuración
           </Button>
 
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setSpatialPanelTab("style");
+              setAnnotationTool((current) => current || "polygon");
+            }}
+          >
+            <PenLine size={16} className="mr-2" />
+            Anotar mapa
+          </Button>
+
           {canManage && (
             <Button
               type="button"
@@ -2743,6 +3346,20 @@ export function ProjectSpatialMap({
               <p className="font-black">La base espacial todavía no está lista</p>
               <p className="mt-1">
                 {spatialStoreError} Aplica la migración de PostGIS antes de cargar nuevas capas. Mientras tanto, no se guardarán shapefiles dentro de documentos pesados.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {annotationStoreError && (
+        <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 text-sm font-semibold leading-6 text-indigo-900">
+          <div className="flex gap-3">
+            <PenLine className="mt-0.5 h-5 w-5 shrink-0 text-indigo-600" />
+            <div>
+              <p className="font-black">Anotaciones del mapa pendientes</p>
+              <p className="mt-1">
+                {annotationStoreError} Las capas cargadas siguen funcionando, pero las figuras y etiquetas personalizadas no se guardarán hasta aplicar la migración.
               </p>
             </div>
           </div>
@@ -2873,7 +3490,7 @@ export function ProjectSpatialMap({
             <div
               ref={mapRef}
               className={`absolute inset-0 touch-none overflow-hidden overscroll-contain ${
-                isDrawingAnalysis ? "cursor-crosshair" : isDragging ? "cursor-grabbing" : "cursor-grab"
+                isDrawingAnalysis || annotationTool ? "cursor-crosshair" : isDragging ? "cursor-grabbing" : "cursor-grab"
               }`}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
@@ -2988,6 +3605,43 @@ export function ProjectSpatialMap({
                 <ZoomOut size={18} />
               </button>
             </div>
+
+            {canManage && (annotationTool || polygonDraftPoints.length > 0 || labelDraftPoint) && (
+              <div className="absolute left-28 top-4 z-20 flex max-w-[calc(100%-9rem)] flex-wrap items-center gap-2 rounded-2xl border border-indigo-100 bg-white/95 p-2 shadow-xl backdrop-blur">
+                <span className="inline-flex items-center rounded-xl bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700">
+                  {annotationTool === "label" ? <Type size={14} className="mr-1.5" /> : <PenLine size={14} className="mr-1.5" />}
+                  {annotationTool === "label" ? "Ubica etiqueta" : `Figura: ${polygonDraftPoints.length} puntos`}
+                </span>
+                {annotationTool === "polygon" && (
+                  <button
+                    type="button"
+                    onClick={() => setPolygonDraftPoints((current) => current.slice(0, -1))}
+                    disabled={polygonDraftPoints.length === 0}
+                    className="inline-flex h-9 items-center rounded-xl border border-slate-200 px-3 text-xs font-black text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    <Undo2 size={14} className="mr-1.5" />
+                    Deshacer
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleSaveAnnotation()}
+                  disabled={savingAnnotation || (annotationTool === "polygon" && polygonDraftPoints.length < 3) || (annotationTool === "label" && !labelDraftPoint)}
+                  className="inline-flex h-9 items-center rounded-xl bg-slate-950 px-3 text-xs font-black text-white transition hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {savingAnnotation ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Save size={14} className="mr-1.5" />}
+                  Guardar
+                </button>
+                <button
+                  type="button"
+                  onClick={resetAnnotationDraft}
+                  className="inline-flex h-9 items-center rounded-xl border border-slate-200 px-3 text-xs font-black text-slate-600 transition hover:bg-slate-50"
+                >
+                  <X size={14} className="mr-1.5" />
+                  Cancelar
+                </button>
+              </div>
+            )}
 
             <div className="absolute left-4 top-16 z-20">
               <button
@@ -3247,11 +3901,12 @@ export function ProjectSpatialMap({
                 </span>
               </div>
 
-              <div className="mt-4 grid grid-cols-4 gap-1 rounded-xl bg-white/10 p-1">
+              <div className="mt-4 grid grid-cols-5 gap-1 rounded-xl bg-white/10 p-1">
                 {[
                   { key: "summary", label: "Resumen", icon: Layers },
                   { key: "simulation", label: "Tiempo", icon: Play },
                   { key: "analysis", label: "Análisis", icon: BarChart3 },
+                  { key: "style", label: "Anotar", icon: PenLine },
                   { key: "search", label: "Buscar", icon: Search },
                 ].map((tab) => {
                   const Icon = tab.icon;
@@ -3688,6 +4343,334 @@ export function ProjectSpatialMap({
                       </div>
                     </>
                   )}
+                </div>
+              )}
+
+              {spatialPanelTab === "style" && (
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-indigo-100 bg-indigo-50/70 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-indigo-700">Anotaciones</p>
+                        <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">
+                          Dibuja figuras y etiquetas libres sobre el mapa sin alterar las capas originales.
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-indigo-700">
+                        {annotations.length}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => startAnnotationTool("polygon")}
+                        disabled={!canManage}
+                        className={`inline-flex items-center justify-center rounded-xl px-3 py-2 text-xs font-black transition disabled:opacity-50 ${
+                          annotationTool === "polygon" ? "bg-indigo-600 text-white shadow-sm" : "bg-white text-indigo-700 hover:bg-indigo-50"
+                        }`}
+                      >
+                        <PenLine size={15} className="mr-1.5" />
+                        Figura
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => startAnnotationTool("label")}
+                        disabled={!canManage}
+                        className={`inline-flex items-center justify-center rounded-xl px-3 py-2 text-xs font-black transition disabled:opacity-50 ${
+                          annotationTool === "label" ? "bg-indigo-600 text-white shadow-sm" : "bg-white text-indigo-700 hover:bg-indigo-50"
+                        }`}
+                      >
+                        <Type size={15} className="mr-1.5" />
+                        Label
+                      </button>
+                    </div>
+
+                    {annotationTool && (
+                      <div className="mt-3 rounded-xl border border-dashed border-indigo-200 bg-white/80 p-3 text-xs font-semibold leading-5 text-indigo-900">
+                        {annotationTool === "polygon"
+                          ? "Haz clic sobre el mapa para agregar puntos. Con tres puntos ya puedes guardar el polígono."
+                          : "Haz clic en el mapa para ubicar la etiqueta. Luego ajusta texto, rotación y color."}
+                      </div>
+                    )}
+                  </div>
+
+                  {(canManage || selectedAnnotation) && (
+                    <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                          {selectedAnnotation ? "Editar anotación" : "Nueva anotación"}
+                        </p>
+                        {selectedAnnotation && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedAnnotationId(null);
+                              resetAnnotationDraft();
+                            }}
+                            className="rounded-full p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                            aria-label="Limpiar selección"
+                          >
+                            <X size={15} />
+                          </button>
+                        )}
+                      </div>
+
+                      <label className="block">
+                        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Nombre</span>
+                        <input
+                          value={annotationTitle}
+                          onChange={(event) => setAnnotationTitle(event.target.value)}
+                          placeholder="Ej: Zona crítica, frente 1, restricción"
+                          disabled={!canManage}
+                          className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 disabled:bg-slate-100"
+                        />
+                      </label>
+
+                      <label className="block">
+                        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                          {selectedAnnotation?.annotationType === "polygon" || annotationTool === "polygon" ? "Nota" : "Texto visible"}
+                        </span>
+                        <textarea
+                          value={annotationBody}
+                          onChange={(event) => setAnnotationBody(event.target.value)}
+                          placeholder="Escribe la nota o el texto del label"
+                          disabled={!canManage}
+                          rows={3}
+                          className="mt-1 w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 disabled:bg-slate-100"
+                        />
+                      </label>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <label className="rounded-xl border border-slate-100 bg-slate-50 p-2">
+                          <span className="block text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">Relleno</span>
+                          <input
+                            type="color"
+                            value={annotationStyle.fillColor}
+                            onChange={(event) =>
+                              setAnnotationStyle((current) => ({
+                                ...current,
+                                fillColor: event.target.value,
+                              }))
+                            }
+                            disabled={!canManage}
+                            className="mt-2 h-9 w-full cursor-pointer rounded-lg border border-slate-200 bg-white p-1 disabled:opacity-50"
+                          />
+                        </label>
+                        <label className="rounded-xl border border-slate-100 bg-slate-50 p-2">
+                          <span className="block text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">Borde</span>
+                          <input
+                            type="color"
+                            value={annotationStyle.strokeColor}
+                            onChange={(event) =>
+                              setAnnotationStyle((current) => ({
+                                ...current,
+                                strokeColor: event.target.value,
+                              }))
+                            }
+                            disabled={!canManage}
+                            className="mt-2 h-9 w-full cursor-pointer rounded-lg border border-slate-200 bg-white p-1 disabled:opacity-50"
+                          />
+                        </label>
+                        <label className="rounded-xl border border-slate-100 bg-slate-50 p-2">
+                          <span className="block text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">Texto</span>
+                          <input
+                            type="color"
+                            value={annotationStyle.textColor}
+                            onChange={(event) =>
+                              setAnnotationStyle((current) => ({
+                                ...current,
+                                textColor: event.target.value,
+                              }))
+                            }
+                            disabled={!canManage}
+                            className="mt-2 h-9 w-full cursor-pointer rounded-lg border border-slate-200 bg-white p-1 disabled:opacity-50"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid gap-3">
+                        <label>
+                          <span className="flex items-center justify-between text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                            Opacidad {Math.round(annotationStyle.fillOpacity * 100)}%
+                          </span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={0.85}
+                            step={0.05}
+                            value={annotationStyle.fillOpacity}
+                            disabled={!canManage}
+                            onChange={(event) =>
+                              setAnnotationStyle((current) => ({
+                                ...current,
+                                fillOpacity: Number(event.target.value),
+                              }))
+                            }
+                            className="mt-1 w-full accent-indigo-600 disabled:opacity-50"
+                          />
+                        </label>
+                        <label>
+                          <span className="flex items-center justify-between text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                            Borde {annotationStyle.strokeWidth.toFixed(1)} px
+                          </span>
+                          <input
+                            type="range"
+                            min={0.5}
+                            max={10}
+                            step={0.5}
+                            value={annotationStyle.strokeWidth}
+                            disabled={!canManage}
+                            onChange={(event) =>
+                              setAnnotationStyle((current) => ({
+                                ...current,
+                                strokeWidth: Number(event.target.value),
+                              }))
+                            }
+                            className="mt-1 w-full accent-indigo-600 disabled:opacity-50"
+                          />
+                        </label>
+                        {(selectedAnnotation?.annotationType === "label" || annotationTool === "label") && (
+                          <>
+                            <label>
+                              <span className="flex items-center justify-between text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                                Tamaño {annotationStyle.fontSize}px
+                              </span>
+                              <input
+                                type="range"
+                                min={10}
+                                max={34}
+                                step={1}
+                                value={annotationStyle.fontSize}
+                                disabled={!canManage}
+                                onChange={(event) =>
+                                  setAnnotationStyle((current) => ({
+                                    ...current,
+                                    fontSize: Number(event.target.value),
+                                  }))
+                                }
+                                className="mt-1 w-full accent-indigo-600 disabled:opacity-50"
+                              />
+                            </label>
+                            <label>
+                              <span className="flex items-center justify-between text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                                <span className="inline-flex items-center gap-1"><RotateCw size={12} /> Rotación</span>
+                                {annotationRotation}°
+                              </span>
+                              <input
+                                type="range"
+                                min={-180}
+                                max={180}
+                                step={5}
+                                value={annotationRotation}
+                                disabled={!canManage}
+                                onChange={(event) => setAnnotationRotation(Number(event.target.value))}
+                                className="mt-1 w-full accent-indigo-600 disabled:opacity-50"
+                              />
+                            </label>
+                          </>
+                        )}
+                      </div>
+
+                      {canManage && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <Button
+                            type="button"
+                            onClick={() => void handleSaveAnnotation()}
+                            disabled={savingAnnotation || (!selectedAnnotation && !annotationTool)}
+                            className="bg-slate-950 text-white hover:bg-slate-800"
+                          >
+                            {savingAnnotation ? <Loader2 size={15} className="mr-2 animate-spin" /> : <Save size={15} className="mr-2" />}
+                            Guardar
+                          </Button>
+                          <Button type="button" variant="outline" onClick={resetAnnotationDraft}>
+                            <X size={15} className="mr-2" />
+                            Cancelar
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="rounded-2xl border border-slate-200 bg-white">
+                    <div className="flex items-center justify-between gap-3 border-b border-slate-100 p-3">
+                      <div>
+                        <p className="text-xs font-black text-slate-900">Capas de anotación</p>
+                        <p className="text-[11px] font-semibold text-slate-500">Figuras y labels guardados en este proyecto.</p>
+                      </div>
+                      {canManage && (
+                        <button
+                          type="button"
+                          onClick={() => startAnnotationTool("polygon")}
+                          className="inline-flex h-8 items-center rounded-lg bg-indigo-600 px-2.5 text-xs font-black text-white hover:bg-indigo-700"
+                        >
+                          <Plus size={13} className="mr-1" />
+                          Nueva
+                        </button>
+                      )}
+                    </div>
+                    <div className="max-h-72 overflow-y-auto p-2">
+                      {annotations.length === 0 ? (
+                        <div className="rounded-xl bg-slate-50 p-4 text-center text-sm font-semibold text-slate-500">
+                          Aún no hay anotaciones sobre este mapa.
+                        </div>
+                      ) : (
+                        annotations.map((annotation) => {
+                          const style = normalizeAnnotationStyle(annotation.styleConfig);
+                          const isActive = selectedAnnotationId === annotation.id;
+                          return (
+                            <div
+                              key={annotation.id}
+                              className={`mb-2 rounded-xl border p-2 transition last:mb-0 ${
+                                isActive ? "border-indigo-300 bg-indigo-50" : "border-slate-100 bg-slate-50 hover:border-slate-200"
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAnnotationId(annotation.id);
+                                  setSelectedFeatureId(null);
+                                  const coordinate = getAnnotationCoordinate(annotation);
+                                  if (coordinate) {
+                                    setMapView((current) => ({ ...current, center: { lon: coordinate[0], lat: coordinate[1] } }));
+                                  }
+                                }}
+                                className="flex w-full items-center gap-2 text-left"
+                              >
+                                <span className="h-4 w-4 shrink-0 rounded-full border border-white shadow-sm" style={{ backgroundColor: annotation.annotationType === "label" ? style.textColor : style.fillColor }} />
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-xs font-black text-slate-900">{annotation.title || annotation.body || "Anotación"}</p>
+                                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
+                                    {annotation.annotationType === "label" ? "Label" : "Figura"}
+                                  </p>
+                                </div>
+                              </button>
+                              {canManage && (
+                                <div className="mt-2 flex items-center justify-end gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleToggleAnnotationVisibility(annotation, annotation.visible === false)}
+                                    className="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-600 hover:bg-slate-50"
+                                  >
+                                    <Eye size={13} className="mr-1" />
+                                    {annotation.visible === false ? "Mostrar" : "Ocultar"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDeleteAnnotation(annotation)}
+                                    className="inline-flex h-8 items-center rounded-lg border border-red-100 bg-white px-2 text-xs font-black text-red-600 hover:bg-red-50"
+                                  >
+                                    <Trash2 size={13} className="mr-1" />
+                                    Borrar
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
 
