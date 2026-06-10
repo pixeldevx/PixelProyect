@@ -214,6 +214,10 @@ type CanvasHitRegion = {
   path: Path2D;
   strokeWidth: number;
   points: Array<{ x: number; y: number; radius: number }>;
+  screenArea: number;
+  labelPoint?: ProjectedPoint | null;
+  labelRect?: ScreenRect | null;
+  drawOrder: number;
 };
 
 type AnnotationHitRegion = {
@@ -2324,12 +2328,13 @@ export function ProjectSpatialMap({
 
       const tolerance = getCanvasSimplificationTolerance(mapView.zoom);
       const hitRegions: CanvasHitRegion[] = [];
+      const hitRegionByFeatureId = new Map<string, CanvasHitRegion>();
       const annotationHitRegions: AnnotationHitRegion[] = [];
 
       const temporalContext = { enabled: spatialViewMode === "simulation", date: simulationDate };
       const auditContext = { enabled: spatialViewMode === "audit", riskByFeatureId: planAudit.riskByFeatureId };
 
-      renderedFeatureJoins.forEach((join) => {
+      renderedFeatureJoins.forEach((join, drawOrder) => {
         const baseStyle = join.style;
         const stateStyle = getFeatureVisualStyle(join, temporalContext, auditContext);
         const isSelected = selectedFeatureId === join.featureId;
@@ -2372,13 +2377,22 @@ export function ProjectSpatialMap({
         });
 
         if (drawState.hasFill || drawState.hasStroke || points.length > 0) {
-          hitRegions.push({
+          const hitBoundsRect = getProjectedBoundsRect(join.bounds, mapView.zoom, topLeft);
+          const labelCoordinate = getLabelCoordinate(join.feature.geometry);
+          const labelPoint = labelCoordinate ? projectCoordinate(labelCoordinate) : null;
+          const hitRegion: CanvasHitRegion = {
             featureId: join.featureId,
             layerId: join.layerId,
             path,
             strokeWidth: Math.max(strokeWidth + 5, 8),
             points,
-          });
+            screenArea: Math.max(1, hitBoundsRect.width * hitBoundsRect.height),
+            labelPoint: labelPoint && Number.isFinite(labelPoint.x) && Number.isFinite(labelPoint.y) ? labelPoint : null,
+            labelRect: null,
+            drawOrder,
+          };
+          hitRegions.push(hitRegion);
+          hitRegionByFeatureId.set(join.featureId, hitRegion);
         }
       });
 
@@ -2518,6 +2532,15 @@ export function ProjectSpatialMap({
           const stateStyle = getFeatureVisualStyle(join, temporalContext, auditContext);
           drawCanvasLabel(context, label.text, label.rect, stateStyle.strokeColor);
           occupiedLabelRects.push(label.rect);
+
+          const region = hitRegionByFeatureId.get(join.featureId);
+          if (region) {
+            region.labelRect = label.rect;
+            region.labelPoint = {
+              x: label.rect.left + label.rect.width / 2,
+              y: label.rect.top + label.rect.height / 2,
+            };
+          }
         });
       }
 
@@ -3239,16 +3262,45 @@ export function ProjectSpatialMap({
       }
     }
 
+    const featureCandidates: Array<{
+      region: CanvasHitRegion;
+      hitRank: number;
+      labelDistance: number;
+    }> = [];
+
     for (let index = hitRegions.length - 1; index >= 0; index -= 1) {
       const region = hitRegions[index];
+      const labelHit = region.labelRect
+        ? x >= region.labelRect.left - 2 &&
+          x <= region.labelRect.right + 2 &&
+          y >= region.labelRect.top - 2 &&
+          y <= region.labelRect.bottom + 2
+        : false;
       const pointHit = region.points.some((point) => Math.hypot(point.x - x, point.y - y) <= point.radius + 5);
       context.lineWidth = region.strokeWidth;
-      if (pointHit || context.isPointInPath(region.path, x, y, "evenodd") || context.isPointInStroke(region.path, x, y)) {
-        setSelectedAnnotationId(null);
-        setSelectedLayerId(region.layerId);
-        setSelectedFeatureId(region.featureId);
-        return;
-      }
+      const fillHit = context.isPointInPath(region.path, x, y, "evenodd");
+      const strokeHit = context.isPointInStroke(region.path, x, y);
+      if (!labelHit && !pointHit && !fillHit && !strokeHit) continue;
+
+      featureCandidates.push({
+        region,
+        hitRank: labelHit ? 0 : pointHit ? 1 : fillHit ? 2 : 3,
+        labelDistance: region.labelPoint ? Math.hypot(region.labelPoint.x - x, region.labelPoint.y - y) : Number.MAX_SAFE_INTEGER,
+      });
+    }
+
+    if (featureCandidates.length > 0) {
+      const bestCandidate = featureCandidates.sort((left, right) => {
+        if (left.hitRank !== right.hitRank) return left.hitRank - right.hitRank;
+        if (left.region.screenArea !== right.region.screenArea) return left.region.screenArea - right.region.screenArea;
+        if (left.labelDistance !== right.labelDistance) return left.labelDistance - right.labelDistance;
+        return right.region.drawOrder - left.region.drawOrder;
+      })[0];
+
+      setSelectedAnnotationId(null);
+      setSelectedLayerId(bestCandidate.region.layerId);
+      setSelectedFeatureId(bestCandidate.region.featureId);
+      return;
     }
 
     setSelectedFeatureId(null);
