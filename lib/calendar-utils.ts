@@ -54,6 +54,17 @@ const combineDateAndTime = (dateValue: any, timeValue: string) => {
 
 export const isMeetingTask = (task: any) => task?.type === "meeting" || Boolean(task?.meeting);
 
+export const getMeetingLocation = (task: any) =>
+  String(task?.meeting?.location || task?.meetingLocation || "").trim();
+
+export const getMeetingAgenda = (task: any) =>
+  String(task?.meeting?.agenda || task?.meetingAgenda || "").trim();
+
+export const getMeetingDescription = (task: any) =>
+  String(task?.meeting?.description || task?.description || task?.initialObservation || task?.meetingDescription || "").trim();
+
+export const isMeetingLocationUrl = (task: any) => /^https?:\/\//i.test(getMeetingLocation(task));
+
 export const getMeetingStartDate = (task: any) =>
   getTaskDateValue(task?.meeting?.startAt || task?.meetingStartAt) ||
   combineDateAndTime(task?.startDate || task?.start, task?.meeting?.startTime || task?.meetingStartTime || "09:00") ||

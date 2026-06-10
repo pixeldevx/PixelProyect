@@ -126,6 +126,8 @@ type SpatialAnnotationStyle = {
   strokeWidth?: number;
   fontSize?: number;
   showHalo?: boolean;
+  scaleWithZoom?: boolean;
+  zoomReference?: number;
 };
 
 type NormalizedAnnotationStyle = Required<SpatialAnnotationStyle>;
@@ -332,6 +334,8 @@ const DEFAULT_ANNOTATION_STYLE: NormalizedAnnotationStyle = {
   strokeWidth: 2,
   fontSize: 14,
   showHalo: true,
+  scaleWithZoom: false,
+  zoomReference: 16,
 };
 const TEMPORAL_STATUS_STYLES: Record<TemporalStateKey, Required<LayerStateStyleConfig>> = {
   unlinked: { fillColor: "#94a3b8", strokeColor: "#64748b" },
@@ -491,7 +495,23 @@ const normalizeAnnotationStyle = (style?: SpatialAnnotationStyle | null): Normal
   strokeWidth: clampNumber(style?.strokeWidth, 0.5, 10, DEFAULT_ANNOTATION_STYLE.strokeWidth),
   fontSize: clampNumber(style?.fontSize, 10, 34, DEFAULT_ANNOTATION_STYLE.fontSize),
   showHalo: style?.showHalo !== false,
+  scaleWithZoom: style?.scaleWithZoom === true,
+  zoomReference: clampNumber(style?.zoomReference, MIN_ZOOM, MAX_ZOOM, DEFAULT_ANNOTATION_STYLE.zoomReference),
 });
+
+const getZoomAwareAnnotationStyle = (
+  style: NormalizedAnnotationStyle,
+  zoom: number
+): NormalizedAnnotationStyle => {
+  if (!style.scaleWithZoom) return style;
+  const zoomDelta = zoom - style.zoomReference;
+  const scale = Math.pow(2, zoomDelta * 0.35);
+  return {
+    ...style,
+    fontSize: clampNumber(style.fontSize * scale, 8, 72, style.fontSize),
+    strokeWidth: clampNumber(style.strokeWidth * Math.pow(scale, 0.25), 0.5, 12, style.strokeWidth),
+  };
+};
 
 const getFeatureVisualStyle = (
   join: LayerFeatureJoin,
@@ -2410,7 +2430,8 @@ export function ProjectSpatialMap({
         if (annotation.annotationType === "label" && annotation.geometry.type === "Point") {
           const point = projectCoordinate(annotation.geometry.coordinates);
           if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
-          const rect = drawAnnotationLabel(context, annotation.body || annotation.title, point, style, Number(annotation.rotation || 0));
+          const renderStyle = getZoomAwareAnnotationStyle(style, mapView.zoom);
+          const rect = drawAnnotationLabel(context, annotation.body || annotation.title, point, renderStyle, Number(annotation.rotation || 0));
           if (rect) {
             if (isSelected) {
               context.save();
@@ -2458,7 +2479,13 @@ export function ProjectSpatialMap({
       if (labelDraftPoint) {
         const point = projectCoordinate(labelDraftPoint);
         if (Number.isFinite(point.x) && Number.isFinite(point.y)) {
-          drawAnnotationLabel(context, annotationBody || annotationTitle || "Etiqueta", point, annotationStyle, annotationRotation);
+          drawAnnotationLabel(
+            context,
+            annotationBody || annotationTitle || "Etiqueta",
+            point,
+            getZoomAwareAnnotationStyle(annotationStyle, mapView.zoom),
+            annotationRotation
+          );
         }
       }
 
@@ -2831,7 +2858,7 @@ export function ProjectSpatialMap({
     setAnnotationTitle(tool === "polygon" ? "Nueva figura" : "Etiqueta personalizada");
     setAnnotationBody(tool === "label" ? "Nueva etiqueta" : "");
     setAnnotationRotation(0);
-    setAnnotationStyle(DEFAULT_ANNOTATION_STYLE);
+    setAnnotationStyle({ ...DEFAULT_ANNOTATION_STYLE, zoomReference: mapView.zoom });
     setSpatialPanelTab("style");
   };
 
@@ -3217,6 +3244,7 @@ export function ProjectSpatialMap({
       const pointHit = region.points.some((point) => Math.hypot(point.x - x, point.y - y) <= point.radius + 5);
       context.lineWidth = region.strokeWidth;
       if (pointHit || context.isPointInPath(region.path, x, y, "evenodd") || context.isPointInStroke(region.path, x, y)) {
+        setSelectedAnnotationId(null);
         setSelectedLayerId(region.layerId);
         setSelectedFeatureId(region.featureId);
         return;
@@ -3224,6 +3252,7 @@ export function ProjectSpatialMap({
     }
 
     setSelectedFeatureId(null);
+    setSelectedAnnotationId(null);
   };
 
   const recenterLayer = () => {
@@ -4551,6 +4580,31 @@ export function ProjectSpatialMap({
                                 }
                                 className="mt-1 w-full accent-indigo-600 disabled:opacity-50"
                               />
+                            </label>
+                            <label className="flex items-start gap-3 rounded-xl border border-slate-100 bg-slate-50 p-3">
+                              <input
+                                type="checkbox"
+                                checked={annotationStyle.scaleWithZoom}
+                                disabled={!canManage}
+                                onChange={(event) =>
+                                  setAnnotationStyle((current) => ({
+                                    ...current,
+                                    scaleWithZoom: event.target.checked,
+                                    zoomReference: event.target.checked ? mapView.zoom : current.zoomReference,
+                                  }))
+                                }
+                                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
+                              />
+                              <span className="min-w-0">
+                                <span className="block text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+                                  Escalar con zoom
+                                </span>
+                                <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">
+                                  {annotationStyle.scaleWithZoom
+                                    ? `El label crece o se reduce tomando como referencia el zoom ${annotationStyle.zoomReference}.`
+                                    : "El label conserva su tamaño visual aunque acerques o alejes el mapa."}
+                                </span>
+                              </span>
                             </label>
                             <label>
                               <span className="flex items-center justify-between text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">

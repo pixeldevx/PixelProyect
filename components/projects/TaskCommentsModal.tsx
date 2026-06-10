@@ -1,11 +1,22 @@
 "use client"
 
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, CalendarClock, CheckCircle2, History, MessageSquare, Pause, Play, Send, X } from 'lucide-react';
+import { ArrowLeft, CalendarClock, CheckCircle2, Download, ExternalLink, History, MapPin, MessageSquare, Pause, Play, Send, Users, X } from 'lucide-react';
 import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, updateDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+import {
+  createGoogleCalendarUrl,
+  downloadMeetingIcs,
+  getMeetingAgenda,
+  getMeetingDescription,
+  getMeetingLocation,
+  getMeetingRecurrenceLabel,
+  getMeetingScheduleLabel,
+  isMeetingLocationUrl,
+  isMeetingTask,
+} from '@/lib/calendar-utils';
 
 interface TaskCommentsModalProps {
   isOpen: boolean;
@@ -41,6 +52,8 @@ const formatCommentDate = (value: any) => {
 
 const getHistoryActionLabel = (action: string) => {
   switch (action) {
+    case 'meeting_comment':
+      return 'Comentario de reunión';
     case 'reschedule':
       return 'Reprogramada';
     case 'pause':
@@ -66,6 +79,8 @@ const getHistoryActionLabel = (action: string) => {
 
 const getHistoryActionClass = (action: string) => {
   switch (action) {
+    case 'meeting_comment':
+      return 'bg-cyan-50 text-cyan-700';
     case 'reschedule':
       return 'bg-indigo-50 text-indigo-700';
     case 'pause':
@@ -90,6 +105,14 @@ const getHistoryActionClass = (action: string) => {
 };
 
 const renderHistoryIcon = (action: string) => {
+  if (action === 'meeting_comment') {
+    return (
+      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-cyan-100 text-cyan-700">
+        <MessageSquare size={16} />
+      </div>
+    );
+  }
+
   if (action === 'reschedule') {
     return (
       <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-indigo-600">
@@ -133,6 +156,112 @@ const renderHistoryIcon = (action: string) => {
   return (
     <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-indigo-600">
       <MessageSquare size={16} />
+    </div>
+  );
+};
+
+const getMeetingAttendeesLabel = (task: any) => {
+  const attendees = Array.isArray(task?.meeting?.attendees) ? task.meeting.attendees : [];
+  if (attendees.length === 0) return '';
+  return attendees.map((attendee: any) => attendee?.name || attendee?.email).filter(Boolean).join(', ');
+};
+
+const MeetingContextCard = ({ task }: { task: any }) => {
+  const location = getMeetingLocation(task);
+  const description = getMeetingDescription(task);
+  const agenda = getMeetingAgenda(task);
+  const attendeesLabel = getMeetingAttendeesLabel(task);
+  const locationIsUrl = isMeetingLocationUrl(task);
+
+  return (
+    <div className="mb-4 rounded-2xl border border-cyan-100 bg-cyan-50 p-4 shadow-sm">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-black uppercase tracking-[0.14em] text-cyan-700">
+            <CalendarClock size={14} />
+            Reunión programada
+          </div>
+          <h3 className="mt-3 break-words text-base font-black text-slate-900 [overflow-wrap:anywhere]">
+            {getTaskTitle(task)}
+          </h3>
+          <p className="mt-1 text-sm font-bold text-cyan-900">
+            {getMeetingScheduleLabel(task)}
+          </p>
+          <p className="text-xs font-semibold text-cyan-700">
+            {getMeetingRecurrenceLabel(task)}
+          </p>
+        </div>
+
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => downloadMeetingIcs(task)}
+            className="h-8 border-cyan-200 bg-white text-cyan-700 hover:bg-cyan-50"
+          >
+            <Download size={14} className="mr-1.5" />
+            .ics
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => {
+              const url = createGoogleCalendarUrl(task);
+              if (url) window.open(url, '_blank', 'noopener,noreferrer');
+            }}
+            className="h-8 bg-cyan-700 text-white hover:bg-cyan-800"
+          >
+            <ExternalLink size={14} className="mr-1.5" />
+            Calendar
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2 text-sm text-slate-700">
+        {location && (
+          <div className="flex min-w-0 items-start gap-2 rounded-xl bg-white/80 px-3 py-2">
+            <MapPin size={15} className="mt-0.5 shrink-0 text-cyan-700" />
+            {locationIsUrl ? (
+              <a
+                href={location}
+                target="_blank"
+                rel="noreferrer"
+                className="min-w-0 break-all font-bold text-cyan-800 underline decoration-cyan-300 underline-offset-2 [overflow-wrap:anywhere]"
+              >
+                {location}
+              </a>
+            ) : (
+              <span className="min-w-0 break-words font-semibold [overflow-wrap:anywhere]">{location}</span>
+            )}
+          </div>
+        )}
+
+        {attendeesLabel && (
+          <div className="flex min-w-0 items-start gap-2 rounded-xl bg-white/80 px-3 py-2">
+            <Users size={15} className="mt-0.5 shrink-0 text-cyan-700" />
+            <span className="min-w-0 break-words font-semibold [overflow-wrap:anywhere]">{attendeesLabel}</span>
+          </div>
+        )}
+
+        {description && (
+          <div className="rounded-xl border border-cyan-100 bg-white/80 p-3">
+            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700">Descripción</p>
+            <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700 [overflow-wrap:anywhere]">
+              {description}
+            </p>
+          </div>
+        )}
+
+        {agenda && (
+          <div className="rounded-xl border border-cyan-100 bg-white/80 p-3">
+            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700">Agenda</p>
+            <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700 [overflow-wrap:anywhere]">
+              {agenda}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
@@ -293,6 +422,12 @@ export function TaskCommentsModal({
   };
 
   const interactionHistory = [
+    ...(Array.isArray(task.meetingResponses) ? task.meetingResponses : []).map((entry: any) => ({
+      ...entry,
+      action: 'meeting_comment',
+      historyType: 'meeting',
+      userName: entry.participantName || entry.userName,
+    })),
     ...(task.workflowHistory || []).map((entry: any) => ({
       ...entry,
       historyType: 'workflow',
@@ -393,6 +528,8 @@ export function TaskCommentsModal({
         </div>
 
         <div className="flex-1 overflow-y-auto bg-slate-50/60 p-5">
+          {isMeetingTask(task) && <MeetingContextCard task={task} />}
+
           {activeTab === 'comments' ? (
             <div className="space-y-3">
               {comments.length === 0 ? (
@@ -437,7 +574,9 @@ export function TaskCommentsModal({
                               {getHistoryAuthorName(history)}
                             </p>
                             <p className="break-words text-xs text-slate-500 [overflow-wrap:anywhere]">
-                              {history.historyType === 'status'
+                              {history.historyType === 'meeting'
+                                ? 'Participación registrada en la reunión'
+                                : history.historyType === 'status'
                                 ? getStatusHistoryDetail(history)
                                 : `Paso ${stepIndex + 1}: ${step?.label || history.stepLabel || 'Desconocido'}`}
                             </p>

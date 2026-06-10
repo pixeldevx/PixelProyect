@@ -15,8 +15,12 @@ import { notifyTaskAssignment } from '@/lib/notifications';
 import {
   createGoogleCalendarUrl,
   downloadMeetingIcs,
+  getMeetingAgenda,
+  getMeetingDescription,
+  getMeetingLocation,
   getMeetingRecurrenceLabel,
   getMeetingScheduleLabel,
+  isMeetingLocationUrl,
   isMeetingTask,
 } from '@/lib/calendar-utils';
 
@@ -544,10 +548,21 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                       <CalendarDays size={14} className="shrink-0 text-cyan-700" />
                       {getMeetingRecurrenceLabel(task)}
                     </span>
-                    {task.meeting?.location && (
+                    {getMeetingLocation(task) && (
                       <span className="inline-flex min-w-0 items-center gap-2 rounded-lg bg-white/70 px-3 py-2">
                         <MapPin size={14} className="shrink-0 text-cyan-700" />
-                        <span className="truncate">{task.meeting.location}</span>
+                        {isMeetingLocationUrl(task) ? (
+                          <a
+                            href={getMeetingLocation(task)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="min-w-0 truncate font-bold text-cyan-800 underline decoration-cyan-300 underline-offset-2"
+                          >
+                            {getMeetingLocation(task)}
+                          </a>
+                        ) : (
+                          <span className="min-w-0 truncate">{getMeetingLocation(task)}</span>
+                        )}
                       </span>
                     )}
                     {Array.isArray(task.meeting?.attendees) && task.meeting.attendees.length > 0 && (
@@ -559,9 +574,20 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                       </span>
                     )}
                   </div>
-                  {task.meeting?.agenda && (
-                    <div className="mt-3 rounded-lg border border-cyan-100 bg-white/70 p-3 text-sm leading-6 text-slate-700">
-                      {task.meeting.agenda}
+                  {getMeetingDescription(task) && (
+                    <div className="mt-3 rounded-lg border border-cyan-100 bg-white/70 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700">Descripción</p>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700 [overflow-wrap:anywhere]">
+                        {getMeetingDescription(task)}
+                      </p>
+                    </div>
+                  )}
+                  {getMeetingAgenda(task) && (
+                    <div className="mt-3 rounded-lg border border-cyan-100 bg-white/70 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700">Agenda</p>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700 [overflow-wrap:anywhere]">
+                        {getMeetingAgenda(task)}
+                      </p>
                     </div>
                   )}
                 </div>

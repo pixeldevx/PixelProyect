@@ -35,8 +35,12 @@ import { getTaskDisplayTitle } from '@/lib/task-title';
 import {
   createGoogleCalendarUrl,
   downloadMeetingIcs,
+  getMeetingAgenda,
+  getMeetingDescription,
+  getMeetingLocation,
   getMeetingRecurrenceLabel,
   getMeetingScheduleLabel,
+  isMeetingLocationUrl,
   isMeetingTask,
 } from '@/lib/calendar-utils';
 import { detectActionCandidates } from '@/lib/project-logbook/action-detection';
@@ -3056,6 +3060,23 @@ export default function WorkflowTray() {
                   <p className="mt-1 text-sm text-slate-500">
                     {getMeetingScheduleLabel(meetingTask)}
                   </p>
+                  {getMeetingLocation(meetingTask) && (
+                    <p className="mt-1 flex min-w-0 items-center gap-1.5 text-xs font-semibold text-cyan-700">
+                      <MapPin size={13} className="shrink-0" />
+                      {isMeetingLocationUrl(meetingTask) ? (
+                        <a
+                          href={getMeetingLocation(meetingTask)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="min-w-0 truncate underline decoration-cyan-300 underline-offset-2"
+                        >
+                          {getMeetingLocation(meetingTask)}
+                        </a>
+                      ) : (
+                        <span className="min-w-0 truncate">{getMeetingLocation(meetingTask)}</span>
+                      )}
+                    </p>
+                  )}
                 </div>
                 <Button
                   variant="ghost"
@@ -3086,6 +3107,26 @@ export default function WorkflowTray() {
                       {pendingCount} quedarán pendientes
                     </span>
                   </div>
+                  {(getMeetingDescription(meetingTask) || getMeetingAgenda(meetingTask)) && (
+                    <div className="mt-3 space-y-2">
+                      {getMeetingDescription(meetingTask) && (
+                        <div className="rounded-lg bg-slate-50 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Descripción</p>
+                          <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-600 [overflow-wrap:anywhere]">
+                            {getMeetingDescription(meetingTask)}
+                          </p>
+                        </div>
+                      )}
+                      {getMeetingAgenda(meetingTask) && (
+                        <div className="rounded-lg bg-cyan-50 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-cyan-700">Agenda</p>
+                          <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-700 [overflow-wrap:anywhere]">
+                            {getMeetingAgenda(meetingTask)}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -3468,10 +3509,21 @@ export default function WorkflowTray() {
                           <p className="mt-1 text-xs font-semibold text-cyan-700">
                             {getMeetingRecurrenceLabel(detailTask)}
                           </p>
-                          {detailTask.meeting?.location && (
+                          {getMeetingLocation(detailTask) && (
                             <p className="mt-2 flex min-w-0 items-center gap-2 text-xs text-cyan-800">
                               <MapPin size={13} className="shrink-0" />
-                              <span className="truncate">{detailTask.meeting.location}</span>
+                              {isMeetingLocationUrl(detailTask) ? (
+                                <a
+                                  href={getMeetingLocation(detailTask)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="min-w-0 truncate font-bold underline decoration-cyan-300 underline-offset-2"
+                                >
+                                  {getMeetingLocation(detailTask)}
+                                </a>
+                              ) : (
+                                <span className="min-w-0 truncate">{getMeetingLocation(detailTask)}</span>
+                              )}
                             </p>
                           )}
                         </div>
@@ -3500,6 +3552,26 @@ export default function WorkflowTray() {
                           </Button>
                         </div>
                       </div>
+                      {getMeetingDescription(detailTask) && (
+                        <div className="mt-4 rounded-lg border border-cyan-100 bg-white p-3">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-cyan-700">
+                            Descripción
+                          </p>
+                          <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-700 [overflow-wrap:anywhere]">
+                            {getMeetingDescription(detailTask)}
+                          </p>
+                        </div>
+                      )}
+                      {getMeetingAgenda(detailTask) && (
+                        <div className="mt-3 rounded-lg border border-cyan-100 bg-white p-3">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-cyan-700">
+                            Agenda
+                          </p>
+                          <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-slate-700 [overflow-wrap:anywhere]">
+                            {getMeetingAgenda(detailTask)}
+                          </p>
+                        </div>
+                      )}
                       {Array.isArray(detailTask.meetingResponses) && detailTask.meetingResponses.length > 0 && (
                         <div className="mt-4 rounded-lg border border-cyan-100 bg-white p-3">
                           <p className="mb-2 text-xs font-black uppercase tracking-wider text-cyan-700">

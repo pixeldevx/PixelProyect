@@ -11,7 +11,7 @@ import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { TaskDateEditorModal } from './TaskDateEditorModal';
 import { getTaskDisplayTitle, getTaskTitle, sanitizeTaskTitleForSave } from '@/lib/task-title';
-import { createGoogleCalendarUrl, downloadMeetingIcs, getMeetingScheduleLabel, isMeetingTask } from '@/lib/calendar-utils';
+import { createGoogleCalendarUrl, downloadMeetingIcs, getMeetingEndDate, getMeetingScheduleLabel, getMeetingStartDate, isMeetingTask } from '@/lib/calendar-utils';
 
 type ScheduleFilter = 'overdue' | 'due_soon' | 'completed_late' | null;
 
@@ -78,6 +78,15 @@ const getTaskDate = (value: any) => {
   if (value.toDate) return value.toDate();
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const getCompactMeetingScheduleLabel = (task: any) => {
+  const start = getMeetingStartDate(task);
+  const end = getMeetingEndDate(task);
+  if (!start) return 'Horario';
+  const startLabel = format(start, 'd MMM, h:mm a', { locale: es });
+  if (!end) return startLabel;
+  return `${startLabel} - ${format(end, 'h:mm a', { locale: es })}`;
 };
 
 const getTaskPriority = (task: any) => {
@@ -1530,7 +1539,15 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   )}
                                   {isMeeting && (
                                     <span className="shrink-0 rounded bg-cyan-50 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-cyan-700 ring-1 ring-cyan-100">
-                                      Reunion
+                                      Reunión
+                                    </span>
+                                  )}
+                                  {isMeeting && (
+                                    <span
+                                      className="max-w-[150px] shrink truncate rounded bg-cyan-100 px-1.5 py-0.5 text-[9px] font-black text-cyan-800 ring-1 ring-cyan-200"
+                                      title={getMeetingScheduleLabel(task)}
+                                    >
+                                      {getCompactMeetingScheduleLabel(task)}
                                     </span>
                                   )}
                                 </>
