@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import Image from 'next/image';
@@ -11,7 +11,6 @@ import {
   FileText, 
   Settings, 
   Bell, 
-  Search,
   ChevronDown,
   LogOut,
   ChevronLeft,
@@ -19,7 +18,8 @@ import {
   Inbox,
   ShieldCheck,
   WalletCards,
-  PackageSearch
+  PackageSearch,
+  UserCircle
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
@@ -28,9 +28,13 @@ import { useInboxPendingCount } from '@/hooks/useInboxPendingCount';
 import { ProfileModal } from '@/components/settings/ProfileModal';
 import { doc, onSnapshot } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
+import { SYSTEM_ROLE_OPTIONS } from '@/lib/permissions';
 
 const DEFAULT_BRAND_NAME = 'Pixel Project';
 const INVENTORY_OVERVIEW_ROLES = new Set(['admin', 'org_admin', 'manager']);
+const ROLE_LABELS = Object.fromEntries(
+  SYSTEM_ROLE_OPTIONS.map((role) => [role.id, role.name])
+) as Record<string, string>;
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -41,12 +45,17 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [showLoadingRecovery, setShowLoadingRecovery] = useState(false);
   const [brandName, setBrandName] = useState(DEFAULT_BRAND_NAME);
   const [brandLogoUrl, setBrandLogoUrl] = useState('');
+  const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const isInitialAuthLoading = loading && !user;
   const canAccessBudgetOverview = ['admin', 'org_admin', 'manager', 'coordinador'].includes(userRole || '');
   const canAccessInventoryOverview = INVENTORY_OVERVIEW_ROLES.has(userRole || '') && rolePermissions.inventoryOverview;
+  const roleLabel = ROLE_LABELS[userRole || ''] || 'Perfil de usuario';
+  const displayName = user?.displayName || user?.email?.split('@')[0] || 'Usuario';
+  const userInitial = displayName.charAt(0).toUpperCase();
 
   useEffect(() => {
     if (!loading && !user) {
@@ -84,6 +93,37 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
 
     return () => unsubscribe();
   }, [user]);
+
+  useEffect(() => {
+    if (!isProfileMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (profileMenuRef.current?.contains(event.target as Node)) return;
+      setIsProfileMenuOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsProfileMenuOpen(false);
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isProfileMenuOpen]);
+
+  const handleLogout = async () => {
+    setIsProfileMenuOpen(false);
+    await logout();
+  };
+
+  const openProfileModal = () => {
+    setIsProfileMenuOpen(false);
+    setIsProfileModalOpen(true);
+  };
 
   if (isInitialAuthLoading) {
     return (
@@ -212,7 +252,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-xs font-bold text-slate-500">
-                  {user.displayName?.charAt(0) || 'U'}
+                  {userInitial}
                 </div>
               )}
             </div>
@@ -222,8 +262,8 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
                   <p className="text-sm font-medium text-slate-900 truncate">{user.displayName || 'Usuario'}</p>
                   <p className="text-xs text-slate-500 truncate">{user.email}</p>
                 </div>
-                <button 
-                  onClick={(e) => { e.stopPropagation(); logout(); }} 
+                <button
+                  onClick={(e) => { e.stopPropagation(); void handleLogout(); }}
                   className="text-slate-400 hover:text-red-500 transition-colors" 
                   title="Cerrar sesión"
                 >
@@ -233,7 +273,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
             )}
             {isCollapsed && (
               <button 
-                onClick={(e) => { e.stopPropagation(); logout(); }} 
+                onClick={(e) => { e.stopPropagation(); void handleLogout(); }}
                 className="absolute -top-2 -right-2 w-5 h-5 bg-white border border-slate-200 rounded-full flex items-center justify-center text-slate-400 hover:text-red-500 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
                 title="Cerrar sesión"
               >
@@ -269,16 +309,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
               </div>
             </div>
 
-            <div className="hidden flex-1 items-center gap-4 md:flex">
-              <div className="relative w-64">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
-              <input 
-                type="text" 
-                placeholder="Search projects, people..." 
-                className="w-full h-9 pl-9 pr-4 rounded-md border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
-              />
-              </div>
-            </div>
+            <div className="hidden flex-1 md:block" />
           
             <div className="flex items-center gap-2 md:gap-4">
             {loading && (
@@ -287,20 +318,109 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
               </span>
             )}
 
-            <Button variant="ghost" size="icon" className="relative text-slate-500">
-              <Bell size={20} />
-              <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
-            </Button>
-            
-            <div className="mx-2 hidden h-6 w-px bg-slate-200 md:block"></div>
-            
-            <div className="hidden cursor-pointer items-center gap-2 text-sm font-medium transition-colors hover:text-indigo-600 md:flex">
-              <span>View as: Project Manager</span>
-              <ChevronDown size={16} className="text-slate-400" />
+            <div className="relative hidden md:block" ref={profileMenuRef}>
+              <button
+                type="button"
+                onClick={() => setIsProfileMenuOpen((current) => !current)}
+                className="flex max-w-[280px] items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-left shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50/40"
+                aria-haspopup="menu"
+                aria-expanded={isProfileMenuOpen}
+              >
+                <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-full bg-indigo-50 ring-1 ring-indigo-100">
+                  {user.photoURL ? (
+                    <Image
+                      src={user.photoURL}
+                      alt={displayName}
+                      fill
+                      className="object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <span className="flex h-full w-full items-center justify-center text-xs font-black text-indigo-700">
+                      {userInitial}
+                    </span>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-black leading-4 text-slate-950">{displayName}</p>
+                  <p className="truncate text-[11px] font-bold text-slate-500">{roleLabel}</p>
+                </div>
+                <ChevronDown
+                  size={16}
+                  className={`shrink-0 text-slate-400 transition-transform ${isProfileMenuOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+
+              {isProfileMenuOpen && (
+                <div
+                  className="absolute right-0 top-[calc(100%+0.6rem)] z-50 w-80 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/12"
+                  role="menu"
+                >
+                  <div className="border-b border-slate-100 bg-slate-50 p-4">
+                    <div className="flex items-center gap-3">
+                      <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full bg-indigo-100 ring-1 ring-indigo-200">
+                        {user.photoURL ? (
+                          <Image
+                            src={user.photoURL}
+                            alt={displayName}
+                            fill
+                            className="object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <span className="flex h-full w-full items-center justify-center text-sm font-black text-indigo-700">
+                            {userInitial}
+                          </span>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-black text-slate-950">{displayName}</p>
+                        <p className="truncate text-xs font-semibold text-slate-500">{user.email}</p>
+                      </div>
+                    </div>
+                    <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-indigo-100 bg-white px-3 py-1 text-[11px] font-black uppercase tracking-wider text-indigo-700">
+                      <ShieldCheck size={13} />
+                      {roleLabel}
+                    </div>
+                  </div>
+
+                  <div className="p-2">
+                    <button
+                      type="button"
+                      onClick={openProfileModal}
+                      className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-bold text-slate-700 transition hover:bg-slate-50 hover:text-indigo-700"
+                      role="menuitem"
+                    >
+                      <UserCircle size={18} className="text-slate-400" />
+                      Ver y editar perfil
+                    </button>
+                    {userRole === 'admin' && (
+                      <Link
+                        href="/settings"
+                        onClick={() => setIsProfileMenuOpen(false)}
+                        className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50 hover:text-indigo-700"
+                        role="menuitem"
+                      >
+                        <Settings size={18} className="text-slate-400" />
+                        Configuración del sistema
+                      </Link>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void handleLogout()}
+                      className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-bold text-red-600 transition hover:bg-red-50"
+                      role="menuitem"
+                    >
+                      <LogOut size={18} />
+                      Cerrar sesión
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
             <button
               type="button"
-              onClick={() => setIsProfileModalOpen(true)}
+              onClick={openProfileModal}
               className="relative h-9 w-9 overflow-hidden rounded-full bg-slate-100 md:hidden"
               aria-label="Abrir perfil"
             >
@@ -314,7 +434,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
                 />
               ) : (
                 <span className="flex h-full w-full items-center justify-center text-xs font-black text-slate-500">
-                  {user.displayName?.charAt(0) || 'U'}
+                  {userInitial}
                 </span>
               )}
             </button>
