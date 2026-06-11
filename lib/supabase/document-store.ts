@@ -37,6 +37,8 @@ type QueryConstraint = WhereConstraint | OrderConstraint | OrConstraint;
 const SERVER_TIMESTAMP = Symbol('serverTimestamp');
 const LOCAL_DOCUMENT_CHANGE_EVENT = 'pixel-project:document-store-change';
 const COLLECTION_FETCH_PAGE_SIZE = 1000;
+const BULK_WRITE_CHUNK_SIZE = 250;
+const BULK_READ_ID_CHUNK_SIZE = 250;
 
 class IncrementTransform {
   constructor(public by: number) {}
@@ -122,6 +124,11 @@ type LocalDocumentChangeDetail = {
   docId: string;
 };
 
+type BatchOperation =
+  | { type: 'set'; ref: DocumentReference; data: Record<string, any>; options?: { merge?: boolean } }
+  | { type: 'update'; ref: DocumentReference; data: Record<string, any> }
+  | { type: 'delete'; ref: DocumentReference };
+
 const emitLocalDocumentChange = (ref: DocumentReference) => {
   if (typeof window === 'undefined') return;
 
@@ -131,6 +138,26 @@ const emitLocalDocumentChange = (ref: DocumentReference) => {
       docId: ref.id,
     },
   }));
+};
+
+const documentKey = (ref: DocumentReference) => `${ref.collectionPath}\u0000${ref.id}`;
+
+const chunkArray = <T,>(items: T[], size: number) => {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+};
+
+const getUniqueRefs = (refs: DocumentReference[]) => {
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    const key = documentKey(ref);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 };
 
 const getQuerySource = (source: CollectionReference | SupabaseQuery) =>
@@ -478,18 +505,58 @@ const applyConstraints = (rows: Row[], constraints: QueryConstraint[]) => {
   return next;
 };
 
-const fetchRowsForCollection = async (source: CollectionReference) => {
+const getServerConstraintColumn = (field: string) => {
+  if (field === '__name__') return 'doc_id';
+  if (!/^[A-Za-z0-9_]+$/.test(field)) return null;
+  return `data->>${field}`;
+};
+
+const getServerComparableValue = (value: any) => {
+  const normalized = normalizeValue(value);
+  if (normalized == null) return null;
+  if (typeof normalized === 'string' || typeof normalized === 'number' || typeof normalized === 'boolean') {
+    return String(normalized);
+  }
+  return null;
+};
+
+const applyServerConstraints = (request: any, constraints: QueryConstraint[]) => {
+  return constraints.reduce((currentRequest, constraint) => {
+    if (constraint.type !== 'where') return currentRequest;
+
+    const column = getServerConstraintColumn(constraint.field);
+    if (!column) return currentRequest;
+
+    if (constraint.op === '==') {
+      const value = getServerComparableValue(constraint.value);
+      return value == null ? currentRequest : currentRequest.eq(column, value);
+    }
+
+    if (constraint.op === 'in' && Array.isArray(constraint.value) && constraint.value.length > 0) {
+      const values = constraint.value
+        .map((item) => getServerComparableValue(item))
+        .filter((item): item is string => item != null);
+      return values.length === constraint.value.length ? currentRequest.in(column, values) : currentRequest;
+    }
+
+    return currentRequest;
+  }, request);
+};
+
+const fetchRowsForCollection = async (source: CollectionReference, constraints: QueryConstraint[] = []) => {
   const rows: Row[] = [];
   let from = 0;
 
   while (true) {
-    let request = supabase.from(SUPABASE_DOCUMENTS_TABLE).select('*');
+    let request: any = supabase.from(SUPABASE_DOCUMENTS_TABLE).select('*');
 
     if (source.isCollectionGroup) {
       request = request.like('collection_path', `%/${source.id}`);
     } else {
       request = request.eq('collection_path', source.collectionPath);
     }
+
+    request = applyServerConstraints(request, constraints);
 
     const { data, error } = await request
       .order('collection_path', { ascending: true })
@@ -519,6 +586,38 @@ const fetchDocRow = async (ref: DocumentReference) => {
   return (data || null) as Row | null;
 };
 
+const fetchDocRows = async (refs: DocumentReference[]) => {
+  const uniqueRefs = getUniqueRefs(refs);
+  const rowsByKey = new Map<string, Row>();
+  if (uniqueRefs.length === 0) return rowsByKey;
+
+  const refsByCollection = new Map<string, string[]>();
+  uniqueRefs.forEach((ref) => {
+    const ids = refsByCollection.get(ref.collectionPath) || [];
+    ids.push(ref.id);
+    refsByCollection.set(ref.collectionPath, ids);
+  });
+
+  await Promise.all(
+    Array.from(refsByCollection.entries()).flatMap(([collectionPath, ids]) =>
+      chunkArray(ids, BULK_READ_ID_CHUNK_SIZE).map(async (idChunk) => {
+        const { data, error } = await supabase
+          .from(SUPABASE_DOCUMENTS_TABLE)
+          .select('*')
+          .eq('collection_path', collectionPath)
+          .in('doc_id', idChunk);
+
+        if (error) throw error;
+        ((data || []) as Row[]).forEach((row) => {
+          rowsByKey.set(`${row.collection_path}\u0000${row.doc_id}`, row);
+        });
+      })
+    )
+  );
+
+  return rowsByKey;
+};
+
 export const getDoc = async (ref: DocumentReference) => {
   return new DocumentSnapshot(ref, await fetchDocRow(ref));
 };
@@ -526,7 +625,7 @@ export const getDoc = async (ref: DocumentReference) => {
 export const getDocs = async (source: CollectionReference | SupabaseQuery) => {
   const querySource = (source as SupabaseQuery).kind === 'query' ? (source as SupabaseQuery).source : (source as CollectionReference);
   const constraints = (source as SupabaseQuery).kind === 'query' ? (source as SupabaseQuery).constraints : [];
-  const rows = await fetchRowsForCollection(querySource);
+  const rows = await fetchRowsForCollection(querySource, constraints);
   return new QuerySnapshot(applyConstraints(rows, constraints));
 };
 
@@ -542,6 +641,49 @@ const saveDocData = async (ref: DocumentReference, data: Record<string, any>) =>
   );
 
   if (error) throw error;
+};
+
+const saveDocDataMany = async (items: Array<{ ref: DocumentReference; data: Record<string, any> }>) => {
+  if (items.length === 0) return;
+  const updatedAt = new Date().toISOString();
+
+  for (const chunk of chunkArray(items, BULK_WRITE_CHUNK_SIZE)) {
+    const { error } = await supabase.from(SUPABASE_DOCUMENTS_TABLE).upsert(
+      chunk.map(({ ref, data }) => ({
+        collection_path: ref.collectionPath,
+        doc_id: ref.id,
+        data,
+        updated_at: updatedAt,
+      })),
+      { onConflict: 'collection_path,doc_id' }
+    );
+
+    if (error) throw error;
+  }
+};
+
+const deleteDocDataMany = async (refs: DocumentReference[]) => {
+  const uniqueRefs = getUniqueRefs(refs);
+  if (uniqueRefs.length === 0) return;
+
+  const refsByCollection = new Map<string, string[]>();
+  uniqueRefs.forEach((ref) => {
+    const ids = refsByCollection.get(ref.collectionPath) || [];
+    ids.push(ref.id);
+    refsByCollection.set(ref.collectionPath, ids);
+  });
+
+  for (const [collectionPath, ids] of refsByCollection.entries()) {
+    for (const idChunk of chunkArray(ids, BULK_READ_ID_CHUNK_SIZE)) {
+      const { error } = await supabase
+        .from(SUPABASE_DOCUMENTS_TABLE)
+        .delete()
+        .eq('collection_path', collectionPath)
+        .in('doc_id', idChunk);
+
+      if (error) throw error;
+    }
+  }
 };
 
 export const setDoc = async (
@@ -581,24 +723,99 @@ export const deleteDoc = async (ref: DocumentReference) => {
 };
 
 class WriteBatch {
-  private operations: (() => Promise<void>)[] = [];
+  private operations: BatchOperation[] = [];
 
   set(ref: DocumentReference, data: Record<string, any>, options?: { merge?: boolean }) {
-    this.operations.push(() => setDoc(ref, data, options));
+    this.operations.push({ type: 'set', ref, data, options });
   }
 
   update(ref: DocumentReference, data: Record<string, any>) {
-    this.operations.push(() => updateDoc(ref, data));
+    this.operations.push({ type: 'update', ref, data });
   }
 
   delete(ref: DocumentReference) {
-    this.operations.push(() => deleteDoc(ref));
+    this.operations.push({ type: 'delete', ref });
   }
 
   async commit() {
-    for (const operation of this.operations) {
-      await operation();
+    if (this.operations.length === 0) return;
+
+    const operationsByDocument = new Map<string, BatchOperation[]>();
+    this.operations.forEach((operation) => {
+      const key = documentKey(operation.ref);
+      const current = operationsByDocument.get(key) || [];
+      current.push(operation);
+      operationsByDocument.set(key, current);
+    });
+
+    const refsNeedingExistingData = getUniqueRefs(
+      Array.from(operationsByDocument.values())
+        .filter((operations) => {
+          let hasKnownFreshData = false;
+          return operations.some((operation) => {
+            if (operation.type === 'set' && !operation.options?.merge) {
+              hasKnownFreshData = true;
+              return false;
+            }
+            if (operation.type === 'set' && operation.options?.merge) return !hasKnownFreshData;
+            if (operation.type === 'update') return !hasKnownFreshData;
+            if (operation.type === 'delete') return false;
+            return false;
+          });
+        })
+        .map((operations) => operations[0].ref)
+    );
+
+    const existingRows = await fetchDocRows(refsNeedingExistingData);
+    const upserts: Array<{ ref: DocumentReference; data: Record<string, any> }> = [];
+    const deletes: DocumentReference[] = [];
+    const changedRefs: DocumentReference[] = [];
+
+    for (const operations of operationsByDocument.values()) {
+      const ref = operations[0].ref;
+      const existingRow = existingRows.get(documentKey(ref)) || null;
+      let exists = Boolean(existingRow);
+      let currentData: Record<string, any> | null = existingRow?.data ? { ...existingRow.data } : null;
+      let deleted = false;
+
+      for (const operation of operations) {
+        if (operation.type === 'set') {
+          currentData = operation.options?.merge
+            ? applyUpdate(currentData || {}, operation.data)
+            : normalizeData(operation.data);
+          exists = true;
+          deleted = false;
+          continue;
+        }
+
+        if (operation.type === 'update') {
+          if (!exists || !currentData) {
+            throw new Error(`Document does not exist: ${operation.ref.path}`);
+          }
+          currentData = applyUpdate(currentData, operation.data);
+          deleted = false;
+          continue;
+        }
+
+        currentData = null;
+        exists = false;
+        deleted = true;
+      }
+
+      if (deleted) {
+        deletes.push(ref);
+      } else if (currentData) {
+        upserts.push({ ref, data: currentData });
+      }
+      changedRefs.push(ref);
     }
+
+    await Promise.all([
+      saveDocDataMany(upserts),
+      deleteDocDataMany(deletes),
+    ]);
+
+    getUniqueRefs(changedRefs).forEach(emitLocalDocumentChange);
   }
 }
 
