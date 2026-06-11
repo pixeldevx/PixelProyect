@@ -36,6 +36,8 @@ import { UploadDocumentModal } from '@/components/projects/modals/UploadDocument
 import { AssignMemberModal } from '@/components/projects/modals/AssignMemberModal';
 import { RemoveMemberModal } from '@/components/projects/modals/RemoveMemberModal';
 import { CompleteTaskModal } from '@/components/projects/modals/CompleteTaskModal';
+import { CompleteSubtaskFormModal, SubtaskCompletionSubmission } from '@/components/projects/modals/CompleteSubtaskFormModal';
+import { CustomForm } from '@/components/projects/WorkflowStepFormBuilderModal';
 import { ProjectOrgChart } from '@/components/projects/ProjectOrgChart';
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
@@ -156,6 +158,26 @@ const isDynamicRateCardEnabled = (source: any) =>
 const isManualStaticRateCardEnabled = (source: any) =>
   Boolean(source?.isRateCardTask && source?.rateCardId && source?.autoAddUnits === false && !isDynamicRateCardEnabled(source));
 
+const getTaskCompletionForm = (task: any): CustomForm | null =>
+  task?.completionForm || task?.subtaskCompletionForm || null;
+
+const taskHasCompletionForm = (task: any) => {
+  const form = getTaskCompletionForm(task);
+  if (!form) return false;
+
+  return Boolean(
+    (Array.isArray(form.fields) && form.fields.length > 0) ||
+    (Array.isArray(form.rateCards) && form.rateCards.length > 0) ||
+    form.rateCardId ||
+    form.dynamicRateCard ||
+    form.rateCardMode === 'dynamic' ||
+    form.dynamicRateCardConfig
+  );
+};
+
+const taskShouldAskCompletionForm = (task: any) =>
+  Boolean(task?.parentTaskId && taskHasCompletionForm(task));
+
 const getDynamicRateCardUnits = (source: any) =>
   normalizeRateCardUnits(source?.dynamicRateCardConfig?.defaultUnits ?? source?.unitsToAdd);
 
@@ -253,6 +275,11 @@ export default function ProjectDetailsPage() {
   const [rescheduleEndDate, setRescheduleEndDate] = useState('');
   const [rescheduleReason, setRescheduleReason] = useState('');
   const [dynamicRateCardStatusChange, setDynamicRateCardStatusChange] = useState<{
+    taskId: string;
+    newStatus: string;
+    task: any;
+  } | null>(null);
+  const [completionFormStatusChange, setCompletionFormStatusChange] = useState<{
     taskId: string;
     newStatus: string;
     task: any;
@@ -622,6 +649,11 @@ export default function ProjectDetailsPage() {
         return;
       }
 
+      if (newProgress === 100 && taskShouldAskCompletionForm(task)) {
+        await handleUpdateTaskStatus(taskId, 'completed', task);
+        return;
+      }
+
       let status = 'in_progress';
       if (newProgress === 0) status = 'todo';
       if (newProgress === 100) status = 'completed';
@@ -967,7 +999,7 @@ export default function ProjectDetailsPage() {
       start: Date;
       end: Date;
     };
-  }) => {
+  }, completionSubmission?: SubtaskCompletionSubmission) => {
     if (!task) return;
     if (!canEditTaskStatus) {
       toast.error('No tienes permisos para cambiar el estado de tareas.');
@@ -1036,6 +1068,7 @@ export default function ProjectDetailsPage() {
       const taskNeedsCompletionRateCardCharge = taskHasDynamicRateCard || taskHasManualStaticRateCard;
       const wasCompleted = isCompletedTaskStatus(task.status);
       const isCompleted = isCompletedTaskStatus(finalStatus);
+      const needsCompletionForm = taskShouldAskCompletionForm(task);
       const actionDate = new Date();
       const actionTimestamp = Timestamp.fromDate(actionDate);
       const actorName = user?.displayName || user?.email || 'Usuario';
@@ -1054,7 +1087,12 @@ export default function ProjectDetailsPage() {
         comment: statusAction?.comment?.trim() || null,
       };
 
-      if (taskNeedsCompletionRateCardCharge && isCompleted && !wasCompleted && !dynamicCharge) {
+      if (needsCompletionForm && isCompleted && !wasCompleted && !completionSubmission) {
+        setCompletionFormStatusChange({ taskId, newStatus, task });
+        return;
+      }
+
+      if (taskNeedsCompletionRateCardCharge && isCompleted && !wasCompleted && !dynamicCharge && !completionSubmission) {
         setDynamicRateCardStatusChange({ taskId, newStatus, task });
         resetDynamicRateCardFields(task);
         return;
@@ -1063,6 +1101,69 @@ export default function ProjectDetailsPage() {
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
       let dynamicRateCardCharge: any = null;
+      let completionRateCardCharges: any[] = [];
+      const completionForm = getTaskCompletionForm(task);
+
+      if (completionSubmission && completionForm && isCompleted && !wasCompleted) {
+        const staticSources = getStaticRateCardSources({ form: completionForm });
+        staticSources.forEach((source) => {
+          const units = source.autoAddUnits === false
+            ? Number(completionSubmission.staticRateCardUnits[source.key] ?? 0)
+            : normalizeRateCardUnits(source.unitsToAdd);
+          const assigneeId = getStaticRateCardAssignee(
+            source,
+            task.assignedTo || user?.uid,
+            completionSubmission.staticRateCardAssignees[source.key],
+          );
+
+          if (!source.rateCardId || !assigneeId || !Number.isFinite(units)) return;
+
+          const charge = addDynamicRateCardChargeToBatch(batch, {
+            task,
+            rateCardId: source.rateCardId,
+            assigneeId,
+            units,
+            source: source.source === 'form' ? 'subtask_completion_form' : 'subtask_completion_step',
+            comment: completionSubmission.comment,
+          });
+
+          if (charge) completionRateCardCharges.push(charge);
+        });
+
+        if (completionSubmission.dynamicRateCard) {
+          const charge = addDynamicRateCardChargeToBatch(batch, {
+            task,
+            rateCardId: completionSubmission.dynamicRateCard.rateCardId,
+            assigneeId: completionSubmission.dynamicRateCard.assigneeId,
+            units: completionSubmission.dynamicRateCard.units,
+            source: 'subtask_completion_form_dynamic',
+            comment: completionSubmission.comment,
+          });
+
+          if (charge) completionRateCardCharges.push(charge);
+        }
+
+        statusHistoryEntry.comment = completionSubmission.comment;
+        statusHistoryEntry.formData = completionSubmission.formData;
+        statusHistoryEntry.completionFormTitle = completionForm.title || 'Formulario de cierre';
+        statusHistoryEntry.completionRateCardCharges = completionRateCardCharges;
+      }
+
+      if (needsCompletionForm && wasCompleted && !isCompleted && Array.isArray(task.completionRateCardLastCharges)) {
+        task.completionRateCardLastCharges.forEach((lastCharge: any) => {
+          if (!lastCharge?.rateCardId || !lastCharge?.assignedTo) return;
+          const charge = addDynamicRateCardChargeToBatch(batch, {
+            task,
+            rateCardId: lastCharge.rateCardId,
+            assigneeId: lastCharge.assignedTo,
+            units: -Math.abs(Number(lastCharge.units || 0)),
+            source: 'subtask_completion_form_reversal',
+            comment: 'Reverso automático por cambio de estado desde finalizada.',
+            reversal: true,
+          });
+          if (charge) completionRateCardCharges.push(charge);
+        });
+      }
 
       // Handle Rate Card update
       if (task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
@@ -1217,6 +1318,24 @@ export default function ProjectDetailsPage() {
         taskUpdate.dynamicRateCardLastCharge = dynamicRateCardCharge;
       } else if (taskNeedsCompletionRateCardCharge && wasCompleted && !isCompleted) {
         taskUpdate.dynamicRateCardLastCharge = null;
+      }
+
+      if (completionSubmission && completionForm && isCompleted && !wasCompleted) {
+        taskUpdate.completionFormData = completionSubmission.formData;
+        taskUpdate.completionFormHistory = arrayUnion({
+          id: `${taskId}-completion-form-${Date.now()}`,
+          formTitle: completionForm.title || 'Formulario de cierre',
+          formData: completionSubmission.formData,
+          comment: completionSubmission.comment,
+          rateCardCharges: completionRateCardCharges,
+          completedBy: user?.uid || null,
+          completedByEmail: user?.email || null,
+          completedByName: actorName,
+          timestamp: actionTimestamp,
+        });
+        taskUpdate.completionRateCardLastCharges = completionRateCardCharges;
+      } else if (needsCompletionForm && wasCompleted && !isCompleted) {
+        taskUpdate.completionRateCardLastCharges = [];
       }
 
       batch.update(taskRef, taskUpdate);
@@ -2143,6 +2262,7 @@ export default function ProjectDetailsPage() {
       status: string;
       startDate: string;
       endDate: string;
+      completionForm?: CustomForm;
     }
   ) => {
     if (!user || !parentTask) return;
@@ -2188,6 +2308,9 @@ export default function ProjectDetailsPage() {
         requiresDocument: false,
         linkedDocumentId: null,
         isRateCardTask: false,
+        completionForm: subtask.completionForm || null,
+        completionFormData: null,
+        completionRateCardLastCharges: [],
         rateCardId: null,
         unitsToAdd: null,
         syncExternal: false,
@@ -2216,6 +2339,26 @@ export default function ProjectDetailsPage() {
     } catch (error: any) {
       console.error("Error creating subtask:", error);
       toast.error(`Error al crear la subtarea: ${error.message}`);
+      throw error;
+    }
+  };
+
+  const handleUpdateSubtaskCompletionForm = async (subtask: any, form: CustomForm | undefined) => {
+    if (!subtask?.id) return;
+    if (!canEditTaskStructure && !canAddSubtasks) {
+      toast.error('No tienes permisos para modificar formularios de subtareas.');
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'projects', projectId, 'tasks', subtask.id), {
+        completionForm: form || null,
+        updatedAt: serverTimestamp(),
+      });
+      toast.success(form ? 'Formulario de subtarea actualizado.' : 'Formulario de subtarea eliminado.');
+    } catch (error: any) {
+      console.error('Error updating subtask completion form:', error);
+      toast.error(error?.message || 'No se pudo actualizar el formulario de la subtarea.');
       throw error;
     }
   };
@@ -3187,6 +3330,27 @@ export default function ProjectDetailsPage() {
         user={user}
       />
 
+      <CompleteSubtaskFormModal
+        isOpen={Boolean(completionFormStatusChange)}
+        onClose={() => setCompletionFormStatusChange(null)}
+        task={completionFormStatusChange?.task || null}
+        user={user}
+        teamMembers={projectAssignableTeamMembers}
+        rateCards={rateCards}
+        onSubmit={async (submission) => {
+          if (!completionFormStatusChange) return;
+          await handleUpdateTaskStatus(
+            completionFormStatusChange.taskId,
+            completionFormStatusChange.newStatus,
+            completionFormStatusChange.task,
+            undefined,
+            undefined,
+            submission,
+          );
+          setCompletionFormStatusChange(null);
+        }}
+      />
+
       <IncrementTaskValueModal
         isOpen={!!selectedTaskForIncrement}
         onClose={() => setSelectedTaskForIncrement(null)}
@@ -3508,6 +3672,7 @@ export default function ProjectDetailsPage() {
         userRole={userRole}
         templateScopeOrganizationIds={managedOrganizationIds}
         onCreateSubtask={canAddSubtasks ? handleCreateSubtask : undefined}
+        onUpdateSubtaskCompletionForm={canAddSubtasks || canEditTaskStructure ? handleUpdateSubtaskCompletionForm : undefined}
         onSave={async (updates) => {
           if (!taskForStructureEdit) return;
           await handleUpdateTaskStructure(taskForStructureEdit, updates);

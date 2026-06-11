@@ -94,6 +94,7 @@ type DraftSubtask = {
   endDate: string;
   priority: string;
   status: string;
+  completionForm?: CustomForm;
 };
 
 const createDraftSubtask = (
@@ -183,6 +184,8 @@ export function CreateTaskModal({
   const [newTaskPriority, setNewTaskPriority] = useState("medium");
   const [newTaskGroupId, setNewTaskGroupId] = useState("");
   const [draftSubtasks, setDraftSubtasks] = useState<DraftSubtask[]>([]);
+  const [isSubtaskFormBuilderOpen, setIsSubtaskFormBuilderOpen] = useState(false);
+  const [currentSubtaskIndexForForm, setCurrentSubtaskIndexForForm] = useState<number | null>(null);
   const [incrementForm, setIncrementForm] = useState<CustomForm | undefined>(
     undefined,
   );
@@ -264,6 +267,8 @@ export function CreateTaskModal({
     setNewTaskRateCardId("");
     setNewTaskUnitsToAdd(1);
     setDraftSubtasks([]);
+    setIsSubtaskFormBuilderOpen(false);
+    setCurrentSubtaskIndexForForm(null);
     setIncrementForm(undefined);
     setIsIncrementFormBuilderOpen(false);
     setMeetingStartTime("09:00");
@@ -710,6 +715,9 @@ export function CreateTaskModal({
             requiresDocument: false,
             linkedDocumentId: null,
             isRateCardTask: false,
+            completionForm: subtask.completionForm || null,
+            completionFormData: null,
+            completionRateCardLastCharges: [],
             rateCardId: null,
             unitsToAdd: null,
             syncExternal: false,
@@ -1742,6 +1750,21 @@ export function CreateTaskModal({
                         />
                         <button
                           type="button"
+                          onClick={() => {
+                            setCurrentSubtaskIndexForForm(index);
+                            setIsSubtaskFormBuilderOpen(true);
+                          }}
+                          className={`p-2 rounded-lg transition-colors ${
+                            subtask.completionForm
+                              ? "text-indigo-600 bg-indigo-50 hover:bg-indigo-100"
+                              : "text-slate-300 hover:text-indigo-600 hover:bg-indigo-50"
+                          }`}
+                          title={subtask.completionForm ? "Editar formulario de cierre" : "Agregar formulario de cierre"}
+                        >
+                          <ClipboardList size={16} />
+                        </button>
+                        <button
+                          type="button"
                           onClick={() =>
                             setDraftSubtasks(
                               draftSubtasks.filter((item) => item.id !== subtask.id),
@@ -1830,6 +1853,16 @@ export function CreateTaskModal({
                           }}
                           className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
                         />
+                      </div>
+
+                      <div className={`rounded-lg border px-3 py-2 text-[11px] ${
+                        subtask.completionForm
+                          ? "border-indigo-100 bg-indigo-50 text-indigo-700"
+                          : "border-slate-100 bg-slate-50 text-slate-400"
+                      }`}>
+                        {subtask.completionForm
+                          ? `Formulario de cierre: ${subtask.completionForm.title || "Sin título"} · ${subtask.completionForm.fields?.length || 0} campos`
+                          : "Sin formulario de cierre personalizado."}
                       </div>
                     </div>
                   ))}
@@ -2010,6 +2043,32 @@ export function CreateTaskModal({
           teamMembers={teamMembers}
           allowDynamicRateCard={false}
           onSave={(form) => setIncrementForm(form)}
+        />
+      )}
+
+      {isSubtaskFormBuilderOpen && currentSubtaskIndexForForm !== null && (
+        <WorkflowStepFormBuilderModal
+          isOpen={isSubtaskFormBuilderOpen}
+          onClose={() => {
+            setIsSubtaskFormBuilderOpen(false);
+            setCurrentSubtaskIndexForForm(null);
+          }}
+          stepName={
+            draftSubtasks[currentSubtaskIndexForForm]?.title ||
+            `Subtarea ${currentSubtaskIndexForForm + 1}`
+          }
+          initialForm={draftSubtasks[currentSubtaskIndexForForm]?.completionForm}
+          rateCards={rateCards}
+          teamMembers={teamMembers}
+          onSave={(form) => {
+            if (currentSubtaskIndexForForm === null) return;
+            const next = [...draftSubtasks];
+            next[currentSubtaskIndexForForm] = {
+              ...next[currentSubtaskIndexForForm],
+              completionForm: form,
+            };
+            setDraftSubtasks(next);
+          }}
         />
       )}
 

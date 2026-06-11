@@ -10,6 +10,7 @@ import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { TaskDocumentsViewer } from '@/components/projects/TaskDocumentsViewer';
 import { TaskCommentsModal } from '@/components/projects/TaskCommentsModal';
+import { CompleteSubtaskFormModal, SubtaskCompletionSubmission } from '@/components/projects/modals/CompleteSubtaskFormModal';
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
 import {
@@ -489,6 +490,26 @@ const buildTaskPerformanceEntry = ({
 const isDynamicRateCardEnabled = (source: any) =>
   Boolean(source?.dynamicRateCard || source?.rateCardMode === 'dynamic' || source?.dynamicRateCardConfig);
 
+const getTaskCompletionForm = (task: any) =>
+  task?.completionForm || task?.subtaskCompletionForm || null;
+
+const taskHasCompletionForm = (task: any) => {
+  const form = getTaskCompletionForm(task);
+  if (!form) return false;
+
+  return Boolean(
+    (Array.isArray(form.fields) && form.fields.length > 0) ||
+    (Array.isArray(form.rateCards) && form.rateCards.length > 0) ||
+    form.rateCardId ||
+    form.dynamicRateCard ||
+    form.rateCardMode === 'dynamic' ||
+    form.dynamicRateCardConfig
+  );
+};
+
+const taskShouldAskCompletionForm = (task: any) =>
+  Boolean(task?.parentTaskId && taskHasCompletionForm(task));
+
 const getDynamicRateCardUnits = (source: any) =>
   normalizeRateCardUnits(source?.dynamicRateCardConfig?.defaultUnits ?? source?.unitsToAdd);
 
@@ -821,6 +842,11 @@ export default function WorkflowTray() {
   const [dynamicRateCardId, setDynamicRateCardId] = useState('');
   const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState<number | ''>(1);
   const [dynamicRateCardModal, setDynamicRateCardModal] = useState<{
+    isOpen: boolean;
+    task: any;
+    nextStatus: string;
+  }>({ isOpen: false, task: null, nextStatus: 'completed' });
+  const [completionFormModal, setCompletionFormModal] = useState<{
     isOpen: boolean;
     task: any;
     nextStatus: string;
@@ -1523,7 +1549,7 @@ export default function WorkflowTray() {
       start: Date;
       end: Date;
     };
-  }) => {
+  }, completionSubmission?: SubtaskCompletionSubmission) => {
     if (!user || !task?.id || isWorkflowItem(task)) return;
 
     let statusComment = statusAction?.comment?.trim() || null;
@@ -1615,7 +1641,13 @@ export default function WorkflowTray() {
       }
     }
 
-    if (taskHasDynamicRateCard && isCompleted && !wasCompleted && !dynamicCharge && !meetingCompletion) {
+    if (taskShouldAskCompletionForm(task) && isCompleted && !wasCompleted && !completionSubmission && !meetingCompletion) {
+      setCompletionFormModal({ isOpen: true, task, nextStatus });
+      await loadProjectRateCardContext(task.projectId);
+      return;
+    }
+
+    if (taskHasDynamicRateCard && isCompleted && !wasCompleted && !dynamicCharge && !meetingCompletion && !completionSubmission) {
       setDynamicRateCardModal({ isOpen: true, task, nextStatus });
       resetDynamicRateCardFields(task, task.assignedTo || memberId || user?.uid || '');
       await loadProjectRateCardContext(task.projectId);
@@ -1628,6 +1660,67 @@ export default function WorkflowTray() {
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', task.projectId, 'tasks', task.id);
       let dynamicRateCardCharge: any = null;
+      let completionRateCardCharges: any[] = [];
+      const completionForm = getTaskCompletionForm(task);
+
+      if (completionSubmission && completionForm && isCompleted && !wasCompleted) {
+        const staticSources = getStaticRateCardSources({ form: completionForm });
+        staticSources.forEach((source) => {
+          const units = source.autoAddUnits === false
+            ? Number(completionSubmission.staticRateCardUnits[source.key] ?? 0)
+            : normalizeRateCardUnits(source.unitsToAdd);
+          const assigneeId = getStaticRateCardAssignee(
+            source,
+            task.assignedTo || memberId || user.uid,
+            completionSubmission.staticRateCardAssignees[source.key],
+          );
+
+          if (!source.rateCardId || !assigneeId || !Number.isFinite(units)) return;
+
+          const charge = addDynamicRateCardChargeToBatch(batch, {
+            projectId: task.projectId,
+            task,
+            rateCardId: source.rateCardId,
+            assigneeId,
+            units,
+            source: source.source === 'form' ? 'assigned_subtask_completion_form' : 'assigned_subtask_completion_step',
+            comment: completionSubmission.comment,
+          });
+
+          if (charge) completionRateCardCharges.push(charge);
+        });
+
+        if (completionSubmission.dynamicRateCard) {
+          const charge = addDynamicRateCardChargeToBatch(batch, {
+            projectId: task.projectId,
+            task,
+            rateCardId: completionSubmission.dynamicRateCard.rateCardId,
+            assigneeId: completionSubmission.dynamicRateCard.assigneeId,
+            units: completionSubmission.dynamicRateCard.units,
+            source: 'assigned_subtask_completion_form_dynamic',
+            comment: completionSubmission.comment,
+          });
+
+          if (charge) completionRateCardCharges.push(charge);
+        }
+      }
+
+      if (taskShouldAskCompletionForm(task) && wasCompleted && !isCompleted && Array.isArray(task.completionRateCardLastCharges)) {
+        task.completionRateCardLastCharges.forEach((lastCharge: any) => {
+          if (!lastCharge?.rateCardId || !lastCharge?.assignedTo) return;
+          const charge = addDynamicRateCardChargeToBatch(batch, {
+            projectId: task.projectId,
+            task,
+            rateCardId: lastCharge.rateCardId,
+            assigneeId: lastCharge.assignedTo,
+            units: -Math.abs(Number(lastCharge.units || 0)),
+            source: 'assigned_subtask_completion_form_reversal',
+            comment: 'Reverso automático por cambio de estado desde finalizada.',
+            reversal: true,
+          });
+          if (charge) completionRateCardCharges.push(charge);
+        });
+      }
 
       if (task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
         const oldProgress = task.progress || 0;
@@ -1690,9 +1783,14 @@ export default function WorkflowTray() {
         changedByName: user.displayName || user.email || 'Usuario',
         timestamp: actionTimestamp,
         source: 'inbox',
-        comment: meetingCompletion?.response?.comment || dynamicCharge?.comment || statusComment,
+        comment: meetingCompletion?.response?.comment || completionSubmission?.comment || dynamicCharge?.comment || statusComment,
         dynamicRateCard: dynamicRateCardCharge,
       };
+      if (completionSubmission && completionForm) {
+        statusHistoryEntry.formData = completionSubmission.formData;
+        statusHistoryEntry.completionFormTitle = completionForm.title || 'Formulario de cierre';
+        statusHistoryEntry.completionRateCardCharges = completionRateCardCharges;
+      }
       const taskPerformanceEntry =
         isCompleted && !wasCompleted
           ? buildTaskPerformanceEntry({
@@ -1789,9 +1887,9 @@ export default function WorkflowTray() {
           memberId,
           userIds: reviewActorIds,
           userName: user.displayName || user.email || 'Usuario',
-          comment: meetingCompletion?.response?.comment || dynamicCharge?.comment || statusComment,
+          comment: meetingCompletion?.response?.comment || completionSubmission?.comment || dynamicCharge?.comment || statusComment,
           timestamp: actionTimestamp,
-          source: meetingCompletion ? 'meeting_closure' : 'inbox_status',
+          source: meetingCompletion ? 'meeting_closure' : completionSubmission ? 'subtask_completion_form' : 'inbox_status',
           performanceEntryId: taskPerformanceEntry?.id || null,
         });
       }
@@ -1800,6 +1898,24 @@ export default function WorkflowTray() {
         taskUpdate.dynamicRateCardLastCharge = dynamicRateCardCharge;
       } else if (taskHasDynamicRateCard && wasCompleted && !isCompleted) {
         taskUpdate.dynamicRateCardLastCharge = null;
+      }
+
+      if (completionSubmission && completionForm && isCompleted && !wasCompleted) {
+        taskUpdate.completionFormData = completionSubmission.formData;
+        taskUpdate.completionFormHistory = arrayUnion({
+          id: `${task.id}-completion-form-${Date.now()}`,
+          formTitle: completionForm.title || 'Formulario de cierre',
+          formData: completionSubmission.formData,
+          comment: completionSubmission.comment,
+          rateCardCharges: completionRateCardCharges,
+          completedBy: user.uid,
+          completedByEmail: user.email || null,
+          completedByName: user.displayName || user.email || 'Usuario',
+          timestamp: actionTimestamp,
+        });
+        taskUpdate.completionRateCardLastCharges = completionRateCardCharges;
+      } else if (taskShouldAskCompletionForm(task) && wasCompleted && !isCompleted) {
+        taskUpdate.completionRateCardLastCharges = [];
       }
 
       if (meetingCompletion?.allParticipantsCompleted && !task.meetingLogbookEntryId) {
@@ -1879,6 +1995,22 @@ export default function WorkflowTray() {
 
     setDynamicRateCardModal({ isOpen: false, task: null, nextStatus: 'completed' });
     resetDynamicRateCardFields();
+  };
+
+  const confirmAssignedSubtaskCompletionForm = async (submission: SubtaskCompletionSubmission) => {
+    const task = completionFormModal.task;
+    if (!task) return;
+
+    await updateAssignedTaskStatus(
+      task,
+      completionFormModal.nextStatus,
+      undefined,
+      undefined,
+      undefined,
+      submission,
+    );
+
+    setCompletionFormModal({ isOpen: false, task: null, nextStatus: 'completed' });
   };
 
   const confirmMeetingCompletion = async () => {
@@ -3448,6 +3580,16 @@ export default function WorkflowTray() {
           </div>
         </div>
       )}
+
+      <CompleteSubtaskFormModal
+        isOpen={completionFormModal.isOpen}
+        onClose={() => setCompletionFormModal({ isOpen: false, task: null, nextStatus: 'completed' })}
+        task={completionFormModal.task}
+        user={user}
+        teamMembers={projectTeamMembers}
+        rateCards={projectRateCards}
+        onSubmit={confirmAssignedSubtaskCompletionForm}
+      />
 
       {detailsModalTask && (() => {
         const detailTask = detailsModalTask;

@@ -46,6 +46,7 @@ type SubtaskDraft = {
   status: string;
   startDate: string;
   endDate: string;
+  completionForm?: CustomForm;
 };
 
 interface EditTaskStructureModalProps {
@@ -63,6 +64,7 @@ interface EditTaskStructureModalProps {
   userRole?: string | null;
   templateScopeOrganizationIds?: string[];
   onCreateSubtask?: (parentTask: any, subtask: SubtaskDraft) => Promise<void> | void;
+  onUpdateSubtaskCompletionForm?: (subtask: any, form: CustomForm | undefined) => Promise<void> | void;
   onSave: (updates: {
     title: string;
     workflowSteps?: WorkflowStepDraft[];
@@ -197,6 +199,7 @@ export function EditTaskStructureModal({
   userRole,
   templateScopeOrganizationIds = [],
   onCreateSubtask,
+  onUpdateSubtaskCompletionForm,
   onSave,
 }: EditTaskStructureModalProps) {
   const [title, setTitle] = useState("");
@@ -210,6 +213,11 @@ export function EditTaskStructureModal({
     startDate: "",
     endDate: "",
   });
+  const [subtaskFormTarget, setSubtaskFormTarget] = useState<{
+    mode: "draft" | "existing";
+    subtask?: any;
+  } | null>(null);
+  const [isUpdatingSubtaskForm, setIsUpdatingSubtaskForm] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isCreatingSubtask, setIsCreatingSubtask] = useState(false);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
@@ -240,7 +248,10 @@ export function EditTaskStructureModal({
       status: "todo",
       startDate: toDateInputValue(task.startDate),
       endDate: toDateInputValue(task.endDate),
+      completionForm: undefined,
     });
+    setSubtaskFormTarget(null);
+    setIsUpdatingSubtaskForm(false);
     setIsSaving(false);
     setIsCreatingSubtask(false);
     setIsSavingTemplate(false);
@@ -422,7 +433,35 @@ export function EditTaskStructureModal({
       status: "todo",
       startDate: toDateInputValue(task.startDate),
       endDate: toDateInputValue(task.endDate),
+      completionForm: undefined,
     });
+  };
+
+  const getSubtaskCompletionFormSummary = (form?: CustomForm | null) => {
+    if (!form) return "Sin formulario de cierre";
+    const fieldsCount = form.fields?.length || 0;
+    const rateCardsCount = form.rateCards?.length || (form.rateCardId ? 1 : 0) || (form.dynamicRateCard ? 1 : 0);
+    return `${form.title || "Formulario de cierre"} · ${fieldsCount} campos${rateCardsCount ? ` · ${rateCardsCount} rates` : ""}`;
+  };
+
+  const handleSaveSubtaskCompletionForm = async (form: CustomForm | undefined) => {
+    if (!subtaskFormTarget) return;
+
+    if (subtaskFormTarget.mode === "draft") {
+      updateSubtaskDraft({ completionForm: form });
+      setSubtaskFormTarget(null);
+      return;
+    }
+
+    if (!subtaskFormTarget.subtask || !onUpdateSubtaskCompletionForm) return;
+
+    setIsUpdatingSubtaskForm(true);
+    try {
+      await onUpdateSubtaskCompletionForm(subtaskFormTarget.subtask, form);
+      setSubtaskFormTarget(null);
+    } finally {
+      setIsUpdatingSubtaskForm(false);
+    }
   };
 
   const handleCreateSubtask = async () => {
@@ -1337,7 +1376,25 @@ export function EditTaskStructureModal({
                           <p className="text-[11px] text-slate-500">
                             {assignee?.name || "Sin responsable"} · {getStatusLabel(subtask.status)}
                           </p>
+                          <p className={`mt-1 truncate text-[10px] font-semibold ${
+                            subtask.completionForm ? "text-indigo-600" : "text-slate-400"
+                          }`}>
+                            {getSubtaskCompletionFormSummary(subtask.completionForm)}
+                          </p>
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => setSubtaskFormTarget({ mode: "existing", subtask })}
+                          className={`rounded-lg p-2 transition-colors ${
+                            subtask.completionForm
+                              ? "bg-indigo-100 text-indigo-700 hover:bg-indigo-200"
+                              : "bg-white text-slate-400 hover:bg-indigo-50 hover:text-indigo-600"
+                          }`}
+                          title={subtask.completionForm ? "Editar formulario de cierre" : "Agregar formulario de cierre"}
+                          disabled={!onUpdateSubtaskCompletionForm}
+                        >
+                          <ClipboardList size={15} />
+                        </button>
                         <span className="rounded bg-white px-2 py-1 text-[10px] font-bold uppercase text-indigo-500 border border-indigo-100">
                           Subtarea
                         </span>
@@ -1359,6 +1416,18 @@ export function EditTaskStructureModal({
                       Se guardará como tarea por estado dependiente de esta tarea.
                     </p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setSubtaskFormTarget({ mode: "draft" })}
+                    className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold transition-colors ${
+                      subtaskDraft.completionForm
+                        ? "border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                        : "border-slate-200 bg-white text-slate-500 hover:border-indigo-200 hover:text-indigo-600"
+                    }`}
+                  >
+                    <ClipboardList size={14} />
+                    Formulario de cierre
+                  </button>
                 </div>
 
                 <input
@@ -1425,6 +1494,14 @@ export function EditTaskStructureModal({
                       className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
                     />
                   </div>
+                </div>
+
+                <div className={`rounded-lg border px-3 py-2 text-[11px] font-semibold ${
+                  subtaskDraft.completionForm
+                    ? "border-indigo-100 bg-indigo-50 text-indigo-700"
+                    : "border-slate-100 bg-slate-50 text-slate-400"
+                }`}>
+                  {getSubtaskCompletionFormSummary(subtaskDraft.completionForm)}
                 </div>
 
                 <div className="flex justify-end">
@@ -1494,6 +1571,29 @@ export function EditTaskStructureModal({
             if (currentStepIndexForForm === null) return;
             updateStep(currentStepIndexForForm, { form });
           }}
+        />
+      )}
+
+      {subtaskFormTarget && (
+        <WorkflowStepFormBuilderModal
+          isOpen={Boolean(subtaskFormTarget)}
+          onClose={() => {
+            if (isUpdatingSubtaskForm) return;
+            setSubtaskFormTarget(null);
+          }}
+          stepName={
+            subtaskFormTarget.mode === "existing"
+              ? getTaskTitle(subtaskFormTarget.subtask)
+              : subtaskDraft.title || "Nueva subtarea"
+          }
+          initialForm={
+            subtaskFormTarget.mode === "existing"
+              ? subtaskFormTarget.subtask?.completionForm
+              : subtaskDraft.completionForm
+          }
+          rateCards={rateCards}
+          teamMembers={teamMembers}
+          onSave={handleSaveSubtaskCompletionForm}
         />
       )}
 
