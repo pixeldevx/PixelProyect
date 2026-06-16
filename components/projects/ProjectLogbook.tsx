@@ -1,11 +1,11 @@
 "use client"
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { addDoc, collection, deleteDoc, doc, increment, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from "@/lib/supabase/document-store";
 import { db } from "@/lib/backend";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { BookOpen, Calendar, CheckCircle2, Clock, MessageSquare, Sparkles, Trash2, UserRound, Wand2, X } from "lucide-react";
+import { Bold, BookOpen, Calendar, CheckCircle2, Clock, Italic, List, ListOrdered, MessageSquare, Quote, RemoveFormatting, Sparkles, Trash2, Underline, UserRound, Wand2, X } from "lucide-react";
 import { toast } from "sonner";
 import {
   ACTION_VERBS,
@@ -29,6 +29,7 @@ type LogbookEntry = {
   id: string;
   title: string;
   content: string;
+  contentHtml?: string;
   type: string;
   systemType?: string;
   source?: string;
@@ -63,6 +64,132 @@ const ENTRY_TYPES = [
 ];
 
 const ACTION_VERB_EXAMPLES = ACTION_VERBS.slice(0, 8).join(", ");
+
+const ALLOWED_RICH_TEXT_TAGS = new Set([
+  "A",
+  "B",
+  "BLOCKQUOTE",
+  "BR",
+  "DIV",
+  "EM",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "I",
+  "LI",
+  "OL",
+  "P",
+  "SPAN",
+  "STRONG",
+  "U",
+  "UL",
+]);
+
+const ALLOWED_RICH_TEXT_STYLES = new Set([
+  "background-color",
+  "color",
+  "font-style",
+  "font-weight",
+  "text-align",
+  "text-decoration",
+]);
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+
+const sanitizeStyleValue = (value: string) => {
+  const cleanValue = value.trim();
+  if (/url\s*\(/i.test(cleanValue)) return "";
+  if (/expression\s*\(/i.test(cleanValue)) return "";
+  return cleanValue;
+};
+
+const sanitizeRichText = (html: string) => {
+  if (!html.trim()) return "";
+  if (typeof window === "undefined" || typeof DOMParser === "undefined") {
+    return escapeHtml(html).replace(/\n/g, "<br>");
+  }
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<div>${html}</div>`, "text/html");
+
+  const cleanNode = (node: Node): Node | null => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return document.createTextNode(node.textContent || "");
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return null;
+
+    const element = node as HTMLElement;
+    const tagName = element.tagName.toUpperCase();
+
+    if (!ALLOWED_RICH_TEXT_TAGS.has(tagName)) {
+      const fragment = document.createDocumentFragment();
+      Array.from(element.childNodes).forEach((child) => {
+        const cleanChild = cleanNode(child);
+        if (cleanChild) fragment.appendChild(cleanChild);
+      });
+      return fragment;
+    }
+
+    const cleanElement = document.createElement(tagName.toLowerCase());
+
+    if (tagName === "A") {
+      const href = element.getAttribute("href") || "";
+      if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
+        cleanElement.setAttribute("href", href);
+        cleanElement.setAttribute("target", "_blank");
+        cleanElement.setAttribute("rel", "noopener noreferrer");
+      }
+    }
+
+    const cleanStyles: string[] = [];
+    Array.from(element.style).forEach((styleName) => {
+      const property = styleName.toLowerCase();
+      if (!ALLOWED_RICH_TEXT_STYLES.has(property)) return;
+      const styleValue = sanitizeStyleValue(element.style.getPropertyValue(styleName));
+      if (styleValue) cleanStyles.push(`${property}: ${styleValue}`);
+    });
+    if (cleanStyles.length > 0) {
+      cleanElement.setAttribute("style", cleanStyles.join("; "));
+    }
+
+    Array.from(element.childNodes).forEach((child) => {
+      const cleanChild = cleanNode(child);
+      if (cleanChild) cleanElement.appendChild(cleanChild);
+    });
+
+    return cleanElement;
+  };
+
+  const container = document.createElement("div");
+  Array.from(doc.body.firstElementChild?.childNodes || []).forEach((child) => {
+    const cleanChild = cleanNode(child);
+    if (cleanChild) container.appendChild(cleanChild);
+  });
+
+  return container.innerHTML;
+};
+
+const richTextToPlainText = (html: string) => {
+  if (!html.trim()) return "";
+  if (typeof document === "undefined") {
+    return html.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  const container = document.createElement("div");
+  container.innerHTML = sanitizeRichText(html);
+  return (container.innerText || container.textContent || "").trim();
+};
+
+const hasMeaningfulRichText = (html?: string) =>
+  Boolean(html && richTextToPlainText(html).length > 0);
 
 const getDateValue = (value: any) => {
   if (!value) return null;
@@ -294,12 +421,15 @@ export function ProjectLogbook({
   const [loading, setLoading] = useState(true);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [contentHtml, setContentHtml] = useState("");
   const [type, setType] = useState("meeting");
   const [savingEntry, setSavingEntry] = useState(false);
   const [selectedAction, setSelectedAction] = useState<{ entry: LogbookEntry; candidate: ActionCandidate } | null>(null);
   const [actionForm, setActionForm] = useState<ActionForm>(emptyActionForm());
   const [savingAction, setSavingAction] = useState(false);
   const [deletingEntryId, setDeletingEntryId] = useState<string | null>(null);
+  const [editorResetKey, setEditorResetKey] = useState(0);
+  const richEditorRef = useRef<HTMLDivElement | null>(null);
   const initialEntrySeedRef = React.useRef<Set<string>>(new Set());
 
   const projectMembers = useMemo(
@@ -320,6 +450,18 @@ export function ProjectLogbook({
   const parentTaskOptions = tasks.filter((task) => !task.parentTaskId);
   const tasksById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
   const liveCandidates = useMemo(() => detectActionCandidates(content), [content]);
+
+  const syncEditorState = () => {
+    const rawHtml = richEditorRef.current?.innerHTML || "";
+    setContentHtml(rawHtml);
+    setContent(richTextToPlainText(rawHtml));
+  };
+
+  const runEditorCommand = (command: string, value?: string) => {
+    richEditorRef.current?.focus();
+    document.execCommand(command, false, value);
+    syncEditorState();
+  };
 
   const getEntryCandidates = (entry: LogbookEntry) =>
     mergeActionCandidates(entry.actionCandidates || [], entry.content || "");
@@ -402,14 +544,17 @@ export function ProjectLogbook({
   const resetEntryForm = () => {
     setTitle("");
     setContent("");
+    setContentHtml("");
     setType("meeting");
+    setEditorResetKey((current) => current + 1);
   };
 
   const handleCreateEntry = async (event: React.FormEvent) => {
     event.preventDefault();
 
     const cleanTitle = title.trim();
-    const cleanContent = content.trim();
+    const cleanContentHtml = sanitizeRichText(contentHtml || richEditorRef.current?.innerHTML || "");
+    const cleanContent = richTextToPlainText(cleanContentHtml);
     if (!cleanTitle || !cleanContent) {
       toast.warning("Agrega título y contenido para la bitácora.");
       return;
@@ -421,6 +566,7 @@ export function ProjectLogbook({
         projectId,
         title: cleanTitle,
         content: cleanContent,
+        contentHtml: cleanContentHtml,
         type,
         actionCandidates: detectActionCandidates(cleanContent),
         derivedLinks: [],
@@ -718,6 +864,19 @@ export function ProjectLogbook({
     return nodes;
   };
 
+  const renderLogbookContent = (entry: LogbookEntry) => {
+    if (hasMeaningfulRichText(entry.contentHtml)) {
+      return (
+        <div
+          className="logbook-rich-content"
+          dangerouslySetInnerHTML={{ __html: sanitizeRichText(entry.contentHtml || "") }}
+        />
+      );
+    }
+
+    return renderAnnotatedContent(entry);
+  };
+
   const renderLinkedTaskCard = (entry: LogbookEntry, link: any, index: number) => {
     const linkedTask = tasksById.get(link.taskId);
     const relationLabel = getRelationLabel(link.relationType);
@@ -877,12 +1036,85 @@ export function ProjectLogbook({
             ))}
           </select>
         </div>
-        <textarea
-          value={content}
-          onChange={(event) => setContent(event.target.value)}
-          placeholder="Pega la minuta o escribe lo ocurrido. Ej: Hay que revisar el contrato, validar el entregable y enviar observaciones al cliente."
-          className="mt-3 min-h-32 w-full resize-y rounded-xl border border-slate-200 px-3 py-3 text-sm outline-none transition-all focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
-        />
+        <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-500/20">
+          <div className="flex flex-wrap items-center gap-1 border-b border-slate-100 bg-slate-50/80 px-2 py-2">
+            <button
+              type="button"
+              onClick={() => runEditorCommand("bold")}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-600 transition hover:bg-white hover:text-indigo-600"
+              title="Negrita"
+            >
+              <Bold size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => runEditorCommand("italic")}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-600 transition hover:bg-white hover:text-indigo-600"
+              title="Cursiva"
+            >
+              <Italic size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => runEditorCommand("underline")}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-600 transition hover:bg-white hover:text-indigo-600"
+              title="Subrayado"
+            >
+              <Underline size={15} />
+            </button>
+            <span className="mx-1 h-5 w-px bg-slate-200" />
+            <button
+              type="button"
+              onClick={() => runEditorCommand("insertUnorderedList")}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-600 transition hover:bg-white hover:text-indigo-600"
+              title="Lista"
+            >
+              <List size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => runEditorCommand("insertOrderedList")}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-600 transition hover:bg-white hover:text-indigo-600"
+              title="Lista numerada"
+            >
+              <ListOrdered size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => runEditorCommand("formatBlock", "blockquote")}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-600 transition hover:bg-white hover:text-indigo-600"
+              title="Cita o intervención destacada"
+            >
+              <Quote size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => runEditorCommand("removeFormat")}
+              className="ml-auto inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-bold text-slate-500 transition hover:bg-white hover:text-red-600"
+              title="Limpiar formato seleccionado"
+            >
+              <RemoveFormatting size={14} />
+              Limpiar
+            </button>
+          </div>
+          <div className="relative">
+            {!content.trim() && (
+              <div className="pointer-events-none absolute left-4 top-4 max-w-[calc(100%-2rem)] text-sm leading-6 text-slate-400">
+                Pega la minuta con formato o escribe lo ocurrido. Ej: acuerdos, responsables, pendientes, decisiones y observaciones de la reunión.
+              </div>
+            )}
+            <div
+              key={editorResetKey}
+              ref={richEditorRef}
+              contentEditable
+              suppressContentEditableWarning
+              onInput={syncEditorState}
+              onBlur={syncEditorState}
+              onPaste={() => window.setTimeout(syncEditorState, 0)}
+              className="logbook-rich-editor min-h-40 w-full overflow-y-auto px-4 py-4 text-sm leading-7 text-slate-700 outline-none"
+            />
+          </div>
+        </div>
         {content.trim() && (
           <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -984,8 +1216,8 @@ export function ProjectLogbook({
                   </div>
                 </div>
 
-                <div className="mt-4 whitespace-pre-wrap rounded-xl border border-slate-100 bg-slate-50/70 p-4 text-sm leading-7 text-slate-700">
-                  {renderAnnotatedContent(entry)}
+                <div className="mt-4 whitespace-pre-wrap rounded-xl border border-slate-100 bg-slate-50/70 p-4 text-sm leading-7 text-slate-700 [&_.logbook-rich-content]:whitespace-normal [&_.logbook-rich-content_a]:font-semibold [&_.logbook-rich-content_a]:text-indigo-600 [&_.logbook-rich-content_blockquote]:my-3 [&_.logbook-rich-content_blockquote]:border-l-4 [&_.logbook-rich-content_blockquote]:border-indigo-300 [&_.logbook-rich-content_blockquote]:bg-white/70 [&_.logbook-rich-content_blockquote]:px-4 [&_.logbook-rich-content_blockquote]:py-2 [&_.logbook-rich-content_h1]:mb-2 [&_.logbook-rich-content_h1]:text-xl [&_.logbook-rich-content_h1]:font-black [&_.logbook-rich-content_h2]:mb-2 [&_.logbook-rich-content_h2]:text-lg [&_.logbook-rich-content_h2]:font-black [&_.logbook-rich-content_h3]:mb-1 [&_.logbook-rich-content_h3]:font-bold [&_.logbook-rich-content_li]:ml-5 [&_.logbook-rich-content_ol]:my-2 [&_.logbook-rich-content_ol]:list-decimal [&_.logbook-rich-content_p]:my-2 [&_.logbook-rich-content_ul]:my-2 [&_.logbook-rich-content_ul]:list-disc">
+                  {renderLogbookContent(entry)}
                 </div>
 
                 {candidates.length > 0 && (
