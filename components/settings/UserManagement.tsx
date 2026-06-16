@@ -101,6 +101,7 @@ export function UserManagement() {
   const [selectedOrganizationIds, setSelectedOrganizationIds] = useState<string[]>([]);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
   const [resendingUserId, setResendingUserId] = useState<string | null>(null);
+  const [isSyncingEmail, setIsSyncingEmail] = useState(false);
 
   const systemRoles = [
     { id: 'admin', name: 'Administrador Global' },
@@ -332,13 +333,64 @@ export function UserManagement() {
     }
   };
 
+  const syncUserEmailIfNeeded = async (targetUser: any, nextEmail: string) => {
+    const currentEmail = String(targetUser?.email || '').trim().toLowerCase();
+    const normalizedNextEmail = nextEmail.trim().toLowerCase();
+
+    if (!normalizedNextEmail || currentEmail === normalizedNextEmail) {
+      return normalizedNextEmail;
+    }
+
+    if (currentUserRole !== 'admin') {
+      throw new Error('Solo el administrador global puede cambiar el correo de acceso.');
+    }
+
+    const confirmed = window.confirm(
+      `¿Cambiar el correo de acceso de ${currentEmail || targetUser.displayName || 'este usuario'} a ${normalizedNextEmail}?`
+    );
+    if (!confirmed) {
+      throw new Error('Cambio de correo cancelado.');
+    }
+
+    setIsSyncingEmail(true);
+    try {
+      const accessToken = await getAccessToken();
+      const response = await fetchWithTimeout('/api/admin/users', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          userId: targetUser.id,
+          email: normalizedNextEmail,
+        }),
+      }, 'La actualización del correo tardó demasiado. Refresca la lista antes de volver a intentar.');
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'No fue posible actualizar el correo de acceso.');
+      }
+
+      const syncedEmail = result.email || normalizedNextEmail;
+      setEditingUser((prev: any) => prev ? { ...prev, email: syncedEmail } : prev);
+      setUsers((prevUsers) =>
+        prevUsers.map((item) => item.id === targetUser.id ? { ...item, email: syncedEmail } : item)
+      );
+      toast.success(result.message || 'Correo de acceso actualizado.');
+      return syncedEmail;
+    } finally {
+      setIsSyncingEmail(false);
+    }
+  };
+
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!userEmail.trim()) return;
 
     setIsUploading(true);
     try {
-      const normalizedEmail = userEmail.toLowerCase();
+      let normalizedEmail = userEmail.trim().toLowerCase();
       const cleanOrganizationIds = formSystemRole === 'admin'
         ? []
         : Array.from(new Set(selectedOrganizationIds.filter(Boolean)));
@@ -353,6 +405,9 @@ export function UserManagement() {
       let uploadedPhotoURL = editingUser?.photoURL || null;
 
       if (editingUser) {
+        const originalEmail = String(editingUser.email || '').trim().toLowerCase();
+        normalizedEmail = await syncUserEmailIfNeeded(editingUser, normalizedEmail);
+
         if (photoFile) {
           uploadedPhotoURL = await withTimeout(
             uploadProfilePicture(editingUser.id, photoFile),
@@ -377,22 +432,31 @@ export function UserManagement() {
         }, { merge: true });
 
         // Also update team_members collection if the user exists there
-        if (editingUser.email) {
-          const tmQuery = query(collection(db, 'team_members'), where('email', '==', editingUser.email));
+        const teamMemberDocs = new Map<string, any>();
+        const teamQueries = [
+          query(collection(db, 'team_members'), where('authUserId', '==', editingUser.id)),
+          ...(originalEmail ? [query(collection(db, 'team_members'), where('email', '==', originalEmail))] : []),
+          query(collection(db, 'team_members'), where('email', '==', normalizedEmail)),
+        ];
+
+        for (const tmQuery of teamQueries) {
           const tmSnapshot = await getDocs(tmQuery);
-          for (const tmDoc of tmSnapshot.docs) {
-            await updateDoc(doc(db, 'team_members', tmDoc.id), {
-              email: normalizedEmail,
-              name: userName || normalizedEmail.split('@')[0],
-              ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL }),
-              ...(currentUserRole === 'admin'
-                ? {
-                    organizationId: primaryOrganizationId,
-                    organizationIds: cleanOrganizationIds,
-                  }
-                : {})
-            });
-          }
+          tmSnapshot.docs.forEach((tmDoc) => teamMemberDocs.set(tmDoc.id, tmDoc));
+        }
+
+        for (const tmDoc of teamMemberDocs.values()) {
+          await updateDoc(doc(db, 'team_members', tmDoc.id), {
+            email: normalizedEmail,
+            name: userName || normalizedEmail.split('@')[0],
+            authUserId: editingUser.id,
+            ...(uploadedPhotoURL && { photoURL: uploadedPhotoURL }),
+            ...(currentUserRole === 'admin'
+              ? {
+                  organizationId: primaryOrganizationId,
+                  organizationIds: cleanOrganizationIds,
+                }
+              : {})
+          });
         }
 
         toast.success("Usuario actualizado exitosamente.");
@@ -596,7 +660,7 @@ export function UserManagement() {
                       <button 
                         onClick={() => handleOpenModal(u)}
                         className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
-                        title="Editar Rol"
+                        title="Editar usuario"
                       >
                         <Shield size={16} />
                       </button>
@@ -624,7 +688,7 @@ export function UserManagement() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4 animate-in fade-in zoom-in-95 duration-200">
             <h3 className="text-lg font-semibold text-slate-900 mb-4">
-              {editingUser ? 'Editar Rol de Usuario' : 'Invitar Nuevo Usuario'}
+              {editingUser ? 'Editar Usuario' : 'Invitar Nuevo Usuario'}
             </h3>
             
             <form onSubmit={handleSaveUser}>
@@ -667,8 +731,16 @@ export function UserManagement() {
                     value={userEmail}
                     onChange={(e) => setUserEmail(e.target.value)}
                     placeholder="correo@ejemplo.com"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    disabled={Boolean(editingUser && currentUserRole !== 'admin')}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed"
                   />
+                  {editingUser && (
+                    <p className="text-xs text-slate-500 mt-1">
+                      {currentUserRole === 'admin'
+                        ? 'Si cambias este correo se actualiza el inicio de sesión en Supabase Auth y las asignaciones por email.'
+                        : 'Solo el administrador global puede cambiar el correo de acceso.'}
+                    </p>
+                  )}
                 </div>
                 
                 <div>
@@ -754,10 +826,10 @@ export function UserManagement() {
                 </Button>
                 <Button 
                   type="submit"
-                  disabled={isUploading}
+                  disabled={isUploading || isSyncingEmail}
                   className="bg-indigo-600 hover:bg-indigo-700 text-white"
                 >
-                  {isUploading ? 'Guardando...' : editingUser ? 'Guardar' : 'Enviar Invitación'}
+                  {isSyncingEmail ? 'Sincronizando correo...' : isUploading ? 'Guardando...' : editingUser ? 'Guardar' : 'Enviar Invitación'}
                 </Button>
               </div>
             </form>

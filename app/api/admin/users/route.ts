@@ -120,11 +120,42 @@ const listAuthUsers = async (supabase: AdminClient) => {
   }
 };
 
+const findAuthUserByEmail = async (
+  supabase: AdminClient,
+  email: string
+) => {
+  const perPage = 1000;
+  let page = 1;
+
+  while (true) {
+    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage });
+    if (error) throw error;
+
+    const match = data.users.find((user: { email?: string | null }) => normalizeEmail(user.email) === email);
+    if (match) return match;
+    if (data.users.length < perPage) return null;
+    page += 1;
+  }
+};
+
 const listProfileDocuments = async (supabase: AdminClient) => {
   const { data, error } = await supabase
     .from(DOCUMENTS_TABLE)
     .select('collection_path, doc_id, data')
     .in('collection_path', ['users', 'team_members']);
+
+  if (error) throw error;
+  return (data || []) as AppDocumentRow[];
+};
+
+const listDocumentsByCollection = async (
+  supabase: AdminClient,
+  collectionPath: string
+) => {
+  const { data, error } = await supabase
+    .from(DOCUMENTS_TABLE)
+    .select('collection_path, doc_id, data')
+    .eq('collection_path', collectionPath);
 
   if (error) throw error;
   return (data || []) as AppDocumentRow[];
@@ -235,6 +266,144 @@ const deleteDocumentsForUser = async (
   );
 };
 
+const upsertDocumentData = async (
+  supabase: AdminClient,
+  collectionPath: string,
+  docId: string,
+  data: Record<string, any>
+) => {
+  const { error } = await supabase
+    .from(DOCUMENTS_TABLE)
+    .upsert(
+      {
+        collection_path: collectionPath,
+        doc_id: docId,
+        data,
+      },
+      { onConflict: 'collection_path,doc_id' }
+    );
+
+  if (error) throw error;
+};
+
+const updateProfileEmailReferences = async (
+  supabase: AdminClient,
+  targetAuthUser: any,
+  oldEmail: string,
+  newEmail: string,
+  requesterEmail: string
+) => {
+  const now = new Date().toISOString();
+  const rows = await listProfileDocuments(supabase);
+  const targetRows = rows.filter((row) => {
+    const rowEmail = normalizeEmail(row.data?.email);
+    const authUserId = typeof row.data?.authUserId === 'string' ? row.data.authUserId : '';
+    const uid = typeof row.data?.uid === 'string' ? row.data.uid : '';
+
+    return (
+      row.doc_id === targetAuthUser.id ||
+      authUserId === targetAuthUser.id ||
+      uid === targetAuthUser.id ||
+      (oldEmail && rowEmail === oldEmail)
+    );
+  });
+
+  if (targetRows.length === 0) {
+    const displayName =
+      targetAuthUser.user_metadata?.displayName ||
+      targetAuthUser.user_metadata?.full_name ||
+      targetAuthUser.user_metadata?.name ||
+      newEmail.split('@')[0];
+
+    await upsertDocumentData(supabase, 'users', targetAuthUser.id, {
+      uid: targetAuthUser.id,
+      authUserId: targetAuthUser.id,
+      email: newEmail,
+      displayName,
+      role: targetAuthUser.user_metadata?.role || 'user',
+      createdAt: now,
+      updatedAt: now,
+      emailUpdatedAt: now,
+      emailUpdatedBy: requesterEmail,
+      previousEmails: oldEmail ? [oldEmail] : [],
+    });
+
+    return { profileUpdates: 1 };
+  }
+
+  await Promise.all(
+    targetRows.map((row) => {
+      const rowPreviousEmails = Array.isArray(row.data?.previousEmails) ? row.data.previousEmails : [];
+      const previousEmails = oldEmail
+        ? Array.from(new Set([...rowPreviousEmails.map(normalizeEmail).filter(Boolean), oldEmail]))
+        : rowPreviousEmails;
+      const isUserProfile = row.collection_path === 'users';
+      const displayName =
+        row.data?.displayName ||
+        row.data?.name ||
+        targetAuthUser.user_metadata?.displayName ||
+        targetAuthUser.user_metadata?.full_name ||
+        newEmail.split('@')[0];
+
+      return upsertDocumentData(supabase, row.collection_path, row.doc_id, {
+        ...row.data,
+        ...(isUserProfile
+          ? {
+              uid: targetAuthUser.id,
+              authUserId: targetAuthUser.id,
+              displayName,
+            }
+          : {
+              authUserId: targetAuthUser.id,
+              name: row.data?.name || displayName,
+            }),
+        email: newEmail,
+        previousEmails,
+        updatedAt: now,
+        emailUpdatedAt: now,
+        emailUpdatedBy: requesterEmail,
+      });
+    })
+  );
+
+  return { profileUpdates: targetRows.length };
+};
+
+const updateProjectEmailReferences = async (
+  supabase: AdminClient,
+  oldEmail: string,
+  newEmail: string
+) => {
+  if (!oldEmail || oldEmail === newEmail) return { projectUpdates: 0 };
+
+  const now = new Date().toISOString();
+  const projects = await listDocumentsByCollection(supabase, 'projects');
+  const projectsToUpdate = projects.filter((row) =>
+    Array.isArray(row.data?.assignedEmails) &&
+    row.data.assignedEmails.some((email: unknown) => normalizeEmail(email) === oldEmail)
+  );
+
+  await Promise.all(
+    projectsToUpdate.map((row) => {
+      const assignedEmails = Array.from(
+        new Set(
+          row.data.assignedEmails
+            .map((email: unknown) => (normalizeEmail(email) === oldEmail ? newEmail : normalizeEmail(email)))
+            .filter(Boolean)
+        )
+      );
+
+      return upsertDocumentData(supabase, row.collection_path, row.doc_id, {
+        ...row.data,
+        assignedEmails,
+        updatedAt: now,
+      });
+    })
+  );
+
+  return { projectUpdates: projectsToUpdate.length };
+};
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = getAdminClient();
@@ -261,6 +430,98 @@ export async function GET(request: NextRequest) {
   } catch (error: any) {
     console.error('Error listing admin users:', error);
     return json({ error: error.message || 'No fue posible listar los usuarios.' }, 500);
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const supabase = getAdminClient();
+    const authResult = await ensureGlobalAdmin(supabase, getBearerToken(request));
+    if ('error' in authResult) return authResult.error;
+
+    const payload = await request.json();
+    const userId = typeof payload.userId === 'string' ? payload.userId.trim() : '';
+    const newEmail = normalizeEmail(payload.email);
+
+    if (!userId) {
+      return json({ error: 'Falta el ID del usuario.' }, 400);
+    }
+
+    if (!newEmail || !newEmail.includes('@')) {
+      return json({ error: 'Correo electrónico inválido.' }, 400);
+    }
+
+    const { data: targetData, error: targetError } = await supabase.auth.admin.getUserById(userId);
+    if (targetError) throw targetError;
+    const targetAuthUser = targetData?.user;
+
+    if (!targetAuthUser?.id) {
+      return json({ error: 'El usuario no existe en Supabase Auth.' }, 404);
+    }
+
+    const oldEmail = normalizeEmail(targetAuthUser.email);
+    if (oldEmail === newEmail) {
+      return json({
+        userId,
+        email: newEmail,
+        message: 'El correo ya estaba actualizado.',
+        profileUpdates: 0,
+        projectUpdates: 0,
+      });
+    }
+
+    const existingAuthUser = await findAuthUserByEmail(supabase, newEmail);
+    if (existingAuthUser && existingAuthUser.id !== userId) {
+      return json({ error: 'Ese correo ya pertenece a otro usuario de Supabase Auth.' }, 409);
+    }
+
+    const existingProfileRows = await listProfileDocuments(supabase);
+    const conflictingProfile = existingProfileRows.find((row) => {
+      const rowEmail = normalizeEmail(row.data?.email);
+      const authUserId = typeof row.data?.authUserId === 'string' ? row.data.authUserId : '';
+      const uid = typeof row.data?.uid === 'string' ? row.data.uid : '';
+
+      return rowEmail === newEmail && row.doc_id !== userId && authUserId !== userId && uid !== userId;
+    });
+
+    if (conflictingProfile) {
+      return json({ error: 'Ese correo ya está registrado en otro perfil de la aplicación.' }, 409);
+    }
+
+    const mergedMetadata = {
+      ...(targetAuthUser.user_metadata || {}),
+      email: newEmail,
+    };
+
+    const { data: updatedData, error: updateError } = await supabase.auth.admin.updateUserById(userId, {
+      email: newEmail,
+      email_confirm: true,
+      user_metadata: mergedMetadata,
+    });
+
+    if (updateError) throw updateError;
+
+    const updatedAuthUser = updatedData?.user || { ...targetAuthUser, email: newEmail, user_metadata: mergedMetadata };
+    const profileResult = await updateProfileEmailReferences(
+      supabase,
+      updatedAuthUser,
+      oldEmail,
+      newEmail,
+      authResult.email
+    );
+    const projectResult = await updateProjectEmailReferences(supabase, oldEmail, newEmail);
+
+    return json({
+      userId,
+      previousEmail: oldEmail,
+      email: newEmail,
+      ...profileResult,
+      ...projectResult,
+      message: 'Correo actualizado en Supabase Auth, perfiles y proyectos asignados.',
+    });
+  } catch (error: any) {
+    console.error('Error updating admin user email:', error);
+    return json({ error: error.message || 'No fue posible actualizar el correo del usuario.' }, 500);
   }
 }
 
