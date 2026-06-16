@@ -39,6 +39,11 @@ const getTaskDate = (value: any) => {
 
 const getHistoryTime = (entry: any) => getTaskDate(entry?.timestamp)?.getTime() || 0;
 
+const normalizeEmail = (email?: string | null) => String(email || '').trim().toLowerCase();
+
+const firstNonEmpty = (...values: any[]) =>
+  values.find((value) => typeof value === 'string' && value.trim().length > 0)?.trim();
+
 const formatCommentDate = (value: any) => {
   const date = getTaskDate(value);
   if (!date) return '';
@@ -394,30 +399,36 @@ export function TaskCommentsModal({
   if (!isOpen || !task) return null;
 
   const getAuthorName = (comment: any) => {
-    const author = teamMembers.find((member) =>
-      member.id === comment.createdBy ||
-      member.authUserId === comment.createdBy ||
-      (comment.createdByEmail && member.email?.toLowerCase() === comment.createdByEmail.toLowerCase())
-    );
+    const authorEmail = normalizeEmail(comment.createdByEmail);
+    const author = teamMembers.find((member) => {
+      if (authorEmail && normalizeEmail(member.email) === authorEmail) return true;
+      return member.id === comment.createdBy || member.authUserId === comment.createdBy;
+    });
     return author?.name || comment.createdByEmail || 'Usuario';
   };
 
   const getHistoryAuthorName = (history: any) => {
+    const explicitName = firstNonEmpty(history.participantName, history.changedByName, history.userName);
+    if (explicitName) return explicitName;
+
+    const historyEmail = normalizeEmail(history.changedByEmail || history.userEmail);
+    const authorByEmail = historyEmail
+      ? teamMembers.find((member) => normalizeEmail(member.email) === historyEmail)
+      : null;
+    if (authorByEmail?.name) return authorByEmail.name;
+
+    if (history.userId === currentUser?.uid || history.changedBy === currentUser?.uid) return currentUser?.displayName || currentUser?.email || 'Usuario';
+
     const author = teamMembers.find((member) =>
-      member.id === history.userId ||
       member.authUserId === history.userId ||
       member.uid === history.userId ||
-      member.id === history.changedBy ||
+      member.id === history.userId ||
       member.authUserId === history.changedBy ||
       member.uid === history.changedBy ||
-      (history.userEmail && member.email?.toLowerCase() === String(history.userEmail).toLowerCase()) ||
-      (history.changedByEmail && member.email?.toLowerCase() === String(history.changedByEmail).toLowerCase())
+      member.id === history.changedBy
     );
 
     if (author?.name) return author.name;
-    if (history.changedByName) return history.changedByName;
-    if (history.userName) return history.userName;
-    if (history.userId === currentUser?.uid || history.changedBy === currentUser?.uid) return currentUser?.displayName || currentUser?.email || 'Usuario';
     return history.changedByEmail || history.userEmail || 'Usuario';
   };
 

@@ -48,15 +48,30 @@ const formatDateTime = (value: any) => {
 const getMemberName = (teamMembers: any[], memberId?: string | null) =>
   teamMembers.find((member) => member.id === memberId || member.authUserId === memberId)?.name || "Sin asignar";
 
+const normalizeEmail = (email?: string | null) => String(email || "").trim().toLowerCase();
+
+const firstNonEmpty = (...values: any[]) =>
+  values.find((value) => typeof value === "string" && value.trim().length > 0)?.trim();
+
 const getAuthorName = (teamMembers: any[], entry: any) => {
+  const explicitName = firstNonEmpty(entry?.participantName, entry?.changedByName, entry?.userName);
+  if (explicitName) return explicitName;
+
+  const entryEmail = normalizeEmail(entry?.changedByEmail || entry?.createdByEmail || entry?.userEmail);
+  const authorByEmail = entryEmail
+    ? teamMembers.find((member) => normalizeEmail(member.email) === entryEmail)
+    : null;
+  if (authorByEmail?.name) return authorByEmail.name;
+
   const author = teamMembers.find((member) =>
-    member.id === entry?.createdBy ||
-    member.id === entry?.userId ||
     member.authUserId === entry?.createdBy ||
     member.authUserId === entry?.userId ||
-    (entry?.createdByEmail && member.email?.toLowerCase() === entry.createdByEmail.toLowerCase())
+    member.uid === entry?.createdBy ||
+    member.uid === entry?.userId ||
+    member.id === entry?.createdBy ||
+    member.id === entry?.userId
   );
-  return author?.name || entry?.userName || entry?.createdByEmail || "Usuario";
+  return author?.name || entry?.changedByEmail || entry?.createdByEmail || entry?.userEmail || "Usuario";
 };
 
 const getWorkflowActionLabel = (action: string) => {
