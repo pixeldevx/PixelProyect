@@ -3054,6 +3054,7 @@ export default function ProjectDetailsPage() {
         onClose={() => setIsTaskStatusReportOpen(false)}
         tasks={tasks}
         taskGroups={taskGroups}
+        teamMembers={teamMembersForAssignment}
       />
 
       {/* Start Workflow Modal */}

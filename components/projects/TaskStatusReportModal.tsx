@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   BarChart3,
   CheckCircle2,
+  ClipboardList,
   Clock3,
   ListChecks,
   Search,
@@ -33,9 +34,10 @@ type TaskStatusReportModalProps = {
   onClose: () => void;
   tasks: any[];
   taskGroups?: any[];
+  teamMembers?: any[];
 };
 
-type ReportView = "general" | "subtasks";
+type ReportView = "general" | "subtasks" | "task-report";
 
 const STATUS_COLORS = {
   notStarted: "#94a3b8",
@@ -67,6 +69,68 @@ const getTaskDate = (value: any) => {
 const getTaskTimestamp = (value: any) => {
   const date = getTaskDate(value);
   return date ? date.getTime() : 0;
+};
+
+const formatReportDate = (value: any) => {
+  const date = getTaskDate(value);
+  if (!date) return "Sin fecha";
+  return date.toLocaleDateString("es-CO", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+};
+
+const getTaskStatusLabel = (status?: string) => {
+  switch (status) {
+    case "completed":
+    case "listo":
+      return "Finalizada";
+    case "completed_late":
+      return "Finalizada con retraso";
+    case "in_progress":
+    case "en_curso":
+      return "En curso";
+    case "stuck":
+    case "detenido":
+      return "Estancada";
+    case "rescheduled":
+      return "Reprogramada";
+    case "devuelto":
+    case "reproceso":
+      return "Devuelta";
+    case "todo":
+    case "pending":
+    case "not_started":
+    default:
+      return "Pendiente";
+  }
+};
+
+const getPriorityLabel = (priority?: string) => {
+  if (priority === "high") return "Alta";
+  if (priority === "low") return "Baja";
+  return "Media";
+};
+
+const getScheduleStateLabel = (state: string) => {
+  switch (state) {
+    case "overdue":
+      return "Atrasada";
+    case "dueSoon":
+      return "Por vencer";
+    case "completedLate":
+      return "Finalizada con retraso";
+    case "done":
+      return "Cumplida";
+    case "paused":
+      return "Pausada";
+    case "noDate":
+      return "Sin fecha";
+    case "ok":
+    default:
+      return "A tiempo";
+  }
 };
 
 const getStatusBucket = (task: any) => {
@@ -187,13 +251,33 @@ const getWorkflowCompletionDate = (task: any) => {
   return getTaskDate(task.completedAt) || getTaskDate(task.updatedAt);
 };
 
+const getTaskCompletionDate = (task: any) => {
+  if (!isCompletedTaskStatus(task?.status)) return null;
+  if (isWorkflowTask(task)) return getWorkflowCompletionDate(task);
+  return getTaskDate(task.completedAt) || getTaskDate(task.updatedAt);
+};
+
+const getAssigneeName = (task: any, teamMembers: any[]) => {
+  const assigneeId = task?.assignedTo || task?.assigneeId || task?.responsibleId;
+  if (!assigneeId) return "Sin responsable";
+  const member = teamMembers.find((item) =>
+    item.id === assigneeId ||
+    item.authUserId === assigneeId ||
+    item.uid === assigneeId ||
+    item.email === assigneeId
+  );
+  return member?.name || member?.displayName || task?.assigneeName || "Sin responsable";
+};
+
 export function TaskStatusReportModal({
   isOpen,
   onClose,
   tasks,
   taskGroups = [],
+  teamMembers = [],
 }: TaskStatusReportModalProps) {
   const [selectedRootIds, setSelectedRootIds] = React.useState<string[]>([]);
+  const [selectedReportRootId, setSelectedReportRootId] = React.useState("");
   const [searchTerm, setSearchTerm] = React.useState("");
   const [activeReportView, setActiveReportView] = React.useState<ReportView>("general");
   const [reportTimestamp, setReportTimestamp] = React.useState(0);
@@ -260,10 +344,17 @@ export function TaskStatusReportModal({
   React.useEffect(() => {
     if (!isOpen) return;
     setSelectedRootIds(rootTasks.map((task) => task.id));
+    setSelectedReportRootId(rootTasks[0]?.id || "");
     setSearchTerm("");
     setActiveReportView("general");
     setReportTimestamp(Date.now());
   }, [isOpen, rootTasks]);
+
+  React.useEffect(() => {
+    if (!isOpen || rootTasks.length === 0) return;
+    if (selectedReportRootId && rootTasks.some((task) => task.id === selectedReportRootId)) return;
+    setSelectedReportRootId(rootTasks[0].id);
+  }, [isOpen, rootTasks, selectedReportRootId]);
 
   if (!isOpen) return null;
 
@@ -558,6 +649,60 @@ export function TaskStatusReportModal({
     },
   ];
 
+  const selectedReportRootTask =
+    rootTasks.find((task) => task.id === selectedReportRootId) ||
+    selectedRootTasks[0] ||
+    rootTasks[0] ||
+    null;
+  const reportTaskTree = selectedReportRootTask ? collectTaskTree(selectedReportRootTask.id) : [];
+  const reportSubtasks = reportTaskTree.filter((task) => task.id !== selectedReportRootTask?.id);
+  const finishedReportSubtasks = reportSubtasks
+    .filter((task) => isCompletedTaskStatus(task.status))
+    .sort((left, right) => {
+      const rightCompletion = getTaskTimestamp(getTaskCompletionDate(right));
+      const leftCompletion = getTaskTimestamp(getTaskCompletionDate(left));
+      if (rightCompletion !== leftCompletion) return rightCompletion - leftCompletion;
+      return getTaskOrder(left) - getTaskOrder(right);
+    });
+  const openReportSubtasks = reportSubtasks.filter((task) => !isCompletedTaskStatus(task.status));
+  const overdueReportSubtasks = openReportSubtasks.filter((task) => getScheduleState(task) === "overdue");
+  const dueSoonReportSubtasks = openReportSubtasks.filter((task) => getScheduleState(task) === "dueSoon");
+  const reportCompletionRate = getPercent(finishedReportSubtasks.length, reportSubtasks.length);
+  const reportAverageProgress = getProgressAverage(reportSubtasks);
+  const reportGroupName = selectedReportRootTask
+    ? groupById.get(getTaskGroupId(selectedReportRootTask))?.name || DEFAULT_TASK_GROUP_NAME
+    : DEFAULT_TASK_GROUP_NAME;
+  const reportKpis = [
+    {
+      label: "Subtareas",
+      value: reportSubtasks.length,
+      detail: `${reportTaskTree.length} registros en el árbol`,
+      icon: ListChecks,
+      tone: "bg-indigo-50 text-indigo-700",
+    },
+    {
+      label: "Finalizadas",
+      value: finishedReportSubtasks.length,
+      detail: `${reportCompletionRate}% del alcance`,
+      icon: CheckCircle2,
+      tone: "bg-emerald-50 text-emerald-700",
+    },
+    {
+      label: "Abiertas",
+      value: openReportSubtasks.length,
+      detail: `${overdueReportSubtasks.length} vencidas · ${dueSoonReportSubtasks.length} por vencer`,
+      icon: AlertTriangle,
+      tone: overdueReportSubtasks.length > 0 ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700",
+    },
+    {
+      label: "Avance promedio",
+      value: `${reportAverageProgress}%`,
+      detail: `Prioridad ${getPriorityLabel(selectedReportRootTask?.priority).toLowerCase()}`,
+      icon: Activity,
+      tone: "bg-sky-50 text-sky-700",
+    },
+  ];
+
   const toggleRootTask = (taskId: string) => {
     setSelectedRootIds((current) =>
       current.includes(taskId)
@@ -658,6 +803,17 @@ export function TaskStatusReportModal({
                 }`}
               >
                 Detalle subtareas
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveReportView("task-report")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-black transition-colors ${
+                  activeReportView === "task-report"
+                    ? "bg-white text-indigo-700 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                Reporte por tarea
               </button>
             </div>
           </div>
@@ -876,7 +1032,7 @@ export function TaskStatusReportModal({
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : activeReportView === "subtasks" ? (
               <div className="space-y-4">
                 {workflowTotal === 0 ? (
                   <div className="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white text-center">
@@ -1087,6 +1243,245 @@ export function TaskStatusReportModal({
                             ))}
                           </tbody>
                         </table>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-end">
+                    <div className="min-w-0">
+                      <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-indigo-700">
+                        <ClipboardList className="h-4 w-4" />
+                        Reporte anclado a indicadores
+                      </div>
+                      <h3 className="truncate text-2xl font-black text-slate-950">
+                        {selectedReportRootTask ? getTaskTitle(selectedReportRootTask) : "Selecciona una tarea"}
+                      </h3>
+                      <p className="mt-1 text-sm font-medium text-slate-500">
+                        {reportGroupName} · {getTaskStatusLabel(selectedReportRootTask?.status)} · {reportSubtasks.length} subtareas dependientes
+                      </p>
+                    </div>
+                    <label className="block">
+                      <span className="mb-1 block text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                        Tarea para reportar
+                      </span>
+                      <select
+                        value={selectedReportRootTask?.id || selectedReportRootId}
+                        onChange={(event) => setSelectedReportRootId(event.target.value)}
+                        className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20"
+                      >
+                        {rootTasks.map((task) => (
+                          <option key={task.id} value={task.id}>
+                            {getTaskTitle(task)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+
+                {!selectedReportRootTask ? (
+                  <div className="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white text-center">
+                    <ClipboardList className="mb-3 h-10 w-10 text-slate-300" />
+                    <p className="text-base font-bold text-slate-700">No hay tareas disponibles para reportar.</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      {reportKpis.map((kpi) => {
+                        const Icon = kpi.icon;
+
+                        return (
+                          <div key={kpi.label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{kpi.label}</p>
+                                <p className="mt-2 text-2xl font-black text-slate-900">{kpi.value}</p>
+                                <p className="mt-1 text-xs font-medium text-slate-500">{kpi.detail}</p>
+                              </div>
+                              <span className={`rounded-xl p-2 ${kpi.tone}`}>
+                                <Icon className="h-5 w-5" />
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+                      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <h3 className="text-sm font-black text-slate-900">Subtareas finalizadas</h3>
+                            <p className="text-xs text-slate-500">
+                              Entregables cerrados dentro de la tarea seleccionada.
+                            </p>
+                          </div>
+                          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
+                            {finishedReportSubtasks.length} finalizadas
+                          </span>
+                        </div>
+
+                        {finishedReportSubtasks.length === 0 ? (
+                          <div className="flex min-h-[220px] items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 text-center text-sm font-semibold text-slate-500">
+                            Esta tarea todavía no tiene subtareas finalizadas.
+                          </div>
+                        ) : (
+                          <div className="max-h-[420px] overflow-auto">
+                            <table className="w-full min-w-[780px] text-left text-xs">
+                              <thead className="sticky top-0 z-10 bg-white">
+                                <tr className="border-b border-slate-100 text-[10px] uppercase tracking-wider text-slate-400">
+                                  <th className="py-2 pr-3">Subtarea</th>
+                                  <th className="px-3 py-2">Responsable</th>
+                                  <th className="px-3 py-2">Estado</th>
+                                  <th className="px-3 py-2">Cronograma</th>
+                                  <th className="px-3 py-2">Cierre</th>
+                                  <th className="px-3 py-2 text-right">Avance</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {finishedReportSubtasks.map((task) => {
+                                  const startDate = getWorkflowStartDate(task) || getTaskDate(task.startDate || task.start || task.createdAt);
+                                  const completionDate = getTaskCompletionDate(task);
+                                  const duration = startDate && completionDate
+                                    ? formatDuration(Math.max(0, completionDate.getTime() - startDate.getTime()))
+                                    : "Sin datos";
+
+                                  return (
+                                    <tr key={task.id} className="border-b border-slate-50 last:border-0">
+                                      <td className="max-w-[260px] py-2 pr-3">
+                                        <p className="truncate font-bold text-slate-800">{getTaskTitle(task)}</p>
+                                        <p className="truncate text-[10px] font-medium text-slate-400">
+                                          {task.type === "workflow" ? "Workflow" : "Tarea"} · {getPriorityLabel(task.priority)}
+                                        </p>
+                                      </td>
+                                      <td className="px-3 py-2 font-semibold text-slate-600">
+                                        {getAssigneeName(task, teamMembers)}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <span className={`rounded-full px-2 py-1 text-[10px] font-black ${
+                                          task.status === "completed_late"
+                                            ? "bg-orange-50 text-orange-700"
+                                            : "bg-emerald-50 text-emerald-700"
+                                        }`}>
+                                          {getTaskStatusLabel(task.status)}
+                                        </span>
+                                      </td>
+                                      <td className="px-3 py-2 text-slate-500">
+                                        {formatReportDate(task.startDate || task.start)} - {formatReportDate(task.endDate || task.end)}
+                                      </td>
+                                      <td className="px-3 py-2 text-slate-500">
+                                        {formatReportDate(completionDate)}
+                                        <span className="ml-1 text-slate-400">({duration})</span>
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-black text-slate-800">
+                                        {Number(task.progress || 0)}%
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <h3 className="text-sm font-black text-slate-900">Lectura ejecutiva</h3>
+                          <div className="mt-4 space-y-3">
+                            <div>
+                              <div className="mb-1 flex items-center justify-between text-xs font-bold text-slate-600">
+                                <span>Finalización de subtareas</span>
+                                <span>{reportCompletionRate}%</span>
+                              </div>
+                              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                                <div
+                                  className="h-full rounded-full bg-emerald-500"
+                                  style={{ width: `${reportCompletionRate}%` }}
+                                />
+                              </div>
+                            </div>
+                            <div>
+                              <div className="mb-1 flex items-center justify-between text-xs font-bold text-slate-600">
+                                <span>Avance promedio</span>
+                                <span>{reportAverageProgress}%</span>
+                              </div>
+                              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                                <div
+                                  className="h-full rounded-full bg-indigo-500"
+                                  style={{ width: `${reportAverageProgress}%` }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                            <div className="rounded-lg bg-red-50 p-3">
+                              <p className="text-lg font-black text-red-700">{overdueReportSubtasks.length}</p>
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-red-500">Atrasadas</p>
+                            </div>
+                            <div className="rounded-lg bg-orange-50 p-3">
+                              <p className="text-lg font-black text-orange-700">{dueSoonReportSubtasks.length}</p>
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-orange-500">Por vencer</p>
+                            </div>
+                            <div className="rounded-lg bg-slate-100 p-3">
+                              <p className="text-lg font-black text-slate-700">{openReportSubtasks.length}</p>
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Abiertas</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <h3 className="text-sm font-black text-slate-900">Subtareas abiertas</h3>
+                            <span className="text-xs font-bold text-slate-400">{openReportSubtasks.length}</span>
+                          </div>
+                          <div className="max-h-[305px] space-y-2 overflow-y-auto pr-1">
+                            {openReportSubtasks.length === 0 ? (
+                              <p className="rounded-lg bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">
+                                Todo el árbol de subtareas está finalizado.
+                              </p>
+                            ) : (
+                              openReportSubtasks
+                                .slice()
+                                .sort((left, right) => getTaskTimestamp(left.endDate || left.end) - getTaskTimestamp(right.endDate || right.end))
+                                .map((task) => {
+                                  const scheduleState = getScheduleState(task);
+                                  const scheduleClass =
+                                    scheduleState === "overdue"
+                                      ? "bg-red-50 text-red-700"
+                                      : scheduleState === "dueSoon"
+                                      ? "bg-orange-50 text-orange-700"
+                                      : "bg-slate-100 text-slate-600";
+
+                                  return (
+                                    <div key={task.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                                      <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                          <p className="truncate text-sm font-black text-slate-800">{getTaskTitle(task)}</p>
+                                          <p className="mt-1 text-xs font-medium text-slate-500">
+                                            {getAssigneeName(task, teamMembers)} · vence {formatReportDate(task.endDate || task.end)}
+                                          </p>
+                                        </div>
+                                        <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-black ${scheduleClass}`}>
+                                          {getScheduleStateLabel(scheduleState)}
+                                        </span>
+                                      </div>
+                                      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white">
+                                        <div
+                                          className="h-full rounded-full bg-indigo-500"
+                                          style={{ width: `${Math.min(Number(task.progress || 0), 100)}%` }}
+                                        />
+                                      </div>
+                                    </div>
+                                  );
+                                })
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </>
