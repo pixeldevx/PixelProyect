@@ -657,11 +657,23 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
                     <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
                     <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} tickFormatter={(value) => `$${value}`} />
-                    <RechartsTooltip 
-                      formatter={(value: any, name: any) => [
-                        Number(value).toLocaleString('en-US', { style: 'currency', currency: 'USD' }), 
-                        name === 'income' ? 'Ingreso' : name === 'cost' ? 'Costo' : 'Reproceso'
-                      ]}
+                    <RechartsTooltip
+                      formatter={(value: any, name: any, item: any) => {
+                        const metricKey = item?.dataKey || name;
+                        const labels: Record<string, string> = {
+                          income: 'Ingreso',
+                          Ingreso: 'Ingreso',
+                          cost: 'Costo',
+                          Costo: 'Costo',
+                          reworkCost: 'Reproceso',
+                          Reproceso: 'Reproceso',
+                        };
+
+                        return [
+                          formatMoney(Number(value || 0)),
+                          labels[metricKey] || String(name || metricKey),
+                        ];
+                      }}
                       cursor={{ fill: '#f1f5f9' }}
                       contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                     />
@@ -922,8 +934,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                         <XAxis dataKey="dateLabel" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
                         <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
                         <RechartsTooltip
-                          formatter={(value: any, name: any) => {
-                            const card = rateCards.find(item => item.id === name);
+                          formatter={(value: any, name: any, item: any) => {
+                            const metricKey = item?.dataKey || name;
+                            const card = rateCards.find(rate => rate.id === metricKey || rate.name === name);
                             return [
                               formatRateCardUnits(Number(value || 0), card || { indicator: 'unidades' }, 2),
                               card?.name || name,
