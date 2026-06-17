@@ -2,6 +2,20 @@
 
 Aplicativo de gestión de proyectos, tareas, documentos, presupuesto, facturación y equipo.
 
+## Licenciamiento
+
+Pixel Project es software propietario. Su uso, despliegue, copia, reproducción, distribución, modificación o explotación comercial solo está permitido con autorización previa y por escrito del titular de los derechos.
+
+- Términos propietarios: `LICENSE.md`
+- Aviso de titularidad: `NOTICE.md`
+- Créditos de software libre y dependencias: `THIRD_PARTY_NOTICES.md`
+
+Para regenerar los créditos de dependencias después de agregar o actualizar paquetes:
+
+```bash
+npm run notices
+```
+
 ## Despliegue En Vercel
 
 **Requisitos:** un proyecto en Vercel conectado al repositorio y un proyecto de Supabase.
