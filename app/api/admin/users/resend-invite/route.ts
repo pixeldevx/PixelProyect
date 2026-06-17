@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getOrganizationIds, getPrimaryOrganizationId } from '@/lib/organizations';
+import { sendEmailWithResend } from '@/lib/email/resend';
+import {
+  buildUserAccessEmailHtml,
+  buildUserAccessSubject,
+  buildUserAccessText,
+  getOrganizationAccessLabel,
+  getUserAccessRoleLabel,
+  type UserAccessEmailMode,
+} from '@/lib/email/user-access-template';
 
 export const runtime = 'nodejs';
 
@@ -64,6 +73,14 @@ const getRedirectTo = (request: NextRequest) => {
     : request.headers.get('origin') || new URL(request.url).origin;
 
   return `${origin.replace(/\/$/, '')}/reset-password`;
+};
+
+const getAppUrlFromRedirect = (redirectTo: string) => {
+  try {
+    return new URL(redirectTo).origin;
+  } catch {
+    return redirectTo.replace(/\/reset-password.*$/, '').replace(/\/$/, '');
+  }
 };
 
 const getAdminClient = () => {
@@ -251,40 +268,135 @@ const buildMetadata = (
   };
 };
 
+const generateAccessLink = async (
+  supabase: AdminClient,
+  email: string,
+  metadata: Record<string, any>,
+  redirectTo: string,
+  mode: UserAccessEmailMode
+) => {
+  const params =
+    mode === 'invite'
+      ? {
+          type: 'invite' as const,
+          email,
+          options: {
+            data: metadata,
+            redirectTo,
+          },
+        }
+      : {
+          type: 'recovery' as const,
+          email,
+          options: {
+            redirectTo,
+          },
+        };
+
+  const { data, error } = await withTimeout(
+    supabase.auth.admin.generateLink(params),
+    AUTH_OPERATION_TIMEOUT_MS,
+    mode === 'invite'
+      ? 'Supabase Auth tardó demasiado generando la invitación.'
+      : 'Supabase Auth tardó demasiado generando el enlace de acceso.'
+  );
+
+  if (error) throw error;
+
+  const actionUrl = data?.properties?.action_link;
+  if (!actionUrl) {
+    throw new Error('Supabase no retornó un enlace válido para reenviar la invitación.');
+  }
+
+  return actionUrl;
+};
+
+const sendUserAccessEmail = async ({
+  email,
+  metadata,
+  invitedBy,
+  redirectTo,
+  actionUrl,
+  mode,
+}: {
+  email: string;
+  metadata: Record<string, any>;
+  invitedBy: string;
+  redirectTo: string;
+  actionUrl: string;
+  mode: UserAccessEmailMode;
+}) => {
+  const role = String(metadata.role || 'user');
+  const organizationIds = getOrganizationIds({
+    organizationIds: metadata.organizationIds,
+    organizationId: metadata.organizationId,
+  });
+  const displayName =
+    metadata.displayName ||
+    metadata.full_name ||
+    metadata.name ||
+    email.split('@')[0];
+  const emailData = {
+    appUrl: getAppUrlFromRedirect(redirectTo),
+    actionUrl,
+    recipientName: displayName,
+    recipientEmail: email,
+    invitedBy,
+    roleLabel: getUserAccessRoleLabel(role),
+    organizationLabel: role === 'admin' ? 'Acceso global' : getOrganizationAccessLabel(organizationIds),
+    mode,
+  };
+
+  const result = await sendEmailWithResend({
+    to: email,
+    subject: buildUserAccessSubject(emailData),
+    html: buildUserAccessEmailHtml(emailData),
+    text: buildUserAccessText(emailData),
+  });
+
+  if (result.skipped) {
+    throw new Error('Falta configurar RESEND_API_KEY para reenviar invitaciones personalizadas.');
+  }
+
+  return result;
+};
+
 const sendAccessLink = async (
   supabase: AdminClient,
   email: string,
   metadata: Record<string, any>,
-  redirectTo: string
+  redirectTo: string,
+  invitedBy: string
 ) => {
-  const inviteResponse = await withTimeout(
-    supabase.auth.admin.inviteUserByEmail(email, {
-      data: metadata,
+  try {
+    const actionUrl = await generateAccessLink(supabase, email, metadata, redirectTo, 'invite');
+    await sendUserAccessEmail({
+      email,
+      metadata,
+      invitedBy,
       redirectTo,
-    }),
-    AUTH_OPERATION_TIMEOUT_MS,
-    'Supabase Auth tardó demasiado reenviando la invitación.'
-  );
-
-  if (!inviteResponse.error) {
+      actionUrl,
+      mode: 'invite',
+    });
     return 'invite_sent' as const;
-  }
+  } catch (error: any) {
+    const alreadyExists = /already|registered|exists/i.test(error?.message || '');
+    if (!alreadyExists) {
+      throw error;
+    }
 
-  const alreadyExists = /already|registered|exists/i.test(inviteResponse.error.message);
-  if (!alreadyExists) {
-    throw inviteResponse.error;
-  }
-
-  const { error: resetError } = await withTimeout(
-    supabase.auth.resetPasswordForEmail(email, {
+    const actionUrl = await generateAccessLink(supabase, email, metadata, redirectTo, 'recovery');
+    await sendUserAccessEmail({
+      email,
+      metadata,
+      invitedBy,
       redirectTo,
-    }),
-    AUTH_OPERATION_TIMEOUT_MS,
-    'Supabase Auth tardó demasiado reenviando el enlace de acceso.'
-  );
-  if (resetError) throw resetError;
+      actionUrl,
+      mode: 'recovery',
+    });
 
-  return 'recovery_sent' as const;
+    return 'recovery_sent' as const;
+  }
 };
 
 const updateProfileDocuments = async (
@@ -393,7 +505,13 @@ export async function POST(request: NextRequest) {
     );
     if (updateError) throw updateError;
 
-    const inviteStatus = await sendAccessLink(supabase, targetEmail, metadata, getRedirectTo(request));
+    const inviteStatus = await sendAccessLink(
+      supabase,
+      targetEmail,
+      metadata,
+      getRedirectTo(request),
+      authResult.email
+    );
 
     await updateProfileDocuments(
       supabase,

@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getPrimaryOrganizationId } from '@/lib/organizations';
+import { sendEmailWithResend } from '@/lib/email/resend';
+import {
+  buildUserAccessEmailHtml,
+  buildUserAccessSubject,
+  buildUserAccessText,
+  getOrganizationAccessLabel,
+  getUserAccessRoleLabel,
+  type UserAccessEmailMode,
+} from '@/lib/email/user-access-template';
 
 export const runtime = 'nodejs';
 
@@ -95,6 +104,14 @@ const getRedirectTo = (request: NextRequest) => {
     : request.headers.get('origin') || new URL(request.url).origin;
 
   return `${origin.replace(/\/$/, '')}/reset-password`;
+};
+
+const getAppUrlFromRedirect = (redirectTo: string) => {
+  try {
+    return new URL(redirectTo).origin;
+  } catch {
+    return redirectTo.replace(/\/reset-password.*$/, '').replace(/\/$/, '');
+  }
 };
 
 const getAdminClient = () => {
@@ -226,6 +243,95 @@ const removeDuplicateUserProfiles = async (
   );
 };
 
+const generateAccessLink = async (
+  supabase: AdminClient,
+  email: string,
+  metadata: Record<string, any>,
+  redirectTo: string,
+  mode: UserAccessEmailMode
+) => {
+  const params =
+    mode === 'invite'
+      ? {
+          type: 'invite' as const,
+          email,
+          options: {
+            data: metadata,
+            redirectTo,
+          },
+        }
+      : {
+          type: 'recovery' as const,
+          email,
+          options: {
+            redirectTo,
+          },
+        };
+
+  const { data, error } = await withTimeout(
+    supabase.auth.admin.generateLink(params),
+    AUTH_OPERATION_TIMEOUT_MS,
+    mode === 'invite'
+      ? 'Supabase Auth tardó demasiado generando la invitación.'
+      : 'Supabase Auth tardó demasiado generando el enlace de contraseña.'
+  );
+
+  if (error) throw error;
+
+  const actionUrl = data?.properties?.action_link;
+  const authUser = data?.user;
+
+  if (!actionUrl || !authUser?.id) {
+    throw new Error('Supabase no retornó un enlace válido para enviar la invitación.');
+  }
+
+  return { actionUrl, authUser };
+};
+
+const sendUserAccessEmail = async ({
+  email,
+  displayName,
+  invitedBy,
+  systemRole,
+  organizationIds,
+  redirectTo,
+  actionUrl,
+  mode,
+}: {
+  email: string;
+  displayName: string;
+  invitedBy: string;
+  systemRole: string;
+  organizationIds: string[];
+  redirectTo: string;
+  actionUrl: string;
+  mode: UserAccessEmailMode;
+}) => {
+  const emailData = {
+    appUrl: getAppUrlFromRedirect(redirectTo),
+    actionUrl,
+    recipientName: displayName || email.split('@')[0],
+    recipientEmail: email,
+    invitedBy,
+    roleLabel: getUserAccessRoleLabel(systemRole),
+    organizationLabel: systemRole === 'admin' ? 'Acceso global' : getOrganizationAccessLabel(organizationIds),
+    mode,
+  };
+
+  const result = await sendEmailWithResend({
+    to: email,
+    subject: buildUserAccessSubject(emailData),
+    html: buildUserAccessEmailHtml(emailData),
+    text: buildUserAccessText(emailData),
+  });
+
+  if (result.skipped) {
+    throw new Error('Falta configurar RESEND_API_KEY para enviar invitaciones personalizadas.');
+  }
+
+  return result;
+};
+
 export async function POST(request: NextRequest) {
   try {
     const supabase = getAdminClient();
@@ -271,24 +377,21 @@ export async function POST(request: NextRequest) {
     let inviteMode: 'invite_sent' | 'recovery_sent' = 'invite_sent';
     let authUser = null;
 
-    const inviteResponse = await withTimeout(
-      supabase.auth.admin.inviteUserByEmail(email, {
-        data: metadata,
-        redirectTo,
-      }),
-      AUTH_OPERATION_TIMEOUT_MS,
-      'Supabase Auth tardó demasiado enviando la invitación.'
-    );
+    let actionUrl = '';
 
-    if (inviteResponse.error) {
-      const alreadyExists = /already|registered|exists/i.test(inviteResponse.error.message);
+    try {
+      const inviteLink = await generateAccessLink(supabase, email, metadata, redirectTo, 'invite');
+      authUser = inviteLink.authUser;
+      actionUrl = inviteLink.actionUrl;
+    } catch (error: any) {
+      const alreadyExists = /already|registered|exists/i.test(error?.message || '');
       if (!alreadyExists) {
-        throw inviteResponse.error;
+        throw error;
       }
 
       authUser = await findAuthUserByEmail(supabase, email);
       if (!authUser) {
-        throw inviteResponse.error;
+        throw error;
       }
 
       const { error: updateError } = await withTimeout(
@@ -303,18 +406,9 @@ export async function POST(request: NextRequest) {
       );
       if (updateError) throw updateError;
 
-      const { error: resetError } = await withTimeout(
-        supabase.auth.resetPasswordForEmail(email, {
-          redirectTo,
-        }),
-        AUTH_OPERATION_TIMEOUT_MS,
-        'Supabase Auth tardó demasiado enviando el enlace de contraseña.'
-      );
-      if (resetError) throw resetError;
-
+      const recoveryLink = await generateAccessLink(supabase, email, metadata, redirectTo, 'recovery');
+      actionUrl = recoveryLink.actionUrl;
       inviteMode = 'recovery_sent';
-    } else {
-      authUser = inviteResponse.data.user;
     }
 
     if (!authUser?.id) {
@@ -334,6 +428,7 @@ export async function POST(request: NextRequest) {
       isPreRegistered: true,
       inviteStatus: inviteMode,
       invitedAt: now,
+      lastInvitationSentAt: now,
       invitedBy: authResult.email,
       updatedAt: now,
       ...(photoURL ? { photoURL } : {}),
@@ -349,6 +444,7 @@ export async function POST(request: NextRequest) {
       authUserId: authUser.id,
       inviteStatus: inviteMode,
       invitedAt: now,
+      lastInvitationSentAt: now,
       invitedBy: authResult.email,
       updatedAt: now,
       ...(photoURL ? { photoURL } : {}),
@@ -382,6 +478,17 @@ export async function POST(request: NextRequest) {
 
     if (upsertError) throw upsertError;
     await removeDuplicateUserProfiles(supabase, email, authUser.id);
+
+    await sendUserAccessEmail({
+      email,
+      displayName,
+      invitedBy: authResult.email,
+      systemRole,
+      organizationIds,
+      redirectTo,
+      actionUrl,
+      mode: inviteMode === 'invite_sent' ? 'invite' : 'recovery',
+    });
 
     return json({
       userId: authUser.id,
