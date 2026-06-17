@@ -13,9 +13,19 @@ import Link from 'next/link';
 import { Progress } from '@/components/ui/progress';
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { toast } from 'sonner';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
 import Image from 'next/image';
-import { formatRateCardRate, formatRateCardUnits, formatRateCardValue, isCurrencyRateCard } from '@/lib/rate-card-config';
+import {
+  formatRateCardRate,
+  formatRateCardUnits,
+  formatRateCardValue,
+  getRateCardCostRate,
+  getRateCardCostValue,
+  getRateCardIncomeRate,
+  getRateCardIncomeValue,
+  getRateCardOutputValue,
+  isCurrencyRateCard,
+} from '@/lib/rate-card-config';
 
 export default function RateCardsPage() {
   const { user } = useAuth();
@@ -30,6 +40,7 @@ export default function RateCardsPage() {
   const [allRateCards, setAllRateCards] = useState<any[]>([]);
   const [allTasks, setAllTasks] = useState<any[]>([]);
   const [loadingEconomic, setLoadingEconomic] = useState(false);
+  const [selectedEconomicRateId, setSelectedEconomicRateId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -190,7 +201,7 @@ export default function RateCardsPage() {
   const accessibleProjectIds = new Set(projects.map(p => p.id));
   const filteredRateCards = allRateCards.filter(rc => accessibleProjectIds.has(rc.projectId));
 
-  const globalUserTotals: Record<string, { name: string; value: number }> = {};
+  const globalUserTotals: Record<string, { name: string; income: number; cost: number; output: number }> = {};
 
   const economicData = filteredRateCards.map(card => {
     const project = projects.find(p => p.id === card.projectId);
@@ -209,18 +220,22 @@ export default function RateCardsPage() {
       });
     }
     
-    const totalGenerated = totalUnits * Number(card.rate || 0);
+    const totalIncome = getRateCardIncomeValue(totalUnits, card);
+    const totalCost = getRateCardCostValue(totalUnits, card);
+    const totalGenerated = getRateCardOutputValue(totalUnits, card);
 
-    if (isCurrencyRateCard(card) && card.userStats) {
+    if (card.userStats) {
       Object.entries(card.userStats).forEach(([userId, units]: [string, any]) => {
         const member = teamMembers.find(m => m.id === userId);
         const userName = member ? member.name : 'Usuario Desconocido';
-        const value = Number(units || 0) * Number(card.rate || 0);
+        const amount = Number(units || 0);
         
         if (!globalUserTotals[userId]) {
-          globalUserTotals[userId] = { name: userName, value: 0 };
+          globalUserTotals[userId] = { name: userName, income: 0, cost: 0, output: 0 };
         }
-        globalUserTotals[userId].value += value;
+        globalUserTotals[userId].income += getRateCardIncomeValue(amount, card);
+        globalUserTotals[userId].cost += getRateCardCostValue(amount, card);
+        globalUserTotals[userId].output += getRateCardOutputValue(amount, card);
       });
     }
     
@@ -228,20 +243,48 @@ export default function RateCardsPage() {
       ...card,
       projectName: project?.name || 'Proyecto Desconocido',
       totalUnits,
-      totalGenerated
+      totalIncome,
+      totalCost,
+      totalGenerated,
+      margin: totalIncome - totalCost,
     };
   }).filter(card => 
     card.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
     card.projectName.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const globalUserChartData = Object.values(globalUserTotals).sort((a, b) => b.value - a.value);
-  const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
-
+  const globalUserChartData = Object.values(globalUserTotals)
+    .map(row => ({ ...row, margin: row.income - row.cost }))
+    .sort((a, b) => (b.income + b.output) - (a.income + a.output));
   const totalMoneyGenerated = economicData
     .filter(isCurrencyRateCard)
+    .reduce((sum, card) => sum + card.totalIncome, 0);
+  const totalMoneyCost = economicData.reduce((sum, card) => sum + card.totalCost, 0);
+  const totalMoneyMargin = totalMoneyGenerated - totalMoneyCost;
+  const totalUnitOutput = economicData
+    .filter((card) => !isCurrencyRateCard(card))
     .reduce((sum, card) => sum + card.totalGenerated, 0);
   const unitMetricCount = economicData.filter((card) => !isCurrencyRateCard(card)).length;
+  const selectedEconomicRate = economicData.find(card => card.id === selectedEconomicRateId) || economicData[0] || null;
+  const selectedEconomicContributors = selectedEconomicRate?.userStats
+    ? Object.entries(selectedEconomicRate.userStats)
+      .map(([userId, units]: [string, any]) => {
+        const member = teamMembers.find(m => m.id === userId);
+        const amount = Number(units || 0);
+        return {
+          userId,
+          name: member?.name || 'Usuario Desconocido',
+          units: amount,
+          income: getRateCardIncomeValue(amount, selectedEconomicRate),
+          cost: getRateCardCostValue(amount, selectedEconomicRate),
+          output: getRateCardOutputValue(amount, selectedEconomicRate),
+        };
+      })
+      .sort((left, right) => right.units - left.units)
+      .slice(0, 5)
+    : [];
+  const formatMoney = (value: number, currency = 'USD') =>
+    value.toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 0 });
 
   return (
     <DashboardLayout>
@@ -535,33 +578,43 @@ export default function RateCardsPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <Card className="border-slate-200 shadow-sm bg-gradient-to-br from-indigo-50 to-white md:col-span-1 flex flex-col justify-center">
-              <CardContent className="p-8">
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-6">
-                  <div>
-                    <h2 className="text-sm font-semibold text-indigo-600 uppercase tracking-wider mb-1">Total Generado</h2>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-4xl font-bold text-slate-900">
-                        {totalMoneyGenerated.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}
-                      </span>
-                    </div>
-                    <span className="text-slate-500 text-sm mt-2 block">
-                      rate cards monetarios{unitMetricCount > 0 ? ` · ${unitMetricCount} métricas aparte` : ''}
-                    </span>
-                  </div>
-                  <div className="p-4 bg-indigo-100 rounded-full">
-                    <DollarSign className="w-8 h-8 text-indigo-600" />
-                  </div>
-                </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+            <Card className="border-emerald-100 bg-emerald-50 shadow-sm">
+              <CardContent className="p-5">
+                <h2 className="text-xs font-bold text-emerald-700 uppercase tracking-wider">Ingresos</h2>
+                <p className="mt-2 text-3xl font-black text-slate-900">{formatMoney(totalMoneyGenerated)}</p>
+                <span className="mt-1 block text-xs font-semibold text-emerald-700">rates monetarios</span>
               </CardContent>
             </Card>
+            <Card className="border-rose-100 bg-rose-50 shadow-sm">
+              <CardContent className="p-5">
+                <h2 className="text-xs font-bold text-rose-700 uppercase tracking-wider">Costos</h2>
+                <p className="mt-2 text-3xl font-black text-slate-900">{formatMoney(totalMoneyCost)}</p>
+                <span className="mt-1 block text-xs font-semibold text-rose-700">costo de producción</span>
+              </CardContent>
+            </Card>
+            <Card className="border-indigo-100 bg-indigo-50 shadow-sm">
+              <CardContent className="p-5">
+                <h2 className="text-xs font-bold text-indigo-700 uppercase tracking-wider">Margen</h2>
+                <p className={`mt-2 text-3xl font-black ${totalMoneyMargin < 0 ? 'text-rose-700' : 'text-slate-900'}`}>{formatMoney(totalMoneyMargin)}</p>
+                <span className="mt-1 block text-xs font-semibold text-indigo-700">ingreso menos costo</span>
+              </CardContent>
+            </Card>
+            <Card className="border-sky-100 bg-sky-50 shadow-sm">
+              <CardContent className="p-5">
+                <h2 className="text-xs font-bold text-sky-700 uppercase tracking-wider">Productividad</h2>
+                <p className="mt-2 text-3xl font-black text-slate-900">{totalUnitOutput.toLocaleString('es-CO', { maximumFractionDigits: 1 })}</p>
+                <span className="mt-1 block text-xs font-semibold text-sky-700">{unitMetricCount} rates por unidades</span>
+              </CardContent>
+            </Card>
+          </div>
 
-            <Card className="border-slate-200 shadow-sm md:col-span-2">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+            <Card className="border-slate-200 shadow-sm xl:col-span-2">
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium text-slate-500 flex items-center gap-2">
                   <Users size={16} className="text-indigo-500" />
-                  Valor Generado por Usuario (Global)
+                  Contribución por usuario
                 </CardTitle>
               </CardHeader>
               <CardContent className="h-[200px]">
@@ -572,20 +625,89 @@ export default function RateCardsPage() {
                       <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
                       <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} tickFormatter={(value) => `$${value}`} />
                       <RechartsTooltip 
-                        formatter={(value: any) => [Number(value).toLocaleString('en-US', { style: 'currency', currency: 'USD' }), 'Valor']}
+                        formatter={(value: any, name: any) => [
+                          name === 'output'
+                            ? Number(value).toLocaleString('es-CO', { maximumFractionDigits: 1 })
+                            : formatMoney(Number(value)),
+                          name === 'income' ? 'Ingreso' : name === 'cost' ? 'Costo' : name === 'margin' ? 'Margen' : 'Productividad',
+                        ]}
                         cursor={{ fill: '#f1f5f9' }}
                         contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                       />
-                      <Bar dataKey="value" fill="#4f46e5" radius={[4, 4, 0, 0]} maxBarSize={50}>
-                        {globalUserChartData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Bar>
+                      <Bar dataKey="income" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={32} />
+                      <Bar dataKey="cost" fill="#ef4444" radius={[4, 4, 0, 0]} maxBarSize={32} />
+                      <Bar dataKey="output" fill="#4f46e5" radius={[4, 4, 0, 0]} maxBarSize={32} />
                     </BarChart>
                   </ResponsiveContainer>
                 ) : (
                   <div className="h-full flex items-center justify-center text-slate-400 text-sm italic">
                     No hay datos por usuario aún
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="border-slate-200 shadow-sm">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                  <DollarSign size={16} className="text-indigo-500" />
+                  Rate seleccionado
+                </CardTitle>
+                <select
+                  value={selectedEconomicRate?.id || ''}
+                  onChange={(event) => setSelectedEconomicRateId(event.target.value)}
+                  className="mt-2 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                >
+                  {economicData.map(card => (
+                    <option key={card.id} value={card.id}>{card.name} · {card.projectName}</option>
+                  ))}
+                </select>
+              </CardHeader>
+              <CardContent>
+                {selectedEconomicRate ? (
+                  <div className="space-y-3">
+                    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                      <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-400">
+                        {isCurrencyRateCard(selectedEconomicRate) ? 'Monetario' : 'Productividad'}
+                      </p>
+                      <p className="mt-1 font-black text-slate-900">{selectedEconomicRate.name}</p>
+                      <p className="text-xs text-slate-500">{selectedEconomicRate.projectName}</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="rounded-lg bg-emerald-50 p-3">
+                        <p className="font-bold text-emerald-700">Ingreso</p>
+                        <p className="mt-1 font-black text-slate-900">{formatMoney(selectedEconomicRate.totalIncome, selectedEconomicRate.currency || 'USD')}</p>
+                      </div>
+                      <div className="rounded-lg bg-rose-50 p-3">
+                        <p className="font-bold text-rose-700">Costo</p>
+                        <p className="mt-1 font-black text-slate-900">{formatMoney(selectedEconomicRate.totalCost, selectedEconomicRate.currency || 'USD')}</p>
+                      </div>
+                      <div className="rounded-lg bg-indigo-50 p-3">
+                        <p className="font-bold text-indigo-700">Resultado</p>
+                        <p className="mt-1 font-black text-slate-900">{formatRateCardValue(selectedEconomicRate.totalGenerated, selectedEconomicRate)}</p>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 p-3">
+                        <p className="font-bold text-slate-600">Unidades</p>
+                        <p className="mt-1 font-black text-slate-900">{formatRateCardUnits(selectedEconomicRate.totalUnits, selectedEconomicRate, 1)}</p>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Top personas</p>
+                      {selectedEconomicContributors.length === 0 ? (
+                        <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-500">Aún no hay contribuciones por persona.</p>
+                      ) : (
+                        selectedEconomicContributors.map((person: any) => (
+                          <div key={person.userId} className="flex items-center justify-between rounded-lg border border-slate-100 p-2 text-xs">
+                            <span className="font-semibold text-slate-700">{person.name}</span>
+                            <span className="font-black text-indigo-600">{formatRateCardUnits(person.units, selectedEconomicRate, 1)}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-500">
+                    Selecciona un rate card para ver su pulso.
                   </div>
                 )}
               </CardContent>
@@ -619,17 +741,20 @@ export default function RateCardsPage() {
                     <TableHead className="font-semibold text-slate-600">Proyecto</TableHead>
                     <TableHead className="font-semibold text-slate-600">Indicador</TableHead>
                     <TableHead className="font-semibold text-slate-600">Tipo / Factor</TableHead>
-                    <TableHead className="font-semibold text-slate-600 text-right">Generado</TableHead>
+                    <TableHead className="font-semibold text-slate-600 text-right">Resultado</TableHead>
+                    <TableHead className="font-semibold text-slate-600 text-right">Ingreso</TableHead>
+                    <TableHead className="font-semibold text-slate-600 text-right">Costo</TableHead>
+                    <TableHead className="font-semibold text-slate-600 text-right">Margen</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {loadingEconomic ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="text-center py-8 text-slate-500">Cargando datos económicos...</TableCell>
+                      <TableCell colSpan={8} className="text-center py-8 text-slate-500">Cargando datos económicos...</TableCell>
                     </TableRow>
                   ) : economicData.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="text-center py-8 text-slate-500">No se encontraron rate cards.</TableCell>
+                      <TableCell colSpan={8} className="text-center py-8 text-slate-500">No se encontraron rate cards.</TableCell>
                     </TableRow>
                   ) : (
                     economicData.map((card) => (
@@ -638,7 +763,12 @@ export default function RateCardsPage() {
                         <TableCell className="text-slate-600">{card.projectName}</TableCell>
                         <TableCell className="text-slate-600">{card.indicator}</TableCell>
                         <TableCell className="font-medium text-indigo-600">
-                          <div>{formatRateCardRate(card.rate, card)}</div>
+                          <div>{formatRateCardRate(isCurrencyRateCard(card) ? getRateCardIncomeRate(card) : card.rate, card)}</div>
+                          {getRateCardCostRate(card) > 0 && (
+                            <div className="mt-1 text-[11px] font-semibold text-rose-600">
+                              Costo {formatMoney(getRateCardCostRate(card), card.currency || 'USD')} / {card.indicator || 'unidad'}
+                            </div>
+                          )}
                           <div className="mt-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
                             {isCurrencyRateCard(card) ? 'Dinero' : 'Unidad / medida'}
                           </div>
@@ -648,6 +778,15 @@ export default function RateCardsPage() {
                             {formatRateCardValue(card.totalGenerated, card)}
                           </div>
                           <div className="text-xs text-slate-500 font-normal">{formatRateCardUnits(card.totalUnits, card, 1)}</div>
+                        </TableCell>
+                        <TableCell className="text-right font-semibold text-emerald-700">
+                          {formatMoney(card.totalIncome, card.currency || 'USD')}
+                        </TableCell>
+                        <TableCell className="text-right font-semibold text-rose-700">
+                          {formatMoney(card.totalCost, card.currency || 'USD')}
+                        </TableCell>
+                        <TableCell className={`text-right font-semibold ${card.margin < 0 ? 'text-rose-700' : 'text-slate-900'}`}>
+                          {formatMoney(card.margin, card.currency || 'USD')}
                         </TableCell>
                       </TableRow>
                     ))

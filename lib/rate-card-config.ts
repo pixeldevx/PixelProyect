@@ -36,6 +36,26 @@ export const normalizeRateCardValueType = (value: any): RateCardValueType =>
 export const isCurrencyRateCard = (rateCard: any) =>
   normalizeRateCardValueType(rateCard?.rateType || rateCard?.valueType) === "currency";
 
+export const getRateCardIncomeRate = (rateCard: any) =>
+  normalizeDecimalInput(rateCard?.incomeRate ?? rateCard?.billingRate ?? rateCard?.rate, 0);
+
+export const getRateCardCostRate = (rateCard: any) =>
+  normalizeDecimalInput(rateCard?.costRate ?? rateCard?.unitCost ?? rateCard?.productionCost, 0);
+
+export const getRateCardUnitFactor = (rateCard: any) =>
+  normalizeDecimalInput(rateCard?.rate ?? rateCard?.unitFactor ?? 1, 1);
+
+export const getRateCardIncomeValue = (units: any, rateCard: any) =>
+  isCurrencyRateCard(rateCard) ? normalizeDecimalInput(units, 0) * getRateCardIncomeRate(rateCard) : 0;
+
+export const getRateCardCostValue = (units: any, rateCard: any) =>
+  normalizeDecimalInput(units, 0) * getRateCardCostRate(rateCard);
+
+export const getRateCardOutputValue = (units: any, rateCard: any) =>
+  isCurrencyRateCard(rateCard)
+    ? getRateCardIncomeValue(units, rateCard)
+    : normalizeDecimalInput(units, 0) * getRateCardUnitFactor(rateCard);
+
 export const getRateCardOutputUnit = (rateCard: any) => {
   if (isCurrencyRateCard(rateCard)) return rateCard?.currency || "USD";
   return (
@@ -76,7 +96,7 @@ export const formatRateCardValue = (value: any, rateCard: any, maximumFractionDi
 export const formatRateCardRate = (rate: any, rateCard: any, maximumFractionDigits = 4) => {
   const indicator = rateCard?.indicator || "unidad";
   if (isCurrencyRateCard(rateCard)) {
-    return `${formatRateCardValue(rate, rateCard, maximumFractionDigits)} / ${indicator}`;
+    return `${formatRateCardValue(getRateCardIncomeRate({ ...rateCard, rate }), rateCard, maximumFractionDigits)} / ${indicator}`;
   }
   return `${formatRateCardNumber(rate, maximumFractionDigits)} ${getRateCardOutputUnit(rateCard)} / ${indicator}`;
 };
