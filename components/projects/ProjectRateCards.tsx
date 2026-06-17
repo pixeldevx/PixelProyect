@@ -223,10 +223,63 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const formatMoney = (value: number, currency = 'USD') =>
     value.toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 0 });
 
+  const toDateKey = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const parseDateLike = (value: any): Date | null => {
+    if (!value) return null;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (typeof value?.toDate === 'function') {
+      const date = value.toDate();
+      return date instanceof Date && !Number.isNaN(date.getTime()) ? date : null;
+    }
+    if (typeof value?.toMillis === 'function') {
+      const date = new Date(value.toMillis());
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    if (typeof value?.seconds === 'number') {
+      const date = new Date(value.seconds * 1000);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    if (typeof value === 'number') {
+      const date = new Date(value < 10000000000 ? value * 1000 : value);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    if (typeof value === 'string') {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    return null;
+  };
+
+  const normalizeDateKey = (value: any) => {
+    if (typeof value !== 'string') return '';
+    const trimmed = value.trim();
+    const dateKeyMatch = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (dateKeyMatch) {
+      const [, year, month, day] = dateKeyMatch;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+
+    const parsed = parseDateLike(trimmed);
+    return parsed ? toDateKey(parsed) : '';
+  };
+
   const getEntryDateKey = (entry: any) => {
-    if (entry.dateKey) return entry.dateKey;
-    const createdAt = entry.createdAt?.toDate ? entry.createdAt.toDate() : entry.createdAt ? new Date(entry.createdAt) : null;
-    return createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt.toISOString().slice(0, 10) : '';
+    const directDateKey = normalizeDateKey(entry.dateKey || entry.dayKey || entry.reportDate);
+    if (directDateKey) return directDateKey;
+
+    const date =
+      parseDateLike(entry.createdAt) ||
+      parseDateLike(entry.completedAt) ||
+      parseDateLike(entry.approvedAt) ||
+      parseDateLike(entry.updatedAt);
+
+    return date ? toDateKey(date) : '';
   };
 
   const formatReportDate = (dateKey: string) => {
@@ -245,6 +298,91 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
   const getRateCardById = (rateCardId: string) =>
     rateCards.find(card => card.id === rateCardId);
+
+  const buildReportRow = (entry: any, card: any) => {
+    const units = Number(entry.units || 0);
+    const rateCardContext = card || entry;
+    const isRework = Boolean(entry.isRework);
+    const costUnits = isRework ? Math.abs(units) : units;
+    const costValue = getRateCardCostValue(costUnits, rateCardContext);
+
+    return {
+      ...entry,
+      dateKey: entry.dateKey || getEntryDateKey(entry),
+      personName: getMemberName(entry.assignedTo),
+      rateCardName: card?.name || entry.rateCardName || 'Rate Card eliminado',
+      indicator: rateCardContext?.indicator || 'unidades',
+      rateType: normalizeRateCardValueType(rateCardContext?.rateType || rateCardContext?.valueType),
+      unitLabel: rateCardContext?.unitLabel || rateCardContext?.measureUnit || 'unidades',
+      currency: rateCardContext?.currency || 'USD',
+      income: isRework ? 0 : getRateCardIncomeValue(units, rateCardContext),
+      cost: costValue,
+      value: isRework ? -costValue : getRateCardOutputValue(units, rateCardContext),
+      units,
+    };
+  };
+
+  const buildHistoricalBalanceRows = () => {
+    if (!reportGenerated || !reportEndDate) return [];
+
+    const trackedUnitsByUser = rateCardEntries.reduce((acc: Record<string, number>, entry: any) => {
+      if (!entry.rateCardId) return acc;
+      const statsType = entry.isRework ? 'rework' : 'production';
+      const userId = entry.assignedTo || 'unknown';
+      const key = `${entry.rateCardId}::${userId}::${statsType}`;
+      acc[key] = (acc[key] || 0) + Number(entry.units || 0);
+      return acc;
+    }, {});
+
+    return rateCards.flatMap(card => {
+      if (analysisRateIds.length > 0 && !analysisRateIds.includes(card.id)) return [];
+
+      const rows: any[] = [];
+      const productionStats = card.userStats || {};
+      const reworkStats = card.userReworkStats || {};
+
+      Object.entries(productionStats).forEach(([assignedTo, rawUnits]) => {
+        const totalUnits = Number(rawUnits || 0);
+        const trackedUnits = trackedUnitsByUser[`${card.id}::${assignedTo}::production`] || 0;
+        const historicalUnits = totalUnits - trackedUnits;
+        if (Math.abs(historicalUnits) < 0.000001) return;
+
+        rows.push(buildReportRow({
+          id: `historical-${card.id}-${assignedTo}-production`,
+          rateCardId: card.id,
+          assignedTo,
+          units: historicalUnits,
+          dateKey: reportEndDate,
+          displayDate: 'Acumulado histórico',
+          taskTitle: 'Saldo acumulado sin fecha individual',
+          source: 'historical_user_stats',
+          historicalBalance: true,
+        }, card));
+      });
+
+      Object.entries(reworkStats).forEach(([assignedTo, rawUnits]) => {
+        const totalUnits = Number(rawUnits || 0);
+        const trackedUnits = trackedUnitsByUser[`${card.id}::${assignedTo}::rework`] || 0;
+        const historicalUnits = totalUnits - trackedUnits;
+        if (Math.abs(historicalUnits) < 0.000001) return;
+
+        rows.push(buildReportRow({
+          id: `historical-${card.id}-${assignedTo}-rework`,
+          rateCardId: card.id,
+          assignedTo,
+          units: historicalUnits,
+          dateKey: reportEndDate,
+          displayDate: 'Reproceso histórico',
+          taskTitle: 'Reproceso acumulado sin fecha individual',
+          source: 'historical_rework_stats',
+          historicalBalance: true,
+          isRework: true,
+        }, card));
+      });
+
+      return rows;
+    });
+  };
 
   const selectedRateCardEntries = selectedRateCard
     ? rateCardEntries
@@ -311,33 +449,20 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   };
 
   const reportRows = reportGenerated
-    ? rateCardEntries
-      .map(entry => {
-        const dateKey = getEntryDateKey(entry);
-        const card = getRateCardById(entry.rateCardId);
-        const units = Number(entry.units || 0);
-        const rateCardContext = card || entry;
-        return {
+    ? [
+      ...rateCardEntries
+        .map(entry => buildReportRow({
           ...entry,
-          dateKey,
-          personName: getMemberName(entry.assignedTo),
-          rateCardName: card?.name || 'Rate Card eliminado',
-          indicator: rateCardContext?.indicator || 'unidades',
-          rateType: normalizeRateCardValueType(rateCardContext?.rateType || rateCardContext?.valueType),
-          unitLabel: rateCardContext?.unitLabel || rateCardContext?.measureUnit || 'unidades',
-          currency: rateCardContext?.currency || 'USD',
-          income: getRateCardIncomeValue(units, rateCardContext),
-          cost: getRateCardCostValue(units, rateCardContext),
-          value: getRateCardOutputValue(units, rateCardContext),
-          units,
-        };
-      })
-      .filter(entry => {
-        const matchesRate = analysisRateIds.length === 0 || analysisRateIds.includes(entry.rateCardId);
-        return matchesRate && entry.dateKey && entry.dateKey >= reportStartDate && entry.dateKey <= reportEndDate;
-      })
-      .sort((a, b) => b.dateKey.localeCompare(a.dateKey) || a.personName.localeCompare(b.personName))
+          dateKey: getEntryDateKey(entry),
+        }, getRateCardById(entry.rateCardId)))
+        .filter(entry => {
+          const matchesRate = analysisRateIds.length === 0 || analysisRateIds.includes(entry.rateCardId);
+          return matchesRate && entry.dateKey && entry.dateKey >= reportStartDate && entry.dateKey <= reportEndDate;
+        }),
+      ...buildHistoricalBalanceRows(),
+    ].sort((a, b) => b.dateKey.localeCompare(a.dateKey) || a.personName.localeCompare(b.personName))
     : [];
+  const reportHasHistoricalBalances = reportRows.some((entry: any) => entry.historicalBalance);
 
   const reportSummaryRows = Object.values(reportRows.reduce((acc: Record<string, any>, entry: any) => {
     const key = `${entry.assignedTo || 'unknown'}::${entry.rateCardId || 'unknown'}`;
@@ -385,7 +510,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
     const headers = ['Fecha', 'Persona', 'Rate Card', 'Tarea', 'Unidades', 'Indicador', 'Ingreso', 'Costo', 'Resultado', 'Tipo', 'Unidad/moneda', 'Fuente'];
     const csvRows = reportRows.map((entry: any) => [
-      entry.dateKey,
+      entry.displayDate || entry.dateKey,
       entry.personName,
       entry.rateCardName,
       entry.taskTitle || '',
@@ -915,6 +1040,11 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   </p>
                 </div>
               </div>
+              {reportHasHistoricalBalances && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                  Algunos valores vienen de saldos acumulados antiguos sin fecha individual. Se incluyen como acumulado histórico para que el reporte no oculte producción registrada.
+                </div>
+              )}
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -1021,7 +1151,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   <TableBody>
                     {reportRows.map((entry: any) => (
                       <TableRow key={entry.id}>
-                        <TableCell className="whitespace-nowrap text-slate-700">{formatReportDate(entry.dateKey)}</TableCell>
+                        <TableCell className="whitespace-nowrap text-slate-700">
+                          {entry.displayDate || formatReportDate(entry.dateKey)}
+                        </TableCell>
                         <TableCell className="font-medium text-slate-900">{entry.personName}</TableCell>
                         <TableCell className="text-slate-700">{entry.rateCardName}</TableCell>
                         <TableCell className="max-w-[260px] truncate text-slate-600" title={entry.taskTitle || ''}>
