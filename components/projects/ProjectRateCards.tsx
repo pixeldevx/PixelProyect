@@ -45,6 +45,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [reportEndDate, setReportEndDate] = useState('');
   const [reportGenerated, setReportGenerated] = useState(false);
   const [selectedRateCardId, setSelectedRateCardId] = useState<string | null>(null);
+  const [analysisRateIds, setAnalysisRateIds] = useState<string[]>([]);
 
   useEffect(() => {
     const q = query(collection(db, 'projects', projectId, 'rateCards'));
@@ -79,17 +80,24 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   useEffect(() => {
     if (rateCards.length === 0) {
       setSelectedRateCardId(null);
+      setAnalysisRateIds([]);
       return;
     }
 
     if (!selectedRateCardId || !rateCards.some(card => card.id === selectedRateCardId)) {
       setSelectedRateCardId(rateCards[0].id);
     }
-  }, [rateCards, selectedRateCardId]);
+
+    const validAnalysisIds = analysisRateIds.filter(id => rateCards.some(card => card.id === id));
+    if (validAnalysisIds.length === 0) {
+      setAnalysisRateIds([rateCards[0].id]);
+    } else if (validAnalysisIds.length !== analysisRateIds.length) {
+      setAnalysisRateIds(validAnalysisIds);
+    }
+  }, [rateCards, selectedRateCardId, analysisRateIds]);
 
   // Calculate data for charts and totals
   const userTotals: Record<string, { name: string; income: number; cost: number; output: number; reworkCost: number }> = {};
-  const cardComputedUserStats: Record<string, Record<string, number>> = {};
   const rateCardAnalytics: any[] = [];
   let totalProjectGenerated = 0;
   let totalProjectCost = 0;
@@ -99,10 +107,19 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
   rateCards.forEach(card => {
     let cardTotalUnits = 0;
-    const computedUserStats: Record<string, number> = { ...(card.userStats || {}) };
+    const rateEntries = rateCardEntries.filter(entry => entry.rateCardId === card.id);
+    const entryUserStats = rateEntries.reduce((acc: Record<string, number>, entry: any) => {
+      const userId = entry.assignedTo || 'unknown';
+      acc[userId] = (acc[userId] || 0) + Number(entry.units || 0);
+      return acc;
+    }, {});
+    const hasReportedEntries = rateEntries.length > 0;
+    const computedUserStats: Record<string, number> = hasReportedEntries ? entryUserStats : { ...(card.userStats || {}) };
 
     if (card.syncExternal) {
       cardTotalUnits = Number(card.currentValue || 0);
+    } else if (hasReportedEntries) {
+      cardTotalUnits = Object.values(computedUserStats).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
     } else {
       cardTotalUnits = Number(card.currentValue || 0);
       tasks.forEach(task => {
@@ -125,8 +142,6 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       }
     }
     
-    cardComputedUserStats[card.id] = computedUserStats;
-
     const currencyRate = isCurrencyRateCard(card);
     const incomeValue = getRateCardIncomeValue(cardTotalUnits, card);
     const costValue = getRateCardCostValue(cardTotalUnits, card);
@@ -231,6 +246,56 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const getRateCardById = (rateCardId: string) =>
     rateCards.find(card => card.id === rateCardId);
 
+  const selectedRateCardEntries = selectedRateCard
+    ? rateCardEntries
+      .filter(entry => entry.rateCardId === selectedRateCard.id)
+      .map(entry => {
+        const units = Number(entry.units || 0);
+        return {
+          ...entry,
+          dateKey: getEntryDateKey(entry),
+          personName: getMemberName(entry.assignedTo),
+          income: getRateCardIncomeValue(units, selectedRateCard),
+          cost: getRateCardCostValue(units, selectedRateCard),
+          value: getRateCardOutputValue(units, selectedRateCard),
+          units,
+        };
+      })
+      .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || ''))
+    : [];
+
+  const buildRateCardRecalculation = (card: any) => {
+    const entries = rateCardEntries.filter(entry => entry.rateCardId === card.id);
+    const reportedUnits = entries.reduce((sum, entry) => sum + Number(entry.units || 0), 0);
+    const calculatedIncome = getRateCardIncomeValue(reportedUnits, card);
+    const calculatedCost = getRateCardCostValue(reportedUnits, card);
+    const calculatedOutput = getRateCardOutputValue(reportedUnits, card);
+
+    return {
+      reportedUnits,
+      calculatedIncome,
+      calculatedCost,
+      calculatedOutput,
+      calculatedMargin: calculatedIncome - calculatedCost,
+      recalculatedAt: serverTimestamp(),
+    };
+  };
+
+  const toggleAnalysisRate = (rateCardId: string) => {
+    setReportGenerated(false);
+    setAnalysisRateIds(previous => {
+      if (previous.includes(rateCardId)) {
+        return previous.length === 1 ? previous : previous.filter(id => id !== rateCardId);
+      }
+      return [...previous, rateCardId];
+    });
+  };
+
+  const selectAllAnalysisRates = () => {
+    setReportGenerated(false);
+    setAnalysisRateIds(rateCards.map(card => card.id));
+  };
+
   const handleGenerateReport = () => {
     if (!reportStartDate || !reportEndDate) {
       toast.warning('Selecciona fecha inicial y fecha final para generar el informe.');
@@ -267,7 +332,10 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
           units,
         };
       })
-      .filter(entry => entry.dateKey && entry.dateKey >= reportStartDate && entry.dateKey <= reportEndDate)
+      .filter(entry => {
+        const matchesRate = analysisRateIds.length === 0 || analysisRateIds.includes(entry.rateCardId);
+        return matchesRate && entry.dateKey && entry.dateKey >= reportStartDate && entry.dateKey <= reportEndDate;
+      })
       .sort((a, b) => b.dateKey.localeCompare(a.dateKey) || a.personName.localeCompare(b.personName))
     : [];
 
@@ -296,6 +364,18 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     acc[key].movements += 1;
     return acc;
   }, {})).sort((a: any, b: any) => b.value - a.value || b.units - a.units);
+
+  const selectedAnalysisCards = rateCards.filter(card => analysisRateIds.includes(card.id));
+  const reportChartData = Object.values(reportRows.reduce((acc: Record<string, any>, entry: any) => {
+    if (!acc[entry.dateKey]) {
+      acc[entry.dateKey] = {
+        dateKey: entry.dateKey,
+        dateLabel: formatReportDate(entry.dateKey),
+      };
+    }
+    acc[entry.dateKey][entry.rateCardId] = (acc[entry.dateKey][entry.rateCardId] || 0) + entry.units;
+    return acc;
+  }, {})).sort((a: any, b: any) => a.dateKey.localeCompare(b.dateKey));
 
   const exportReportCsv = () => {
     if (reportRows.length === 0) {
@@ -360,6 +440,11 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
         unitLabel: rateType === 'unit' ? unitLabel.trim() : null,
         syncExternal,
         budgetLineId: budgetLineId || null,
+        reportedUnits: 0,
+        calculatedIncome: 0,
+        calculatedCost: 0,
+        calculatedOutput: 0,
+        calculatedMargin: 0,
         createdAt: serverTimestamp(),
         createdBy: currentUser.uid
       });
@@ -434,6 +519,12 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       if (syncExternal && currentValue !== '') {
         updateData.currentValue = normalizeDecimalInput(currentValue, 0);
       }
+
+      Object.assign(updateData, buildRateCardRecalculation({
+        ...rateCardToEdit,
+        ...updateData,
+        id: rateCardToEdit.id,
+      }));
       
       await updateDoc(doc(db, 'projects', projectId, 'rateCards', rateCardToEdit.id), updateData);
       setName('');
@@ -449,7 +540,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       setCurrentValue('');
       setIsEditModalOpen(false);
       setRateCardToEdit(null);
-      toast.success('Rate card actualizado exitosamente');
+      toast.success('Rate card actualizado y recalculado con las unidades reportadas.');
     } catch (error: any) {
       console.error("Error updating rate card:", error);
       toast.error(`Error al actualizar rate card: ${error.message}`);
@@ -655,6 +746,32 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                       ))
                     )}
                   </div>
+                  <div className="mt-4 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Interacciones recientes</p>
+                      <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500 ring-1 ring-slate-100">
+                        {selectedRateCardEntries.length}
+                      </span>
+                    </div>
+                    {selectedRateCardEntries.length === 0 ? (
+                      <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Este rate todavía no tiene interacciones reportadas.</p>
+                    ) : (
+                      <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
+                        {selectedRateCardEntries.slice(0, 8).map((entry: any) => (
+                          <div key={entry.id} className="rounded-lg bg-white p-2 text-xs ring-1 ring-slate-100">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate font-bold text-slate-800">{entry.personName}</span>
+                              <span className="shrink-0 font-black text-indigo-700">{formatRateCardUnits(entry.units, selectedRateCard, 1)}</span>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                              <span>{formatReportDate(entry.dateKey)}</span>
+                              <span className="truncate">{entry.taskTitle || 'Sin tarea asociada'}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -669,10 +786,10 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
             <div>
               <CardTitle className="text-lg font-semibold text-slate-900 flex items-center gap-2">
                 <FileText size={18} className="text-indigo-500" />
-                Generador de Informes
+                Estadísticas e interacciones de rates
               </CardTitle>
               <CardDescription className="mt-1">
-                Movimientos registrados por fecha, persona y rate card.
+                Selecciona uno o varios indicadores, grafica su movimiento y descarga el reporte filtrado.
               </CardDescription>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(150px,1fr)_minmax(150px,1fr)_auto_auto]">
@@ -709,7 +826,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 onClick={handleGenerateReport}
                 className="h-10 self-end bg-indigo-600 text-white hover:bg-indigo-700"
               >
-                Generar
+                Analizar
               </Button>
               <Button
                 type="button"
@@ -721,6 +838,47 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 <Download size={15} className="mr-2" />
                 CSV
               </Button>
+            </div>
+          </div>
+          <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 p-3">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">Rates a graficar</p>
+              <div className="flex gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={selectAllAnalysisRates} className="h-8 border-slate-200 text-xs">
+                  Todos
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setReportGenerated(false);
+                    setAnalysisRateIds(selectedRateCard ? [selectedRateCard.id] : rateCards.slice(0, 1).map(card => card.id));
+                  }}
+                  className="h-8 border-slate-200 text-xs"
+                >
+                  Rate activo
+                </Button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {rateCards.map(card => {
+                const active = analysisRateIds.includes(card.id);
+                return (
+                  <button
+                    key={card.id}
+                    type="button"
+                    onClick={() => toggleAnalysisRate(card.id)}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-black transition ${
+                      active
+                        ? 'border-indigo-200 bg-indigo-600 text-white shadow-sm'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200 hover:text-indigo-700'
+                    }`}
+                  >
+                    {card.name}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </CardHeader>
@@ -744,6 +902,54 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     {formatMoney(reportRows.reduce((sum: number, entry: any) => sum + entry.cost, 0), rateCards[0]?.currency || 'USD')}
                   </p>
                 </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900">Movimiento por indicador</h3>
+                    <p className="text-xs text-slate-500">La gráfica muestra unidades reportadas por día para comparar rates distintos sin mezclar moneda y productividad.</p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">
+                    {selectedAnalysisCards.length} seleccionados
+                  </span>
+                </div>
+                {reportChartData.length > 0 ? (
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={reportChartData} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="dateLabel" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
+                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
+                        <RechartsTooltip
+                          formatter={(value: any, name: any) => {
+                            const card = rateCards.find(item => item.id === name);
+                            return [
+                              formatRateCardUnits(Number(value || 0), card || { indicator: 'unidades' }, 2),
+                              card?.name || name,
+                            ];
+                          }}
+                          cursor={{ fill: '#f8fafc' }}
+                          contentStyle={{ borderRadius: '10px', border: '1px solid #e2e8f0', boxShadow: '0 12px 24px -16px rgb(15 23 42 / 0.35)' }}
+                        />
+                        {selectedAnalysisCards.map((card, index) => (
+                          <Bar
+                            key={card.id}
+                            dataKey={card.id}
+                            name={card.name}
+                            fill={COLORS[index % COLORS.length]}
+                            radius={[4, 4, 0, 0]}
+                            maxBarSize={34}
+                          />
+                        ))}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 py-10 text-center text-sm text-slate-500">
+                    No hay datos para graficar en el rango y rates seleccionados.
+                  </div>
+                )}
               </div>
 
               {reportSummaryRows.length > 0 && (
@@ -852,14 +1058,11 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 <TableHead className="font-semibold text-slate-600">Sincronización</TableHead>
                 <TableHead className="font-semibold text-slate-600">Tipo / Factor</TableHead>
                 <TableHead className="font-semibold text-slate-600">Generado</TableHead>
-                <TableHead className="font-semibold text-slate-600">Por Usuario</TableHead>
                 <TableHead className="font-semibold text-slate-600 text-right">Acciones</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rateCards.map((card) => {
-                const computedUserStats = cardComputedUserStats[card.id] || {};
-                
                 const analytics = rateCardAnalytics.find(row => row.id === card.id);
                 const totalUnits = analytics?.cardTotalUnits || 0;
                 const totalGenerated = analytics?.outputValue || 0;
@@ -870,7 +1073,11 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 const associatedBudgetLine = analytics?.associatedBudgetLine || budgetLines.find(bl => bl.id === card.budgetLineId);
 
                 return (
-                  <TableRow key={card.id} className="hover:bg-slate-50/50">
+                  <TableRow
+                    key={card.id}
+                    onClick={() => setSelectedRateCardId(card.id)}
+                    className={`cursor-pointer hover:bg-slate-50/70 ${selectedRateCardId === card.id ? 'bg-indigo-50/60 ring-1 ring-inset ring-indigo-100' : ''}`}
+                  >
                     <TableCell className="font-medium text-slate-900">{card.name}</TableCell>
                     <TableCell className="text-slate-600">
                       {associatedBudgetLine ? (
@@ -917,62 +1124,23 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                         </div>
                       )}
                     </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col gap-1 max-w-[200px]">
-                        {(Object.keys(computedUserStats).length > 0) || (card.userReworkStats && Object.entries(card.userReworkStats).length > 0) ? (
-                          Array.from(new Set([...Object.keys(computedUserStats), ...Object.keys(card.userReworkStats || {})])).map(userId => {
-                            const units = computedUserStats[userId] || 0;
-                            const reworkUnits = (card.userReworkStats && card.userReworkStats[userId]) || 0;
-                            const member = teamMembers.find(m => m.id === userId);
-                            const name = member ? member.name : 'Usuario Desconocido';
-                            const value = getRateCardOutputValue(units, card);
-                            const income = getRateCardIncomeValue(units, card);
-                            const cost = getRateCardCostValue(units, card);
-                            const reworkValue = getRateCardCostValue(reworkUnits, card);
-                            
-                            return (
-                              <div key={userId} className="flex flex-col text-[11px] border-b border-slate-50 pb-1 last:border-0">
-                                <div className="flex items-center justify-between">
-                                  <span className="text-slate-600 truncate mr-2" title={name}>{name}</span>
-                                  <span className="font-medium text-indigo-600 whitespace-nowrap">
-                                    {formatRateCardUnits(units, card, 1)} ({formatRateCardValue(value, card, 0)})
-                                  </span>
-                                </div>
-                                {(income > 0 || cost > 0) && (
-                                  <div className="flex items-center justify-between text-[10px] text-slate-500 mt-0.5">
-                                    <span className="truncate mr-2">Ingreso / costo</span>
-                                    <span className="whitespace-nowrap">
-                                      {formatMoney(income, card.currency || 'USD')} / {formatMoney(cost, card.currency || 'USD')}
-                                    </span>
-                                  </div>
-                                )}
-                                {reworkUnits > 0 && (
-                                  <div className="flex items-center justify-between text-red-600 mt-0.5">
-                                    <span className="truncate mr-2 text-[10px]">Reproceso:</span>
-                                    <span className="font-medium whitespace-nowrap">
-                                      {formatRateCardUnits(reworkUnits, card, 1)} (-{formatMoney(reworkValue, card.currency || 'USD')})
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })
-                        ) : (
-                          <span className="text-[11px] text-slate-400 italic">Sin datos individuales</span>
-                        )}
-                      </div>
-                    </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
                         <button 
-                          onClick={() => handleEditRateCard(card)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleEditRateCard(card);
+                          }}
                           className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
                           title="Editar"
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
                         </button>
                         <button 
-                          onClick={() => handleDeleteRateCard(card.id)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleDeleteRateCard(card.id);
+                          }}
                           className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
                           title="Eliminar"
                         >
@@ -985,7 +1153,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
               })}
               {rateCards.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center py-12 text-slate-500">
+                  <TableCell colSpan={7} className="text-center py-12 text-slate-500">
                     <CreditCard className="w-12 h-12 text-slate-200 mx-auto mb-3" />
                     <h3 className="text-base font-medium text-slate-900">No hay rate cards</h3>
                     <p className="text-sm text-slate-500 mt-1 mb-4">Crea un rate card para empezar a medir el valor generado.</p>
