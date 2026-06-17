@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock3,
+  Download,
   ListChecks,
   Search,
   Target,
@@ -38,6 +39,7 @@ type TaskStatusReportModalProps = {
 };
 
 type ReportView = "general" | "subtasks" | "task-report";
+type ReportTaskFilter = "all" | "finished" | "open" | "overdue" | "dueSoon";
 
 const STATUS_COLORS = {
   notStarted: "#94a3b8",
@@ -79,6 +81,30 @@ const formatReportDate = (value: any) => {
     month: "short",
     year: "numeric",
   });
+};
+
+const REPORT_FILTER_LABELS: Record<ReportTaskFilter, string> = {
+  all: "Todas",
+  finished: "Finalizadas",
+  open: "Abiertas",
+  overdue: "Atrasadas",
+  dueSoon: "Por vencer",
+};
+
+const sanitizeFilename = (value: string) =>
+  value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase() || "reporte";
+
+const escapeCsvCell = (value: any) => {
+  const text = value === null || value === undefined ? "" : String(value);
+  if (/[;"\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
 };
 
 const getTaskStatusLabel = (status?: string) => {
@@ -280,6 +306,7 @@ export function TaskStatusReportModal({
   const [selectedReportRootId, setSelectedReportRootId] = React.useState("");
   const [searchTerm, setSearchTerm] = React.useState("");
   const [activeReportView, setActiveReportView] = React.useState<ReportView>("general");
+  const [reportFilter, setReportFilter] = React.useState<ReportTaskFilter>("all");
   const [reportTimestamp, setReportTimestamp] = React.useState(0);
 
   const groupById = React.useMemo(
@@ -347,6 +374,7 @@ export function TaskStatusReportModal({
     setSelectedReportRootId(rootTasks[0]?.id || "");
     setSearchTerm("");
     setActiveReportView("general");
+    setReportFilter("all");
     setReportTimestamp(Date.now());
   }, [isOpen, rootTasks]);
 
@@ -355,6 +383,11 @@ export function TaskStatusReportModal({
     if (selectedReportRootId && rootTasks.some((task) => task.id === selectedReportRootId)) return;
     setSelectedReportRootId(rootTasks[0].id);
   }, [isOpen, rootTasks, selectedReportRootId]);
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+    setReportFilter("all");
+  }, [isOpen, selectedReportRootId]);
 
   if (!isOpen) return null;
 
@@ -667,18 +700,47 @@ export function TaskStatusReportModal({
   const openReportSubtasks = reportSubtasks.filter((task) => !isCompletedTaskStatus(task.status));
   const overdueReportSubtasks = openReportSubtasks.filter((task) => getScheduleState(task) === "overdue");
   const dueSoonReportSubtasks = openReportSubtasks.filter((task) => getScheduleState(task) === "dueSoon");
+  const filteredReportSubtasks = reportSubtasks.filter((task) => {
+    if (reportFilter === "finished") return isCompletedTaskStatus(task.status);
+    if (reportFilter === "open") return !isCompletedTaskStatus(task.status);
+    if (reportFilter === "overdue") return getScheduleState(task) === "overdue";
+    if (reportFilter === "dueSoon") return getScheduleState(task) === "dueSoon";
+    return true;
+  });
+  const sortedFilteredReportSubtasks = filteredReportSubtasks
+    .slice()
+    .sort((left, right) => {
+      if (reportFilter === "finished") {
+        const rightCompletion = getTaskTimestamp(getTaskCompletionDate(right));
+        const leftCompletion = getTaskTimestamp(getTaskCompletionDate(left));
+        if (rightCompletion !== leftCompletion) return rightCompletion - leftCompletion;
+      }
+
+      const leftEnd = getTaskTimestamp(left.endDate || left.end) || Number.MAX_SAFE_INTEGER;
+      const rightEnd = getTaskTimestamp(right.endDate || right.end) || Number.MAX_SAFE_INTEGER;
+      if (leftEnd !== rightEnd) return leftEnd - rightEnd;
+      return getTaskOrder(left) - getTaskOrder(right);
+    });
   const reportCompletionRate = getPercent(finishedReportSubtasks.length, reportSubtasks.length);
   const reportAverageProgress = getProgressAverage(reportSubtasks);
   const reportGroupName = selectedReportRootTask
     ? groupById.get(getTaskGroupId(selectedReportRootTask))?.name || DEFAULT_TASK_GROUP_NAME
     : DEFAULT_TASK_GROUP_NAME;
-  const reportKpis = [
+  const reportKpis: {
+    label: string;
+    value: string | number;
+    detail: string;
+    icon: React.ComponentType<{ className?: string }>;
+    tone: string;
+    filter: ReportTaskFilter;
+  }[] = [
     {
-      label: "Subtareas",
+      label: "Todas",
       value: reportSubtasks.length,
       detail: `${reportTaskTree.length} registros en el árbol`,
       icon: ListChecks,
       tone: "bg-indigo-50 text-indigo-700",
+      filter: "all",
     },
     {
       label: "Finalizadas",
@@ -686,6 +748,7 @@ export function TaskStatusReportModal({
       detail: `${reportCompletionRate}% del alcance`,
       icon: CheckCircle2,
       tone: "bg-emerald-50 text-emerald-700",
+      filter: "finished",
     },
     {
       label: "Abiertas",
@@ -693,15 +756,86 @@ export function TaskStatusReportModal({
       detail: `${overdueReportSubtasks.length} vencidas · ${dueSoonReportSubtasks.length} por vencer`,
       icon: AlertTriangle,
       tone: overdueReportSubtasks.length > 0 ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700",
+      filter: "open",
     },
     {
-      label: "Avance promedio",
-      value: `${reportAverageProgress}%`,
-      detail: `Prioridad ${getPriorityLabel(selectedReportRootTask?.priority).toLowerCase()}`,
-      icon: Activity,
-      tone: "bg-sky-50 text-sky-700",
+      label: "Atrasadas",
+      value: overdueReportSubtasks.length,
+      detail: "Requieren gestión inmediata",
+      icon: Clock3,
+      tone: "bg-red-50 text-red-700",
+      filter: "overdue",
+    },
+    {
+      label: "Por vencer",
+      value: dueSoonReportSubtasks.length,
+      detail: "Cierre próximo",
+      icon: Target,
+      tone: "bg-orange-50 text-orange-700",
+      filter: "dueSoon",
     },
   ];
+
+  const downloadTaskReport = () => {
+    if (!selectedReportRootTask || sortedFilteredReportSubtasks.length === 0) return;
+
+    const headers = [
+      "Tarea matriz",
+      "Grupo",
+      "Filtro",
+      "Subtarea",
+      "Tipo",
+      "Responsable",
+      "Estado",
+      "Prioridad",
+      "Cronograma inicio",
+      "Cronograma fin",
+      "Estado cronograma",
+      "Fecha cierre",
+      "Duracion",
+      "Avance",
+    ];
+
+    const rows = sortedFilteredReportSubtasks.map((task) => {
+      const startDate = getWorkflowStartDate(task) || getTaskDate(task.startDate || task.start || task.createdAt);
+      const completionDate = getTaskCompletionDate(task);
+      const referenceDate = completionDate || (reportTimestamp ? new Date(reportTimestamp) : null);
+      const duration = startDate && referenceDate
+        ? formatDuration(Math.max(0, referenceDate.getTime() - startDate.getTime()))
+        : "Sin datos";
+
+      return [
+        getTaskTitle(selectedReportRootTask),
+        reportGroupName,
+        REPORT_FILTER_LABELS[reportFilter],
+        getTaskTitle(task),
+        task.type === "workflow" ? "Workflow" : "Tarea",
+        getAssigneeName(task, teamMembers),
+        getTaskStatusLabel(task.status),
+        getPriorityLabel(task.priority),
+        formatReportDate(task.startDate || task.start),
+        formatReportDate(task.endDate || task.end),
+        getScheduleStateLabel(getScheduleState(task)),
+        formatReportDate(completionDate),
+        duration,
+        `${Number(task.progress || 0)}%`,
+      ];
+    });
+
+    const csv = [headers, ...rows]
+      .map((row) => row.map(escapeCsvCell).join(";"))
+      .join("\n");
+    const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10);
+    link.href = url;
+    link.download = `${sanitizeFilename(getTaskTitle(selectedReportRootTask))}-${sanitizeFilename(REPORT_FILTER_LABELS[reportFilter])}-${date}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   const toggleRootTask = (taskId: string) => {
     setSelectedRootIds((current) =>
@@ -771,7 +905,7 @@ export function TaskStatusReportModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[92vh] w-full max-w-7xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+      <div className="flex h-[94vh] w-[min(98vw,1900px)] max-w-none flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -822,7 +956,7 @@ export function TaskStatusReportModal({
           </Button>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[360px_minmax(0,1fr)]">
           <aside className="min-h-0 border-b border-slate-100 bg-slate-50/70 p-4 lg:border-b-0 lg:border-r">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div>
@@ -1251,7 +1385,7 @@ export function TaskStatusReportModal({
             ) : (
               <div className="space-y-4">
                 <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-end">
+                  <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_360px_auto] 2xl:items-end">
                     <div className="min-w-0">
                       <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-indigo-700">
                         <ClipboardList className="h-4 w-4" />
@@ -1280,6 +1414,15 @@ export function TaskStatusReportModal({
                         ))}
                       </select>
                     </label>
+                    <Button
+                      type="button"
+                      onClick={downloadTaskReport}
+                      disabled={!selectedReportRootTask || sortedFilteredReportSubtasks.length === 0}
+                      className="h-11 gap-2 rounded-xl bg-slate-950 px-4 text-sm font-black text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      <Download className="h-4 w-4" />
+                      Descargar CSV
+                    </Button>
                   </div>
                 </div>
 
@@ -1290,12 +1433,22 @@ export function TaskStatusReportModal({
                   </div>
                 ) : (
                   <>
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                       {reportKpis.map((kpi) => {
                         const Icon = kpi.icon;
+                        const active = reportFilter === kpi.filter;
 
                         return (
-                          <div key={kpi.label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <button
+                            key={kpi.label}
+                            type="button"
+                            onClick={() => setReportFilter(kpi.filter)}
+                            className={`rounded-xl border p-4 text-left shadow-sm transition-all ${
+                              active
+                                ? "border-indigo-300 bg-indigo-50 ring-2 ring-indigo-500/10"
+                                : "border-slate-200 bg-white hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-md"
+                            }`}
+                          >
                             <div className="flex items-start justify-between gap-3">
                               <div>
                                 <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{kpi.label}</p>
@@ -1306,52 +1459,74 @@ export function TaskStatusReportModal({
                                 <Icon className="h-5 w-5" />
                               </span>
                             </div>
-                          </div>
+                          </button>
                         );
                       })}
                     </div>
 
-                    <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+                    <div className="grid gap-4 2xl:grid-cols-[minmax(820px,1fr)_360px]">
                       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                           <div>
-                            <h3 className="text-sm font-black text-slate-900">Subtareas finalizadas</h3>
+                            <h3 className="text-sm font-black text-slate-900">Subtareas del reporte</h3>
                             <p className="text-xs text-slate-500">
-                              Entregables cerrados dentro de la tarea seleccionada.
+                              Filtro activo: {REPORT_FILTER_LABELS[reportFilter].toLowerCase()}.
                             </p>
                           </div>
-                          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
-                            {finishedReportSubtasks.length} finalizadas
+                          <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-black text-indigo-700">
+                            {sortedFilteredReportSubtasks.length} visibles
                           </span>
                         </div>
 
-                        {finishedReportSubtasks.length === 0 ? (
+                        {sortedFilteredReportSubtasks.length === 0 ? (
                           <div className="flex min-h-[220px] items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 text-center text-sm font-semibold text-slate-500">
-                            Esta tarea todavía no tiene subtareas finalizadas.
+                            No hay subtareas para el filtro seleccionado.
                           </div>
                         ) : (
-                          <div className="max-h-[420px] overflow-auto">
-                            <table className="w-full min-w-[780px] text-left text-xs">
+                          <div className="max-h-[56vh] overflow-auto rounded-xl border border-slate-100">
+                            <table className="w-full min-w-[1080px] text-left text-xs">
                               <thead className="sticky top-0 z-10 bg-white">
                                 <tr className="border-b border-slate-100 text-[10px] uppercase tracking-wider text-slate-400">
                                   <th className="py-2 pr-3">Subtarea</th>
                                   <th className="px-3 py-2">Responsable</th>
                                   <th className="px-3 py-2">Estado</th>
+                                  <th className="px-3 py-2">Condición</th>
                                   <th className="px-3 py-2">Cronograma</th>
-                                  <th className="px-3 py-2">Cierre</th>
+                                  <th className="px-3 py-2">Cierre / edad</th>
                                   <th className="px-3 py-2 text-right">Avance</th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {finishedReportSubtasks.map((task) => {
+                                {sortedFilteredReportSubtasks.map((task) => {
                                   const startDate = getWorkflowStartDate(task) || getTaskDate(task.startDate || task.start || task.createdAt);
                                   const completionDate = getTaskCompletionDate(task);
-                                  const duration = startDate && completionDate
-                                    ? formatDuration(Math.max(0, completionDate.getTime() - startDate.getTime()))
+                                  const referenceDate = completionDate || (reportTimestamp ? new Date(reportTimestamp) : null);
+                                  const duration = startDate && referenceDate
+                                    ? formatDuration(Math.max(0, referenceDate.getTime() - startDate.getTime()))
                                     : "Sin datos";
+                                  const scheduleState = getScheduleState(task);
+                                  const scheduleClass =
+                                    scheduleState === "overdue"
+                                      ? "bg-red-50 text-red-700"
+                                      : scheduleState === "dueSoon"
+                                      ? "bg-orange-50 text-orange-700"
+                                      : scheduleState === "completedLate"
+                                      ? "bg-orange-50 text-orange-700"
+                                      : scheduleState === "done"
+                                      ? "bg-emerald-50 text-emerald-700"
+                                      : "bg-slate-100 text-slate-600";
+                                  const statusClass = isCompletedTaskStatus(task.status)
+                                    ? task.status === "completed_late"
+                                      ? "bg-orange-50 text-orange-700"
+                                      : "bg-emerald-50 text-emerald-700"
+                                    : task.status === "stuck" || task.status === "detenido"
+                                    ? "bg-red-50 text-red-700"
+                                    : task.status === "in_progress" || task.status === "en_curso"
+                                    ? "bg-amber-50 text-amber-700"
+                                    : "bg-slate-100 text-slate-600";
 
                                   return (
-                                    <tr key={task.id} className="border-b border-slate-50 last:border-0">
+                                    <tr key={task.id} className="border-b border-slate-50 last:border-0 hover:bg-indigo-50/40">
                                       <td className="max-w-[260px] py-2 pr-3">
                                         <p className="truncate font-bold text-slate-800">{getTaskTitle(task)}</p>
                                         <p className="truncate text-[10px] font-medium text-slate-400">
@@ -1362,19 +1537,20 @@ export function TaskStatusReportModal({
                                         {getAssigneeName(task, teamMembers)}
                                       </td>
                                       <td className="px-3 py-2">
-                                        <span className={`rounded-full px-2 py-1 text-[10px] font-black ${
-                                          task.status === "completed_late"
-                                            ? "bg-orange-50 text-orange-700"
-                                            : "bg-emerald-50 text-emerald-700"
-                                        }`}>
+                                        <span className={`rounded-full px-2 py-1 text-[10px] font-black ${statusClass}`}>
                                           {getTaskStatusLabel(task.status)}
+                                        </span>
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <span className={`rounded-full px-2 py-1 text-[10px] font-black ${scheduleClass}`}>
+                                          {getScheduleStateLabel(scheduleState)}
                                         </span>
                                       </td>
                                       <td className="px-3 py-2 text-slate-500">
                                         {formatReportDate(task.startDate || task.start)} - {formatReportDate(task.endDate || task.end)}
                                       </td>
                                       <td className="px-3 py-2 text-slate-500">
-                                        {formatReportDate(completionDate)}
+                                        {completionDate ? formatReportDate(completionDate) : "Pendiente"}
                                         <span className="ml-1 text-slate-400">({duration})</span>
                                       </td>
                                       <td className="px-3 py-2 text-right font-black text-slate-800">
@@ -1419,18 +1595,36 @@ export function TaskStatusReportModal({
                             </div>
                           </div>
                           <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-                            <div className="rounded-lg bg-red-50 p-3">
+                            <button
+                              type="button"
+                              onClick={() => setReportFilter("overdue")}
+                              className={`rounded-lg p-3 transition ${
+                                reportFilter === "overdue" ? "bg-red-100 ring-2 ring-red-500/20" : "bg-red-50 hover:bg-red-100"
+                              }`}
+                            >
                               <p className="text-lg font-black text-red-700">{overdueReportSubtasks.length}</p>
                               <p className="text-[10px] font-bold uppercase tracking-wider text-red-500">Atrasadas</p>
-                            </div>
-                            <div className="rounded-lg bg-orange-50 p-3">
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setReportFilter("dueSoon")}
+                              className={`rounded-lg p-3 transition ${
+                                reportFilter === "dueSoon" ? "bg-orange-100 ring-2 ring-orange-500/20" : "bg-orange-50 hover:bg-orange-100"
+                              }`}
+                            >
                               <p className="text-lg font-black text-orange-700">{dueSoonReportSubtasks.length}</p>
                               <p className="text-[10px] font-bold uppercase tracking-wider text-orange-500">Por vencer</p>
-                            </div>
-                            <div className="rounded-lg bg-slate-100 p-3">
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setReportFilter("open")}
+                              className={`rounded-lg p-3 transition ${
+                                reportFilter === "open" ? "bg-slate-200 ring-2 ring-slate-500/15" : "bg-slate-100 hover:bg-slate-200"
+                              }`}
+                            >
                               <p className="text-lg font-black text-slate-700">{openReportSubtasks.length}</p>
                               <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Abiertas</p>
-                            </div>
+                            </button>
                           </div>
                         </div>
 
