@@ -14,6 +14,11 @@ import { toast } from 'sonner';
 import { belongsToAnyOrganization } from '@/lib/organizations';
 import { getCompletionStatusForTask, getProgressForTaskStatus } from '@/lib/taskProgress';
 import { normalizeRateCardUnits } from '@/lib/rate-card-config';
+import {
+  getIncrementalRateBinding,
+  isRateDrivenIncrementalTask,
+  syncRateDrivenIncrementalTasksForRate,
+} from '@/lib/incremental-rate-tasks';
 
 enum OperationType {
   CREATE = 'create',
@@ -216,6 +221,19 @@ export const GanttOverview: React.FC = () => {
 
   const handleUpdateTaskValue = async (taskId: string, value: number, task: any) => {
     try {
+      if (isRateDrivenIncrementalTask(task)) {
+        const binding = getIncrementalRateBinding(task);
+        toast.info('Esta tarea incremental se actualiza únicamente con el Rate Card configurado.');
+        if (binding?.rateCardId) {
+          await syncRateDrivenIncrementalTasksForRate({
+            projectId: selectedProjectId,
+            rateCardId: binding.rateCardId,
+            tasks,
+          });
+        }
+        return;
+      }
+
       const targetValue = Number(task.indicatorValue || 0);
       if (targetValue <= 0) {
         toast.warning('Esta tarea no tiene una meta válida configurada.');
@@ -250,6 +268,19 @@ export const GanttOverview: React.FC = () => {
     formData: Record<string, any>,
     comment: string
   ) => {
+    if (isRateDrivenIncrementalTask(task)) {
+      const binding = getIncrementalRateBinding(task);
+      toast.info('Esta tarea incremental solo puede avanzar con movimientos del Rate Card configurado.');
+      if (binding?.rateCardId) {
+        await syncRateDrivenIncrementalTasksForRate({
+          projectId: selectedProjectId,
+          rateCardId: binding.rateCardId,
+          tasks,
+        });
+      }
+      return;
+    }
+
     const incrementAmount = Number(amount);
     const targetValue = Number(task?.indicatorValue || 0);
     const currentValue = Number(task?.currentValue || 0);

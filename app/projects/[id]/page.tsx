@@ -58,6 +58,11 @@ import {
   isInvalidRateCardUnits,
   normalizeRateCardUnits,
 } from '@/lib/rate-card-config';
+import {
+  getIncrementalRateBinding,
+  isRateDrivenIncrementalTask,
+  syncRateDrivenIncrementalTasksForRate,
+} from '@/lib/incremental-rate-tasks';
 import { sanitizeTaskTitleForSave } from '@/lib/task-title';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
@@ -256,6 +261,25 @@ export default function ProjectDetailsPage() {
   const [tasks, setTasks] = useState<any[]>([]);
   const [rateCards, setRateCards] = useState<any[]>([]);
   const [budgetLines, setBudgetLines] = useState<any[]>([]);
+
+  const syncRateDrivenTasksForRateIds = async (
+    rateCardIds: Array<string | null | undefined>,
+    options: { fetchFreshTasks?: boolean } = {},
+  ) => {
+    const uniqueRateCardIds = Array.from(new Set(rateCardIds.filter(Boolean))) as string[];
+    if (uniqueRateCardIds.length === 0) return;
+
+    await Promise.all(
+      uniqueRateCardIds.map((rateCardId) =>
+        syncRateDrivenIncrementalTasksForRate({
+          projectId,
+          rateCardId,
+          tasks: options.fetchFreshTasks ? undefined : tasks,
+        }),
+      ),
+    );
+  };
+
   const [isCreateTaskModalOpen, setIsCreateTaskModalOpen] = useState(false);
   const [completingTaskId, setCompletingTaskId] = useState<string | null>(null);
   const [isTaskDocsModalOpen, setIsTaskDocsModalOpen] = useState(false);
@@ -745,6 +769,11 @@ export default function ProjectDetailsPage() {
       toast.error('No tienes permisos para editar los detalles de tareas.');
       return;
     }
+    if (isRateDrivenIncrementalTask(task)) {
+      toast.info('Esta tarea incremental se actualiza únicamente con el Rate Card configurado.');
+      await syncRateDrivenTasksForRateIds([getIncrementalRateBinding(task)?.rateCardId]);
+      return;
+    }
     try {
       const targetValue = Number(task.indicatorValue);
       const safeValue = Math.min(Math.max(Number(newValue) || 0, 0), targetValue);
@@ -820,6 +849,12 @@ export default function ProjectDetailsPage() {
 
     if (!task || !task.indicatorValue) {
       toast.warning('Esta tarea no tiene una meta válida configurada.');
+      return;
+    }
+
+    if (isRateDrivenIncrementalTask(task)) {
+      toast.info('Esta tarea incremental solo puede avanzar con movimientos del Rate Card configurado.');
+      await syncRateDrivenTasksForRateIds([getIncrementalRateBinding(task)?.rateCardId]);
       return;
     }
 
@@ -1341,6 +1376,10 @@ export default function ProjectDetailsPage() {
       batch.update(taskRef, taskUpdate);
 
       await batch.commit();
+      await syncRateDrivenTasksForRateIds([
+        dynamicRateCardCharge?.rateCardId,
+        ...completionRateCardCharges.map((charge) => charge?.rateCardId),
+      ]);
 
       if (task.parentTaskId) {
         const { updateParentTaskStatus } = await import('@/lib/taskUtils');
@@ -2365,7 +2404,7 @@ export default function ProjectDetailsPage() {
 
   const handleUpdateTaskStructure = async (
     task: any,
-    updates: { title: string; workflowSteps?: any[]; rateCard?: any }
+    updates: { title: string; workflowSteps?: any[]; rateCard?: any; incrementalRateBinding?: any }
   ) => {
     if (!task) return;
 
@@ -2427,10 +2466,17 @@ export default function ProjectDetailsPage() {
             : false;
         }
 
+        updateData.incrementalRateBinding = updates.incrementalRateBinding || null;
+        updateData.incrementSource = updates.incrementalRateBinding ? 'rate_card' : 'manual';
+
         batch.update(doc(db, 'projects', projectId, 'tasks', taskId), updateData);
       });
 
       await batch.commit();
+      await syncRateDrivenTasksForRateIds(
+        [updates.incrementalRateBinding?.rateCardId],
+        { fetchFreshTasks: true },
+      );
 
       setTasks((currentTasks) =>
         currentTasks.map((currentTask) => {
@@ -2468,6 +2514,9 @@ export default function ProjectDetailsPage() {
               ? Boolean(rateCards.find((rateCard) => rateCard.id === updates.rateCard.rateCardId)?.syncExternal)
               : false;
           }
+
+          updatedTask.incrementalRateBinding = updates.incrementalRateBinding || null;
+          updatedTask.incrementSource = updates.incrementalRateBinding ? 'rate_card' : 'manual';
 
           return updatedTask;
         })

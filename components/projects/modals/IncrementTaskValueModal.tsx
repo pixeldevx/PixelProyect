@@ -5,6 +5,7 @@ import { ClipboardList, Loader2, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CustomForm } from "@/components/projects/WorkflowStepFormBuilderModal";
 import { toast } from "sonner";
+import { getIncrementalRateBinding, isRateDrivenIncrementalTask } from "@/lib/incremental-rate-tasks";
 
 interface IncrementTaskValueModalProps {
   isOpen: boolean;
@@ -52,6 +53,8 @@ export function IncrementTaskValueModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const incrementForm: CustomForm | undefined = task?.incrementForm || undefined;
+  const rateBinding = getIncrementalRateBinding(task);
+  const isRateDriven = isRateDrivenIncrementalTask(task);
   const currentValue = Number(task?.currentValue || 0);
   const targetValue = Number(task?.indicatorValue || 0);
   const amountValue = Number(amount);
@@ -72,6 +75,11 @@ export function IncrementTaskValueModal({
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+
+    if (isRateDriven) {
+      toast.info("Esta tarea avanza automáticamente con el Rate Card configurado.");
+      return;
+    }
 
     if (!amountValue || amountValue <= 0) {
       toast.warning("Ingresa un valor de incremento mayor a cero.");
@@ -245,6 +253,17 @@ export function IncrementTaskValueModal({
             </div>
           </div>
 
+          {isRateDriven && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+              <p className="font-bold">Incremento gobernado por Rate Card</p>
+              <p className="mt-1 text-xs">
+                Esta tarea solo avanza cuando se reporta el Rate Card configurado
+                {rateBinding?.assigneeMode === "fixed" ? " por la persona seleccionada" : ""}
+                {rateBinding?.dateMode === "range" ? " dentro del periodo definido" : ""}.
+              </p>
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
               Incrementar en <span className="text-red-500">*</span>
@@ -255,6 +274,7 @@ export function IncrementTaskValueModal({
               step="0.01"
               value={amount}
               onChange={(event) => setAmount(event.target.value)}
+              disabled={isRateDriven}
               className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
               autoFocus
             />
@@ -294,7 +314,7 @@ export function IncrementTaskValueModal({
           <Button type="button" variant="outline" onClick={onClose} disabled={isSubmitting}>
             Cancelar
           </Button>
-          <Button type="submit" disabled={isSubmitting} className="bg-indigo-600 hover:bg-indigo-700 text-white min-w-[150px]">
+          <Button type="submit" disabled={isSubmitting || isRateDriven} className="bg-indigo-600 hover:bg-indigo-700 text-white min-w-[150px]">
             {isSubmitting ? (
               <>
                 <Loader2 size={16} className="mr-2 animate-spin" />

@@ -17,6 +17,7 @@ import {
   loadWorkflowTemplatesForScope,
 } from "@/lib/workflow-templates";
 import { getStaticRateCardAssignmentKey, isInvalidRateCardUnits, normalizeRateCardUnits } from "@/lib/rate-card-config";
+import { getIncrementalRateBinding, IncrementalRateBinding } from "@/lib/incremental-rate-tasks";
 
 type WorkflowStepDraft = {
   assignedTo?: string;
@@ -82,6 +83,7 @@ interface EditTaskStructureModalProps {
       unitsToAdd: number | null;
       autoAddUnits: boolean;
     };
+    incrementalRateBinding?: IncrementalRateBinding | null;
   }) => Promise<void> | void;
 }
 
@@ -231,6 +233,13 @@ export function EditTaskStructureModal({
   const [taskRateCardId, setTaskRateCardId] = useState("");
   const [taskUnitsToAdd, setTaskUnitsToAdd] = useState<number>(1);
   const [taskAutoAddUnits, setTaskAutoAddUnits] = useState(true);
+  const [incrementRateBindingEnabled, setIncrementRateBindingEnabled] = useState(false);
+  const [incrementRateCardId, setIncrementRateCardId] = useState("");
+  const [incrementRateFilterByAssignee, setIncrementRateFilterByAssignee] = useState(false);
+  const [incrementRateAssigneeId, setIncrementRateAssigneeId] = useState("");
+  const [incrementRateFilterByDate, setIncrementRateFilterByDate] = useState(false);
+  const [incrementRateStartDate, setIncrementRateStartDate] = useState("");
+  const [incrementRateEndDate, setIncrementRateEndDate] = useState("");
   const templateScopeOrganizationKey = templateScopeOrganizationIds.join("|");
 
   const canEditWorkflow = Boolean(canEditTaskStructure && (task?.type === "workflow" || (task?.workflowSteps?.length || 0) > 0));
@@ -264,6 +273,14 @@ export function EditTaskStructureModal({
     setTaskRateCardId(task.rateCardId || "");
     setTaskUnitsToAdd(normalizeRateCardUnits(task.unitsToAdd ?? task.dynamicRateCardConfig?.defaultUnits));
     setTaskAutoAddUnits(task.autoAddUnits !== false);
+    const incrementalBinding = getIncrementalRateBinding(task);
+    setIncrementRateBindingEnabled(Boolean(incrementalBinding));
+    setIncrementRateCardId(incrementalBinding?.rateCardId || "");
+    setIncrementRateFilterByAssignee(incrementalBinding?.assigneeMode === "fixed");
+    setIncrementRateAssigneeId(incrementalBinding?.assignedTo || "");
+    setIncrementRateFilterByDate(incrementalBinding?.dateMode === "range");
+    setIncrementRateStartDate(toDateInputValue(incrementalBinding?.startDate));
+    setIncrementRateEndDate(toDateInputValue(incrementalBinding?.endDate));
   }, [isOpen, task]);
 
   useEffect(() => {
@@ -572,6 +589,24 @@ export function EditTaskStructureModal({
     };
   };
 
+  const getCleanIncrementalRateBinding = (): IncrementalRateBinding | null => {
+    if (task?.type !== "quantitative" || !incrementRateBindingEnabled) return null;
+
+    return {
+      enabled: true,
+      rateCardId: incrementRateCardId || null,
+      assigneeMode: incrementRateFilterByAssignee ? "fixed" : "any",
+      assignedTo: incrementRateFilterByAssignee ? incrementRateAssigneeId || null : null,
+      dateMode: incrementRateFilterByDate ? "range" : "any",
+      startDate: incrementRateFilterByDate && incrementRateStartDate
+        ? new Date(`${incrementRateStartDate}T00:00:00`)
+        : null,
+      endDate: incrementRateFilterByDate && incrementRateEndDate
+        ? new Date(`${incrementRateEndDate}T23:59:59`)
+        : null,
+    };
+  };
+
   const normalizeTemplateName = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
 
   const validateWorkflowSteps = () => {
@@ -757,6 +792,28 @@ export function EditTaskStructureModal({
       return;
     }
 
+    if (task?.type === "quantitative" && incrementRateBindingEnabled && !incrementRateCardId) {
+      toast.warning("Selecciona el Rate Card que gobernará el avance incremental.");
+      return;
+    }
+
+    if (task?.type === "quantitative" && incrementRateBindingEnabled && incrementRateFilterByAssignee && !incrementRateAssigneeId) {
+      toast.warning("Selecciona la persona que debe generar el Rate Card para contar el avance.");
+      return;
+    }
+
+    if (task?.type === "quantitative" && incrementRateBindingEnabled && incrementRateFilterByDate) {
+      if (!incrementRateStartDate || !incrementRateEndDate) {
+        toast.warning("Define fecha inicial y final para el filtro del Rate Card incremental.");
+        return;
+      }
+
+      if (new Date(`${incrementRateStartDate}T00:00:00`).getTime() > new Date(`${incrementRateEndDate}T23:59:59`).getTime()) {
+        toast.warning("La fecha inicial del filtro no puede ser posterior a la fecha final.");
+        return;
+      }
+    }
+
     setIsSaving(true);
     try {
       await onSave({
@@ -765,6 +822,7 @@ export function EditTaskStructureModal({
           ? getCleanWorkflowSteps()
           : undefined,
         rateCard: getCleanTaskRateCard(),
+        incrementalRateBinding: getCleanIncrementalRateBinding(),
       });
       onClose();
     } catch (error: any) {
@@ -910,6 +968,115 @@ export function EditTaskStructureModal({
                   ) : (
                     <div className="h-10 rounded-lg border border-dashed border-emerald-200 bg-white px-3 py-2 text-[10px] font-medium text-emerald-700">
                       Pedirá unidades al completar.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {canEditTaskStructure && task?.type === "quantitative" && (
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start gap-2">
+                  <div className="mt-0.5 rounded-lg bg-white p-1.5 text-emerald-600 shadow-sm">
+                    <ClipboardList size={15} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-800">Avance gobernado por Rate Card</h3>
+                    <p className="text-xs text-slate-500">
+                      Hace que el contador de esta tarea avance solo con movimientos del Rate Card seleccionado.
+                    </p>
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald-700">
+                  <input
+                    type="checkbox"
+                    checked={incrementRateBindingEnabled}
+                    onChange={(event) => setIncrementRateBindingEnabled(event.target.checked)}
+                    className="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  Activar
+                </label>
+              </div>
+
+              {incrementRateBindingEnabled && (
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1 md:col-span-2">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                      Rate Card que suma avance
+                    </label>
+                    <select
+                      value={incrementRateCardId}
+                      onChange={(event) => setIncrementRateCardId(event.target.value)}
+                      className="h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    >
+                      <option value="">Seleccionar Rate Card...</option>
+                      {rateCards.map((rateCard) => (
+                        <option key={rateCard.id} value={rateCard.id}>
+                          {rateCard.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <label className="flex h-10 items-center gap-2 rounded-lg border border-emerald-100 bg-white px-3 text-xs font-bold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={incrementRateFilterByAssignee}
+                      onChange={(event) => setIncrementRateFilterByAssignee(event.target.checked)}
+                      className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    Solo contar una persona
+                  </label>
+
+                  {incrementRateFilterByAssignee ? (
+                    <select
+                      value={incrementRateAssigneeId}
+                      onChange={(event) => setIncrementRateAssigneeId(event.target.value)}
+                      className="h-10 rounded-lg border border-emerald-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    >
+                      <option value="">Seleccionar persona...</option>
+                      {teamMembers.map((member) => (
+                        <option key={member.id} value={member.id}>
+                          {member.name || member.email}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="flex h-10 items-center rounded-lg border border-emerald-100 bg-white px-3 text-xs font-medium text-emerald-700">
+                      Cuenta movimientos de cualquier profesional.
+                    </div>
+                  )}
+
+                  <label className="flex h-10 items-center gap-2 rounded-lg border border-emerald-100 bg-white px-3 text-xs font-bold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={incrementRateFilterByDate}
+                      onChange={(event) => setIncrementRateFilterByDate(event.target.checked)}
+                      className="rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    Contar solo un periodo
+                  </label>
+
+                  {incrementRateFilterByDate ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="date"
+                        value={incrementRateStartDate}
+                        onChange={(event) => setIncrementRateStartDate(event.target.value)}
+                        className="h-10 rounded-lg border border-emerald-200 bg-white px-3 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      />
+                      <input
+                        type="date"
+                        value={incrementRateEndDate}
+                        onChange={(event) => setIncrementRateEndDate(event.target.value)}
+                        className="h-10 rounded-lg border border-emerald-200 bg-white px-3 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex h-10 items-center rounded-lg border border-emerald-100 bg-white px-3 text-xs font-medium text-emerald-700">
+                      Cuenta todos los movimientos históricos del rate.
                     </div>
                   )}
                 </div>

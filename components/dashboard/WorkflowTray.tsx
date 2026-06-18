@@ -32,6 +32,7 @@ import {
   isInvalidRateCardUnits,
   normalizeRateCardUnits,
 } from '@/lib/rate-card-config';
+import { syncRateDrivenIncrementalTasksForRate } from '@/lib/incremental-rate-tasks';
 import { getTaskDisplayTitle } from '@/lib/task-title';
 import {
   createGoogleCalendarUrl,
@@ -1215,13 +1216,13 @@ export default function WorkflowTray() {
       let nextIndex = currentIndex;
       let newStatus = task.status;
       let progress = task.progress || 0;
+      const rateCardChargesToSync: any[] = [];
 
       const hasBeenActedUpon = task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex && (h.action === 'approve' || h.action === 'return'));
 
       // Rate Card Update for the current step (whether approved or returned)
       if (staticRateCardSources.length > 0 && (action === 'approve' || action === 'return')) {
         staticRateCardSources.forEach((staticRateCardSource) => {
-          const rcRef = doc(db, 'projects', task.projectId, 'rateCards', staticRateCardSource.rateCardId);
           const units = staticRateCardSource.autoAddUnits === false
             ? Number(staticRateCardUnits[staticRateCardSource.key] || 0)
             : normalizeRateCardUnits(staticRateCardSource.unitsToAdd);
@@ -1231,21 +1232,20 @@ export default function WorkflowTray() {
             staticRateCardAssignees[staticRateCardSource.key]
           );
 
-          if (!units) return;
+          if (!units || !assignedUser) return;
 
-          const updateData: any = {};
-          if (!hasBeenActedUpon) {
-            updateData.currentValue = increment(units);
-            if (assignedUser) {
-              updateData[`userStats.${assignedUser}`] = increment(units);
-            }
-          } else {
-            updateData.reworkValue = increment(units);
-            if (assignedUser) {
-              updateData[`userReworkStats.${assignedUser}`] = increment(units);
-            }
-          }
-          batch.update(rcRef, updateData);
+          const charge = addDynamicRateCardChargeToBatch(batch, {
+            projectId: task.projectId,
+            task,
+            rateCardId: staticRateCardSource.rateCardId,
+            assigneeId: assignedUser,
+            units,
+            source: staticRateCardSource.source === 'form' ? 'workflow_step_form_static' : 'workflow_step_static',
+            stepIndex: currentIndex,
+            comment: actionComment,
+            isRework: hasBeenActedUpon,
+          });
+          if (charge) rateCardChargesToSync.push(charge);
         });
       }
 
@@ -1269,6 +1269,7 @@ export default function WorkflowTray() {
           comment: actionComment,
           isRework: workflowDynamicRateCardSource.source === 'workflow_step' ? hasBeenActedUpon : taskWasCompletedBefore,
         });
+        if (dynamicRateCardCharge) rateCardChargesToSync.push(dynamicRateCardCharge);
       }
 
       let qualityEvent: any = null;
@@ -1471,6 +1472,15 @@ export default function WorkflowTray() {
       batch.update(taskRef, taskUpdate);
 
       await batch.commit();
+
+      await Promise.all(
+        Array.from(new Set(rateCardChargesToSync.map((charge) => charge?.rateCardId).filter(Boolean))).map((rateCardId) =>
+          syncRateDrivenIncrementalTasksForRate({
+            projectId: task.projectId,
+            rateCardId,
+          }),
+        ),
+      );
 
       if (task.parentTaskId) {
         const { updateParentTaskStatus } = await import('@/lib/taskUtils');
@@ -1951,6 +1961,20 @@ export default function WorkflowTray() {
       batch.update(taskRef, taskUpdate);
 
       await batch.commit();
+
+      await Promise.all(
+        Array.from(
+          new Set([
+            dynamicRateCardCharge?.rateCardId,
+            ...completionRateCardCharges.map((charge) => charge?.rateCardId),
+          ].filter(Boolean)),
+        ).map((rateCardId) =>
+          syncRateDrivenIncrementalTasksForRate({
+            projectId: task.projectId,
+            rateCardId,
+          }),
+        ),
+      );
 
       if (task.parentTaskId) {
         const { updateParentTaskStatus } = await import('@/lib/taskUtils');
