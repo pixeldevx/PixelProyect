@@ -222,6 +222,17 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
   const formatMoney = (value: number, currency = 'USD') =>
     value.toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 0 });
+  const formatCompactMoney = (value: number) => {
+    const absoluteValue = Math.abs(value);
+    if (absoluteValue >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(1)}B`;
+    if (absoluteValue >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+    if (absoluteValue >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
+    return `$${value.toLocaleString('es-CO', { maximumFractionDigits: 0 })}`;
+  };
+  const shortLabel = (value: string, maxLength = 18) => {
+    if (!value) return '';
+    return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
+  };
 
   const toDateKey = (date: Date) => {
     const year = date.getFullYear();
@@ -401,6 +412,18 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       })
       .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || ''))
     : [];
+  const chartDisplayData = userChartData.slice(0, 8);
+  const activeUserCount = userChartData.filter(row => row.income > 0 || row.cost > 0 || row.output > 0 || row.reworkCost > 0).length;
+  const totalMovements = rateCardEntries.length;
+  const totalMargin = totalProjectGenerated - totalProjectCost;
+  const topFinancialUsers = userChartData
+    .filter(row => row.income > 0 || row.cost > 0 || row.reworkCost > 0)
+    .slice(0, 5);
+  const topProductiveUsers = userChartData
+    .filter(row => row.output > 0)
+    .sort((left, right) => right.output - left.output)
+    .slice(0, 5);
+  const selectedRateCardLastEntry = selectedRateCardEntries[0];
 
   const buildRateCardRecalculation = (card: any) => {
     const entries = rateCardEntries.filter(entry => entry.rateCardId === card.id);
@@ -767,152 +790,250 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
             </Card>
           </div>
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_360px]">
-          <Card className="border-slate-200 shadow-sm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500 flex items-center gap-2">
-                <Users size={16} className="text-indigo-500" />
-                Contribución financiera por usuario
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="h-[200px]">
-              {userChartData.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={userChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} tickFormatter={(value) => `$${value}`} />
-                    <RechartsTooltip
-                      formatter={(value: any, name: any, item: any) => {
-                        const metricKey = item?.dataKey || name;
-                        const labels: Record<string, string> = {
-                          income: 'Ingreso',
-                          Ingreso: 'Ingreso',
-                          cost: 'Costo',
-                          Costo: 'Costo',
-                          reworkCost: 'Reproceso',
-                          Reproceso: 'Reproceso',
-                        };
-
-                        return [
-                          formatMoney(Number(value || 0)),
-                          labels[metricKey] || String(name || metricKey),
-                        ];
-                      }}
-                      cursor={{ fill: '#f1f5f9' }}
-                      contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                    />
-                    <Bar dataKey="income" name="Ingreso" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={50}>
-                      {userChartData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Bar>
-                    <Bar dataKey="cost" name="Costo" fill="#ef4444" radius={[4, 4, 0, 0]} maxBarSize={50} />
-                    <Bar dataKey="reworkCost" name="Reproceso" fill="#f97316" radius={[4, 4, 0, 0]} maxBarSize={50} />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="h-full flex items-center justify-center text-slate-400 text-sm italic">
-                  No hay datos por usuario aún
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_420px] 2xl:grid-cols-[minmax(0,1fr)_460px]">
+            <Card className="min-w-0 border-slate-200 shadow-sm">
+              <CardHeader className="pb-2">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 text-base font-black text-slate-900">
+                      <Users size={18} className="text-indigo-500" />
+                      Contribución por usuario
+                    </CardTitle>
+                    <CardDescription className="mt-1">
+                      Compara ingreso, costo y reproceso sin perder las etiquetas del gráfico.
+                    </CardDescription>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div className="rounded-xl bg-slate-50 px-3 py-2">
+                      <p className="font-black uppercase tracking-wider text-slate-400">Usuarios</p>
+                      <p className="mt-1 text-lg font-black text-slate-900">{activeUserCount}</p>
+                    </div>
+                    <div className="rounded-xl bg-indigo-50 px-3 py-2">
+                      <p className="font-black uppercase tracking-wider text-indigo-500">Mov.</p>
+                      <p className="mt-1 text-lg font-black text-indigo-700">{totalMovements}</p>
+                    </div>
+                    <div className={`rounded-xl px-3 py-2 ${totalMargin >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
+                      <p className={`font-black uppercase tracking-wider ${totalMargin >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>Margen</p>
+                      <p className="mt-1 text-lg font-black text-slate-900">{formatCompactMoney(totalMargin)}</p>
+                    </div>
+                  </div>
                 </div>
-              )}
-            </CardContent>
-          </Card>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {chartDisplayData.length > 0 ? (
+                  <div className="h-[340px] min-w-0">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={chartDisplayData} margin={{ top: 12, right: 24, left: 8, bottom: 28 }} barCategoryGap="24%">
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis
+                          dataKey="name"
+                          axisLine={false}
+                          tickLine={false}
+                          interval={0}
+                          minTickGap={6}
+                          tick={{ fontSize: 11, fill: '#64748b' }}
+                          tickFormatter={(value) => shortLabel(String(value), 14)}
+                        />
+                        <YAxis
+                          width={76}
+                          axisLine={false}
+                          tickLine={false}
+                          tick={{ fontSize: 11, fill: '#64748b' }}
+                          tickFormatter={(value) => formatCompactMoney(Number(value || 0))}
+                        />
+                        <RechartsTooltip
+                          formatter={(value: any, name: any, item: any) => {
+                            const metricKey = item?.dataKey || name;
+                            const labels: Record<string, string> = {
+                              income: 'Ingreso',
+                              Ingreso: 'Ingreso',
+                              cost: 'Costo',
+                              Costo: 'Costo',
+                              reworkCost: 'Reproceso',
+                              Reproceso: 'Reproceso',
+                            };
 
-          <Card className="border-slate-200 shadow-sm">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-black text-slate-900">Rate seleccionado</CardTitle>
-              <CardDescription>Elige un indicador y revisa quién más aporta.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <select
-                value={selectedRateCard?.id || ''}
-                onChange={(event) => setSelectedRateCardId(event.target.value)}
-                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20"
-              >
-                {rateCardAnalytics.map(card => (
-                  <option key={card.id} value={card.id}>{card.name}</option>
-                ))}
-              </select>
-              {selectedRateCard && (
-                <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-xs font-black uppercase tracking-wider text-slate-400">
-                        {isCurrencyRateCard(selectedRateCard) ? 'Monetario' : 'Productividad'}
-                      </p>
-                      <p className="mt-1 text-lg font-black text-slate-900">{selectedRateCard.name}</p>
-                      <p className="text-xs font-semibold text-slate-500">
-                        {selectedRateCard.associatedBudgetLine?.name || 'Sin línea de presupuesto'}
-                      </p>
-                    </div>
-                    <span className="rounded-full bg-white px-2 py-1 text-xs font-black text-indigo-700 ring-1 ring-indigo-100">
-                      {formatRateCardUnits(selectedRateCard.cardTotalUnits, selectedRateCard, 1)}
-                    </span>
+                            return [
+                              formatMoney(Number(value || 0)),
+                              labels[metricKey] || String(name || metricKey),
+                            ];
+                          }}
+                          labelFormatter={(label) => String(label)}
+                          cursor={{ fill: '#f8fafc' }}
+                          contentStyle={{ borderRadius: '12px', border: '1px solid #e2e8f0', boxShadow: '0 16px 30px -20px rgb(15 23 42 / 0.45)' }}
+                        />
+                        <Bar dataKey="income" name="Ingreso" fill="#10b981" radius={[5, 5, 0, 0]} maxBarSize={42}>
+                          {chartDisplayData.map((entry, index) => (
+                            <Cell key={`income-${entry.name}-${index}`} fill={COLORS[index % COLORS.length]} />
+                          ))}
+                        </Bar>
+                        <Bar dataKey="cost" name="Costo" fill="#ef4444" radius={[5, 5, 0, 0]} maxBarSize={42} />
+                        <Bar dataKey="reworkCost" name="Reproceso" fill="#f97316" radius={[5, 5, 0, 0]} maxBarSize={42} />
+                      </BarChart>
+                    </ResponsiveContainer>
                   </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                    <div className="rounded-lg bg-white p-2">
-                      <p className="font-bold text-slate-400">Ingreso</p>
-                      <p className="font-black text-emerald-700">{formatMoney(selectedRateCard.incomeValue, selectedRateCard.currency || 'USD')}</p>
+                ) : (
+                  <div className="flex min-h-[260px] items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 text-sm italic text-slate-400">
+                    No hay datos por usuario aún.
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                  <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Top financiero</p>
+                      <span className="text-[10px] font-black text-slate-400">{topFinancialUsers.length} visibles</span>
                     </div>
-                    <div className="rounded-lg bg-white p-2">
-                      <p className="font-bold text-slate-400">Costo</p>
-                      <p className="font-black text-rose-700">{formatMoney(selectedRateCard.costValue, selectedRateCard.currency || 'USD')}</p>
-                    </div>
-                    <div className="rounded-lg bg-white p-2">
-                      <p className="font-bold text-slate-400">Resultado</p>
-                      <p className="font-black text-indigo-700">{formatRateCardValue(selectedRateCard.outputValue, selectedRateCard)}</p>
-                    </div>
-                    <div className="rounded-lg bg-white p-2">
-                      <p className="font-bold text-slate-400">Margen</p>
-                      <p className="font-black text-slate-900">{formatMoney(selectedRateCard.marginValue, selectedRateCard.currency || 'USD')}</p>
+                    <div className="mt-2 space-y-2">
+                      {topFinancialUsers.length === 0 ? (
+                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Sin contribución monetaria todavía.</p>
+                      ) : (
+                        topFinancialUsers.map((person, index) => (
+                          <div key={`${person.name}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-white px-3 py-2 text-xs ring-1 ring-slate-100">
+                            <span className="truncate font-bold text-slate-800" title={person.name}>{person.name}</span>
+                            <span className={`font-black ${person.margin >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                              {formatCompactMoney(person.margin)}
+                            </span>
+                          </div>
+                        ))
+                      )}
                     </div>
                   </div>
-                  <div className="mt-3 space-y-2">
-                    <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Top contribuyentes</p>
-                    {selectedRateCardContribution.length === 0 ? (
-                      <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Sin movimientos individuales.</p>
-                    ) : (
-                      selectedRateCardContribution.map((person: any) => (
-                        <div key={person.userId} className="flex items-center justify-between gap-3 rounded-lg bg-white p-2">
-                          <span className="truncate text-xs font-bold text-slate-700" title={person.name}>{person.name}</span>
-                          <span className="shrink-0 text-xs font-black text-indigo-700">
-                            {formatRateCardUnits(person.units, selectedRateCard, 1)}
-                          </span>
-                        </div>
-                      ))
-                    )}
+
+                  <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Top productividad</p>
+                      <span className="text-[10px] font-black text-slate-400">{unitRateCardCount} rates unidad</span>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {topProductiveUsers.length === 0 ? (
+                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Sin producción por unidad todavía.</p>
+                      ) : (
+                        topProductiveUsers.map((person, index) => (
+                          <div key={`${person.name}-output-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-white px-3 py-2 text-xs ring-1 ring-slate-100">
+                            <span className="truncate font-bold text-slate-800" title={person.name}>{person.name}</span>
+                            <span className="font-black text-indigo-700">
+                              {person.output.toLocaleString('es-CO', { maximumFractionDigits: 1 })}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
-                  <div className="mt-4 space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Interacciones recientes</p>
-                      <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500 ring-1 ring-slate-100">
-                        {selectedRateCardEntries.length}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="min-w-0 border-slate-200 shadow-sm">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base font-black text-slate-900">Rate seleccionado</CardTitle>
+                <CardDescription>Elige un indicador y revisa quién más aporta.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <select
+                  value={selectedRateCard?.id || ''}
+                  onChange={(event) => setSelectedRateCardId(event.target.value)}
+                  className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20"
+                >
+                  {rateCardAnalytics.map(card => (
+                    <option key={card.id} value={card.id}>{card.name}</option>
+                  ))}
+                </select>
+                {selectedRateCard && (
+                  <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-black uppercase tracking-wider text-slate-400">
+                          {isCurrencyRateCard(selectedRateCard) ? 'Monetario' : 'Productividad'}
+                        </p>
+                        <p className="mt-1 break-words text-lg font-black leading-tight text-slate-900">{selectedRateCard.name}</p>
+                        <p className="mt-1 text-xs font-semibold text-slate-500">
+                          {selectedRateCard.associatedBudgetLine?.name || 'Sin línea de presupuesto'}
+                        </p>
+                      </div>
+                      <span className="max-w-[160px] rounded-full bg-white px-2 py-1 text-right text-[11px] font-black leading-tight text-indigo-700 ring-1 ring-indigo-100">
+                        {formatRateCardUnits(selectedRateCard.cardTotalUnits, selectedRateCard, 1)}
                       </span>
                     </div>
-                    {selectedRateCardEntries.length === 0 ? (
-                      <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Este rate todavía no tiene interacciones reportadas.</p>
-                    ) : (
-                      <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
-                        {selectedRateCardEntries.slice(0, 8).map((entry: any) => (
-                          <div key={entry.id} className="rounded-lg bg-white p-2 text-xs ring-1 ring-slate-100">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="truncate font-bold text-slate-800">{entry.personName}</span>
-                              <span className="shrink-0 font-black text-indigo-700">{formatRateCardUnits(entry.units, selectedRateCard, 1)}</span>
-                            </div>
-                            <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-500">
-                              <span>{formatReportDate(entry.dateKey)}</span>
-                              <span className="truncate">{entry.taskTitle || 'Sin tarea asociada'}</span>
-                            </div>
-                          </div>
-                        ))}
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                      <div className="min-w-0 rounded-lg bg-white p-2">
+                        <p className="font-bold text-slate-400">Ingreso</p>
+                        <p className="break-words font-black text-emerald-700">{formatMoney(selectedRateCard.incomeValue, selectedRateCard.currency || 'USD')}</p>
                       </div>
-                    )}
+                      <div className="min-w-0 rounded-lg bg-white p-2">
+                        <p className="font-bold text-slate-400">Costo</p>
+                        <p className="break-words font-black text-rose-700">{formatMoney(selectedRateCard.costValue, selectedRateCard.currency || 'USD')}</p>
+                      </div>
+                      <div className="min-w-0 rounded-lg bg-white p-2">
+                        <p className="font-bold text-slate-400">Resultado</p>
+                        <p className="break-words font-black text-indigo-700">{formatRateCardValue(selectedRateCard.outputValue, selectedRateCard)}</p>
+                      </div>
+                      <div className="min-w-0 rounded-lg bg-white p-2">
+                        <p className="font-bold text-slate-400">Margen</p>
+                        <p className="break-words font-black text-slate-900">{formatMoney(selectedRateCard.marginValue, selectedRateCard.currency || 'USD')}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                      <div className="rounded-lg border border-slate-100 bg-white p-2">
+                        <p className="font-bold text-slate-400">Movimientos</p>
+                        <p className="mt-1 font-black text-slate-900">{selectedRateCardEntries.length}</p>
+                      </div>
+                      <div className="rounded-lg border border-slate-100 bg-white p-2">
+                        <p className="font-bold text-slate-400">Último</p>
+                        <p className="mt-1 truncate font-black text-slate-900" title={selectedRateCardLastEntry?.personName || 'Sin movimiento'}>
+                          {selectedRateCardLastEntry ? formatReportDate(selectedRateCardLastEntry.dateKey) : 'Sin dato'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 space-y-2">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Top contribuyentes</p>
+                      {selectedRateCardContribution.length === 0 ? (
+                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Sin movimientos individuales.</p>
+                      ) : (
+                        selectedRateCardContribution.map((person: any) => (
+                          <div key={person.userId} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-white p-2">
+                            <span className="truncate text-xs font-bold text-slate-700" title={person.name}>{person.name}</span>
+                            <span className="max-w-[180px] break-words text-right text-xs font-black leading-tight text-indigo-700">
+                              {formatRateCardUnits(person.units, selectedRateCard, 1)}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    <div className="mt-4 space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Interacciones recientes</p>
+                        <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500 ring-1 ring-slate-100">
+                          {selectedRateCardEntries.length}
+                        </span>
+                      </div>
+                      {selectedRateCardEntries.length === 0 ? (
+                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Este rate todavía no tiene interacciones reportadas.</p>
+                      ) : (
+                        <div className="max-h-60 space-y-2 overflow-y-auto pr-1">
+                          {selectedRateCardEntries.slice(0, 8).map((entry: any) => (
+                            <div key={entry.id} className="rounded-lg bg-white p-2 text-xs ring-1 ring-slate-100">
+                              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                                <span className="truncate font-bold text-slate-800" title={entry.personName}>{entry.personName}</span>
+                                <span className="max-w-[180px] break-words text-right font-black leading-tight text-indigo-700">
+                                  {formatRateCardUnits(entry.units, selectedRateCard, 1)}
+                                </span>
+                              </div>
+                              <div className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-2 text-[11px] text-slate-500">
+                                <span>{formatReportDate(entry.dateKey)}</span>
+                                <span className="truncate text-right" title={entry.taskTitle || 'Sin tarea asociada'}>{entry.taskTitle || 'Sin tarea asociada'}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                )}
+              </CardContent>
+            </Card>
           </div>
         </div>
       )}
