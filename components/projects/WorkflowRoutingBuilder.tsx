@@ -1,6 +1,33 @@
-import React from "react";
-import { ArrowRight, GitBranch, Plus, Trash2 } from "lucide-react";
+"use client";
+
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  Background,
+  Controls,
+  Handle,
+  MarkerType,
+  MiniMap,
+  Position,
+  ReactFlow,
+  type Edge,
+  type Node,
+  type NodeProps,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import {
+  ArrowRight,
+  CheckCircle2,
+  ClipboardList,
+  GitBranch,
+  Maximize2,
+  MousePointer2,
+  Plus,
+  Route,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkflowStepFormBuilderModal } from "@/components/projects/WorkflowStepFormBuilderModal";
 import {
   createWorkflowRouteId,
   getWorkflowRouteDescription,
@@ -17,7 +44,14 @@ import {
 type WorkflowRoutingBuilderProps = {
   steps: any[];
   onChange: (steps: any[]) => void;
+  rateCards?: any[];
+  teamMembers?: any[];
 };
+
+const COMPLETE_NODE_ID = "workflow-complete";
+
+const getStepTitle = (step: any, index: number) =>
+  String(step?.label || `Paso ${index + 1}`);
 
 const getDefaultRouteTarget = (currentIndex: number, stepCount: number): WorkflowRouteTarget =>
   currentIndex < stepCount - 1 ? currentIndex + 1 : "complete";
@@ -45,11 +79,217 @@ const targetToSelectValue = (target: WorkflowRouteTarget | undefined, currentInd
 const selectValueToTarget = (value: string): WorkflowRouteTarget =>
   value === "complete" ? "complete" : Number(value);
 
+const targetToNodeId = (target: WorkflowRouteTarget | undefined, currentIndex: number, stepCount: number) => {
+  const resolvedTarget = target ?? getDefaultRouteTarget(currentIndex, stepCount);
+  if (resolvedTarget === "complete" || resolvedTarget === null) return COMPLETE_NODE_ID;
+  if (typeof resolvedTarget !== "number") return null;
+  if (resolvedTarget < 0 || resolvedTarget >= stepCount || resolvedTarget === currentIndex) return null;
+  return `workflow-step-${resolvedTarget}`;
+};
+
+function WorkflowStepNode({ data, selected }: NodeProps) {
+  const nodeData = data as any;
+  const routeCount = Number(nodeData.routeCount || 0);
+  const hasForm = Boolean(nodeData.hasForm);
+
+  return (
+    <div
+      className={`w-[260px] rounded-2xl border bg-white shadow-xl transition-all ${
+        selected
+          ? "border-indigo-500 ring-4 ring-indigo-500/15"
+          : "border-slate-200 hover:border-indigo-200 hover:shadow-2xl"
+      }`}
+    >
+      <Handle type="target" position={Position.Left} className="!h-3 !w-3 !border-2 !border-white !bg-indigo-500" />
+      <div className="rounded-t-2xl border-b border-slate-100 bg-slate-50 px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-indigo-500">
+              Paso {nodeData.index + 1}
+            </p>
+            <p className="mt-1 truncate text-sm font-black text-slate-950" title={nodeData.title}>
+              {nodeData.title}
+            </p>
+          </div>
+          <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-1 text-[10px] font-black text-indigo-700">
+            {routeCount}
+          </span>
+        </div>
+      </div>
+      <div className="space-y-3 px-4 py-3">
+        <div className="flex flex-wrap gap-1.5">
+          <span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase tracking-wider ${
+            hasForm ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
+          }`}>
+            {hasForm ? "Con formulario" : "Sin formulario"}
+          </span>
+          <span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-slate-500">
+            {nodeData.fieldCount} variables
+          </span>
+        </div>
+        <p className="line-clamp-2 text-[11px] font-semibold text-slate-500">
+          {nodeData.description}
+        </p>
+      </div>
+      <Handle type="source" position={Position.Right} className="!h-3 !w-3 !border-2 !border-white !bg-indigo-500" />
+    </div>
+  );
+}
+
+function WorkflowCompleteNode() {
+  return (
+    <div className="w-[220px] rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 shadow-xl">
+      <Handle type="target" position={Position.Left} className="!h-3 !w-3 !border-2 !border-white !bg-emerald-500" />
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500 text-white">
+          <CheckCircle2 size={20} />
+        </div>
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700">
+            Salida
+          </p>
+          <p className="text-sm font-black text-emerald-950">Workflow finalizado</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const workflowNodeTypes = {
+  workflowStep: WorkflowStepNode,
+  workflowComplete: WorkflowCompleteNode,
+};
+
 export function WorkflowRoutingBuilder({
   steps,
   onChange,
+  rateCards = [],
+  teamMembers = [],
 }: WorkflowRoutingBuilderProps) {
+  const [isVisualEditorOpen, setIsVisualEditorOpen] = useState(false);
+
   if (steps.length === 0) return null;
+
+  const totalRoutes = steps.reduce(
+    (count, step) => count + normalizeWorkflowRoutes(step.conditionalRoutes || []).length,
+    0
+  );
+  const variablesCount = steps.reduce(
+    (count, step) => count + getWorkflowStepFormFields(step).length,
+    0
+  );
+
+  return (
+    <>
+      <div className="rounded-xl border border-indigo-100 bg-white/90 p-3 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.18em] text-indigo-600">
+              <GitBranch size={14} />
+              Workflow visual
+            </p>
+            <p className="mt-1 text-[11px] font-medium text-slate-500">
+              Programa rutas condicionales en pantalla completa, como un organigrama interactivo del proceso.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-slate-100 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-slate-600">
+              {steps.length} pasos
+            </span>
+            <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-indigo-700">
+              {totalRoutes} rutas
+            </span>
+            <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-emerald-700">
+              {variablesCount} variables
+            </span>
+            <Button
+              type="button"
+              onClick={() => setIsVisualEditorOpen(true)}
+              className="h-9 rounded-xl bg-indigo-600 px-4 text-xs font-black text-white hover:bg-indigo-700"
+            >
+              <Maximize2 size={14} className="mr-2" />
+              Editar workflow visual
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-3 overflow-x-auto rounded-xl border border-slate-100 bg-slate-50/80 p-3">
+          <div className="flex min-w-max items-center gap-2">
+            {steps.slice(0, 6).map((step, index) => {
+              const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
+              return (
+                <React.Fragment key={`workflow-route-preview-${index}`}>
+                  <button
+                    type="button"
+                    onClick={() => setIsVisualEditorOpen(true)}
+                    className="w-44 rounded-xl border border-white bg-white p-3 text-left shadow-sm transition hover:border-indigo-200 hover:shadow-md"
+                  >
+                    <p className="text-[9px] font-black uppercase tracking-wider text-indigo-500">
+                      Paso {index + 1}
+                    </p>
+                    <p className="mt-1 truncate text-xs font-black text-slate-900">
+                      {getStepTitle(step, index)}
+                    </p>
+                    <p className="mt-2 truncate text-[10px] font-semibold text-slate-500">
+                      {routes.length === 0
+                        ? `Lineal -> ${getWorkflowTargetLabel(getDefaultRouteTarget(index, steps.length), steps, index)}`
+                        : `${routes.length} ruta${routes.length === 1 ? "" : "s"} condicionales`}
+                    </p>
+                  </button>
+                  {index < Math.min(steps.length, 6) - 1 && (
+                    <ArrowRight size={16} className="text-indigo-300" />
+                  )}
+                </React.Fragment>
+              );
+            })}
+            {steps.length > 6 && (
+              <button
+                type="button"
+                onClick={() => setIsVisualEditorOpen(true)}
+                className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50 px-4 py-5 text-xs font-black text-indigo-700"
+              >
+                +{steps.length - 6} pasos mas
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {isVisualEditorOpen && (
+        <WorkflowVisualEditorModal
+          steps={steps}
+          onChange={onChange}
+          onClose={() => setIsVisualEditorOpen(false)}
+          rateCards={rateCards}
+          teamMembers={teamMembers}
+        />
+      )}
+    </>
+  );
+}
+
+function WorkflowVisualEditorModal({
+  steps,
+  onChange,
+  onClose,
+  rateCards,
+  teamMembers,
+}: {
+  steps: any[];
+  onChange: (steps: any[]) => void;
+  onClose: () => void;
+  rateCards: any[];
+  teamMembers: any[];
+}) {
+  const [selectedStepIndex, setSelectedStepIndex] = useState(0);
+  const [formStepIndex, setFormStepIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (selectedStepIndex >= steps.length) {
+      setSelectedStepIndex(Math.max(0, steps.length - 1));
+    }
+  }, [selectedStepIndex, steps.length]);
 
   const updateStep = (stepIndex: number, updates: Record<string, any>) => {
     onChange(
@@ -93,6 +333,22 @@ export function WorkflowRoutingBuilder({
     });
   };
 
+  const addStepFromCanvas = () => {
+    const nextIndex = steps.length;
+    onChange([
+      ...steps,
+      {
+        assignedTo: "",
+        label: "",
+        unitsToAdd: 1,
+        autoAddUnits: true,
+        rateCards: [],
+        plannedDurationDays: 1,
+      },
+    ]);
+    setSelectedStepIndex(nextIndex);
+  };
+
   const removeRoute = (stepIndex: number, routeId: string) => {
     const step = steps[stepIndex];
     updateStep(stepIndex, {
@@ -102,227 +358,426 @@ export function WorkflowRoutingBuilder({
     });
   };
 
-  const totalRoutes = steps.reduce(
-    (count, step) => count + normalizeWorkflowRoutes(step.conditionalRoutes || []).length,
-    0
-  );
+  const saveStepForm = (stepIndex: number, form: any) => {
+    const step = steps[stepIndex];
+    const fields = Array.isArray(form?.fields) ? form.fields : [];
+    const nextRoutes = normalizeWorkflowRoutes(step.conditionalRoutes || [])
+      .filter((route) => fields.some((field: any) => field.id === route.fieldId))
+      .map((route) => {
+        const field = fields.find((candidate: any) => candidate.id === route.fieldId);
+        return {
+          ...route,
+          fieldLabel: field?.label || route.fieldLabel || route.fieldId,
+        };
+      });
+
+    updateStep(stepIndex, {
+      form,
+      conditionalRoutes: form ? nextRoutes : [],
+    });
+  };
+
+  const nodes = useMemo<Node[]>(() => {
+    const stepNodes = steps.map((step, index) => {
+      const fields = getWorkflowStepFormFields(step);
+      const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
+
+      return {
+        id: `workflow-step-${index}`,
+        type: "workflowStep",
+        position: { x: index * 360, y: index % 2 === 0 ? 0 : 36 },
+        data: {
+          index,
+          title: getStepTitle(step, index),
+          routeCount: routes.length,
+          fieldCount: fields.length,
+          hasForm: Boolean(step.form),
+          description:
+            routes.length === 0
+              ? `Ruta lineal hacia ${getWorkflowTargetLabel(getDefaultRouteTarget(index, steps.length), steps, index)}`
+              : routes
+                  .slice(0, 2)
+                  .map((route) => getWorkflowRouteDescription(route, steps, index))
+                  .join(" / "),
+        },
+      } satisfies Node;
+    });
+
+    return [
+      ...stepNodes,
+      {
+        id: COMPLETE_NODE_ID,
+        type: "workflowComplete",
+        position: { x: Math.max(steps.length, 1) * 360, y: 18 },
+        data: {},
+      } satisfies Node,
+    ];
+  }, [steps]);
+
+  const edges = useMemo<Edge[]>(() => {
+    const nextEdges: Edge[] = [];
+
+    steps.forEach((step, index) => {
+      const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
+      const defaultTarget = step.defaultNextStepIndex ?? step.defaultNextStepTarget ?? getDefaultRouteTarget(index, steps.length);
+      const defaultTargetId = targetToNodeId(defaultTarget, index, steps.length);
+
+      if (defaultTargetId) {
+        nextEdges.push({
+          id: `default-${index}-${defaultTargetId}`,
+          source: `workflow-step-${index}`,
+          target: defaultTargetId,
+          type: "smoothstep",
+          label: routes.length > 0 ? "si no coincide" : "lineal",
+          animated: routes.length === 0,
+          markerEnd: { type: MarkerType.ArrowClosed, color: routes.length > 0 ? "#94a3b8" : "#4f46e5" },
+          style: {
+            stroke: routes.length > 0 ? "#94a3b8" : "#4f46e5",
+            strokeWidth: routes.length > 0 ? 1.5 : 2.5,
+            strokeDasharray: routes.length > 0 ? "6 5" : undefined,
+          },
+          labelStyle: { fill: "#475569", fontSize: 11, fontWeight: 800 },
+          labelBgStyle: { fill: "#ffffff", fillOpacity: 0.9 },
+          labelBgPadding: [6, 4],
+          labelBgBorderRadius: 8,
+        });
+      }
+
+      routes.forEach((route, routeIndex) => {
+        const targetId = targetToNodeId(route.targetStepIndex, index, steps.length);
+        if (!targetId) return;
+        const color = routeIndex % 2 === 0 ? "#f97316" : "#7c3aed";
+        const label = routeOperatorNeedsValue(route.operator)
+          ? `${route.fieldLabel || route.fieldId} ${route.value || "..."}`
+          : `${route.fieldLabel || route.fieldId}`;
+
+        nextEdges.push({
+          id: route.id || `route-${index}-${routeIndex}`,
+          source: `workflow-step-${index}`,
+          target: targetId,
+          type: "smoothstep",
+          label,
+          animated: true,
+          markerEnd: { type: MarkerType.ArrowClosed, color },
+          style: { stroke: color, strokeWidth: 3 },
+          labelStyle: { fill: color, fontSize: 11, fontWeight: 900 },
+          labelBgStyle: { fill: "#fff7ed", fillOpacity: 0.95 },
+          labelBgPadding: [6, 4],
+          labelBgBorderRadius: 8,
+        });
+      });
+    });
+
+    return nextEdges;
+  }, [steps]);
+
+  const selectedStep = steps[selectedStepIndex];
+  const selectedFields = getWorkflowStepFormFields(selectedStep);
+  const selectedRoutes = normalizeWorkflowRoutes(selectedStep?.conditionalRoutes || []);
+  const selectedDefaultTarget = selectedStep?.defaultNextStepIndex ?? selectedStep?.defaultNextStepTarget;
+  const selectedTargetOptions = getTargetOptions(steps, selectedStepIndex);
 
   return (
-    <div className="rounded-xl border border-indigo-100 bg-white/85 p-3 shadow-sm">
-      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.18em] text-indigo-600">
-            <GitBranch size={14} />
-            Mapa visual de decisiones
-          </p>
-          <p className="mt-1 text-[10px] text-slate-500">
-            Usa campos del formulario de cada paso para decidir si el workflow avanza, salta o finaliza.
-          </p>
+    <div className="fixed inset-0 z-[70] flex flex-col bg-slate-950 text-white">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-slate-950 px-5 py-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-600 shadow-lg shadow-indigo-950/30">
+            <GitBranch size={22} />
+          </div>
+          <div className="min-w-0">
+            <h2 className="truncate text-xl font-black">Editor visual de workflow</h2>
+            <p className="text-xs font-semibold text-slate-400">
+              {steps.length} pasos visibles · clic en un nodo para configurar formulario, variables y caminos.
+            </p>
+          </div>
         </div>
-        <span className="w-fit rounded-full bg-indigo-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-indigo-700">
-          {totalRoutes} rutas
-        </span>
-      </div>
 
-      <div className="mb-4 overflow-x-auto rounded-xl border border-slate-100 bg-slate-50/80 p-3">
-        <div className="flex min-w-max items-stretch gap-2">
-          {steps.map((step, index) => {
-            const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
-            return (
-              <React.Fragment key={`workflow-route-node-${index}`}>
-                <div className="w-56 rounded-xl border border-white bg-white p-3 shadow-sm">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-[10px] font-black uppercase tracking-wider text-indigo-500">
-                        Paso {index + 1}
-                      </p>
-                      <p className="mt-1 truncate text-xs font-black text-slate-900">
-                        {step.label || "Paso sin nombre"}
-                      </p>
-                    </div>
-                    <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-black text-slate-600">
-                      {routes.length}
-                    </span>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={addStepFromCanvas}
+            className="h-10 border-white/10 bg-white/5 text-xs font-black text-white hover:bg-white/10"
+          >
+            <Plus size={14} className="mr-2" />
+            Agregar paso
+          </Button>
+          <Button
+            type="button"
+            onClick={onClose}
+            className="h-10 rounded-xl bg-white text-xs font-black text-slate-950 hover:bg-slate-100"
+          >
+            Guardar vista
+          </Button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-400 hover:bg-white/10 hover:text-white"
+            aria-label="Cerrar editor visual"
+          >
+            <X size={20} />
+          </button>
+        </div>
+      </header>
+
+      <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_430px]">
+        <section className="relative min-h-[55vh] bg-[radial-gradient(circle_at_top_left,rgba(79,70,229,.24),transparent_34%),#f8fafc] text-slate-950">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={workflowNodeTypes}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            elementsSelectable
+            fitView
+            minZoom={0.25}
+            maxZoom={1.8}
+            onNodeClick={(_, node) => {
+              if (!String(node.id).startsWith("workflow-step-")) return;
+              const index = Number(String(node.id).replace("workflow-step-", ""));
+              if (Number.isFinite(index)) setSelectedStepIndex(index);
+            }}
+            fitViewOptions={{ padding: 0.18 }}
+            attributionPosition="bottom-left"
+          >
+            <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-2xl border border-white/70 bg-white/90 px-4 py-3 shadow-xl">
+              <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.18em] text-indigo-600">
+                <MousePointer2 size={14} />
+                Lienzo interactivo
+              </p>
+              <p className="mt-1 max-w-sm text-[11px] font-semibold text-slate-500">
+                Usa zoom y arrastre para recorrer el flujo. Las lineas punteadas son rutas por defecto.
+              </p>
+            </div>
+            <Controls showInteractive={false} />
+            <MiniMap
+              nodeColor={(node) => (node.id === COMPLETE_NODE_ID ? "#10b981" : "#4f46e5")}
+              maskColor="rgba(15, 23, 42, 0.08)"
+              pannable
+              zoomable
+            />
+            <Background color="#cbd5e1" gap={22} />
+          </ReactFlow>
+        </section>
+
+        <aside className="min-h-0 overflow-y-auto border-l border-white/10 bg-slate-950 p-4">
+          {!selectedStep ? (
+            <div className="rounded-2xl border border-dashed border-white/15 p-5 text-sm text-slate-400">
+              Selecciona un paso del workflow para editar sus decisiones.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-300">
+                  Paso seleccionado
+                </p>
+                <input
+                  value={selectedStep.label || ""}
+                  onChange={(event) => updateStep(selectedStepIndex, { label: event.target.value })}
+                  placeholder={`Paso ${selectedStepIndex + 1}`}
+                  className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-white px-3 text-sm font-black text-slate-950 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/20"
+                />
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="rounded-xl bg-white/[0.05] p-3">
+                    <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Variables</p>
+                    <p className="mt-1 text-2xl font-black text-white">{selectedFields.length}</p>
                   </div>
-                  <div className="mt-3 space-y-1">
-                    {routes.length === 0 ? (
-                      <p className="rounded-lg bg-slate-50 px-2 py-1 text-[10px] font-semibold text-slate-500">
-                        Ruta lineal: {getWorkflowTargetLabel(getDefaultRouteTarget(index, steps.length), steps, index)}
-                      </p>
-                    ) : (
-                      routes.slice(0, 3).map((route) => (
-                        <p
-                          key={route.id}
-                          className="truncate rounded-lg bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700"
-                          title={getWorkflowRouteDescription(route, steps, index)}
-                        >
-                          {getWorkflowRouteDescription(route, steps, index)}
-                        </p>
-                      ))
-                    )}
-                    {routes.length > 3 && (
-                      <p className="text-[10px] font-bold text-slate-400">
-                        +{routes.length - 3} rutas mas
-                      </p>
-                    )}
+                  <div className="rounded-xl bg-white/[0.05] p-3">
+                    <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Rutas</p>
+                    <p className="mt-1 text-2xl font-black text-white">{selectedRoutes.length}</p>
                   </div>
                 </div>
-                {index < steps.length - 1 && (
-                  <div className="flex items-center text-indigo-300">
-                    <ArrowRight size={18} />
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-200">
+                      Formulario del paso
+                    </p>
+                    <p className="mt-1 text-xs font-semibold text-slate-400">
+                      Estos campos son las variables que gobiernan las rutas.
+                    </p>
                   </div>
-                )}
-              </React.Fragment>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="space-y-3">
-        {steps.map((step, stepIndex) => {
-          const fields = getWorkflowStepFormFields(step);
-          const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
-          const defaultTarget = step.defaultNextStepIndex ?? step.defaultNextStepTarget;
-          const targetOptions = getTargetOptions(steps, stepIndex);
-
-          return (
-            <div key={`workflow-route-editor-${stepIndex}`} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <div className="min-w-0">
-                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                    Decisiones del paso {stepIndex + 1}
-                  </p>
-                  <p className="truncate text-sm font-black text-slate-800">
-                    {step.label || "Paso sin nombre"}
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <select
-                    value={targetToSelectValue(defaultTarget, stepIndex, steps.length)}
-                    onChange={(event) =>
-                      updateStep(stepIndex, {
-                        defaultNextStepIndex: selectValueToTarget(event.target.value),
-                      })
-                    }
-                    className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-[10px] font-bold text-slate-600 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                    title="Ruta por defecto cuando ninguna condicion coincide"
+                  <Button
+                    type="button"
+                    onClick={() => setFormStepIndex(selectedStepIndex)}
+                    className="h-9 shrink-0 rounded-xl bg-cyan-400 px-3 text-xs font-black text-slate-950 hover:bg-cyan-300"
                   >
-                    {targetOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        Si no coincide: {option.label}
-                      </option>
-                    ))}
-                  </select>
+                    <ClipboardList size={14} className="mr-2" />
+                    {selectedStep.form ? "Editar" : "Crear"}
+                  </Button>
+                </div>
+
+                <div className="mt-3 space-y-2">
+                  {selectedFields.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-white/15 p-3 text-xs font-semibold text-slate-400">
+                      Este paso aun no tiene formulario. Crea campos para usarlos como variables de decision.
+                    </div>
+                  ) : (
+                    selectedFields.map((field: any) => (
+                      <div key={field.id} className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 text-slate-950">
+                        <span className="truncate text-xs font-black">{field.label}</span>
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-slate-500">
+                          {field.type}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-indigo-200">
+                  <Route size={14} />
+                  Caminos del paso
+                </p>
+                <label className="mt-3 block text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Ruta si ninguna condicion coincide
+                </label>
+                <select
+                  value={targetToSelectValue(selectedDefaultTarget, selectedStepIndex, steps.length)}
+                  onChange={(event) =>
+                    updateStep(selectedStepIndex, {
+                      defaultNextStepIndex: selectValueToTarget(event.target.value),
+                    })
+                  }
+                  className="mt-1 h-10 w-full rounded-xl border border-white/10 bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/20"
+                >
+                  {selectedTargetOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="mt-4 flex items-center justify-between gap-3">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                    Condiciones
+                  </p>
                   <Button
                     type="button"
                     size="sm"
-                    variant="outline"
-                    onClick={() => addRoute(stepIndex)}
-                    disabled={fields.length === 0 || targetOptions.length === 0}
-                    className="h-8 border-indigo-100 text-[10px] font-black text-indigo-600 hover:bg-indigo-50"
+                    onClick={() => addRoute(selectedStepIndex)}
+                    disabled={selectedFields.length === 0}
+                    className="h-8 rounded-xl bg-indigo-500 px-3 text-[10px] font-black text-white hover:bg-indigo-400 disabled:opacity-40"
                   >
                     <Plus size={12} className="mr-1" />
                     Condicion
                   </Button>
                 </div>
-              </div>
 
-              {fields.length === 0 ? (
-                <p className="mt-3 rounded-lg border border-dashed border-slate-200 bg-white px-3 py-2 text-[10px] font-medium text-slate-500">
-                  Agrega un formulario a este paso para crear variables de decision.
-                </p>
-              ) : (
-                <div className="mt-3 space-y-2">
-                  {routes.length === 0 && (
-                    <p className="rounded-lg bg-white px-3 py-2 text-[10px] font-medium text-slate-500">
-                      Sin condiciones. Este paso seguira la ruta por defecto.
-                    </p>
+                <div className="mt-3 space-y-3">
+                  {selectedRoutes.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-white/15 p-3 text-xs font-semibold text-slate-400">
+                      Sin condiciones. El paso seguira la ruta por defecto.
+                    </div>
                   )}
-                  {routes.map((route) => {
+
+                  {selectedRoutes.map((route) => {
                     const needsValue = routeOperatorNeedsValue(route.operator);
 
                     return (
-                      <div
-                        key={route.id}
-                        className="grid grid-cols-1 gap-2 rounded-xl border border-white bg-white p-2 shadow-sm lg:grid-cols-[minmax(150px,1fr)_140px_minmax(120px,1fr)_minmax(180px,1fr)_36px]"
-                      >
-                        <select
-                          value={route.fieldId}
-                          onChange={(event) => {
-                            const field = fields.find((candidate: any) => candidate.id === event.target.value);
-                            updateRoute(stepIndex, route.id, {
-                              fieldId: event.target.value,
-                              fieldLabel: field?.label || "",
-                            });
-                          }}
-                          className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs font-semibold text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                        >
-                          {fields.map((field: any) => (
-                            <option key={field.id} value={field.id}>
-                              {field.label}
-                            </option>
-                          ))}
-                        </select>
-                        <select
-                          value={route.operator}
-                          onChange={(event) =>
-                            updateRoute(stepIndex, route.id, {
-                              operator: event.target.value as WorkflowRouteOperator,
-                              value: routeOperatorNeedsValue(event.target.value) ? route.value || "" : "",
-                            })
-                          }
-                          className="h-9 rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs font-semibold text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                        >
-                          {WORKFLOW_ROUTE_OPERATORS.map((operator) => (
-                            <option key={operator.value} value={operator.value}>
-                              {operator.label}
-                            </option>
-                          ))}
-                        </select>
-                        {needsValue ? (
-                          <input
-                            value={route.value || ""}
-                            onChange={(event) => updateRoute(stepIndex, route.id, { value: event.target.value })}
-                            placeholder="Valor esperado"
-                            className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                          />
-                        ) : (
-                          <div className="flex h-9 items-center rounded-lg border border-slate-100 bg-slate-50 px-2 text-[10px] font-bold text-slate-400">
-                            No requiere valor
+                      <div key={route.id} className="rounded-2xl border border-white/10 bg-slate-900 p-3">
+                        <div className="grid grid-cols-1 gap-2">
+                          <select
+                            value={route.fieldId}
+                            onChange={(event) => {
+                              const field = selectedFields.find((candidate: any) => candidate.id === event.target.value);
+                              updateRoute(selectedStepIndex, route.id, {
+                                fieldId: event.target.value,
+                                fieldLabel: field?.label || "",
+                              });
+                            }}
+                            className="h-9 rounded-xl border border-white/10 bg-white px-3 text-xs font-bold text-slate-800 outline-none"
+                          >
+                            {selectedFields.map((field: any) => (
+                              <option key={field.id} value={field.id}>
+                                {field.label}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="grid grid-cols-2 gap-2">
+                            <select
+                              value={route.operator}
+                              onChange={(event) =>
+                                updateRoute(selectedStepIndex, route.id, {
+                                  operator: event.target.value as WorkflowRouteOperator,
+                                  value: routeOperatorNeedsValue(event.target.value) ? route.value || "" : "",
+                                })
+                              }
+                              className="h-9 rounded-xl border border-white/10 bg-white px-3 text-xs font-bold text-slate-800 outline-none"
+                            >
+                              {WORKFLOW_ROUTE_OPERATORS.map((operator) => (
+                                <option key={operator.value} value={operator.value}>
+                                  {operator.label}
+                                </option>
+                              ))}
+                            </select>
+                            {needsValue ? (
+                              <input
+                                value={route.value || ""}
+                                onChange={(event) => updateRoute(selectedStepIndex, route.id, { value: event.target.value })}
+                                placeholder="Valor esperado"
+                                className="h-9 rounded-xl border border-white/10 bg-white px-3 text-xs font-bold text-slate-800 outline-none"
+                              />
+                            ) : (
+                              <div className="flex h-9 items-center rounded-xl border border-white/10 bg-white/5 px-3 text-[10px] font-bold text-slate-400">
+                                No requiere valor
+                              </div>
+                            )}
                           </div>
-                        )}
-                        <select
-                          value={targetToSelectValue(route.targetStepIndex, stepIndex, steps.length)}
-                          onChange={(event) =>
-                            updateRoute(stepIndex, route.id, {
-                              targetStepIndex: selectValueToTarget(event.target.value),
-                            })
-                          }
-                          className="h-9 rounded-lg border border-indigo-100 bg-indigo-50 px-2 text-xs font-bold text-indigo-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                        >
-                          {targetOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() => removeRoute(stepIndex, route.id)}
-                          className="flex h-9 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"
-                          title="Eliminar condicion"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                          <div className="grid grid-cols-[minmax(0,1fr)_38px] gap-2">
+                            <select
+                              value={targetToSelectValue(route.targetStepIndex, selectedStepIndex, steps.length)}
+                              onChange={(event) =>
+                                updateRoute(selectedStepIndex, route.id, {
+                                  targetStepIndex: selectValueToTarget(event.target.value),
+                                })
+                              }
+                              className="h-9 rounded-xl border border-indigo-200 bg-indigo-50 px-3 text-xs font-black text-indigo-800 outline-none"
+                            >
+                              {selectedTargetOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => removeRoute(selectedStepIndex, route.id)}
+                              className="flex h-9 items-center justify-center rounded-xl border border-red-400/20 bg-red-500/10 text-red-200 hover:bg-red-500/20"
+                              title="Eliminar condicion"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     );
                   })}
                 </div>
-              )}
+              </div>
             </div>
-          );
-        })}
+          )}
+        </aside>
       </div>
+
+      {formStepIndex !== null && (
+        <WorkflowStepFormBuilderModal
+          isOpen={formStepIndex !== null}
+          overlayClassName="z-[90]"
+          onClose={() => setFormStepIndex(null)}
+          stepName={steps[formStepIndex]?.label || `Paso ${formStepIndex + 1}`}
+          initialForm={steps[formStepIndex]?.form}
+          rateCards={rateCards}
+          teamMembers={teamMembers}
+          onSave={(form) => {
+            if (formStepIndex === null) return;
+            saveStepForm(formStepIndex, form);
+          }}
+        />
+      )}
     </div>
   );
 }

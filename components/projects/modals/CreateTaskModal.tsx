@@ -1473,6 +1473,8 @@ export function CreateTaskModal({
                 {workflowSteps.length > 0 && (
                   <WorkflowRoutingBuilder
                     steps={workflowSteps}
+                    rateCards={rateCards}
+                    teamMembers={teamMembers}
                     onChange={(nextSteps) => setWorkflowSteps(nextSteps)}
                   />
                 )}

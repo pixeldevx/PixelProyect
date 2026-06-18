@@ -51,6 +51,7 @@ interface WorkflowStepFormBuilderModalProps {
   rateCards?: any[];
   teamMembers?: any[];
   allowDynamicRateCard?: boolean;
+  overlayClassName?: string;
   onSave: (form: CustomForm | undefined) => void;
 }
 
@@ -62,6 +63,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
   rateCards = [],
   teamMembers = [],
   allowDynamicRateCard = true,
+  overlayClassName = 'z-50',
   onSave
 }) => {
   const [title, setTitle] = useState(initialForm?.title || `Formulario para ${stepName}`);
@@ -333,7 +335,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div className={`fixed inset-0 bg-slate-900/50 backdrop-blur-sm ${overlayClassName} flex items-center justify-center p-4`}>
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl flex flex-col max-h-[90vh]">
         <div className="flex items-center justify-between p-6 border-b border-slate-100">
           <div>

@@ -1383,6 +1383,8 @@ export function EditTaskStructureModal({
                 <div className="mb-4">
                   <WorkflowRoutingBuilder
                     steps={workflowSteps}
+                    rateCards={rateCards}
+                    teamMembers={teamMembers}
                     onChange={(nextSteps) => setWorkflowSteps(nextSteps)}
                   />
                 </div>
