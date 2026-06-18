@@ -15,7 +15,6 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
-  ArrowRight,
   CheckCircle2,
   ClipboardList,
   GitBranch,
@@ -181,77 +180,48 @@ export function WorkflowRoutingBuilder({
 
   return (
     <>
-      <div className="rounded-xl border border-indigo-100 bg-white/90 p-3 shadow-sm">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <p className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.18em] text-indigo-600">
-              <GitBranch size={14} />
-              Workflow visual
-            </p>
-            <p className="mt-1 text-[11px] font-medium text-slate-500">
-              Programa rutas condicionales en pantalla completa, como un organigrama interactivo del proceso.
-            </p>
+      <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50 via-white to-cyan-50 p-4 shadow-sm">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex min-w-0 gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-200">
+              <GitBranch size={20} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] font-black uppercase tracking-[0.22em] text-indigo-600">
+                Mapa visual de decisiones
+              </p>
+              <h4 className="mt-1 text-base font-black text-slate-950">
+                Configura rutas, variables y condiciones en pantalla completa
+              </h4>
+              <p className="mt-1 max-w-2xl text-xs font-semibold leading-relaxed text-slate-500">
+                La vista del flujo ya no se edita dentro de este modal. Abre el lienzo para ver todo el workflow como mapa interactivo y configurar cada paso sin perder espacio.
+              </p>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-slate-100 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-slate-600">
-              {steps.length} pasos
-            </span>
-            <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-indigo-700">
-              {totalRoutes} rutas
-            </span>
-            <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-emerald-700">
-              {variablesCount} variables
-            </span>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-xl border border-white bg-white/80 px-3 py-2 text-center shadow-sm">
+                <p className="text-lg font-black text-slate-950">{steps.length}</p>
+                <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Pasos</p>
+              </div>
+              <div className="rounded-xl border border-white bg-white/80 px-3 py-2 text-center shadow-sm">
+                <p className="text-lg font-black text-indigo-600">{totalRoutes}</p>
+                <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Rutas</p>
+              </div>
+              <div className="rounded-xl border border-white bg-white/80 px-3 py-2 text-center shadow-sm">
+                <p className="text-lg font-black text-emerald-600">{variablesCount}</p>
+                <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Variables</p>
+              </div>
+            </div>
             <Button
               type="button"
               onClick={() => setIsVisualEditorOpen(true)}
-              className="h-9 rounded-xl bg-indigo-600 px-4 text-xs font-black text-white hover:bg-indigo-700"
+              className="h-12 rounded-2xl bg-slate-950 px-5 text-xs font-black text-white shadow-lg shadow-slate-200 hover:bg-indigo-700"
             >
               <Maximize2 size={14} className="mr-2" />
-              Editar workflow visual
+              Abrir editor full screen
             </Button>
-          </div>
-        </div>
-
-        <div className="mt-3 overflow-x-auto rounded-xl border border-slate-100 bg-slate-50/80 p-3">
-          <div className="flex min-w-max items-center gap-2">
-            {steps.slice(0, 6).map((step, index) => {
-              const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
-              return (
-                <React.Fragment key={`workflow-route-preview-${index}`}>
-                  <button
-                    type="button"
-                    onClick={() => setIsVisualEditorOpen(true)}
-                    className="w-44 rounded-xl border border-white bg-white p-3 text-left shadow-sm transition hover:border-indigo-200 hover:shadow-md"
-                  >
-                    <p className="text-[9px] font-black uppercase tracking-wider text-indigo-500">
-                      Paso {index + 1}
-                    </p>
-                    <p className="mt-1 truncate text-xs font-black text-slate-900">
-                      {getStepTitle(step, index)}
-                    </p>
-                    <p className="mt-2 truncate text-[10px] font-semibold text-slate-500">
-                      {routes.length === 0
-                        ? `Lineal -> ${getWorkflowTargetLabel(getDefaultRouteTarget(index, steps.length), steps, index)}`
-                        : `${routes.length} ruta${routes.length === 1 ? "" : "s"} condicionales`}
-                    </p>
-                  </button>
-                  {index < Math.min(steps.length, 6) - 1 && (
-                    <ArrowRight size={16} className="text-indigo-300" />
-                  )}
-                </React.Fragment>
-              );
-            })}
-            {steps.length > 6 && (
-              <button
-                type="button"
-                onClick={() => setIsVisualEditorOpen(true)}
-                className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50 px-4 py-5 text-xs font-black text-indigo-700"
-              >
-                +{steps.length - 6} pasos mas
-              </button>
-            )}
           </div>
         </div>
       </div>
