@@ -329,6 +329,58 @@ const getScheduleBarColors = (task: any) => {
   return { backgroundColor: '#c4c4c4', backgroundSelectedColor: '#b0b0b0' };
 };
 
+const getFullscreenGanttBarColors = (task: any) => {
+  if (!task) {
+    return {
+      backgroundColor: '#dbe4f0',
+      backgroundSelectedColor: '#c6d3e3',
+      progressColor: 'rgba(79, 70, 229, 0.24)',
+      progressSelectedColor: 'rgba(79, 70, 229, 0.34)',
+    };
+  }
+
+  const scheduleState = getTaskScheduleState(task);
+  if (scheduleState === 'overdue') {
+    return {
+      backgroundColor: '#ef4444',
+      backgroundSelectedColor: '#dc2626',
+      progressColor: 'rgba(255, 255, 255, 0.26)',
+      progressSelectedColor: 'rgba(255, 255, 255, 0.34)',
+    };
+  }
+  if (scheduleState === 'due_soon' || scheduleState === 'completed_late' || task.status === 'in_progress') {
+    return {
+      backgroundColor: '#f59e0b',
+      backgroundSelectedColor: '#d97706',
+      progressColor: 'rgba(255, 255, 255, 0.28)',
+      progressSelectedColor: 'rgba(255, 255, 255, 0.38)',
+    };
+  }
+  if (scheduleState === 'completed') {
+    return {
+      backgroundColor: '#10b981',
+      backgroundSelectedColor: '#059669',
+      progressColor: 'rgba(255, 255, 255, 0.24)',
+      progressSelectedColor: 'rgba(255, 255, 255, 0.34)',
+    };
+  }
+  if (scheduleState === 'paused') {
+    return {
+      backgroundColor: '#e2445c',
+      backgroundSelectedColor: '#be3148',
+      progressColor: 'rgba(255, 255, 255, 0.25)',
+      progressSelectedColor: 'rgba(255, 255, 255, 0.34)',
+    };
+  }
+
+  return {
+    backgroundColor: '#cbd5e1',
+    backgroundSelectedColor: '#94a3b8',
+    progressColor: 'rgba(79, 70, 229, 0.18)',
+    progressSelectedColor: 'rgba(79, 70, 229, 0.28)',
+  };
+};
+
 const sortChildTasks = (childTasks: any[]) => {
   return [...childTasks].sort((a, b) => {
     const aOrder = a.cycleNumber ?? a.displayOrder ?? 0;
@@ -1014,11 +1066,20 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   }, [visibleRows, visibleTasks]);
 
   const fullscreenGanttTasks: Task[] = useMemo(
-    () => ganttTasks.map((task) => ({
-      ...task,
-      name: getFullscreenGanttLabel(task.name, viewMode),
-    })),
-    [ganttTasks, viewMode]
+    () => ganttTasks.map((task) => {
+      const sourceTask = visibleTasks.find((candidate) => candidate.id === task.id);
+      const fullscreenStyles = getFullscreenGanttBarColors(sourceTask);
+
+      return {
+        ...task,
+        name: getFullscreenGanttLabel(task.name, viewMode),
+        styles: {
+          ...task.styles,
+          ...fullscreenStyles,
+        },
+      };
+    }),
+    [ganttTasks, viewMode, visibleTasks]
   );
 
   const selectedTimelineTask = useMemo(() => {
@@ -2203,94 +2264,104 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         </div>
       </div>
       {isFullscreenGanttOpen && (
-        <div className="fixed inset-0 z-[70] flex flex-col bg-slate-950 text-white">
-          <div className="flex min-h-16 items-center justify-between border-b border-white/10 bg-slate-950/95 px-5 py-3 shadow-2xl">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500 text-white shadow-lg shadow-indigo-900/30">
-                  <Maximize2 size={18} />
-                </div>
-                <div className="min-w-0">
-                  <h2 className="truncate text-lg font-black">Gantt interactivo del proyecto</h2>
-                  <p className="truncate text-xs font-semibold text-slate-400">
-                    {fullscreenGanttTasks.length} linea{fullscreenGanttTasks.length === 1 ? '' : 's'} visibles · haz clic en una barra para revisar sus detalles.
-                  </p>
+        <div className="fixed inset-0 z-[70] flex flex-col bg-slate-50 text-slate-950">
+          <div className="relative overflow-hidden border-b border-white/10 bg-[#070b1a] px-5 py-4 text-white shadow-2xl">
+            <div className="pointer-events-none absolute inset-y-0 left-0 w-2/3 bg-[radial-gradient(circle_at_20%_20%,rgba(99,102,241,0.34),transparent_34%),linear-gradient(90deg,rgba(20,184,166,0.16),transparent_60%)]" />
+            <div className="relative flex min-h-14 items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-500 text-white shadow-lg shadow-indigo-950/40 ring-1 ring-white/15">
+                    <Maximize2 size={18} />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="truncate text-xl font-black tracking-tight">Gantt interactivo del proyecto</h2>
+                    <p className="truncate text-sm font-semibold text-slate-300">
+                      {fullscreenGanttTasks.length} linea{fullscreenGanttTasks.length === 1 ? '' : 's'} visibles · haz clic en una barra para revisar sus detalles.
+                    </p>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="flex items-center gap-3">
-              <div className="hidden rounded-xl bg-white/10 p-1 sm:flex">
+              <div className="flex items-center gap-3">
+                <div className="hidden items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-2 text-xs font-black text-slate-200 lg:flex">
+                  <span className="text-indigo-200">{scheduleStats.overdue}</span>
+                  <span>atrasadas</span>
+                  <span className="h-4 w-px bg-white/15" />
+                  <span className="text-orange-200">{scheduleStats.dueSoon}</span>
+                  <span>por vencer</span>
+                </div>
+                <div className="hidden rounded-2xl bg-white/10 p-1 shadow-inner shadow-black/10 sm:flex">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode(ViewMode.Day)}
+                    className={`rounded-xl px-3 py-1.5 text-xs font-black transition ${viewMode === ViewMode.Day ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-300 hover:text-white'}`}
+                  >
+                    Día
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode(ViewMode.Week)}
+                    className={`rounded-xl px-3 py-1.5 text-xs font-black transition ${viewMode === ViewMode.Week ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-300 hover:text-white'}`}
+                  >
+                    Semana
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode(ViewMode.Month)}
+                    className={`rounded-xl px-3 py-1.5 text-xs font-black transition ${viewMode === ViewMode.Month ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-300 hover:text-white'}`}
+                  >
+                    Mes
+                  </button>
+                </div>
                 <button
                   type="button"
-                  onClick={() => setViewMode(ViewMode.Day)}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-black transition ${viewMode === ViewMode.Day ? 'bg-white text-slate-950' : 'text-slate-300 hover:text-white'}`}
+                  onClick={() => setIsFullscreenGanttOpen(false)}
+                  className="rounded-2xl p-2 text-slate-300 transition hover:bg-white/10 hover:text-white"
+                  aria-label="Cerrar Gantt completo"
                 >
-                  Día
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode(ViewMode.Week)}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-black transition ${viewMode === ViewMode.Week ? 'bg-white text-slate-950' : 'text-slate-300 hover:text-white'}`}
-                >
-                  Semana
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode(ViewMode.Month)}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-black transition ${viewMode === ViewMode.Month ? 'bg-white text-slate-950' : 'text-slate-300 hover:text-white'}`}
-                >
-                  Mes
+                  <X size={22} />
                 </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsFullscreenGanttOpen(false)}
-                className="rounded-xl p-2 text-slate-300 transition hover:bg-white/10 hover:text-white"
-                aria-label="Cerrar Gantt completo"
-              >
-                <X size={22} />
-              </button>
             </div>
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col xl:flex-row">
             <div className="min-w-0 flex-1 bg-slate-100">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-500">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3 text-xs font-bold text-slate-500 shadow-sm">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-700">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-emerald-700">
                     <span className="h-2 w-2 rounded-full bg-[#00c875]" />
                     Finalizadas
                   </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2.5 py-1 text-orange-700">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-orange-100 bg-orange-50 px-3 py-1.5 text-orange-700">
                     <span className="h-2 w-2 rounded-full bg-[#fdab3d]" />
                     Trabajando / por vencer
                   </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-red-700">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-red-100 bg-red-50 px-3 py-1.5 text-red-700">
                     <span className="h-2 w-2 rounded-full bg-red-600" />
                     Atrasadas / estancadas
                   </span>
                 </div>
-                <span className="text-[11px] uppercase tracking-wider text-slate-400">
+                <span className="rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
                   Vista {viewMode === ViewMode.Day ? 'diaria' : viewMode === ViewMode.Week ? 'semanal' : 'mensual'}
                 </span>
               </div>
 
-              <div className="h-[calc(100vh-116px)] overflow-auto bg-white">
+              <div className="h-[calc(100vh-134px)] overflow-auto bg-[#f8fafc] p-3">
                 {fullscreenGanttTasks.length > 0 ? (
-                  <div className="project-gantt-fullscreen-canvas min-w-[980px]">
+                  <div className="project-gantt-fullscreen-canvas min-w-[980px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                     <Gantt
                       tasks={fullscreenGanttTasks}
                       viewMode={viewMode}
                       listCellWidth=""
                       columnWidth={viewMode === ViewMode.Day ? 72 : viewMode === ViewMode.Week ? 160 : 260}
-                      headerHeight={46}
-                      rowHeight={42}
-                      barCornerRadius={6}
-                      barFill={84}
+                      headerHeight={54}
+                      rowHeight={48}
+                      barCornerRadius={9}
+                      barFill={66}
                       handleWidth={8}
-                      fontSize={viewMode === ViewMode.Month ? "12px" : "11px"}
-                      fontFamily="Inter, sans-serif"
+                      fontSize={viewMode === ViewMode.Month ? "12px" : "11.5px"}
+                      fontFamily="Inter, ui-sans-serif, system-ui, sans-serif"
                       todayColor="rgba(79, 70, 229, 0.07)"
                       onClick={handleFullscreenTaskClick}
                       onProgressChange={canModifyTaskDetails && onUpdateTaskProgress ? (task) => {

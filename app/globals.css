@@ -106,29 +106,95 @@
     display: none !important;
   }
 
-  .project-gantt-fullscreen-canvas ._3zRJQ {
+  .project-gantt-fullscreen-canvas svg {
+    background: #ffffff;
+  }
+
+  .project-gantt-fullscreen-canvas ._2dZTy {
+    fill: #ffffff;
+  }
+
+  .project-gantt-fullscreen-canvas ._2dZTy:nth-child(even) {
+    fill: #f8fafc;
+  }
+
+  .project-gantt-fullscreen-canvas ._35nLX {
+    fill: #ffffff;
+    stroke: #e2e8f0;
+    stroke-width: 1;
+  }
+
+  .project-gantt-fullscreen-canvas ._RuwuK,
+  .project-gantt-fullscreen-canvas ._1rLuZ {
+    stroke: #e2e8f0;
+  }
+
+  .project-gantt-fullscreen-canvas ._3rUKi {
+    stroke: #edf2f7;
+  }
+
+  .project-gantt-fullscreen-canvas ._9w8d5 {
+    fill: #475569;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0;
+  }
+
+  .project-gantt-fullscreen-canvas ._2q1Kt {
     fill: #0f172a;
+    font-size: 12px;
     font-weight: 900;
     letter-spacing: 0;
-    paint-order: stroke;
-    stroke: rgba(255, 255, 255, 0.92);
-    stroke-linejoin: round;
-    stroke-width: 3px;
+  }
+
+  .project-gantt-fullscreen-canvas ._3zRJQ {
+    fill: #111827;
+    font-size: 11.5px;
+    font-weight: 850;
+    letter-spacing: 0;
+    paint-order: normal;
+    stroke: transparent;
+    stroke-width: 0;
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.32);
   }
 
   .project-gantt-fullscreen-canvas ._3KcaM {
-    fill: #172033;
-    font-weight: 850;
+    fill: #334155;
+    font-size: 11.5px;
+    font-weight: 800;
     letter-spacing: 0;
-    paint-order: stroke;
-    stroke: rgba(255, 255, 255, 0.95);
-    stroke-linejoin: round;
-    stroke-width: 3px;
+    paint-order: normal;
+    stroke: transparent;
+    stroke-width: 0;
   }
 
   .project-gantt-fullscreen-canvas ._KxSXS,
   .project-gantt-fullscreen-canvas ._RRr13,
   .project-gantt-fullscreen-canvas ._1KJ6x {
-    filter: drop-shadow(0 8px 14px rgba(15, 23, 42, 0.12));
+    filter: drop-shadow(0 2px 5px rgba(15, 23, 42, 0.12));
+  }
+
+  .project-gantt-fullscreen-canvas ._31ERP,
+  .project-gantt-fullscreen-canvas ._2P2B1,
+  .project-gantt-fullscreen-canvas ._2RbVy,
+  .project-gantt-fullscreen-canvas ._2pZMF {
+    shape-rendering: geometricPrecision;
+  }
+
+  .project-gantt-fullscreen-canvas ._19jgW {
+    background: #e2e8f0;
+    border-radius: 999px;
+  }
+
+  .project-gantt-fullscreen-canvas ._1eT-t::-webkit-scrollbar,
+  .project-gantt-fullscreen-canvas ._19jgW::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .project-gantt-fullscreen-canvas ._1eT-t::-webkit-scrollbar-thumb,
+  .project-gantt-fullscreen-canvas ._19jgW::-webkit-scrollbar-thumb {
+    background: #94a3b8;
+    border-radius: 999px;
   }
 }
