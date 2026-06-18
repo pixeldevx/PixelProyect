@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users, FileText, Download, DollarSign, WalletCards, Target } from 'lucide-react';
-import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp } from '@/lib/supabase/document-store';
+import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users, FileText, Download, DollarSign, WalletCards, Target, Wrench, RefreshCw, Save } from 'lucide-react';
+import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc, writeBatch } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -20,6 +20,7 @@ import {
   normalizeDecimalInput,
   normalizeRateCardValueType,
 } from '@/lib/rate-card-config';
+import { syncRateDrivenIncrementalTasksForRate } from '@/lib/incremental-rate-tasks';
 
 export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembers = [], budgetLines = [] }: { projectId: string, currentUser: any, tasks?: any[], teamMembers?: any[], budgetLines?: any[] }) {
   const [rateCards, setRateCards] = useState<any[]>([]);
@@ -46,6 +47,10 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [reportGenerated, setReportGenerated] = useState(false);
   const [selectedRateCardId, setSelectedRateCardId] = useState<string | null>(null);
   const [analysisRateIds, setAnalysisRateIds] = useState<string[]>([]);
+  const [maintenanceRateCardId, setMaintenanceRateCardId] = useState<string | null>(null);
+  const [entryDrafts, setEntryDrafts] = useState<Record<string, { units: string; assignedTo: string; comment: string }>>({});
+  const [maintenanceLoading, setMaintenanceLoading] = useState(false);
+  const [maintenanceConfirm, setMaintenanceConfirm] = useState<{ type: 'reset' | 'deleteEntry'; entry?: any } | null>(null);
 
   useEffect(() => {
     const q = query(collection(db, 'projects', projectId, 'rateCards'));
@@ -412,6 +417,19 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       })
       .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || ''))
     : [];
+  const maintenanceRateCard = maintenanceRateCardId
+    ? rateCards.find(card => card.id === maintenanceRateCardId) || null
+    : null;
+  const maintenanceEntries = maintenanceRateCard
+    ? rateCardEntries
+      .filter(entry => entry.rateCardId === maintenanceRateCard.id)
+      .map(entry => ({
+        ...entry,
+        dateKey: getEntryDateKey(entry),
+        personName: getMemberName(entry.assignedTo),
+      }))
+      .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || ''))
+    : [];
   const chartDisplayData = userChartData.slice(0, 8);
   const activeUserCount = userChartData.filter(row => row.income > 0 || row.cost > 0 || row.output > 0 || row.reworkCost > 0).length;
   const totalMovements = rateCardEntries.length;
@@ -440,6 +458,227 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       calculatedMargin: calculatedIncome - calculatedCost,
       recalculatedAt: serverTimestamp(),
     };
+  };
+
+  const buildRateCardStateFromEntries = (card: any, entries: any[]) => {
+    const stats = entries.reduce((acc: {
+      currentValue: number;
+      reworkValue: number;
+      userStats: Record<string, number>;
+      userReworkStats: Record<string, number>;
+    }, entry: any) => {
+      const units = normalizeDecimalInput(entry.units, 0);
+      const assigneeId = entry.assignedTo || '';
+
+      if (entry.isRework) {
+        acc.reworkValue += units;
+        if (assigneeId) acc.userReworkStats[assigneeId] = (acc.userReworkStats[assigneeId] || 0) + units;
+      } else {
+        acc.currentValue += units;
+        if (assigneeId) acc.userStats[assigneeId] = (acc.userStats[assigneeId] || 0) + units;
+      }
+
+      return acc;
+    }, {
+      currentValue: 0,
+      reworkValue: 0,
+      userStats: {},
+      userReworkStats: {},
+    });
+
+    const productionCost = getRateCardCostValue(stats.currentValue, card);
+    const reworkCost = getRateCardCostValue(Math.abs(stats.reworkValue), card);
+    const calculatedIncome = getRateCardIncomeValue(stats.currentValue, card);
+
+    return {
+      currentValue: stats.currentValue,
+      reworkValue: stats.reworkValue,
+      userStats: stats.userStats,
+      userReworkStats: stats.userReworkStats,
+      reportedUnits: stats.currentValue,
+      reportedReworkUnits: stats.reworkValue,
+      calculatedIncome,
+      calculatedCost: productionCost + reworkCost,
+      calculatedOutput: getRateCardOutputValue(stats.currentValue, card),
+      calculatedMargin: calculatedIncome - productionCost - reworkCost,
+      recalculatedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+  };
+
+  const recalculateRateCardFromEntries = async (card: any, entries: any[]) => {
+    await updateDoc(
+      doc(db, 'projects', projectId, 'rateCards', card.id),
+      buildRateCardStateFromEntries(card, entries),
+    );
+
+    await syncRateDrivenIncrementalTasksForRate({
+      projectId,
+      rateCardId: card.id,
+    });
+  };
+
+  const buildEntryDrafts = (entries: any[]) => entries.reduce((acc: Record<string, { units: string; assignedTo: string; comment: string }>, entry: any) => {
+    acc[entry.id] = {
+      units: String(entry.units ?? 0),
+      assignedTo: entry.assignedTo || '',
+      comment: entry.comment || '',
+    };
+    return acc;
+  }, {});
+
+  const openMaintenancePanel = (card: any) => {
+    const entries = rateCardEntries.filter(entry => entry.rateCardId === card.id);
+    setMaintenanceRateCardId(card.id);
+    setSelectedRateCardId(card.id);
+    setEntryDrafts(buildEntryDrafts(entries));
+    setMaintenanceConfirm(null);
+  };
+
+  const closeMaintenancePanel = () => {
+    setMaintenanceRateCardId(null);
+    setEntryDrafts({});
+    setMaintenanceConfirm(null);
+  };
+
+  const updateEntryDraft = (entryId: string, updates: Partial<{ units: string; assignedTo: string; comment: string }>) => {
+    setEntryDrafts(previous => ({
+      ...previous,
+      [entryId]: {
+        units: previous[entryId]?.units ?? '0',
+        assignedTo: previous[entryId]?.assignedTo ?? '',
+        comment: previous[entryId]?.comment ?? '',
+        ...updates,
+      },
+    }));
+  };
+
+  const handleUpdateRateCardEntry = async (entry: any) => {
+    if (!maintenanceRateCard) return;
+    const draft = entryDrafts[entry.id] || { units: String(entry.units ?? 0), assignedTo: entry.assignedTo || '', comment: entry.comment || '' };
+    const parsedUnits = normalizeDecimalInput(draft.units, Number.NaN);
+
+    if (!Number.isFinite(parsedUnits)) {
+      toast.warning('La cantidad del movimiento debe ser un número válido.');
+      return;
+    }
+
+    setMaintenanceLoading(true);
+    try {
+      const nextEntry = {
+        ...entry,
+        units: parsedUnits,
+        assignedTo: draft.assignedTo || null,
+        comment: draft.comment?.trim() || null,
+      };
+      const nextEntries = rateCardEntries.map(candidate => candidate.id === entry.id ? nextEntry : candidate)
+        .filter(candidate => candidate.rateCardId === maintenanceRateCard.id);
+
+      await updateDoc(doc(db, 'projects', projectId, 'rateCardEntries', entry.id), {
+        units: parsedUnits,
+        assignedTo: draft.assignedTo || null,
+        comment: draft.comment?.trim() || null,
+        manuallyAdjusted: true,
+        adjustedAt: serverTimestamp(),
+        adjustedBy: currentUser?.uid || null,
+        adjustedByEmail: currentUser?.email || null,
+      });
+      await recalculateRateCardFromEntries(maintenanceRateCard, nextEntries);
+      toast.success('Movimiento actualizado y rate card recalculado.');
+    } catch (error: any) {
+      console.error('Error updating rate card entry:', error);
+      toast.error(`No se pudo actualizar el movimiento: ${error.message}`);
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
+  const handleDeleteRateCardEntry = async (entry: any) => {
+    if (!maintenanceRateCard) return;
+    setMaintenanceConfirm({ type: 'deleteEntry', entry });
+  };
+
+  const executeDeleteRateCardEntry = async (entry: any) => {
+    if (!maintenanceRateCard) return;
+    setMaintenanceLoading(true);
+    try {
+      const nextEntries = rateCardEntries.filter(candidate => candidate.rateCardId === maintenanceRateCard.id && candidate.id !== entry.id);
+      await deleteDoc(doc(db, 'projects', projectId, 'rateCardEntries', entry.id));
+      await recalculateRateCardFromEntries(maintenanceRateCard, nextEntries);
+      setEntryDrafts(previous => {
+        const next = { ...previous };
+        delete next[entry.id];
+        return next;
+      });
+      toast.success('Movimiento eliminado y rate card recalculado.');
+    } catch (error: any) {
+      console.error('Error deleting rate card entry:', error);
+      toast.error(`No se pudo eliminar el movimiento: ${error.message}`);
+    } finally {
+      setMaintenanceLoading(false);
+      setMaintenanceConfirm(null);
+    }
+  };
+
+  const handleRecalculateMaintenanceRateCard = async () => {
+    if (!maintenanceRateCard) return;
+
+    setMaintenanceLoading(true);
+    try {
+      await recalculateRateCardFromEntries(maintenanceRateCard, rateCardEntries.filter(entry => entry.rateCardId === maintenanceRateCard.id));
+      toast.success('Rate card recalculado desde sus movimientos.');
+    } catch (error: any) {
+      console.error('Error recalculating rate card:', error);
+      toast.error(`No se pudo recalcular el rate card: ${error.message}`);
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
+  const handleResetMaintenanceRateCard = async () => {
+    if (!maintenanceRateCard) return;
+    setMaintenanceConfirm({ type: 'reset' });
+  };
+
+  const executeResetMaintenanceRateCard = async () => {
+    if (!maintenanceRateCard) return;
+    setMaintenanceLoading(true);
+    try {
+      const batch = writeBatch(db);
+      maintenanceEntries.forEach(entry => {
+        batch.delete(doc(db, 'projects', projectId, 'rateCardEntries', entry.id));
+      });
+      batch.update(doc(db, 'projects', projectId, 'rateCards', maintenanceRateCard.id), buildRateCardStateFromEntries(maintenanceRateCard, []));
+      await batch.commit();
+      await syncRateDrivenIncrementalTasksForRate({
+        projectId,
+        rateCardId: maintenanceRateCard.id,
+      });
+      setEntryDrafts({});
+      toast.success('Rate card reiniciado en cero.');
+    } catch (error: any) {
+      console.error('Error resetting rate card:', error);
+      toast.error(`No se pudo reiniciar el rate card: ${error.message}`);
+    } finally {
+      setMaintenanceLoading(false);
+      setMaintenanceConfirm(null);
+    }
+  };
+
+  const formatEntrySource = (source: string) => {
+    const labels: Record<string, string> = {
+      workflow_step: 'Workflow',
+      workflow_step_dynamic: 'Workflow dinámico',
+      project_task_status: 'Tarea por estado',
+      project_task_status_manual_units: 'Tarea manual',
+      project_task_status_reversal: 'Reverso tarea',
+      subtask_completion_form: 'Formulario subtarea',
+      subtask_completion_form_dynamic: 'Formulario dinámico',
+      subtask_completion_form_reversal: 'Reverso formulario',
+      manual_adjustment: 'Ajuste manual',
+    };
+
+    return labels[source] || source || 'Movimiento';
   };
 
   const toggleAnalysisRate = (rateCardId: string) => {
@@ -648,7 +887,6 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     }
     setLoading(true);
     try {
-      const { updateDoc } = await import('@/lib/supabase/document-store');
       const updateData: any = {
         name: name.trim(),
         indicator: indicator.trim(),
@@ -1392,6 +1630,16 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openMaintenancePanel(card);
+                          }}
+                          className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-md transition-colors"
+                          title="Saneamiento de movimientos"
+                        >
+                          <Wrench size={16} />
+                        </button>
                         <button 
                           onClick={(event) => {
                             event.stopPropagation();
@@ -1434,6 +1682,276 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
           </Table>
         </CardContent>
       </Card>
+
+      {/* Rate Card Maintenance Modal */}
+      {maintenanceRateCard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="m-4 flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="border-b border-slate-100 p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.16em] text-amber-700">
+                    <Wrench size={13} />
+                    Panel de saneamiento
+                  </div>
+                  <h3 className="mt-3 truncate text-2xl font-black text-slate-950">{maintenanceRateCard.name}</h3>
+                  <p className="mt-1 text-sm font-medium text-slate-500">
+                    Corrige movimientos pegados, elimina registros erróneos o reinicia completamente este rate card.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleRecalculateMaintenanceRateCard}
+                    disabled={maintenanceLoading}
+                    className="border-slate-200 text-slate-700 hover:bg-slate-50"
+                  >
+                    <RefreshCw size={15} className={`mr-2 ${maintenanceLoading ? 'animate-spin' : ''}`} />
+                    Recalcular
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={handleResetMaintenanceRateCard}
+                    disabled={maintenanceLoading}
+                    className="bg-rose-600 text-white hover:bg-rose-700"
+                  >
+                    <Trash2 size={15} className="mr-2" />
+                    Reiniciar
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={closeMaintenancePanel}
+                    className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                    aria-label="Cerrar saneamiento de rate card"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+                <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Movimientos</p>
+                  <p className="mt-1 text-xl font-black text-slate-900">{maintenanceEntries.length}</p>
+                </div>
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-emerald-700">Producción</p>
+                  <p className="mt-1 break-words text-lg font-black text-emerald-800">
+                    {formatRateCardUnits(maintenanceRateCard.currentValue || 0, maintenanceRateCard, 1)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-rose-100 bg-rose-50 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-rose-700">Reproceso</p>
+                  <p className="mt-1 break-words text-lg font-black text-rose-800">
+                    {formatRateCardUnits(maintenanceRateCard.reworkValue || 0, maintenanceRateCard, 1)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-indigo-700">Ingreso</p>
+                  <p className="mt-1 break-words text-lg font-black text-indigo-900">
+                    {formatMoney(getRateCardIncomeValue(maintenanceRateCard.currentValue || 0, maintenanceRateCard), maintenanceRateCard.currency || 'USD')}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-100 bg-white p-3">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Costo total</p>
+                  <p className="mt-1 break-words text-lg font-black text-slate-900">
+                    {formatMoney(
+                      getRateCardCostValue(maintenanceRateCard.currentValue || 0, maintenanceRateCard) +
+                      getRateCardCostValue(Math.abs(Number(maintenanceRateCard.reworkValue || 0)), maintenanceRateCard),
+                      maintenanceRateCard.currency || 'USD'
+                    )}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto bg-slate-50/70 p-5">
+              {maintenanceEntries.length === 0 ? (
+                <div className="flex min-h-[280px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white text-center">
+                  <CreditCard className="mb-3 h-10 w-10 text-slate-300" />
+                  <h4 className="text-lg font-black text-slate-900">Sin movimientos registrados</h4>
+                  <p className="mt-1 max-w-md text-sm font-medium text-slate-500">
+                    Este rate card no tiene entradas históricas. Puedes recalcularlo o reiniciarlo para dejar sus acumulados en cero.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-slate-50 hover:bg-slate-50">
+                        <TableHead className="min-w-[115px] font-black uppercase tracking-wider text-slate-500">Fecha</TableHead>
+                        <TableHead className="min-w-[180px] font-black uppercase tracking-wider text-slate-500">Persona</TableHead>
+                        <TableHead className="min-w-[140px] font-black uppercase tracking-wider text-slate-500">Cantidad</TableHead>
+                        <TableHead className="min-w-[220px] font-black uppercase tracking-wider text-slate-500">Tarea / origen</TableHead>
+                        <TableHead className="min-w-[220px] font-black uppercase tracking-wider text-slate-500">Comentario</TableHead>
+                        <TableHead className="min-w-[130px] text-right font-black uppercase tracking-wider text-slate-500">Acciones</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {maintenanceEntries.map((entry: any) => {
+                        const draft = entryDrafts[entry.id] || {
+                          units: String(entry.units ?? 0),
+                          assignedTo: entry.assignedTo || '',
+                          comment: entry.comment || '',
+                        };
+
+                        return (
+                          <TableRow key={entry.id} className={entry.manuallyAdjusted ? 'bg-amber-50/40' : ''}>
+                            <TableCell className="whitespace-nowrap text-sm font-bold text-slate-700">
+                              <div>{formatReportDate(entry.dateKey)}</div>
+                              {entry.isRework && (
+                                <span className="mt-1 inline-flex rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-rose-700">
+                                  Reproceso
+                                </span>
+                              )}
+                              {entry.reversal && (
+                                <span className="mt-1 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-slate-600">
+                                  Reverso
+                                </span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <select
+                                value={draft.assignedTo}
+                                onChange={(event) => updateEntryDraft(entry.id, { assignedTo: event.target.value })}
+                                disabled={maintenanceLoading}
+                                className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20"
+                              >
+                                <option value="">Sin profesional</option>
+                                {teamMembers.map(member => (
+                                  <option key={member.id} value={member.id}>{member.name}</option>
+                                ))}
+                              </select>
+                            </TableCell>
+                            <TableCell>
+                              <input
+                                type="number"
+                                step="any"
+                                value={draft.units}
+                                onChange={(event) => updateEntryDraft(entry.id, { units: event.target.value })}
+                                disabled={maintenanceLoading}
+                                className="h-9 w-full rounded-lg border border-slate-200 px-2 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500/20"
+                              />
+                              <p className="mt-1 text-[10px] font-bold text-slate-400">
+                                Actual: {formatRateCardUnits(entry.units || 0, maintenanceRateCard, 1)}
+                              </p>
+                            </TableCell>
+                            <TableCell className="text-sm">
+                              <p className="max-w-[280px] truncate font-black text-slate-900" title={entry.taskTitle || 'Sin tarea asociada'}>
+                                {entry.taskTitle || 'Sin tarea asociada'}
+                              </p>
+                              <p className="mt-1 text-xs font-semibold text-slate-500">
+                                {formatEntrySource(entry.source)}
+                              </p>
+                            </TableCell>
+                            <TableCell>
+                              <input
+                                type="text"
+                                value={draft.comment}
+                                onChange={(event) => updateEntryDraft(entry.id, { comment: event.target.value })}
+                                disabled={maintenanceLoading}
+                                className="h-9 w-full rounded-lg border border-slate-200 px-2 text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                placeholder="Motivo o comentario"
+                              />
+                              {entry.manuallyAdjusted && (
+                                <p className="mt-1 text-[10px] font-black uppercase tracking-wider text-amber-700">Ajustado manualmente</p>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleUpdateRateCardEntry(entry)}
+                                  disabled={maintenanceLoading}
+                                  className="h-8 border-slate-200 px-2 text-xs"
+                                  title="Guardar corrección"
+                                >
+                                  <Save size={14} />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleDeleteRateCardEntry(entry)}
+                                  disabled={maintenanceLoading}
+                                  className="h-8 border-rose-200 px-2 text-xs text-rose-600 hover:bg-rose-50"
+                                  title="Eliminar movimiento"
+                                >
+                                  <Trash2 size={14} />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {maintenanceRateCard && maintenanceConfirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-start gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-rose-50 text-rose-600">
+                <AlertCircle size={22} />
+              </div>
+              <div>
+                <h4 className="text-lg font-black text-slate-950">
+                  {maintenanceConfirm.type === 'reset' ? 'Reiniciar rate card' : 'Eliminar movimiento'}
+                </h4>
+                <p className="mt-2 text-sm font-medium leading-6 text-slate-600">
+                  {maintenanceConfirm.type === 'reset'
+                    ? `Se eliminarán ${maintenanceEntries.length} movimiento${maintenanceEntries.length === 1 ? '' : 's'} y los acumulados de "${maintenanceRateCard.name}" quedarán en cero.`
+                    : `Se eliminará este movimiento de "${maintenanceRateCard.name}" y se recalcularán sus totales.`}
+                </p>
+              </div>
+            </div>
+
+            {maintenanceConfirm.type === 'deleteEntry' && maintenanceConfirm.entry && (
+              <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm">
+                <p className="font-black text-slate-900">{maintenanceConfirm.entry.taskTitle || 'Sin tarea asociada'}</p>
+                <p className="mt-1 text-xs font-semibold text-slate-500">
+                  {formatRateCardUnits(maintenanceConfirm.entry.units || 0, maintenanceRateCard, 2)} · {formatReportDate(getEntryDateKey(maintenanceConfirm.entry))}
+                </p>
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setMaintenanceConfirm(null)}
+                disabled={maintenanceLoading}
+                className="border-slate-200 text-slate-700 hover:bg-slate-50"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  if (maintenanceConfirm.type === 'reset') {
+                    void executeResetMaintenanceRateCard();
+                  } else if (maintenanceConfirm.entry) {
+                    void executeDeleteRateCardEntry(maintenanceConfirm.entry);
+                  }
+                }}
+                disabled={maintenanceLoading}
+                className="bg-rose-600 text-white hover:bg-rose-700"
+              >
+                {maintenanceLoading ? 'Procesando...' : maintenanceConfirm.type === 'reset' ? 'Sí, reiniciar' : 'Sí, eliminar'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create Rate Card Modal */}
       {isCreateModalOpen && (
