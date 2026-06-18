@@ -100,4 +100,35 @@
   .project-gantt-timeline-only ._3ZbQT {
     display: none !important;
   }
+
+  .project-gantt-fullscreen-canvas ._3_ygE,
+  .project-gantt-fullscreen-canvas ._3ZbQT {
+    display: none !important;
+  }
+
+  .project-gantt-fullscreen-canvas ._3zRJQ {
+    fill: #0f172a;
+    font-weight: 900;
+    letter-spacing: 0;
+    paint-order: stroke;
+    stroke: rgba(255, 255, 255, 0.92);
+    stroke-linejoin: round;
+    stroke-width: 3px;
+  }
+
+  .project-gantt-fullscreen-canvas ._3KcaM {
+    fill: #172033;
+    font-weight: 850;
+    letter-spacing: 0;
+    paint-order: stroke;
+    stroke: rgba(255, 255, 255, 0.95);
+    stroke-linejoin: round;
+    stroke-width: 3px;
+  }
+
+  .project-gantt-fullscreen-canvas ._KxSXS,
+  .project-gantt-fullscreen-canvas ._RRr13,
+  .project-gantt-fullscreen-canvas ._1KJ6x {
+    filter: drop-shadow(0 8px 14px rgba(15, 23, 42, 0.12));
+  }
 }

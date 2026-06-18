@@ -401,6 +401,14 @@ const buildRecoveredMatrixTask = (parentId: string, children: any[]) => {
   };
 };
 
+const getFullscreenGanttLabel = (name: string, mode: ViewMode) => {
+  const cleanName = String(name || '').replace(/\s+/g, ' ').trim();
+  const maxLength = mode === ViewMode.Day ? 34 : mode === ViewMode.Week ? 44 : 56;
+
+  if (cleanName.length <= maxLength) return cleanName;
+  return `${cleanName.slice(0, maxLength - 1)}…`;
+};
+
 export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   tasks,
   teamMembers,
@@ -1004,6 +1012,14 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       };
     });
   }, [visibleRows, visibleTasks]);
+
+  const fullscreenGanttTasks: Task[] = useMemo(
+    () => ganttTasks.map((task) => ({
+      ...task,
+      name: getFullscreenGanttLabel(task.name, viewMode),
+    })),
+    [ganttTasks, viewMode]
+  );
 
   const selectedTimelineTask = useMemo(() => {
     if (selectedTimelineTaskId) {
@@ -2197,7 +2213,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 <div className="min-w-0">
                   <h2 className="truncate text-lg font-black">Gantt interactivo del proyecto</h2>
                   <p className="truncate text-xs font-semibold text-slate-400">
-                    {ganttTasks.length} linea{ganttTasks.length === 1 ? '' : 's'} visibles · haz clic en una barra para revisar sus detalles.
+                    {fullscreenGanttTasks.length} linea{fullscreenGanttTasks.length === 1 ? '' : 's'} visibles · haz clic en una barra para revisar sus detalles.
                   </p>
                 </div>
               </div>
@@ -2261,19 +2277,19 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               </div>
 
               <div className="h-[calc(100vh-116px)] overflow-auto bg-white">
-                {ganttTasks.length > 0 ? (
-                  <div className="min-w-[980px]">
+                {fullscreenGanttTasks.length > 0 ? (
+                  <div className="project-gantt-fullscreen-canvas min-w-[980px]">
                     <Gantt
-                      tasks={ganttTasks}
+                      tasks={fullscreenGanttTasks}
                       viewMode={viewMode}
-                      listCellWidth="260px"
+                      listCellWidth=""
                       columnWidth={viewMode === ViewMode.Day ? 72 : viewMode === ViewMode.Week ? 160 : 260}
                       headerHeight={46}
                       rowHeight={42}
                       barCornerRadius={6}
-                      barFill={76}
+                      barFill={84}
                       handleWidth={8}
-                      fontSize="12px"
+                      fontSize={viewMode === ViewMode.Month ? "12px" : "11px"}
                       fontFamily="Inter, sans-serif"
                       todayColor="rgba(79, 70, 229, 0.07)"
                       onClick={handleFullscreenTaskClick}
