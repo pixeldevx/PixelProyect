@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { X, Upload, Save, FileText, MessageSquare, Hash, Calendar, MapPin } from 'lucide-react';
 import { doc, updateDoc, serverTimestamp, addDoc, collection } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
@@ -6,6 +6,7 @@ import { db, storage } from '@/lib/backend';
 import { toast } from 'sonner';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
+import { applyWorkflowStepSchedule, normalizeWorkflowScheduleMode } from '@/lib/workflow-schedule';
 
 interface StartWorkflowModalProps {
   isOpen: boolean;
@@ -66,6 +67,21 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
     setFirstStepAssignee('');
   }, [isOpen, task, parentTask]);
 
+  const workflowScheduleMode = normalizeWorkflowScheduleMode(task?.workflowScheduleMode || parentTask?.workflowScheduleMode);
+  const workflowSchedulePreview = useMemo(() => {
+    if (!isOpen || !task || !workflowStartDate || !Array.isArray(task.workflowSteps) || task.workflowSteps.length === 0) {
+      return null;
+    }
+
+    const parsedWorkflowStart = parseDateInput(workflowStartDate);
+    if (!parsedWorkflowStart) return null;
+
+    return applyWorkflowStepSchedule(task.workflowSteps, parsedWorkflowStart, workflowScheduleMode);
+  }, [isOpen, task, workflowStartDate, workflowScheduleMode]);
+  const computedWorkflowEndValue = workflowSchedulePreview
+    ? toDateInputValue(workflowSchedulePreview.workflowEndDate)
+    : workflowEndDate;
+
   if (!isOpen || !task) return null;
 
   const parentStartValue = parentTask ? toDateInputValue(parentTask.startDate || parentTask.start) : '';
@@ -91,7 +107,11 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
     }
 
     const parsedWorkflowStart = parseDateInput(workflowStartDate);
-    const parsedWorkflowEnd = parseDateInput(workflowEndDate);
+    const workflowSchedule =
+      parsedWorkflowStart && Array.isArray(task.workflowSteps) && task.workflowSteps.length > 0
+        ? applyWorkflowStepSchedule(task.workflowSteps, parsedWorkflowStart, workflowScheduleMode)
+        : null;
+    const parsedWorkflowEnd = workflowSchedule?.workflowEndDate || parseDateInput(workflowEndDate);
     if (!parsedWorkflowStart || !parsedWorkflowEnd) {
       toast.warning("Define fecha de inicio y fecha fin para este workflow.");
       return;
@@ -153,7 +173,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
       };
 
       // 3. Update task
-      const updatedSteps = [...(task.workflowSteps || [])];
+      const updatedSteps = [...(workflowSchedule?.steps || task.workflowSteps || [])];
       if (updatedSteps.length > 0) {
         updatedSteps[0] = {
           ...updatedSteps[0],
@@ -177,9 +197,9 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         originalTitle: task.originalTitle || getTaskTitle(task),
         status: 'in_progress',
         progress: 10,
-        startDate: parsedWorkflowStart,
+        startDate: workflowSchedule?.workflowStartDate || parsedWorkflowStart,
         endDate: parsedWorkflowEnd,
-        start: parsedWorkflowStart,
+        start: workflowSchedule?.workflowStartDate || parsedWorkflowStart,
         end: parsedWorkflowEnd,
         assignedTo: shouldAssignTaskToFirstStep ? resolvedFirstStepAssignee : task.assignedTo || '',
         externalWorkflowId: cleanWorkflowId,
@@ -189,6 +209,8 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         startDocumentId: documentId,
         currentStepIndex: 0,
         workflowSteps: updatedSteps,
+        workflowScheduleMode: workflowScheduleMode,
+        workflowTotalPlannedDays: workflowSchedule?.workflowTotalPlannedDays || task.workflowTotalPlannedDays || null,
         workflowHistory: [historyEntry, ...(task.workflowHistory || [])],
         updatedAt: serverTimestamp()
       });
@@ -286,16 +308,29 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
                 />
               </div>
               <div>
-                <span className="mb-1 block text-xs font-medium text-slate-600">Fecha fin</span>
+                <span className="mb-1 block text-xs font-medium text-slate-600">Fecha fin calculada</span>
                 <input
                   type="date"
-                  value={workflowEndDate}
+                  value={computedWorkflowEndValue}
                   min={workflowStartDate || parentStartValue || undefined}
                   max={parentEndValue || undefined}
                   onChange={(e) => setWorkflowEndDate(e.target.value)}
-                  className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                  readOnly={Boolean(workflowSchedulePreview)}
+                  className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 read-only:bg-slate-50"
                 />
               </div>
+            </div>
+            <div className="mt-3 rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs text-slate-600">
+              <span className="font-bold text-indigo-700">
+                {workflowScheduleMode === "business" ? "Dias laborales" : "Dias calendario"}
+              </span>
+              {workflowSchedulePreview ? (
+                <span>
+                  {" "}· {workflowSchedulePreview.workflowTotalPlannedDays} dias distribuidos en {workflowSchedulePreview.steps.length} pasos.
+                </span>
+              ) : (
+                <span> · El fin se calcula automaticamente cuando existan pasos configurados.</span>
+              )}
             </div>
             {parentTask && parentStartValue && parentEndValue && (
               <p className="mt-2 text-xs text-indigo-700">

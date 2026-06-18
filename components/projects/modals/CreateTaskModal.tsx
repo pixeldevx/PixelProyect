@@ -13,6 +13,13 @@ import {
 } from '@/lib/workflow-templates';
 import { getStaticRateCardAssignmentKey, isInvalidRateCardUnits, normalizeRateCardUnits } from '@/lib/rate-card-config';
 import { syncRateDrivenIncrementalTasksForRate } from '@/lib/incremental-rate-tasks';
+import {
+  applyWorkflowStepSchedule,
+  getWorkflowStepPlannedDuration,
+  getWorkflowTotalPlannedDays,
+  normalizeWorkflowScheduleMode,
+  type WorkflowScheduleMode,
+} from '@/lib/workflow-schedule';
 
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
@@ -186,8 +193,10 @@ export function CreateTaskModal({
       autoAddUnits?: boolean;
       assignsNextStep?: boolean;
       isQualityGate?: boolean;
+      plannedDurationDays?: number;
     }[]
   >([]);
+  const [workflowScheduleMode, setWorkflowScheduleMode] = useState<WorkflowScheduleMode>("calendar");
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
   const [currentStepIndexForForm, setCurrentStepIndexForForm] = useState<
     number | null
@@ -292,6 +301,7 @@ export function CreateTaskModal({
     setNewTaskGroupId("");
     setNewTaskType("quantitative");
     setWorkflowSteps([]);
+    setWorkflowScheduleMode("calendar");
     setWorkflowCycles(1);
     setNewTaskRequiresDoc(false);
     setNewTaskIsRateCard(false);
@@ -335,6 +345,7 @@ export function CreateTaskModal({
       return {
         ...step,
         isQualityGate: index === 0 ? false : step.isQualityGate,
+        plannedDurationDays: getWorkflowStepPlannedDuration(step),
         rateCards: staticRateCards,
         rateCardMode: step.dynamicRateCard
           ? ("dynamic" as const)
@@ -422,6 +433,14 @@ export function CreateTaskModal({
       return false;
     }
 
+    const hasInvalidDuration = workflowSteps.some(
+      (step) => !Number.isFinite(Number(step.plannedDurationDays ?? 1)) || Number(step.plannedDurationDays ?? 1) <= 0
+    );
+    if (hasInvalidDuration) {
+      toast.warning("Cada paso del workflow debe tener una duración mayor a cero días.");
+      return false;
+    }
+
     return true;
   };
 
@@ -444,6 +463,7 @@ export function CreateTaskModal({
         name: cleanTemplateName,
         ...getWorkflowTemplateScopeData(projectId, project),
         steps: sanitizeWorkflowSteps(workflowSteps),
+        workflowScheduleMode,
         updatedAt: serverTimestamp(),
         updatedBy: user?.uid || "unknown",
       };
@@ -517,6 +537,7 @@ export function CreateTaskModal({
     if (template && template.steps) {
       const loadedSteps = sanitizeWorkflowSteps(template.steps);
       setWorkflowSteps(loadedSteps);
+      setWorkflowScheduleMode(normalizeWorkflowScheduleMode(template.workflowScheduleMode));
       if (template.steps[0]?.isQualityGate) {
         toast.warning("Se desmarcó calidad del primer paso porque necesita un paso anterior.");
       }
@@ -659,6 +680,13 @@ export function CreateTaskModal({
       const taskTitle = newTaskTitle.trim();
       const parentStartDate = new Date(newTaskStart + "T00:00:00");
       const parentEndDate = new Date(newTaskEnd + "T00:00:00");
+      const cleanWorkflowSteps = newTaskType === "workflow" ? sanitizeWorkflowSteps(workflowSteps) : [];
+      const workflowSchedule =
+        newTaskType === "workflow"
+          ? applyWorkflowStepSchedule(cleanWorkflowSteps, parentStartDate, workflowScheduleMode)
+          : null;
+      const effectiveParentStartDate = workflowSchedule?.workflowStartDate || parentStartDate;
+      const effectiveParentEndDate = workflowSchedule?.workflowEndDate || parentEndDate;
       const meetingStartAt = new Date(`${newTaskStart}T${meetingStartTime || "09:00"}:00`);
       const meetingEndAt = new Date(`${newTaskStart}T${meetingEndTime || "10:00"}:00`);
       const meetingAttendees = meetingParticipantIds
@@ -695,10 +723,10 @@ export function CreateTaskModal({
         title: taskTitle,
         name: taskTitle,
         description: newTaskDesc,
-        startDate: parentStartDate,
-        endDate: parentEndDate,
-        start: parentStartDate,
-        end: parentEndDate,
+        startDate: effectiveParentStartDate,
+        endDate: effectiveParentEndDate,
+        start: effectiveParentStartDate,
+        end: effectiveParentEndDate,
         assignedTo: newTaskAssignedTo,
         indicator: newTaskType === "quantitative"
           ? quantitativeDelegatesToSubtasks
@@ -914,7 +942,7 @@ export function CreateTaskModal({
       }
 
       if (newTaskType === "workflow") {
-        taskData.workflowSteps = sanitizeWorkflowSteps(workflowSteps).map((step) => {
+        taskData.workflowSteps = (workflowSchedule?.steps || cleanWorkflowSteps).map((step) => {
           const cleanStep: any = {
             ...step,
             status: "not_started",
@@ -930,6 +958,8 @@ export function CreateTaskModal({
         taskData.currentStepIndex = 0;
         taskData.workflowHistory = [];
         taskData.progress = 0;
+        taskData.workflowScheduleMode = workflowScheduleMode;
+        taskData.workflowTotalPlannedDays = getWorkflowTotalPlannedDays(cleanWorkflowSteps);
         taskData.workflowCycles = workflowCycles;
         taskData.currentCycle = 1;
 
@@ -1331,6 +1361,25 @@ export function CreateTaskModal({
                   </p>
                 </div>
 
+                <div className="mb-4 grid gap-3 rounded-xl border border-indigo-100 bg-white/80 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-indigo-600">
+                      Programacion de pasos
+                    </label>
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      Define cuantos dias dura cada paso. La fecha fin del workflow se calcula con la suma de esos tiempos.
+                    </p>
+                  </div>
+                  <select
+                    value={workflowScheduleMode}
+                    onChange={(event) => setWorkflowScheduleMode(normalizeWorkflowScheduleMode(event.target.value))}
+                    className="h-9 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="calendar">Dias calendario</option>
+                    <option value="business">Dias laborales</option>
+                  </select>
+                </div>
+
                 <div className="flex items-center justify-between border-t border-indigo-100 pt-4">
                   <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">
                     Pasos del Workflow
@@ -1383,7 +1432,7 @@ export function CreateTaskModal({
                       onClick={() =>
                         setWorkflowSteps([
                           ...workflowSteps,
-                          { assignedTo: "", label: "", unitsToAdd: 1, autoAddUnits: true, rateCards: [] },
+                          { assignedTo: "", label: "", unitsToAdd: 1, autoAddUnits: true, rateCards: [], plannedDurationDays: 1 },
                         ])
                       }
                       className="h-7 text-[10px] font-bold text-indigo-600 hover:bg-indigo-100"
@@ -1452,6 +1501,30 @@ export function CreateTaskModal({
                         </div>
 
                           <div className="grid grid-cols-1 gap-2 pl-8 sm:grid-cols-2">
+                            <div className="sm:col-span-2 grid grid-cols-1 gap-2 rounded-lg border border-indigo-50 bg-indigo-50/60 p-2 sm:grid-cols-[minmax(0,1fr)_130px] sm:items-center">
+                              <div>
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">
+                                  Duracion planificada
+                                </p>
+                                <p className="text-[9px] text-indigo-500">
+                                  Este paso consumira esta cantidad de dias en el cronograma del workflow.
+                                </p>
+                              </div>
+                              <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={step.plannedDurationDays ?? 1}
+                                onChange={(e) => {
+                                  const newSteps = [...workflowSteps];
+                                  newSteps[idx].plannedDurationDays = Number(e.target.value);
+                                  setWorkflowSteps(newSteps);
+                                }}
+                                className="h-8 w-full rounded border border-indigo-100 bg-white px-2 text-xs font-semibold text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                aria-label={`Duracion del paso ${idx + 1} en dias`}
+                              />
+                            </div>
+
                             <select
                             value={step.assignedTo}
                             onChange={(e) => {

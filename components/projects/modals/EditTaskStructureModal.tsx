@@ -18,6 +18,11 @@ import {
 } from "@/lib/workflow-templates";
 import { getStaticRateCardAssignmentKey, isInvalidRateCardUnits, normalizeRateCardUnits } from "@/lib/rate-card-config";
 import { getIncrementalRateBinding, IncrementalRateBinding } from "@/lib/incremental-rate-tasks";
+import {
+  getWorkflowStepPlannedDuration,
+  normalizeWorkflowScheduleMode,
+  type WorkflowScheduleMode,
+} from "@/lib/workflow-schedule";
 
 type WorkflowStepDraft = {
   assignedTo?: string;
@@ -37,6 +42,7 @@ type WorkflowStepDraft = {
   autoAddUnits?: boolean | null;
   assignsNextStep?: boolean | null;
   isQualityGate?: boolean | null;
+  plannedDurationDays?: number | null;
 };
 
 type SubtaskDraft = {
@@ -83,6 +89,7 @@ interface EditTaskStructureModalProps {
       indicatorValue: number;
     };
     workflowSteps?: WorkflowStepDraft[];
+    workflowScheduleMode?: WorkflowScheduleMode;
     rateCard?: {
       isRateCardTask: boolean;
       rateCardMode: "static" | "dynamic" | null;
@@ -198,6 +205,7 @@ const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
     autoAddUnits: step?.autoAddUnits ?? null,
     assignsNextStep: step?.assignsNextStep ?? null,
     isQualityGate: index === 0 ? false : step?.isQualityGate ?? null,
+    plannedDurationDays: getWorkflowStepPlannedDuration(step),
   }));
 
 export function EditTaskStructureModal({
@@ -220,6 +228,7 @@ export function EditTaskStructureModal({
 }: EditTaskStructureModalProps) {
   const [title, setTitle] = useState("");
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStepDraft[]>([]);
+  const [workflowScheduleMode, setWorkflowScheduleMode] = useState<WorkflowScheduleMode>("calendar");
   const [subtaskDraft, setSubtaskDraft] = useState<SubtaskDraft>({
     title: "",
     description: "",
@@ -270,6 +279,7 @@ export function EditTaskStructureModal({
     if (!isOpen || !task) return;
     setTitle(getTaskTitle(task));
     setWorkflowSteps(toDraftSteps(task.workflowSteps || []));
+    setWorkflowScheduleMode(normalizeWorkflowScheduleMode(task.workflowScheduleMode));
     setTaskIndicator(task.type === "quantitative" && hasDirectSubtasks ? "avance subtareas" : task.indicator || "avance");
     setTaskIndicatorValue(task.type === "quantitative" && hasDirectSubtasks ? 100 : Number(task.indicatorValue || 1));
     setSubtaskDraft({
@@ -435,6 +445,7 @@ export function EditTaskStructureModal({
         rateCards: [],
         unitsToAdd: 1,
         autoAddUnits: true,
+        plannedDurationDays: 1,
       },
     ]);
   };
@@ -596,6 +607,7 @@ export function EditTaskStructureModal({
         ...step,
         isQualityGate: index === 0 ? false : step.isQualityGate,
         label: step.label.trim(),
+        plannedDurationDays: getWorkflowStepPlannedDuration(step),
         rateCards: staticRateCards,
         rateCardMode: step.dynamicRateCard
           ? ("dynamic" as const)
@@ -744,6 +756,14 @@ export function EditTaskStructureModal({
       return false;
     }
 
+    const hasInvalidDuration = workflowSteps.some(
+      (step) => !Number.isFinite(Number(step.plannedDurationDays ?? 1)) || Number(step.plannedDurationDays ?? 1) <= 0
+    );
+    if (hasInvalidDuration) {
+      toast.warning("Cada paso del workflow debe tener una duracion mayor a cero dias.");
+      return false;
+    }
+
     return true;
   };
 
@@ -765,6 +785,7 @@ export function EditTaskStructureModal({
         name: cleanTemplateName,
         ...getWorkflowTemplateScopeData(projectId, project),
         steps: getCleanWorkflowSteps(),
+        workflowScheduleMode,
         updatedAt: serverTimestamp(),
         updatedBy: user?.uid || "unknown",
         sourceTaskId: task.id,
@@ -837,6 +858,7 @@ export function EditTaskStructureModal({
     if (!template?.steps) return;
 
     setWorkflowSteps(toDraftSteps(template.steps));
+    setWorkflowScheduleMode(normalizeWorkflowScheduleMode(template.workflowScheduleMode));
     if (template.steps[0]?.isQualityGate) {
       toast.warning("Se desmarco calidad del primer paso porque necesita un paso anterior.");
     }
@@ -921,6 +943,7 @@ export function EditTaskStructureModal({
         workflowSteps: canEditWorkflow
           ? getCleanWorkflowSteps()
           : undefined,
+        workflowScheduleMode: canEditWorkflow ? workflowScheduleMode : undefined,
         rateCard: getCleanTaskRateCard(),
         incrementalRateBinding: getCleanIncrementalRateBinding(),
       });
@@ -1259,10 +1282,19 @@ export function EditTaskStructureModal({
                 <div>
                   <h3 className="text-sm font-semibold text-slate-800">Pasos del workflow</h3>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Cambia nombres, responsables y formularios de cada paso.
+                    Cambia nombres, responsables, formularios y duracion de cada paso.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
+                  <select
+                    value={workflowScheduleMode}
+                    onChange={(event) => setWorkflowScheduleMode(normalizeWorkflowScheduleMode(event.target.value))}
+                    className="h-8 rounded-lg border border-indigo-200 bg-white px-2 text-xs font-semibold text-slate-700"
+                    title="Modo de calculo de fechas"
+                  >
+                    <option value="calendar">Dias calendario</option>
+                    <option value="business">Dias laborales</option>
+                  </select>
                   {workflowTemplates.length > 0 && (
                     <select
                       className="h-8 rounded-lg border border-indigo-200 bg-white px-2 text-xs text-slate-700"
@@ -1382,6 +1414,26 @@ export function EditTaskStructureModal({
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 pl-10">
+                      <div className="md:col-span-2 grid grid-cols-1 gap-2 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3 md:grid-cols-[minmax(0,1fr)_140px] md:items-center">
+                        <div>
+                          <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-indigo-600">
+                            Duracion planificada
+                          </label>
+                          <p className="text-[10px] text-indigo-500">
+                            Se usa para calcular el inicio y fin automatico de este paso dentro del workflow.
+                          </p>
+                        </div>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={step.plannedDurationDays ?? 1}
+                          onChange={(event) => updateStep(index, { plannedDurationDays: Number(event.target.value) })}
+                          className="h-9 w-full rounded-lg border border-indigo-100 bg-white px-3 text-sm font-semibold text-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500"
+                          aria-label={`Duracion del paso ${index + 1} en dias`}
+                        />
+                      </div>
+
                       <div>
                         <label className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
                           Responsable

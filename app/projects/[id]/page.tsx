@@ -64,6 +64,11 @@ import {
   syncRateDrivenIncrementalTasksForRate,
 } from '@/lib/incremental-rate-tasks';
 import { sanitizeTaskTitleForSave } from '@/lib/task-title';
+import {
+  applyWorkflowStepSchedule,
+  getWorkflowTotalPlannedDays,
+  normalizeWorkflowScheduleMode,
+} from '@/lib/workflow-schedule';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
@@ -2486,6 +2491,7 @@ export default function ProjectDetailsPage() {
       title: string;
       quantitative?: { indicator: string; indicatorValue: number };
       workflowSteps?: any[];
+      workflowScheduleMode?: string;
       rateCard?: any;
       incrementalRateBinding?: any;
     }
@@ -2504,6 +2510,7 @@ export default function ProjectDetailsPage() {
     }
 
     const shouldUpdateWorkflow = Array.isArray(updates.workflowSteps);
+    const workflowScheduleMode = normalizeWorkflowScheduleMode(updates.workflowScheduleMode || task.workflowScheduleMode);
     const structuralSteps = shouldUpdateWorkflow
       ? updates.workflowSteps!.map(stripWorkflowStepRuntime)
       : [];
@@ -2535,7 +2542,20 @@ export default function ProjectDetailsPage() {
           const updatedSteps = structuralSteps.map((step, index) =>
             mergeWorkflowStepStructure(currentTask.workflowSteps?.[index], step, index)
           );
-          updateData.workflowSteps = updatedSteps;
+          const taskStartDate = getTaskDateValue(currentTask.startDate || currentTask.start);
+          const scheduledWorkflow = taskStartDate
+            ? applyWorkflowStepSchedule(updatedSteps, taskStartDate, workflowScheduleMode)
+            : null;
+          updateData.workflowSteps = scheduledWorkflow?.steps || updatedSteps;
+          updateData.workflowScheduleMode = workflowScheduleMode;
+          updateData.workflowTotalPlannedDays =
+            scheduledWorkflow?.workflowTotalPlannedDays || getWorkflowTotalPlannedDays(updatedSteps);
+          if (scheduledWorkflow) {
+            updateData.startDate = scheduledWorkflow.workflowStartDate;
+            updateData.start = scheduledWorkflow.workflowStartDate;
+            updateData.endDate = scheduledWorkflow.workflowEndDate;
+            updateData.end = scheduledWorkflow.workflowEndDate;
+          }
           updateData.currentStepIndex =
             updatedSteps.length > 0
               ? Math.min(currentTask.currentStepIndex || 0, updatedSteps.length - 1)
@@ -2601,7 +2621,20 @@ export default function ProjectDetailsPage() {
             const updatedSteps = structuralSteps.map((step, index) =>
               mergeWorkflowStepStructure(currentTask.workflowSteps?.[index], step, index)
             );
-            updatedTask.workflowSteps = updatedSteps;
+            const taskStartDate = getTaskDateValue(currentTask.startDate || currentTask.start);
+            const scheduledWorkflow = taskStartDate
+              ? applyWorkflowStepSchedule(updatedSteps, taskStartDate, workflowScheduleMode)
+              : null;
+            updatedTask.workflowSteps = scheduledWorkflow?.steps || updatedSteps;
+            updatedTask.workflowScheduleMode = workflowScheduleMode;
+            updatedTask.workflowTotalPlannedDays =
+              scheduledWorkflow?.workflowTotalPlannedDays || getWorkflowTotalPlannedDays(updatedSteps);
+            if (scheduledWorkflow) {
+              updatedTask.startDate = scheduledWorkflow.workflowStartDate;
+              updatedTask.start = scheduledWorkflow.workflowStartDate;
+              updatedTask.endDate = scheduledWorkflow.workflowEndDate;
+              updatedTask.end = scheduledWorkflow.workflowEndDate;
+            }
             updatedTask.currentStepIndex =
               updatedSteps.length > 0
                 ? Math.min(currentTask.currentStepIndex || 0, updatedSteps.length - 1)

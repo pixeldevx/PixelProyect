@@ -5,6 +5,7 @@ import { collection, doc, getDocs, query, serverTimestamp, where, writeBatch } f
 import { db } from "@/lib/backend";
 import { toast } from "sonner";
 import { notifyTaskAssignment, TaskAssignmentNotificationPayload } from "@/lib/notifications";
+import { applyWorkflowStepSchedule, normalizeWorkflowScheduleMode } from "@/lib/workflow-schedule";
 
 type BulkWorkflowIterationsModalProps = {
   isOpen: boolean;
@@ -228,12 +229,18 @@ const validateIterationSchedule = (
     fallbackEndDate: string;
     parentStartDate: Date | null;
     parentEndDate: Date | null;
+    workflowSteps?: any[];
+    workflowScheduleMode?: string;
   }
 ) => {
   if (item.error) return item;
 
   const iterationStartDate = dateFromInputValue(item.startDate || options.fallbackStartDate);
-  const iterationEndDate = dateFromInputValue(item.endDate || options.fallbackEndDate);
+  const scheduledWorkflow =
+    iterationStartDate && options.workflowSteps?.length
+      ? applyWorkflowStepSchedule(options.workflowSteps, iterationStartDate, options.workflowScheduleMode)
+      : null;
+  const iterationEndDate = scheduledWorkflow?.workflowEndDate || dateFromInputValue(item.endDate || options.fallbackEndDate);
 
   if (!iterationStartDate || !iterationEndDate) {
     return { ...item, error: "Define fechas válidas para la iteración" };
@@ -268,6 +275,8 @@ const parseIterations = (
     fallbackEndDate: string;
     parentStartDate: Date | null;
     parentEndDate: Date | null;
+    workflowSteps?: any[];
+    workflowScheduleMode?: string;
   }
 ) => {
   const seenIds = new Set<string>();
@@ -376,6 +385,7 @@ export function BulkWorkflowIterationsModal({
   const parentEndDate = getTaskDate(task?.endDate || task?.end);
   const parentStartValue = parentStartDate ? parentStartDate.toISOString().slice(0, 10) : "";
   const parentEndValue = parentEndDate ? parentEndDate.toISOString().slice(0, 10) : "";
+  const workflowScheduleMode = normalizeWorkflowScheduleMode(task?.workflowScheduleMode);
   const existingIds = useMemo(() => getExistingWorkflowIdsForTask(tasks, task), [tasks, task]);
   const parsedIterations = useMemo(
     () =>
@@ -384,8 +394,10 @@ export function BulkWorkflowIterationsModal({
         fallbackEndDate: endDate,
         parentStartDate,
         parentEndDate,
+        workflowSteps: task?.workflowSteps || [],
+        workflowScheduleMode,
       }),
-    [rawItems, existingIds, startDate, endDate, parentStartDate, parentEndDate]
+    [rawItems, existingIds, startDate, endDate, parentStartDate, parentEndDate, task?.workflowSteps, workflowScheduleMode]
   );
   const validIterations = parsedIterations.filter((item) => !item.error && !item.existing);
   const invalidIterations = parsedIterations.filter((item) => item.error);
@@ -394,6 +406,16 @@ export function BulkWorkflowIterationsModal({
     () => tasks.filter((candidate) => candidate.parentTaskId === task?.id).length,
     [task?.id, tasks]
   );
+  const getIterationPreviewEndDate = (item: ParsedIteration) => {
+    const iterationStartDate = dateFromInputValue(item.startDate || startDate);
+    if (iterationStartDate && task?.workflowSteps?.length) {
+      return applyWorkflowStepSchedule(task.workflowSteps, iterationStartDate, workflowScheduleMode)
+        .workflowEndDate.toISOString()
+        .slice(0, 10);
+    }
+
+    return item.endDate || endDate || "";
+  };
 
   if (!isOpen || !task) return null;
 
@@ -513,8 +535,9 @@ export function BulkWorkflowIterationsModal({
           const cleanObservation = iteration.observation.trim();
           const cleanMunicipality = iteration.municipality.trim();
           const iterationStartDate = dateFromInputValue(iteration.startDate || startDate) || parsedStartDate;
-          const iterationEndDate = dateFromInputValue(iteration.endDate || endDate) || parsedEndDate;
-          const workflowSteps = task.workflowSteps.map((step: any, stepIndex: number) => {
+          const scheduledWorkflow = applyWorkflowStepSchedule(task.workflowSteps || [], iterationStartDate, workflowScheduleMode);
+          const iterationEndDate = scheduledWorkflow.workflowEndDate || dateFromInputValue(iteration.endDate || endDate) || parsedEndDate;
+          const workflowSteps = scheduledWorkflow.steps.map((step: any, stepIndex: number) => {
             const cleanStep: any = {
               ...stripWorkflowStepRuntime(step),
               status: stepIndex === 0 ? "en_curso" : "not_started",
@@ -584,6 +607,8 @@ export function BulkWorkflowIterationsModal({
             cycleNumber: existingChildCount + index + 1,
             displayOrder: displayOrderBase + index + 1,
             workflowSteps,
+            workflowScheduleMode,
+            workflowTotalPlannedDays: scheduledWorkflow.workflowTotalPlannedDays,
             currentStepIndex: 0,
             workflowHistory: [
               {
@@ -825,10 +850,14 @@ export function BulkWorkflowIterationsModal({
                     </div>
                     <div className="min-w-0 text-left sm:text-right">
                       <p className="truncate text-[10px] font-semibold text-slate-500">
-                        {item.startDate || startDate || "Sin inicio"} - {item.endDate || endDate || "Sin fin"}
+                        {item.startDate || startDate || "Sin inicio"} - {getIterationPreviewEndDate(item) || "Sin fin"}
                       </p>
                       <p className="text-[10px] text-slate-400">
-                        {item.usesCustomDates ? "Fechas individuales" : "Cronograma general"}
+                        {task?.workflowSteps?.length
+                          ? `Calculado por pasos · ${workflowScheduleMode === "business" ? "laborales" : "calendario"}`
+                          : item.usesCustomDates
+                            ? "Fechas individuales"
+                            : "Cronograma general"}
                       </p>
                     </div>
                   </div>

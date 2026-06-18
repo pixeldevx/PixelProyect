@@ -890,8 +890,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 status: step.status || 'not_started',
                 priority: getTaskPriority(subTask),
                 assignedTo: step.assignedTo,
-                startDate: subTask.startDate,
-                endDate: subTask.endDate,
+                startDate: step.plannedStartDate || step.startDate || step.plannedStartAt || subTask.startDate,
+                endDate: step.plannedEndDate || step.endDate || step.plannedEndAt || subTask.endDate,
                 progress: step.status === 'listo' ? 100 : (step.status === 'en_curso' || step.status === 'reproceso' ? 50 : 0),
                 type: 'workflow_step',
                 originalTask: subTask
@@ -912,8 +912,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             status: step.status || 'not_started',
             priority: getTaskPriority(task),
             assignedTo: step.assignedTo,
-            startDate: task.startDate,
-            endDate: task.endDate,
+            startDate: step.plannedStartDate || step.startDate || step.plannedStartAt || task.startDate,
+            endDate: step.plannedEndDate || step.endDate || step.plannedEndAt || task.endDate,
             progress: step.status === 'listo' ? 100 : (step.status === 'en_curso' || step.status === 'reproceso' ? 50 : 0),
             type: 'workflow_step',
             originalTask: task
