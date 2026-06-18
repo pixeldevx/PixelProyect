@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Gantt, Task, ViewMode } from 'gantt-task-react';
 import "gantt-task-react/dist/index.css";
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
-import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw, ClipboardList, Search, X, EyeOff } from 'lucide-react';
+import { GripVertical, Trash2, RefreshCw, FileText, ListTodo, Users, Calendar, ChevronLeft, ChevronRight, AlertCircle, Plus, PanelRightClose, PanelRightOpen, Settings, CornerDownRight, MessageSquare, MoreHorizontal, RotateCcw, ClipboardList, Search, X, EyeOff, Maximize2, History, Activity } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -80,6 +80,23 @@ const getTaskDate = (value: any) => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+const getTaskDateTime = (value: any) => {
+  const date = getTaskDate(value);
+  return date ? date.getTime() : 0;
+};
+
+const formatTaskDateLabel = (value: any, fallback = 'Sin fecha') => {
+  const date = getTaskDate(value);
+  if (!date) return fallback;
+  return format(date, 'd MMM yyyy', { locale: es });
+};
+
+const formatTaskDateTimeLabel = (value: any, fallback = 'Fecha no registrada') => {
+  const date = getTaskDate(value);
+  if (!date) return fallback;
+  return format(date, 'd MMM yyyy, h:mm a', { locale: es });
+};
+
 const getCompactMeetingScheduleLabel = (task: any) => {
   const start = getMeetingStartDate(task);
   const end = getMeetingEndDate(task);
@@ -95,6 +112,71 @@ const getTaskPriority = (task: any) => {
 
 const getTaskCommentCount = (task: any) => {
   return Number(task?.commentCount || task?.originalTask?.commentCount || 0);
+};
+
+const getTaskInteractionTimeline = (task: any) => {
+  if (!task) return [];
+
+  const workflowHistory = Array.isArray(task.workflowHistory)
+    ? task.workflowHistory.map((entry: any) => ({
+        ...entry,
+        kind: 'workflow',
+        date: entry.timestamp || entry.createdAt || entry.completedAt || entry.startedAt,
+        title: entry.action === 'return'
+          ? 'Devolución de workflow'
+          : entry.action === 'approve'
+            ? 'Paso aprobado'
+            : entry.action === 'stop'
+              ? 'Workflow detenido'
+              : entry.action === 'resume'
+                ? 'Workflow reanudado'
+                : 'Interacción de workflow',
+        description: entry.stepLabel || entry.comment || entry.status || '',
+        actor: entry.userName || entry.changedByName || entry.userEmail || entry.changedByEmail || 'Usuario',
+      }))
+    : [];
+
+  const statusHistory = Array.isArray(task.statusHistory)
+    ? task.statusHistory.map((entry: any) => ({
+        ...entry,
+        kind: 'status',
+        date: entry.timestamp || entry.createdAt,
+        title: entry.action === 'reschedule'
+          ? 'Tarea reprogramada'
+          : entry.action === 'pause'
+            ? 'Tarea estancada'
+            : entry.action === 'resume'
+              ? 'Tarea reanudada'
+              : 'Cambio de estado',
+        description: entry.comment || [entry.previousStatus, entry.effectiveStatus || entry.status].filter(Boolean).join(' -> '),
+        actor: entry.changedByName || entry.changedByEmail || 'Usuario',
+      }))
+    : [];
+
+  const reviewReceipts = Array.isArray(task.taskReviewReceipts)
+    ? task.taskReviewReceipts.map((entry: any) => ({
+        ...entry,
+        kind: 'review',
+        date: entry.timestamp || entry.createdAt,
+        title: 'Revisión registrada',
+        description: entry.comment || entry.status || '',
+        actor: entry.changedByName || entry.changedByEmail || entry.userName || 'Usuario',
+      }))
+    : [];
+
+  const incrementHistory = Array.isArray(task.incrementHistory)
+    ? task.incrementHistory.map((entry: any) => ({
+        ...entry,
+        kind: 'increment',
+        date: entry.createdAt || entry.timestamp,
+        title: 'Incremento registrado',
+        description: `${entry.amount || 0} ${entry.indicator || task.indicator || ''}`.trim(),
+        actor: entry.createdByEmail || entry.createdBy || 'Usuario',
+      }))
+    : [];
+
+  return [...workflowHistory, ...statusHistory, ...reviewReceipts, ...incrementHistory]
+    .sort((left: any, right: any) => getTaskDateTime(right.date) - getTaskDateTime(left.date));
 };
 
 const getTaskGroupId = (task: any) => task?.groupId || UNGROUPED_GROUP_ID;
@@ -373,6 +455,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [newGroupColor, setNewGroupColor] = useState(TASK_GROUP_COLORS[0]);
   const [taskSearchQuery, setTaskSearchQuery] = useState("");
   const [repairingMatrixIds, setRepairingMatrixIds] = useState<string[]>([]);
+  const [isFullscreenGanttOpen, setIsFullscreenGanttOpen] = useState(false);
+  const [selectedTimelineTaskId, setSelectedTimelineTaskId] = useState<string | null>(null);
   const taskAssigneeOptions = assigneeOptions || teamMembers;
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
@@ -921,6 +1005,39 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     });
   }, [visibleRows, visibleTasks]);
 
+  const selectedTimelineTask = useMemo(() => {
+    if (selectedTimelineTaskId) {
+      const explicitTask = visibleTasks.find((task) => task.id === selectedTimelineTaskId);
+      if (explicitTask) return explicitTask;
+    }
+
+    return visibleTasks.find((task) => !task.isWorkflowStep) || visibleTasks[0] || null;
+  }, [selectedTimelineTaskId, visibleTasks]);
+
+  const selectedTimelineSourceTask = selectedTimelineTask?.originalTask || selectedTimelineTask;
+  const selectedTimelineAssignee = selectedTimelineSourceTask
+    ? teamMembers.find((member) => member.id === selectedTimelineSourceTask.assignedTo)
+    : null;
+  const selectedTimelineInteractions = useMemo(
+    () => getTaskInteractionTimeline(selectedTimelineSourceTask),
+    [selectedTimelineSourceTask]
+  );
+
+  const openFullscreenGantt = () => {
+    if (!selectedTimelineTaskId) {
+      const firstSelectableTask = visibleTasks.find((task) => !task.isWorkflowStep) || visibleTasks[0];
+      setSelectedTimelineTaskId(firstSelectableTask?.id || null);
+    }
+    setIsFullscreenGanttOpen(true);
+  };
+
+  const handleFullscreenTaskClick = (ganttTask: Task) => {
+    const clickedTask = visibleTasks.find((task) => task.id === ganttTask.id);
+    if (clickedTask) {
+      setSelectedTimelineTaskId(clickedTask.id);
+    }
+  };
+
   const handleDragEnd = (result: DropResult) => {
     if (!canModifyTaskDetails || !onReorderTasks) return;
     if (hasActiveTaskFilter) return;
@@ -1174,6 +1291,18 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               <PanelRightClose size={14} className="mr-1.5" />
             )}
             {isTimelineCollapsed ? "Mostrar Gantt" : "Solo tareas"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={openFullscreenGantt}
+            disabled={ganttTasks.length === 0}
+            className="h-8 px-3 text-[11px] font-bold border-indigo-100 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-60"
+            title="Abrir cronograma interactivo en pantalla completa"
+          >
+            <Maximize2 size={14} className="mr-1.5" />
+            Gantt completo
           </Button>
           <Button
             type="button"
@@ -2057,6 +2186,272 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           </div>
         </div>
       </div>
+      {isFullscreenGanttOpen && (
+        <div className="fixed inset-0 z-[70] flex flex-col bg-slate-950 text-white">
+          <div className="flex min-h-16 items-center justify-between border-b border-white/10 bg-slate-950/95 px-5 py-3 shadow-2xl">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500 text-white shadow-lg shadow-indigo-900/30">
+                  <Maximize2 size={18} />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="truncate text-lg font-black">Gantt interactivo del proyecto</h2>
+                  <p className="truncate text-xs font-semibold text-slate-400">
+                    {ganttTasks.length} linea{ganttTasks.length === 1 ? '' : 's'} visibles · haz clic en una barra para revisar sus detalles.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="hidden rounded-xl bg-white/10 p-1 sm:flex">
+                <button
+                  type="button"
+                  onClick={() => setViewMode(ViewMode.Day)}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-black transition ${viewMode === ViewMode.Day ? 'bg-white text-slate-950' : 'text-slate-300 hover:text-white'}`}
+                >
+                  Día
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode(ViewMode.Week)}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-black transition ${viewMode === ViewMode.Week ? 'bg-white text-slate-950' : 'text-slate-300 hover:text-white'}`}
+                >
+                  Semana
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode(ViewMode.Month)}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-black transition ${viewMode === ViewMode.Month ? 'bg-white text-slate-950' : 'text-slate-300 hover:text-white'}`}
+                >
+                  Mes
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsFullscreenGanttOpen(false)}
+                className="rounded-xl p-2 text-slate-300 transition hover:bg-white/10 hover:text-white"
+                aria-label="Cerrar Gantt completo"
+              >
+                <X size={22} />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col xl:flex-row">
+            <div className="min-w-0 flex-1 bg-slate-100">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-500">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-700">
+                    <span className="h-2 w-2 rounded-full bg-[#00c875]" />
+                    Finalizadas
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2.5 py-1 text-orange-700">
+                    <span className="h-2 w-2 rounded-full bg-[#fdab3d]" />
+                    Trabajando / por vencer
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-red-700">
+                    <span className="h-2 w-2 rounded-full bg-red-600" />
+                    Atrasadas / estancadas
+                  </span>
+                </div>
+                <span className="text-[11px] uppercase tracking-wider text-slate-400">
+                  Vista {viewMode === ViewMode.Day ? 'diaria' : viewMode === ViewMode.Week ? 'semanal' : 'mensual'}
+                </span>
+              </div>
+
+              <div className="h-[calc(100vh-116px)] overflow-auto bg-white">
+                {ganttTasks.length > 0 ? (
+                  <div className="min-w-[980px]">
+                    <Gantt
+                      tasks={ganttTasks}
+                      viewMode={viewMode}
+                      listCellWidth="260px"
+                      columnWidth={viewMode === ViewMode.Day ? 72 : viewMode === ViewMode.Week ? 160 : 260}
+                      headerHeight={46}
+                      rowHeight={42}
+                      barCornerRadius={6}
+                      barFill={76}
+                      handleWidth={8}
+                      fontSize="12px"
+                      fontFamily="Inter, sans-serif"
+                      todayColor="rgba(79, 70, 229, 0.07)"
+                      onClick={handleFullscreenTaskClick}
+                      onProgressChange={canModifyTaskDetails && onUpdateTaskProgress ? (task) => {
+                        const originalTask = tasks.find(t => t.id === task.id);
+                        if (!originalTask) return;
+                        onUpdateTaskProgress(task.id, task.progress, originalTask);
+                      } : undefined}
+                      onDateChange={canModifyTaskDates ? (task) => {
+                        const originalTask = tasks.find(t => t.id === task.id);
+                        if (!originalTask) return;
+                        onUpdateTaskDates?.(task.id, task.start, task.end, originalTask);
+                      } : undefined}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm font-bold text-slate-400">
+                    No hay tareas para visualizar en pantalla completa.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <aside className="flex max-h-[45vh] min-h-0 w-full flex-col border-t border-white/10 bg-slate-950 xl:max-h-none xl:w-[420px] xl:border-l xl:border-t-0">
+              <div className="border-b border-white/10 p-4">
+                <p className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.18em] text-indigo-300">
+                  <Activity size={14} />
+                  Detalle seleccionado
+                </p>
+                {selectedTimelineSourceTask ? (
+                  <>
+                    <h3 className="mt-3 break-words text-xl font-black leading-tight text-white [overflow-wrap:anywhere]">
+                      {getTaskDisplayTitle(selectedTimelineTask || selectedTimelineSourceTask)}
+                    </h3>
+                    {selectedTimelineTask?.isWorkflowStep && (
+                      <p className="mt-1 break-words text-xs font-semibold text-slate-400 [overflow-wrap:anywhere]">
+                        Pertenece a {getTaskDisplayTitle(selectedTimelineSourceTask)}
+                      </p>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs font-black text-white">
+                        {getStatusLabel(selectedTimelineTask?.status || selectedTimelineSourceTask.status || 'todo')}
+                      </span>
+                      <span className="rounded-full bg-indigo-500/15 px-2.5 py-1 text-xs font-black text-indigo-200">
+                        {selectedTimelineSourceTask.type === 'workflow' ? 'Workflow' : selectedTimelineSourceTask.type === 'quantitative' ? 'Cuantitativa' : isMeetingTask(selectedTimelineSourceTask) ? 'Reunión' : 'Tarea'}
+                      </span>
+                      <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs font-black text-slate-200">
+                        {getTaskPriority(selectedTimelineSourceTask) === 'high' ? 'Alta' : getTaskPriority(selectedTimelineSourceTask) === 'low' ? 'Baja' : 'Media'}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-3 text-sm text-slate-400">Selecciona una barra del cronograma para ver sus datos.</p>
+                )}
+              </div>
+
+              {selectedTimelineSourceTask && (
+                <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-3">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Inicio</p>
+                      <p className="mt-1 text-sm font-black text-white">
+                        {formatTaskDateLabel(selectedTimelineSourceTask.startDate || selectedTimelineSourceTask.start)}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-3">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Fin</p>
+                      <p className="mt-1 text-sm font-black text-white">
+                        {formatTaskDateLabel(selectedTimelineSourceTask.endDate || selectedTimelineSourceTask.end)}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-3">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Responsable</p>
+                      <p className="mt-1 truncate text-sm font-black text-white" title={selectedTimelineAssignee?.name || 'Sin responsable'}>
+                        {selectedTimelineAssignee?.name || (selectedTimelineSourceTask.assignedTo === 'DYNAMIC' ? 'Dinámico' : 'Sin responsable')}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-3">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Avance</p>
+                      <p className="mt-1 text-sm font-black text-white">{selectedTimelineSourceTask.progress || 0}%</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.06] p-4">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-400">
+                      <span>Progreso de la tarea</span>
+                      <span>{selectedTimelineSourceTask.progress || 0}%</span>
+                    </div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className="h-full rounded-full bg-indigo-400 transition-all"
+                        style={{ width: `${Math.min(100, Number(selectedTimelineSourceTask.progress || 0))}%` }}
+                      />
+                    </div>
+                    {selectedTimelineSourceTask.type === 'workflow' && Array.isArray(selectedTimelineSourceTask.workflowSteps) && (
+                      <p className="mt-2 text-xs font-semibold text-amber-200">
+                        Paso {(selectedTimelineSourceTask.currentStepIndex || 0) + 1} de {selectedTimelineSourceTask.workflowSteps.length}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1">
+                    {onOpenTaskDocs && !selectedTimelineTask?.isWorkflowStep && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsFullscreenGanttOpen(false);
+                          onOpenTaskDocs(selectedTimelineSourceTask.id, selectedTimelineSourceTask);
+                        }}
+                        className="rounded-xl border border-indigo-400/30 bg-indigo-500 px-3 py-2.5 text-sm font-black text-white shadow-lg shadow-indigo-950/20 transition hover:bg-indigo-400"
+                      >
+                        Ver detalles e iteraciones
+                      </button>
+                    )}
+                    {onOpenTaskComments && !selectedTimelineTask?.isWorkflowStep && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsFullscreenGanttOpen(false);
+                          onOpenTaskComments(selectedTimelineSourceTask);
+                        }}
+                        className="rounded-xl border border-white/10 bg-white/[0.08] px-3 py-2.5 text-sm font-black text-white transition hover:bg-white/[0.12]"
+                      >
+                        Comentarios e interacciones
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mt-5">
+                    <div className="mb-3 flex items-center justify-between">
+                      <p className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">
+                        <History size={14} />
+                        Interacciones
+                      </p>
+                      <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] font-black text-slate-300">
+                        {selectedTimelineInteractions.length}
+                      </span>
+                    </div>
+                    {selectedTimelineInteractions.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm font-semibold text-slate-500">
+                        Esta tarea todavía no tiene interacciones registradas.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {selectedTimelineInteractions.slice(0, 10).map((interaction: any, index: number) => (
+                          <div key={`${interaction.kind}-${index}-${getTaskDateTime(interaction.date)}`} className="rounded-2xl border border-white/10 bg-white/[0.06] p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="break-words text-sm font-black text-white [overflow-wrap:anywhere]">
+                                  {interaction.title}
+                                </p>
+                                <p className="mt-0.5 truncate text-xs font-semibold text-indigo-200" title={interaction.actor}>
+                                  {interaction.actor}
+                                </p>
+                              </div>
+                              <span className="shrink-0 rounded-full bg-white/10 px-2 py-1 text-[10px] font-bold text-slate-300">
+                                {interaction.kind}
+                              </span>
+                            </div>
+                            {interaction.description && (
+                              <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-slate-300 [overflow-wrap:anywhere]">
+                                {interaction.description}
+                              </p>
+                            )}
+                            <p className="mt-2 text-[10px] font-semibold text-slate-500">
+                              {formatTaskDateTimeLabel(interaction.date)}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </aside>
+          </div>
+        </div>
+      )}
       {isGroupManagerOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
           <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
