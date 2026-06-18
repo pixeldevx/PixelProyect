@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { collection, query, where, onSnapshot, doc, arrayUnion, Timestamp, writeBatch, increment, getDoc, getDocs } from '@/lib/supabase/document-store';
 import { db, auth } from '@/lib/backend';
-import { CheckCircle2, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, X, ClipboardList, Play, Pause, FolderOpen, ShieldCheck, FileText, Eye, CalendarDays, Download, ExternalLink, MapPin, GitBranch, CornerDownRight } from 'lucide-react';
+import { CheckCircle2, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, X, ClipboardList, Play, Pause, FolderOpen, ShieldCheck, FileText, Eye, CalendarDays, Download, ExternalLink, MapPin, GitBranch, CornerDownRight, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -873,6 +873,7 @@ export default function WorkflowTray() {
   const [projectFilter, setProjectFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [sortFilter, setSortFilter] = useState('newest');
+  const [collapsedInboxGroups, setCollapsedInboxGroups] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const unsubscribe = onSnapshot(query(collection(db, 'organizations')), (snapshot) => {
@@ -2153,6 +2154,7 @@ export default function WorkflowTray() {
     const externalId = (task.externalWorkflowId || '').toLowerCase();
     const taskId = (task.id || '').toLowerCase();
     const title = (task.title || '').toLowerCase();
+    const parentTitle = (task.parentTaskTitle || task.parentTitle || task.matrixTaskTitle || task.originalTitle || '').toLowerCase();
     const organizationName = (task.organizationName || '').toLowerCase();
     const projectName = (task.projectName || '').toLowerCase();
     const currentStepStatus = taskIsWorkflow
@@ -2177,6 +2179,7 @@ export default function WorkflowTray() {
     return externalId.includes(searchLower) || 
            taskId.includes(searchLower) || 
            title.includes(searchLower) ||
+           parentTitle.includes(searchLower) ||
            organizationName.includes(searchLower) ||
            projectName.includes(searchLower) ||
            currentStepStatus.includes(searchLower);
@@ -2191,6 +2194,83 @@ export default function WorkflowTray() {
     const aTime = getTaskTimestamp(a.createdAt) || getTaskTimestamp(a.updatedAt);
     return bTime - aTime;
   });
+
+  const getInboxParentTitle = (task: any) =>
+    task?.parentTaskTitle ||
+    task?.parentTitle ||
+    task?.matrixTaskTitle ||
+    task?.originalTitle ||
+    task?.parentName ||
+    'Tarea matriz';
+
+  const groupedInboxItems = (() => {
+    const parentIds = new Set(filteredWorkflows.map((task: any) => task.parentTaskId).filter(Boolean));
+    const groups = new Map<string, any>();
+    const orderedItems: any[] = [];
+    const pushedGroups = new Set<string>();
+
+    const ensureGroup = (task: any) => {
+      const parentId = task.parentTaskId || task.id;
+      const key = `${task.projectId || 'project'}:${parentId}`;
+      const existing = groups.get(key);
+      if (existing) return existing;
+
+      const group = {
+        type: 'group',
+        key,
+        parentId,
+        parentTask: null,
+        parentTitle: getInboxParentTitle(task),
+        projectId: task.projectId,
+        projectName: task.projectName || 'Proyecto',
+        organizationName: task.organizationName || 'Sin organización',
+        children: [],
+      };
+      groups.set(key, group);
+      return group;
+    };
+
+    filteredWorkflows.forEach((task: any) => {
+      if (task.parentTaskId) {
+        const group = ensureGroup(task);
+        group.children.push(task);
+        return;
+      }
+
+      if (parentIds.has(task.id)) {
+        const group = ensureGroup(task);
+        group.parentTask = task;
+        group.parentTitle = getInboxTaskTitle(task);
+        return;
+      }
+
+      orderedItems.push({ type: 'single', key: `${task.projectId}-${task.id}`, task });
+    });
+
+    filteredWorkflows.forEach((task: any) => {
+      if (task.parentTaskId || parentIds.has(task.id)) {
+        const group = groups.get(`${task.projectId || 'project'}:${task.parentTaskId || task.id}`);
+        if (group && !pushedGroups.has(group.key)) {
+          orderedItems.push(group);
+          pushedGroups.add(group.key);
+        }
+      }
+    });
+
+    return orderedItems.sort((left, right) => {
+      const leftTask = left.type === 'single' ? left.task : (left.parentTask || left.children[0]);
+      const rightTask = right.type === 'single' ? right.task : (right.parentTask || right.children[0]);
+      if (sortFilter === 'due_asc') {
+        const leftDue = getInboxDueSortTime(leftTask);
+        const rightDue = getInboxDueSortTime(rightTask);
+        if (leftDue !== rightDue) return leftDue < rightDue ? -1 : 1;
+      }
+
+      const rightTime = getTaskTimestamp(rightTask?.createdAt) || getTaskTimestamp(rightTask?.updatedAt);
+      const leftTime = getTaskTimestamp(leftTask?.createdAt) || getTaskTimestamp(leftTask?.updatedAt);
+      return rightTime - leftTime;
+    });
+  })();
   const activeDynamicRateCardSource = actionModal.isOpen
     ? getWorkflowDynamicRateCardSource(actionModal.task, actionModal.type)
     : null;
@@ -2431,7 +2511,44 @@ export default function WorkflowTray() {
     );
   };
 
-  const renderInboxItem = (task: any) => {
+  const toggleInboxGroup = (groupKey: string) => {
+    setCollapsedInboxGroups((current) => ({
+      ...current,
+      [groupKey]: !current[groupKey],
+    }));
+  };
+
+  const renderInboxHierarchyMarker = (options: any = {}) => {
+    if (options.groupToggle) {
+      const { collapsed, count, onToggle, label } = options.groupToggle;
+      const Icon = collapsed ? ChevronRight : ChevronDown;
+
+      return (
+        <button
+          type="button"
+          onClick={onToggle}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-indigo-100 bg-white px-1.5 text-[10px] font-black uppercase tracking-wider text-indigo-700 shadow-sm transition-colors hover:border-indigo-200 hover:bg-indigo-50"
+          title={label}
+          aria-label={label}
+        >
+          <Icon size={13} strokeWidth={2.5} />
+          {count}
+        </button>
+      );
+    }
+
+    if (options.nested) {
+      return (
+        <span className="inline-flex h-6 shrink-0 items-center justify-center rounded-md bg-indigo-50 px-1 text-indigo-400">
+          <CornerDownRight size={13} strokeWidth={2.4} />
+        </span>
+      );
+    }
+
+    return null;
+  };
+
+  const renderInboxItem = (task: any, options: any = {}) => {
     const taskIsWorkflow = isWorkflowItem(task);
     const dueState = getDueState(task);
     const urgencyStyles = getInboxUrgencyStyles(dueState);
@@ -2453,11 +2570,12 @@ export default function WorkflowTray() {
       return (
         <article
           key={`${task.projectId}-${task.id}`}
-          className={`relative grid min-h-[54px] gap-2 px-3 py-2 transition-colors lg:grid-cols-[minmax(0,1fr)_auto] lg:py-1.5 ${urgencyStyles.row}`}
+          className={`relative grid min-h-[54px] gap-2 px-3 py-2 transition-colors lg:grid-cols-[minmax(0,1fr)_auto] lg:py-1.5 ${urgencyStyles.row} ${options.nested ? 'ml-3 border-l-2 border-indigo-100 pl-4' : ''}`}
         >
           <span className={`absolute bottom-0 left-0 top-0 w-1 ${urgencyStyles.rail}`} />
           <div className="min-w-0 pl-2.5">
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              {renderInboxHierarchyMarker(options)}
               {renderInboxTaskTypeBadge(task)}
               <h3 className="min-w-0 flex-[1_1_100%] truncate text-sm font-bold text-slate-900 sm:flex-1">{title}</h3>
               <span className={`hidden shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider sm:inline-flex ${getTaskStatusClass(status)}`}>
@@ -2545,11 +2663,12 @@ export default function WorkflowTray() {
     return (
       <article
         key={`${task.projectId}-${task.id}`}
-        className={`relative grid min-h-[54px] gap-2 px-3 py-2 transition-colors lg:grid-cols-[minmax(0,1fr)_auto] lg:py-1.5 ${workflowUrgencyStyles.row}`}
+        className={`relative grid min-h-[54px] gap-2 px-3 py-2 transition-colors lg:grid-cols-[minmax(0,1fr)_auto] lg:py-1.5 ${workflowUrgencyStyles.row} ${options.nested ? 'ml-3 border-l-2 border-indigo-100 pl-4' : ''}`}
       >
         <span className={`absolute bottom-0 left-0 top-0 w-1 ${workflowUrgencyStyles.rail}`} />
         <div className="min-w-0 pl-2.5">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            {renderInboxHierarchyMarker(options)}
             {renderInboxTaskTypeBadge(task, true)}
             {attentionBadge && (
               <span className={`inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${attentionBadge.className}`}>
@@ -2650,6 +2769,57 @@ export default function WorkflowTray() {
             renderUtilityButton('Interacciones', <ClipboardList size={14} />, () => setHistoryModalTask(task), 'text-slate-600 hover:bg-white/80 hover:text-slate-900', workflowHistoryCount)}
         </div>
       </article>
+    );
+  };
+
+  const renderInboxGroup = (group: any) => {
+    const isCollapsed = Boolean(collapsedInboxGroups[group.key]);
+    const childCount = group.children.length;
+    const groupToggle = {
+      collapsed: isCollapsed,
+      count: childCount,
+      onToggle: () => toggleInboxGroup(group.key),
+      label: `${isCollapsed ? 'Mostrar' : 'Ocultar'} ${childCount} subtarea${childCount === 1 ? '' : 's'} de ${group.parentTitle}`,
+    };
+
+    const groupHeader = group.parentTask ? (
+      renderInboxItem(group.parentTask, { groupToggle })
+    ) : (
+      <article
+        key={`${group.key}-header`}
+        className="relative grid min-h-[52px] gap-2 bg-slate-50 px-3 py-2 transition-colors hover:bg-indigo-50/50 lg:grid-cols-[minmax(0,1fr)_auto]"
+      >
+        <span className="absolute bottom-0 left-0 top-0 w-1 bg-indigo-400" />
+        <div className="min-w-0 pl-2.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            {renderInboxHierarchyMarker({ groupToggle })}
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-indigo-100 bg-indigo-50 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-indigo-700">
+              <GitBranch size={11} strokeWidth={2.5} />
+              Matriz
+            </span>
+            <h3 className="min-w-0 flex-[1_1_100%] truncate text-sm font-black text-slate-900 sm:flex-1">
+              {group.parentTitle}
+            </h3>
+            <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-slate-500 shadow-sm ring-1 ring-slate-200">
+              {childCount} subtarea{childCount === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600">
+            <span className="shrink-0 font-bold text-indigo-700">{group.organizationName}</span>
+            <span className="min-w-0 flex-1 truncate">{group.projectName}</span>
+          </div>
+        </div>
+        <div className="flex items-center justify-end pr-1 text-[11px] font-semibold text-slate-400">
+          {isCollapsed ? 'Subtareas ocultas' : 'Subtareas desplegadas'}
+        </div>
+      </article>
+    );
+
+    return (
+      <React.Fragment key={group.key}>
+        {groupHeader}
+        {!isCollapsed && group.children.map((child: any) => renderInboxItem(child, { nested: true }))}
+      </React.Fragment>
     );
   };
 
@@ -2787,7 +2957,9 @@ export default function WorkflowTray() {
         <>
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="divide-y divide-slate-100">
-            {filteredWorkflows.map(renderInboxItem)}
+            {groupedInboxItems.map((item) =>
+              item.type === 'group' ? renderInboxGroup(item) : renderInboxItem(item.task)
+            )}
           </div>
         </div>
         </>
