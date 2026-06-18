@@ -742,11 +742,19 @@ export function CreateTaskModal({
         displayOrderOffset: number,
       ) => {
         draftSubtasks.forEach((subtask, index) => {
+          const parentIsIncremental = newTaskType === "quantitative";
+          const inheritedIncrementalRateBinding = parentIsIncremental && incrementalRateBinding
+            ? {
+                ...incrementalRateBinding,
+                activatedAt: new Date(),
+              }
+            : null;
           const subtaskTitle = subtask.title.trim();
           const startValue = subtask.startDate || newTaskStart;
           const endValue = subtask.endDate || newTaskEnd;
           const subtaskStartDate = new Date(startValue + "T00:00:00");
           const subtaskEndDate = new Date(endValue + "T00:00:00");
+          const childStatus = parentIsIncremental ? "todo" : subtask.status;
           const subtaskRef = doc(
             collection(db, "projects", projectId, "tasks"),
           );
@@ -761,23 +769,41 @@ export function CreateTaskModal({
             start: subtaskStartDate,
             end: subtaskEndDate,
             assignedTo: subtask.assignedTo || newTaskAssignedTo,
-            indicator: null,
-            indicatorValue: null,
-            status: subtask.status,
-            progress: subtask.status === "completed" ? 100 : 0,
-            type: "state",
+            indicator: parentIsIncremental ? newTaskIndicator || null : null,
+            indicatorValue: parentIsIncremental ? Number(newTaskIndicatorValue || 0) : null,
+            status: childStatus,
+            progress: parentIsIncremental ? 0 : childStatus === "completed" ? 100 : 0,
+            type: parentIsIncremental ? "quantitative" : "state",
             requiresDocument: false,
             linkedDocumentId: null,
-            isRateCardTask: false,
+            isRateCardTask: parentIsIncremental ? newTaskIsRateCard : false,
+            rateCardMode: parentIsIncremental && newTaskIsRateCard ? newTaskRateCardMode : null,
+            dynamicRateCard: parentIsIncremental ? usesDynamicRateCard : false,
+            dynamicRateCardConfig: parentIsIncremental && usesDynamicRateCard
+              ? {
+                  defaultUnits: normalizeRateCardUnits(newTaskUnitsToAdd),
+                  requirePerson: true,
+                  requireRateCard: true,
+                  promptForUnits: !newTaskDynamicAutoAddUnits,
+                }
+              : null,
             completionForm: subtask.completionForm || null,
             completionFormData: null,
             completionRateCardLastCharges: [],
-            rateCardId: null,
-            unitsToAdd: null,
-            syncExternal: false,
+            rateCardId: parentIsIncremental && usesStaticRateCard ? newTaskRateCardId : null,
+            unitsToAdd: parentIsIncremental && newTaskIsRateCard ? Number(newTaskUnitsToAdd) : null,
+            autoAddUnits: parentIsIncremental && usesDynamicRateCard ? newTaskDynamicAutoAddUnits : true,
+            syncExternal: parentIsIncremental && usesStaticRateCard
+              ? rateCards.find((rc) => rc.id === newTaskRateCardId)?.syncExternal || false
+              : false,
             priority: subtask.priority,
             groupId: newTaskGroupId || null,
             currentValue: 0,
+            incrementForm: parentIsIncremental ? incrementForm || null : null,
+            incrementalRateBinding: inheritedIncrementalRateBinding,
+            incrementSource: parentIsIncremental ? (inheritedIncrementalRateBinding ? "rate_card" : "manual") : null,
+            incrementHistory: parentIsIncremental ? [] : null,
+            incrementDelegatedFromParentTaskId: parentIsIncremental ? parentTaskId : null,
             parentTaskId,
             displayOrder: displayOrderOffset + index,
             createdAt: serverTimestamp(),
@@ -787,7 +813,7 @@ export function CreateTaskModal({
           queueTaskNotification(
             subtaskRef.id,
             subtask.assignedTo || newTaskAssignedTo,
-            subtask.status,
+            childStatus,
             "manual_subtask_created",
           );
         });
@@ -796,11 +822,18 @@ export function CreateTaskModal({
       if (draftSubtasks.length > 0) {
         taskData.isParentTask = true;
         taskData.totalSubtasks = draftSubtasks.length;
+        taskData.incrementDelegatedToSubtasks = newTaskType === "quantitative";
+        if (newTaskType === "quantitative") {
+          taskData.currentValue = 0;
+          taskData.progress = 0;
+          taskData.status = "todo";
+        }
       }
 
       // Handle Rate Card update for initial progress
       if (
         taskData.isRateCardTask &&
+        !taskData.incrementDelegatedToSubtasks &&
         taskData.rateCardId &&
         taskData.unitsToAdd &&
         taskData.progress > 0 &&

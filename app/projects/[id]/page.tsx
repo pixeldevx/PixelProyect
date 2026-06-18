@@ -769,6 +769,13 @@ export default function ProjectDetailsPage() {
       toast.error('No tienes permisos para editar los detalles de tareas.');
       return;
     }
+    const delegatesIncrementToSubtasks =
+      task.type === 'quantitative' &&
+      (task.incrementDelegatedToSubtasks || task.isParentTask || Number(task.totalSubtasks || 0) > 0);
+    if (delegatesIncrementToSubtasks) {
+      toast.info('Esta tarea incremental delega su avance en sus subtareas. Actualiza las subtareas para completar la matriz.');
+      return;
+    }
     if (isRateDrivenIncrementalTask(task)) {
       toast.info('Esta tarea incremental se actualiza únicamente con el Rate Card configurado.');
       await syncRateDrivenTasksForRateIds([getIncrementalRateBinding(task)?.rateCardId]);
@@ -826,6 +833,11 @@ export default function ProjectDetailsPage() {
 
       await batch.commit();
 
+      if (task.parentTaskId) {
+        const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+        await updateParentTaskStatus(projectId, task.parentTaskId);
+      }
+
       if (requiresCompletionDocument) {
         setCompletingTaskId(taskId);
         toast.info('La tarea llegó a la meta. Adjunta el documento requerido para completarla.');
@@ -849,6 +861,14 @@ export default function ProjectDetailsPage() {
 
     if (!task || !task.indicatorValue) {
       toast.warning('Esta tarea no tiene una meta válida configurada.');
+      return;
+    }
+
+    const delegatesIncrementToSubtasks =
+      task.type === 'quantitative' &&
+      (task.incrementDelegatedToSubtasks || task.isParentTask || Number(task.totalSubtasks || 0) > 0);
+    if (delegatesIncrementToSubtasks) {
+      toast.info('Esta tarea incremental delega su avance en sus subtareas. Registra los incrementos en cada subtarea.');
       return;
     }
 
@@ -2326,7 +2346,22 @@ export default function ProjectDetailsPage() {
     const currentSubtasks = tasks.filter((candidate) => candidate.parentTaskId === parentTask.id);
     const batch = writeBatch(db);
     const subtaskRef = doc(collection(db, 'projects', projectId, 'tasks'));
-    const progress = subtask.status === 'completed' || subtask.status === 'completed_late' ? 100 : subtask.status === 'in_progress' ? 10 : 0;
+    const parentIsIncremental = parentTask.type === 'quantitative';
+    const parentIncrementalRateBinding = parentIsIncremental ? getIncrementalRateBinding(parentTask) : null;
+    const inheritedIncrementalRateBinding = parentIncrementalRateBinding
+      ? {
+          ...parentIncrementalRateBinding,
+          activatedAt: new Date(),
+        }
+      : null;
+    const subtaskStatus = parentIsIncremental ? 'todo' : subtask.status || 'todo';
+    const progress = parentIsIncremental
+      ? 0
+      : subtaskStatus === 'completed' || subtaskStatus === 'completed_late'
+        ? 100
+        : subtaskStatus === 'in_progress'
+          ? 10
+          : 0;
 
     try {
       batch.set(subtaskRef, {
@@ -2339,23 +2374,32 @@ export default function ProjectDetailsPage() {
         start: subtaskStartDate,
         end: subtaskEndDate,
         assignedTo: subtask.assignedTo || parentTask.assignedTo || '',
-        indicator: null,
-        indicatorValue: null,
-        status: subtask.status || 'todo',
+        indicator: parentIsIncremental ? parentTask.indicator || null : null,
+        indicatorValue: parentIsIncremental ? Number(parentTask.indicatorValue || 0) : null,
+        status: subtaskStatus,
         progress,
-        type: 'state',
+        type: parentIsIncremental ? 'quantitative' : 'state',
         requiresDocument: false,
         linkedDocumentId: null,
-        isRateCardTask: false,
+        isRateCardTask: parentIsIncremental ? Boolean(parentTask.isRateCardTask) : false,
+        rateCardMode: parentIsIncremental ? parentTask.rateCardMode || null : null,
+        dynamicRateCard: parentIsIncremental ? Boolean(parentTask.dynamicRateCard) : false,
+        dynamicRateCardConfig: parentIsIncremental ? parentTask.dynamicRateCardConfig || null : null,
         completionForm: subtask.completionForm || null,
         completionFormData: null,
         completionRateCardLastCharges: [],
-        rateCardId: null,
-        unitsToAdd: null,
-        syncExternal: false,
+        rateCardId: parentIsIncremental ? parentTask.rateCardId || null : null,
+        unitsToAdd: parentIsIncremental ? parentTask.unitsToAdd ?? null : null,
+        autoAddUnits: parentIsIncremental ? parentTask.autoAddUnits !== false : true,
+        syncExternal: parentIsIncremental ? Boolean(parentTask.syncExternal) : false,
         priority: subtask.priority || parentTask.priority || 'medium',
         groupId: parentTask.groupId || null,
         currentValue: 0,
+        incrementForm: parentIsIncremental ? parentTask.incrementForm || null : null,
+        incrementalRateBinding: inheritedIncrementalRateBinding,
+        incrementSource: parentIsIncremental ? (inheritedIncrementalRateBinding ? 'rate_card' : 'manual') : null,
+        incrementHistory: parentIsIncremental ? [] : null,
+        incrementDelegatedFromParentTaskId: parentIsIncremental ? parentTask.id : null,
         parentTaskId: parentTask.id,
         displayOrder: tasks.length + currentSubtasks.length + 1,
         createdAt: serverTimestamp(),
@@ -2366,6 +2410,7 @@ export default function ProjectDetailsPage() {
       batch.update(doc(db, 'projects', projectId, 'tasks', parentTask.id), {
         isParentTask: true,
         totalSubtasks: currentSubtasks.length + 1,
+        incrementDelegatedToSubtasks: parentIsIncremental ? true : Boolean(parentTask.incrementDelegatedToSubtasks),
         updatedAt: serverTimestamp(),
       });
 
@@ -2424,6 +2469,17 @@ export default function ProjectDetailsPage() {
       ? updates.workflowSteps!.map(stripWorkflowStepRuntime)
       : [];
     const dependentTaskIds = shouldUpdateWorkflow ? collectDependentTaskIds(task.id) : new Set<string>([task.id]);
+    const incrementalSubtasksToCascade =
+      task.type === 'quantitative' && !task.parentTaskId
+        ? tasks.filter((candidate) => candidate.parentTaskId === task.id)
+        : [];
+    const cascadedIncrementalBinding = updates.incrementalRateBinding && incrementalSubtasksToCascade.length > 0
+      ? {
+          ...updates.incrementalRateBinding,
+          activatedAt: new Date(),
+        }
+      : null;
+    const cascadedSubtaskIds = new Set(incrementalSubtasksToCascade.map((candidate) => candidate.id));
 
     try {
       const batch = writeBatch(db);
@@ -2472,6 +2528,43 @@ export default function ProjectDetailsPage() {
         batch.update(doc(db, 'projects', projectId, 'tasks', taskId), updateData);
       });
 
+      if (incrementalSubtasksToCascade.length > 0) {
+        incrementalSubtasksToCascade.forEach((subtask) => {
+          const subtaskUpdateData: any = {
+            type: 'quantitative',
+            indicator: task.indicator || null,
+            indicatorValue: Number(task.indicatorValue || 0),
+            incrementForm: task.incrementForm || null,
+            incrementalRateBinding: cascadedIncrementalBinding,
+            incrementSource: cascadedIncrementalBinding ? 'rate_card' : 'manual',
+            incrementDelegatedFromParentTaskId: task.id,
+            updatedAt: serverTimestamp(),
+          };
+
+          if (updates.rateCard) {
+            subtaskUpdateData.isRateCardTask = updates.rateCard.isRateCardTask;
+            subtaskUpdateData.rateCardMode = updates.rateCard.rateCardMode;
+            subtaskUpdateData.dynamicRateCard = updates.rateCard.dynamicRateCard;
+            subtaskUpdateData.dynamicRateCardConfig = updates.rateCard.dynamicRateCardConfig;
+            subtaskUpdateData.rateCardId = updates.rateCard.rateCardId;
+            subtaskUpdateData.unitsToAdd = updates.rateCard.unitsToAdd;
+            subtaskUpdateData.autoAddUnits = updates.rateCard.autoAddUnits;
+            subtaskUpdateData.syncExternal = updates.rateCard.rateCardId
+              ? Boolean(rateCards.find((rateCard) => rateCard.id === updates.rateCard.rateCardId)?.syncExternal)
+              : false;
+          }
+
+          batch.update(doc(db, 'projects', projectId, 'tasks', subtask.id), subtaskUpdateData);
+        });
+
+        batch.update(doc(db, 'projects', projectId, 'tasks', task.id), {
+          isParentTask: true,
+          totalSubtasks: incrementalSubtasksToCascade.length,
+          incrementDelegatedToSubtasks: true,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
       await batch.commit();
       await syncRateDrivenTasksForRateIds(
         [updates.incrementalRateBinding?.rateCardId],
@@ -2480,18 +2573,23 @@ export default function ProjectDetailsPage() {
 
       setTasks((currentTasks) =>
         currentTasks.map((currentTask) => {
-          if (!dependentTaskIds.has(currentTask.id)) return currentTask;
+          const shouldUpdateDirectly = dependentTaskIds.has(currentTask.id);
+          const shouldCascadeAsIncrementalSubtask = cascadedSubtaskIds.has(currentTask.id);
+          if (!shouldUpdateDirectly && !shouldCascadeAsIncrementalSubtask) return currentTask;
 
           const updatedTask: any = {
             ...currentTask,
-            title: currentTask.externalWorkflowId ? currentTask.externalWorkflowId : cleanTitle,
-            name: currentTask.externalWorkflowId ? currentTask.externalWorkflowId : cleanTitle,
           };
-          if (currentTask.externalWorkflowId) {
-            updatedTask.originalTitle = cleanTitle;
+
+          if (shouldUpdateDirectly) {
+            updatedTask.title = currentTask.externalWorkflowId ? currentTask.externalWorkflowId : cleanTitle;
+            updatedTask.name = currentTask.externalWorkflowId ? currentTask.externalWorkflowId : cleanTitle;
+            if (currentTask.externalWorkflowId) {
+              updatedTask.originalTitle = cleanTitle;
+            }
           }
 
-          if (shouldUpdateWorkflow && taskReceivesWorkflowStructure(currentTask)) {
+          if (shouldUpdateWorkflow && shouldUpdateDirectly && taskReceivesWorkflowStructure(currentTask)) {
             const updatedSteps = structuralSteps.map((step, index) =>
               mergeWorkflowStepStructure(currentTask.workflowSteps?.[index], step, index)
             );
@@ -2499,10 +2597,18 @@ export default function ProjectDetailsPage() {
             updatedTask.currentStepIndex =
               updatedSteps.length > 0
                 ? Math.min(currentTask.currentStepIndex || 0, updatedSteps.length - 1)
-                : 0;
+              : 0;
           }
 
-          if (updates.rateCard) {
+          if (shouldCascadeAsIncrementalSubtask) {
+            updatedTask.type = 'quantitative';
+            updatedTask.indicator = task.indicator || null;
+            updatedTask.indicatorValue = Number(task.indicatorValue || 0);
+            updatedTask.incrementForm = task.incrementForm || null;
+            updatedTask.incrementDelegatedFromParentTaskId = task.id;
+          }
+
+          if (updates.rateCard && (shouldUpdateDirectly || shouldCascadeAsIncrementalSubtask)) {
             updatedTask.isRateCardTask = updates.rateCard.isRateCardTask;
             updatedTask.rateCardMode = updates.rateCard.rateCardMode;
             updatedTask.dynamicRateCard = updates.rateCard.dynamicRateCard;
@@ -2515,8 +2621,16 @@ export default function ProjectDetailsPage() {
               : false;
           }
 
-          updatedTask.incrementalRateBinding = updates.incrementalRateBinding || null;
-          updatedTask.incrementSource = updates.incrementalRateBinding ? 'rate_card' : 'manual';
+          updatedTask.incrementalRateBinding = shouldCascadeAsIncrementalSubtask
+            ? cascadedIncrementalBinding
+            : updates.incrementalRateBinding || null;
+          updatedTask.incrementSource = updatedTask.incrementalRateBinding ? 'rate_card' : 'manual';
+
+          if (shouldUpdateDirectly && currentTask.id === task.id && incrementalSubtasksToCascade.length > 0) {
+            updatedTask.isParentTask = true;
+            updatedTask.totalSubtasks = incrementalSubtasksToCascade.length;
+            updatedTask.incrementDelegatedToSubtasks = true;
+          }
 
           return updatedTask;
         })

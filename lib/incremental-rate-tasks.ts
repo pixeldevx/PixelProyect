@@ -2,6 +2,7 @@ import { collection, doc, getDocs, query, serverTimestamp, updateDoc, where } fr
 import { db } from "@/lib/backend";
 import { getCompletionStatusForTask, getTaskDateValue, isCompletedTaskStatus } from "@/lib/taskProgress";
 import { normalizeDecimalInput } from "@/lib/rate-card-config";
+import { updateParentTaskStatus } from "@/lib/taskUtils";
 
 export type IncrementalRateBinding = {
   enabled?: boolean;
@@ -11,6 +12,7 @@ export type IncrementalRateBinding = {
   dateMode?: "any" | "range";
   startDate?: any;
   endDate?: any;
+  activatedAt?: any;
 };
 
 const startOfDay = (date: Date) =>
@@ -45,6 +47,7 @@ export const getIncrementalRateBinding = (task: any): IncrementalRateBinding | n
     dateMode: binding.dateMode === "range" ? "range" : "any",
     startDate: binding.startDate || null,
     endDate: binding.endDate || null,
+    activatedAt: binding.activatedAt || null,
   };
 };
 
@@ -59,6 +62,12 @@ export const rateEntryMatchesIncrementalBinding = (
 
   if (binding.assigneeMode === "fixed" && binding.assignedTo) {
     if (entry?.assignedTo !== binding.assignedTo) return false;
+  }
+
+  if (binding.activatedAt) {
+    const entryDate = getEntryDate(entry);
+    const activatedAt = getTaskDateValue(binding.activatedAt);
+    if (!entryDate || (activatedAt && entryDate.getTime() < activatedAt.getTime())) return false;
   }
 
   if (binding.dateMode === "range") {
@@ -119,6 +128,11 @@ export const syncRateDrivenIncrementalTasksForRate = async ({
     }));
 
   const impactedTasks = availableTasks.filter((task) => {
+    const delegatesIncrementToSubtasks =
+      task?.type === "quantitative" &&
+      (task?.incrementDelegatedToSubtasks || task?.isParentTask || Number(task?.totalSubtasks || 0) > 0);
+    if (delegatesIncrementToSubtasks) return false;
+
     const binding = getIncrementalRateBinding(task);
     return Boolean(binding?.rateCardId === rateCardId);
   });
@@ -137,6 +151,7 @@ export const syncRateDrivenIncrementalTasksForRate = async ({
   }));
 
   let updated = 0;
+  const parentTaskIdsToRefresh = new Set<string>();
 
   for (const task of impactedTasks) {
     const targetValue = Math.max(0, Number(task.indicatorValue || 0));
@@ -165,8 +180,11 @@ export const syncRateDrivenIncrementalTasksForRate = async ({
       rateDrivenLastSyncAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    if (task.parentTaskId) parentTaskIdsToRefresh.add(task.parentTaskId);
     updated += 1;
   }
+
+  await Promise.all(Array.from(parentTaskIdsToRefresh).map((parentTaskId) => updateParentTaskStatus(projectId, parentTaskId)));
 
   return { updated };
 };

@@ -221,6 +221,14 @@ export const GanttOverview: React.FC = () => {
 
   const handleUpdateTaskValue = async (taskId: string, value: number, task: any) => {
     try {
+      const delegatesIncrementToSubtasks =
+        task?.type === 'quantitative' &&
+        (task?.incrementDelegatedToSubtasks || task?.isParentTask || Number(task?.totalSubtasks || 0) > 0);
+      if (delegatesIncrementToSubtasks) {
+        toast.info('Esta tarea incremental delega su avance en sus subtareas.');
+        return;
+      }
+
       if (isRateDrivenIncrementalTask(task)) {
         const binding = getIncrementalRateBinding(task);
         toast.info('Esta tarea incremental se actualiza únicamente con el Rate Card configurado.');
@@ -254,6 +262,11 @@ export const GanttOverview: React.FC = () => {
         updatedAt: serverTimestamp()
       });
 
+      if (task.parentTaskId) {
+        const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+        await updateParentTaskStatus(selectedProjectId, task.parentTaskId);
+      }
+
       if (requiresCompletionDocument) {
         toast.info('La tarea llegó a la meta. Adjunta el documento requerido desde el detalle del proyecto.');
       }
@@ -268,6 +281,14 @@ export const GanttOverview: React.FC = () => {
     formData: Record<string, any>,
     comment: string
   ) => {
+    const delegatesIncrementToSubtasks =
+      task?.type === 'quantitative' &&
+      (task?.incrementDelegatedToSubtasks || task?.isParentTask || Number(task?.totalSubtasks || 0) > 0);
+    if (delegatesIncrementToSubtasks) {
+      toast.info('Esta tarea incremental delega su avance en sus subtareas.');
+      return;
+    }
+
     if (isRateDrivenIncrementalTask(task)) {
       const binding = getIncrementalRateBinding(task);
       toast.info('Esta tarea incremental solo puede avanzar con movimientos del Rate Card configurado.');

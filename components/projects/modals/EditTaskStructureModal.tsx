@@ -243,7 +243,9 @@ export function EditTaskStructureModal({
   const templateScopeOrganizationKey = templateScopeOrganizationIds.join("|");
 
   const canEditWorkflow = Boolean(canEditTaskStructure && (task?.type === "workflow" || (task?.workflowSteps?.length || 0) > 0));
-  const canManageSubtasks = Boolean(task?.type === "state" && !task?.parentTaskId && onCreateSubtask);
+  const canManageSubtasks = Boolean(
+    (task?.type === "state" || task?.type === "quantitative") && !task?.parentTaskId && onCreateSubtask
+  );
 
   useEffect(() => {
     if (!isOpen || !task) return;

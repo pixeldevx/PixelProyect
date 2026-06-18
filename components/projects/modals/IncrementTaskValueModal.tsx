@@ -55,6 +55,9 @@ export function IncrementTaskValueModal({
   const incrementForm: CustomForm | undefined = task?.incrementForm || undefined;
   const rateBinding = getIncrementalRateBinding(task);
   const isRateDriven = isRateDrivenIncrementalTask(task);
+  const delegatesIncrementToSubtasks =
+    task?.type === "quantitative" &&
+    (task?.incrementDelegatedToSubtasks || task?.isParentTask || Number(task?.totalSubtasks || 0) > 0);
   const currentValue = Number(task?.currentValue || 0);
   const targetValue = Number(task?.indicatorValue || 0);
   const amountValue = Number(amount);
@@ -78,6 +81,11 @@ export function IncrementTaskValueModal({
 
     if (isRateDriven) {
       toast.info("Esta tarea avanza automáticamente con el Rate Card configurado.");
+      return;
+    }
+
+    if (delegatesIncrementToSubtasks) {
+      toast.info("Esta tarea matriz delega su avance en sus subtareas.");
       return;
     }
 
@@ -264,6 +272,15 @@ export function IncrementTaskValueModal({
             </div>
           )}
 
+          {delegatesIncrementToSubtasks && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              <p className="font-bold">Incremento delegado a subtareas</p>
+              <p className="mt-1 text-xs">
+                Esta matriz se completa automáticamente cuando todas sus subtareas incrementales alcanzan su meta.
+              </p>
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">
               Incrementar en <span className="text-red-500">*</span>
@@ -274,7 +291,7 @@ export function IncrementTaskValueModal({
               step="0.01"
               value={amount}
               onChange={(event) => setAmount(event.target.value)}
-              disabled={isRateDriven}
+              disabled={isRateDriven || delegatesIncrementToSubtasks}
               className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
               autoFocus
             />
@@ -314,7 +331,7 @@ export function IncrementTaskValueModal({
           <Button type="button" variant="outline" onClick={onClose} disabled={isSubmitting}>
             Cancelar
           </Button>
-          <Button type="submit" disabled={isSubmitting || isRateDriven} className="bg-indigo-600 hover:bg-indigo-700 text-white min-w-[150px]">
+          <Button type="submit" disabled={isSubmitting || isRateDriven || delegatesIncrementToSubtasks} className="bg-indigo-600 hover:bg-indigo-700 text-white min-w-[150px]">
             {isSubmitting ? (
               <>
                 <Loader2 size={16} className="mr-2 animate-spin" />
