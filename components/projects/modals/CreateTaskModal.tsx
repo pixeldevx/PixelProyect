@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, ListTodo, Plus, ClipboardList, Loader2, Trash2, CalendarDays } from 'lucide-react';
+import { X, ListTodo, Plus, ClipboardList, CreditCard, Loader2, Trash2, CalendarDays } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, updateDoc, deleteDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
@@ -96,6 +96,16 @@ type DraftSubtask = {
   priority: string;
   status: string;
   completionForm?: CustomForm;
+  isIncremental?: boolean;
+  incrementIndicator?: string;
+  incrementTarget?: number;
+  incrementMode?: "manual" | "rate_card";
+  incrementRateCardId?: string;
+  incrementFilterByAssignee?: boolean;
+  incrementAssigneeId?: string;
+  incrementFilterByDate?: boolean;
+  incrementStartDate?: string;
+  incrementEndDate?: string;
 };
 
 const createDraftSubtask = (
@@ -109,6 +119,16 @@ const createDraftSubtask = (
   endDate: defaults.endDate || "",
   priority: defaults.priority || "medium",
   status: defaults.status || "todo",
+  isIncremental: defaults.isIncremental || false,
+  incrementIndicator: defaults.incrementIndicator || "",
+  incrementTarget: defaults.incrementTarget || 1,
+  incrementMode: defaults.incrementMode || "manual",
+  incrementRateCardId: defaults.incrementRateCardId || "",
+  incrementFilterByAssignee: defaults.incrementFilterByAssignee || false,
+  incrementAssigneeId: defaults.incrementAssigneeId || "",
+  incrementFilterByDate: defaults.incrementFilterByDate || false,
+  incrementStartDate: defaults.incrementStartDate || "",
+  incrementEndDate: defaults.incrementEndDate || "",
   ...defaults,
 });
 
@@ -546,6 +566,26 @@ export function CreateTaskModal({
       return;
     }
 
+    if (newTaskType === "quantitative") {
+      const invalidIncrementalSubtask = draftSubtasks.find((subtask) => {
+        if (!subtask.isIncremental) return false;
+        if (!String(subtask.incrementIndicator || "").trim()) return true;
+        if (Number(subtask.incrementTarget || 0) <= 0) return true;
+        if (subtask.incrementMode === "rate_card" && !subtask.incrementRateCardId) return true;
+        if (subtask.incrementMode === "rate_card" && subtask.incrementFilterByAssignee && !subtask.incrementAssigneeId) return true;
+        if (subtask.incrementMode === "rate_card" && subtask.incrementFilterByDate) {
+          if (!subtask.incrementStartDate || !subtask.incrementEndDate) return true;
+          return new Date(`${subtask.incrementStartDate}T00:00:00`).getTime() > new Date(`${subtask.incrementEndDate}T23:59:59`).getTime();
+        }
+        return false;
+      });
+
+      if (invalidIncrementalSubtask) {
+        toast.warning("Revisa la configuración incremental de cada subtarea: indicador, meta, Rate Card y filtros.");
+        return;
+      }
+    }
+
     if (newTaskType === "quantitative" && Number(newTaskIndicatorValue) <= 0) {
       toast.warning("Define una meta mayor a cero para la tarea cuantitativa.");
       return;
@@ -743,9 +783,20 @@ export function CreateTaskModal({
       ) => {
         draftSubtasks.forEach((subtask, index) => {
           const parentIsIncremental = newTaskType === "quantitative";
-          const inheritedIncrementalRateBinding = parentIsIncremental && incrementalRateBinding
+          const subtaskIsIncremental = parentIsIncremental && Boolean(subtask.isIncremental);
+          const subtaskIncrementalRateBinding = subtaskIsIncremental && subtask.incrementMode === "rate_card" && subtask.incrementRateCardId
             ? {
-                ...incrementalRateBinding,
+                enabled: true,
+                rateCardId: subtask.incrementRateCardId,
+                assigneeMode: subtask.incrementFilterByAssignee ? "fixed" : "any",
+                assignedTo: subtask.incrementFilterByAssignee ? subtask.incrementAssigneeId || null : null,
+                dateMode: subtask.incrementFilterByDate ? "range" : "any",
+                startDate: subtask.incrementFilterByDate && subtask.incrementStartDate
+                  ? new Date(`${subtask.incrementStartDate}T00:00:00`)
+                  : null,
+                endDate: subtask.incrementFilterByDate && subtask.incrementEndDate
+                  ? new Date(`${subtask.incrementEndDate}T23:59:59`)
+                  : null,
                 activatedAt: new Date(),
               }
             : null;
@@ -769,41 +820,32 @@ export function CreateTaskModal({
             start: subtaskStartDate,
             end: subtaskEndDate,
             assignedTo: subtask.assignedTo || newTaskAssignedTo,
-            indicator: parentIsIncremental ? newTaskIndicator || null : null,
-            indicatorValue: parentIsIncremental ? Number(newTaskIndicatorValue || 0) : null,
+            indicator: subtaskIsIncremental ? subtask.incrementIndicator || newTaskIndicator || "avance" : null,
+            indicatorValue: subtaskIsIncremental ? Number(subtask.incrementTarget || 0) : null,
             status: childStatus,
-            progress: parentIsIncremental ? 0 : childStatus === "completed" ? 100 : 0,
-            type: parentIsIncremental ? "quantitative" : "state",
+            progress: subtaskIsIncremental ? 0 : childStatus === "completed" ? 100 : 0,
+            type: subtaskIsIncremental ? "quantitative" : "state",
             requiresDocument: false,
             linkedDocumentId: null,
-            isRateCardTask: parentIsIncremental ? newTaskIsRateCard : false,
-            rateCardMode: parentIsIncremental && newTaskIsRateCard ? newTaskRateCardMode : null,
-            dynamicRateCard: parentIsIncremental ? usesDynamicRateCard : false,
-            dynamicRateCardConfig: parentIsIncremental && usesDynamicRateCard
-              ? {
-                  defaultUnits: normalizeRateCardUnits(newTaskUnitsToAdd),
-                  requirePerson: true,
-                  requireRateCard: true,
-                  promptForUnits: !newTaskDynamicAutoAddUnits,
-                }
-              : null,
+            isRateCardTask: false,
+            rateCardMode: null,
+            dynamicRateCard: false,
+            dynamicRateCardConfig: null,
             completionForm: subtask.completionForm || null,
             completionFormData: null,
             completionRateCardLastCharges: [],
-            rateCardId: parentIsIncremental && usesStaticRateCard ? newTaskRateCardId : null,
-            unitsToAdd: parentIsIncremental && newTaskIsRateCard ? Number(newTaskUnitsToAdd) : null,
-            autoAddUnits: parentIsIncremental && usesDynamicRateCard ? newTaskDynamicAutoAddUnits : true,
-            syncExternal: parentIsIncremental && usesStaticRateCard
-              ? rateCards.find((rc) => rc.id === newTaskRateCardId)?.syncExternal || false
-              : false,
+            rateCardId: null,
+            unitsToAdd: null,
+            autoAddUnits: true,
+            syncExternal: false,
             priority: subtask.priority,
             groupId: newTaskGroupId || null,
             currentValue: 0,
-            incrementForm: parentIsIncremental ? incrementForm || null : null,
-            incrementalRateBinding: inheritedIncrementalRateBinding,
-            incrementSource: parentIsIncremental ? (inheritedIncrementalRateBinding ? "rate_card" : "manual") : null,
-            incrementHistory: parentIsIncremental ? [] : null,
-            incrementDelegatedFromParentTaskId: parentIsIncremental ? parentTaskId : null,
+            incrementForm: null,
+            incrementalRateBinding: subtaskIncrementalRateBinding,
+            incrementSource: subtaskIsIncremental ? (subtaskIncrementalRateBinding ? "rate_card" : "manual") : null,
+            incrementHistory: subtaskIsIncremental ? [] : null,
+            incrementDelegatedFromParentTaskId: subtaskIsIncremental ? parentTaskId : null,
             parentTaskId,
             displayOrder: displayOrderOffset + index,
             createdAt: serverTimestamp(),
@@ -1914,6 +1956,10 @@ export function CreateTaskModal({
                         startDate: newTaskStart,
                         endDate: newTaskEnd,
                         priority: newTaskPriority,
+                        isIncremental: newTaskType === "quantitative",
+                        incrementIndicator: newTaskType === "quantitative" ? newTaskIndicator || "avance" : "",
+                        incrementTarget: newTaskType === "quantitative" ? Number(newTaskIndicatorValue || 1) : 1,
+                        incrementMode: "manual",
                       }),
                     ])
                   }
@@ -2056,6 +2102,161 @@ export function CreateTaskModal({
                           className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs"
                         />
                       </div>
+
+                      {newTaskType === "quantitative" && (
+                        <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3 space-y-3">
+                          <label className="flex items-center justify-between gap-3 text-xs font-bold text-emerald-800">
+                            <span className="flex items-center gap-2">
+                              <CreditCard size={14} />
+                              Incremento individual de esta subtarea
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(subtask.isIncremental)}
+                              onChange={(e) => {
+                                const next = [...draftSubtasks];
+                                next[index] = { ...subtask, isIncremental: e.target.checked };
+                                setDraftSubtasks(next);
+                              }}
+                              className="h-4 w-4 rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                            />
+                          </label>
+
+                          {subtask.isIncremental && (
+                            <div className="space-y-3">
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                <input
+                                  type="text"
+                                  value={subtask.incrementIndicator || ""}
+                                  onChange={(e) => {
+                                    const next = [...draftSubtasks];
+                                    next[index] = { ...subtask, incrementIndicator: e.target.value };
+                                    setDraftSubtasks(next);
+                                  }}
+                                  className="h-9 px-3 rounded-lg border border-emerald-100 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                                  placeholder="Indicador ej. Predios"
+                                />
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  value={subtask.incrementTarget ?? 1}
+                                  onChange={(e) => {
+                                    const next = [...draftSubtasks];
+                                    next[index] = { ...subtask, incrementTarget: Number(e.target.value) };
+                                    setDraftSubtasks(next);
+                                  }}
+                                  className="h-9 px-3 rounded-lg border border-emerald-100 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                                  placeholder="Meta"
+                                />
+                                <select
+                                  value={subtask.incrementMode || "manual"}
+                                  onChange={(e) => {
+                                    const next = [...draftSubtasks];
+                                    next[index] = { ...subtask, incrementMode: e.target.value as "manual" | "rate_card" };
+                                    setDraftSubtasks(next);
+                                  }}
+                                  className="h-9 px-3 rounded-lg border border-emerald-100 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                                >
+                                  <option value="manual">Incremento manual</option>
+                                  <option value="rate_card">Auto por Rate Card</option>
+                                </select>
+                              </div>
+
+                              {subtask.incrementMode === "rate_card" && (
+                                <div className="space-y-2 rounded-lg border border-emerald-100 bg-white p-3">
+                                  <select
+                                    value={subtask.incrementRateCardId || ""}
+                                    onChange={(e) => {
+                                      const next = [...draftSubtasks];
+                                      next[index] = { ...subtask, incrementRateCardId: e.target.value };
+                                      setDraftSubtasks(next);
+                                    }}
+                                    className="h-9 w-full px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                                  >
+                                    <option value="">Selecciona Rate Card</option>
+                                    {rateCards.map((rateCard) => (
+                                      <option key={rateCard.id} value={rateCard.id}>
+                                        {rateCard.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                    <label className="flex items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(subtask.incrementFilterByAssignee)}
+                                        onChange={(e) => {
+                                          const next = [...draftSubtasks];
+                                          next[index] = { ...subtask, incrementFilterByAssignee: e.target.checked };
+                                          setDraftSubtasks(next);
+                                        }}
+                                        className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                      />
+                                      Filtrar por persona
+                                    </label>
+                                    <label className="flex items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(subtask.incrementFilterByDate)}
+                                        onChange={(e) => {
+                                          const next = [...draftSubtasks];
+                                          next[index] = { ...subtask, incrementFilterByDate: e.target.checked };
+                                          setDraftSubtasks(next);
+                                        }}
+                                        className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                      />
+                                      Filtrar por fechas
+                                    </label>
+                                  </div>
+                                  {subtask.incrementFilterByAssignee && (
+                                    <select
+                                      value={subtask.incrementAssigneeId || ""}
+                                      onChange={(e) => {
+                                        const next = [...draftSubtasks];
+                                        next[index] = { ...subtask, incrementAssigneeId: e.target.value };
+                                        setDraftSubtasks(next);
+                                      }}
+                                      className="h-9 w-full px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                                    >
+                                      <option value="">Selecciona persona</option>
+                                      {teamMembers.map((member) => (
+                                        <option key={member.id} value={member.id}>
+                                          {member.name || member.email}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                  {subtask.incrementFilterByDate && (
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <input
+                                        type="date"
+                                        value={subtask.incrementStartDate || ""}
+                                        onChange={(e) => {
+                                          const next = [...draftSubtasks];
+                                          next[index] = { ...subtask, incrementStartDate: e.target.value };
+                                          setDraftSubtasks(next);
+                                        }}
+                                        className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                                      />
+                                      <input
+                                        type="date"
+                                        value={subtask.incrementEndDate || ""}
+                                        onChange={(e) => {
+                                          const next = [...draftSubtasks];
+                                          next[index] = { ...subtask, incrementEndDate: e.target.value };
+                                          setDraftSubtasks(next);
+                                        }}
+                                        className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       <div className={`rounded-lg border px-3 py-2 text-[11px] ${
                         subtask.completionForm

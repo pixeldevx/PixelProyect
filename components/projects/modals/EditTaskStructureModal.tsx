@@ -48,6 +48,16 @@ type SubtaskDraft = {
   startDate: string;
   endDate: string;
   completionForm?: CustomForm;
+  isIncremental?: boolean;
+  incrementIndicator?: string;
+  incrementTarget?: number;
+  incrementMode?: "manual" | "rate_card";
+  incrementRateCardId?: string;
+  incrementFilterByAssignee?: boolean;
+  incrementAssigneeId?: string;
+  incrementFilterByDate?: boolean;
+  incrementStartDate?: string;
+  incrementEndDate?: string;
 };
 
 interface EditTaskStructureModalProps {
@@ -68,6 +78,10 @@ interface EditTaskStructureModalProps {
   onUpdateSubtaskCompletionForm?: (subtask: any, form: CustomForm | undefined) => Promise<void> | void;
   onSave: (updates: {
     title: string;
+    quantitative?: {
+      indicator: string;
+      indicatorValue: number;
+    };
     workflowSteps?: WorkflowStepDraft[];
     rateCard?: {
       isRateCardTask: boolean;
@@ -233,6 +247,8 @@ export function EditTaskStructureModal({
   const [taskRateCardId, setTaskRateCardId] = useState("");
   const [taskUnitsToAdd, setTaskUnitsToAdd] = useState<number>(1);
   const [taskAutoAddUnits, setTaskAutoAddUnits] = useState(true);
+  const [taskIndicator, setTaskIndicator] = useState("");
+  const [taskIndicatorValue, setTaskIndicatorValue] = useState<number>(1);
   const [incrementRateBindingEnabled, setIncrementRateBindingEnabled] = useState(false);
   const [incrementRateCardId, setIncrementRateCardId] = useState("");
   const [incrementRateFilterByAssignee, setIncrementRateFilterByAssignee] = useState(false);
@@ -246,11 +262,15 @@ export function EditTaskStructureModal({
   const canManageSubtasks = Boolean(
     (task?.type === "state" || task?.type === "quantitative") && !task?.parentTaskId && onCreateSubtask
   );
+  const hasDirectSubtasks = subtasks.length > 0;
+  const canConfigureTaskIncrementRate = Boolean(task?.type === "quantitative" && !hasDirectSubtasks);
 
   useEffect(() => {
     if (!isOpen || !task) return;
     setTitle(getTaskTitle(task));
     setWorkflowSteps(toDraftSteps(task.workflowSteps || []));
+    setTaskIndicator(task.indicator || "avance");
+    setTaskIndicatorValue(Number(task.indicatorValue || 1));
     setSubtaskDraft({
       title: "",
       description: "",
@@ -260,6 +280,16 @@ export function EditTaskStructureModal({
       startDate: toDateInputValue(task.startDate),
       endDate: toDateInputValue(task.endDate),
       completionForm: undefined,
+      isIncremental: task.type === "quantitative",
+      incrementIndicator: task.type === "quantitative" ? task.indicator || "avance" : "",
+      incrementTarget: task.type === "quantitative" ? Number(task.indicatorValue || 1) : 1,
+      incrementMode: "manual",
+      incrementRateCardId: "",
+      incrementFilterByAssignee: false,
+      incrementAssigneeId: "",
+      incrementFilterByDate: false,
+      incrementStartDate: "",
+      incrementEndDate: "",
     });
     setSubtaskFormTarget(null);
     setIsUpdatingSubtaskForm(false);
@@ -453,6 +483,16 @@ export function EditTaskStructureModal({
       startDate: toDateInputValue(task.startDate),
       endDate: toDateInputValue(task.endDate),
       completionForm: undefined,
+      isIncremental: task.type === "quantitative",
+      incrementIndicator: task.type === "quantitative" ? task.indicator || "avance" : "",
+      incrementTarget: task.type === "quantitative" ? Number(task.indicatorValue || 1) : 1,
+      incrementMode: "manual",
+      incrementRateCardId: "",
+      incrementFilterByAssignee: false,
+      incrementAssigneeId: "",
+      incrementFilterByDate: false,
+      incrementStartDate: "",
+      incrementEndDate: "",
     });
   };
 
@@ -494,6 +534,40 @@ export function EditTaskStructureModal({
     if (!subtaskDraft.startDate || !subtaskDraft.endDate) {
       toast.warning("Define fecha de inicio y fin para la subtarea.");
       return;
+    }
+
+    if (task.type === "quantitative" && subtaskDraft.isIncremental) {
+      if (!String(subtaskDraft.incrementIndicator || "").trim()) {
+        toast.warning("Define la unidad o indicador incremental de la subtarea.");
+        return;
+      }
+
+      if (Number(subtaskDraft.incrementTarget || 0) <= 0) {
+        toast.warning("Define una meta incremental mayor a cero para la subtarea.");
+        return;
+      }
+
+      if (subtaskDraft.incrementMode === "rate_card" && !subtaskDraft.incrementRateCardId) {
+        toast.warning("Selecciona el Rate Card que incrementará esta subtarea.");
+        return;
+      }
+
+      if (subtaskDraft.incrementMode === "rate_card" && subtaskDraft.incrementFilterByAssignee && !subtaskDraft.incrementAssigneeId) {
+        toast.warning("Selecciona la persona que debe generar el Rate Card de esta subtarea.");
+        return;
+      }
+
+      if (subtaskDraft.incrementMode === "rate_card" && subtaskDraft.incrementFilterByDate) {
+        if (!subtaskDraft.incrementStartDate || !subtaskDraft.incrementEndDate) {
+          toast.warning("Define el rango de fechas del Rate Card incremental de esta subtarea.");
+          return;
+        }
+
+        if (new Date(`${subtaskDraft.incrementStartDate}T00:00:00`).getTime() > new Date(`${subtaskDraft.incrementEndDate}T23:59:59`).getTime()) {
+          toast.warning("La fecha inicial del filtro incremental no puede ser posterior a la fecha final.");
+          return;
+        }
+      }
     }
 
     setIsCreatingSubtask(true);
@@ -592,7 +666,7 @@ export function EditTaskStructureModal({
   };
 
   const getCleanIncrementalRateBinding = (): IncrementalRateBinding | null => {
-    if (task?.type !== "quantitative" || !incrementRateBindingEnabled) return null;
+    if (!canConfigureTaskIncrementRate || !incrementRateBindingEnabled) return null;
 
     return {
       enabled: true,
@@ -794,17 +868,29 @@ export function EditTaskStructureModal({
       return;
     }
 
-    if (task?.type === "quantitative" && incrementRateBindingEnabled && !incrementRateCardId) {
+    if (task?.type === "quantitative") {
+      if (!taskIndicator.trim()) {
+        toast.warning("Define la unidad o indicador incremental de esta tarea.");
+        return;
+      }
+
+      if (Number(taskIndicatorValue || 0) <= 0) {
+        toast.warning("Define una meta incremental mayor a cero para esta tarea.");
+        return;
+      }
+    }
+
+    if (canConfigureTaskIncrementRate && incrementRateBindingEnabled && !incrementRateCardId) {
       toast.warning("Selecciona el Rate Card que gobernará el avance incremental.");
       return;
     }
 
-    if (task?.type === "quantitative" && incrementRateBindingEnabled && incrementRateFilterByAssignee && !incrementRateAssigneeId) {
+    if (canConfigureTaskIncrementRate && incrementRateBindingEnabled && incrementRateFilterByAssignee && !incrementRateAssigneeId) {
       toast.warning("Selecciona la persona que debe generar el Rate Card para contar el avance.");
       return;
     }
 
-    if (task?.type === "quantitative" && incrementRateBindingEnabled && incrementRateFilterByDate) {
+    if (canConfigureTaskIncrementRate && incrementRateBindingEnabled && incrementRateFilterByDate) {
       if (!incrementRateStartDate || !incrementRateEndDate) {
         toast.warning("Define fecha inicial y final para el filtro del Rate Card incremental.");
         return;
@@ -820,6 +906,12 @@ export function EditTaskStructureModal({
     try {
       await onSave({
         title: cleanTitle,
+        quantitative: task?.type === "quantitative"
+          ? {
+              indicator: taskIndicator.trim(),
+              indicatorValue: Number(taskIndicatorValue),
+            }
+          : undefined,
         workflowSteps: canEditWorkflow
           ? getCleanWorkflowSteps()
           : undefined,
@@ -885,6 +977,52 @@ export function EditTaskStructureModal({
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Tarea</p>
               <p className="mt-1 text-sm font-semibold text-slate-800">{getTaskTitle(task)}</p>
+            </div>
+          )}
+
+          {canEditTaskStructure && task?.type === "quantitative" && (
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-4">
+              <div className="flex items-start gap-2">
+                <div className="mt-0.5 rounded-lg bg-white p-1.5 text-emerald-600 shadow-sm">
+                  <ClipboardList size={15} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-800">Meta incremental de esta tarea</h3>
+                  <p className="text-xs text-slate-500">
+                    {hasDirectSubtasks
+                      ? "La matriz se completará desde sus subtareas. Cada subtarea puede tener su propia meta y filtros."
+                      : "Ajusta la unidad de avance y la meta que debe alcanzar esta tarea."}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_140px]">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                    Indicador
+                  </label>
+                  <input
+                    type="text"
+                    value={taskIndicator}
+                    onChange={(event) => setTaskIndicator(event.target.value)}
+                    className="h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    placeholder="Ej. predios, revisiones, unidades"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                    Meta
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={taskIndicatorValue}
+                    onChange={(event) => setTaskIndicatorValue(Number(event.target.value))}
+                    className="h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    placeholder="Meta"
+                  />
+                </div>
+              </div>
             </div>
           )}
 
@@ -977,7 +1115,7 @@ export function EditTaskStructureModal({
             </div>
           )}
 
-          {canEditTaskStructure && task?.type === "quantitative" && (
+          {canEditTaskStructure && canConfigureTaskIncrementRate && (
             <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex items-start gap-2">
@@ -1545,6 +1683,11 @@ export function EditTaskStructureModal({
                           <p className="text-[11px] text-slate-500">
                             {assignee?.name || "Sin responsable"} · {getStatusLabel(subtask.status)}
                           </p>
+                          {subtask.type === "quantitative" && (
+                            <p className="mt-1 truncate text-[10px] font-semibold text-emerald-600">
+                              Incremental · meta {Number(subtask.indicatorValue || 0)} {subtask.indicator || "unidades"} · {getIncrementalRateBinding(subtask) ? "Rate Card" : "Manual"}
+                            </p>
+                          )}
                           <p className={`mt-1 truncate text-[10px] font-semibold ${
                             subtask.completionForm ? "text-indigo-600" : "text-slate-400"
                           }`}>
@@ -1581,8 +1724,10 @@ export function EditTaskStructureModal({
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h4 className="text-sm font-semibold text-slate-800">Nueva subtarea</h4>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Se guardará como tarea por estado dependiente de esta tarea.
+                  <p className="text-xs text-slate-500 mt-0.5">
+                      {task.type === "quantitative"
+                        ? "Puede tener su propia meta incremental y su propio Rate Card."
+                        : "Se guardará como tarea por estado dependiente de esta tarea."}
                     </p>
                   </div>
                   <button
@@ -1664,6 +1809,121 @@ export function EditTaskStructureModal({
                     />
                   </div>
                 </div>
+
+                {task.type === "quantitative" && (
+                  <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3 space-y-3">
+                    <label className="flex items-center justify-between gap-3 text-xs font-bold text-emerald-800">
+                      <span className="flex items-center gap-2">
+                        <CreditCard size={14} />
+                        Incremento individual de esta subtarea
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(subtaskDraft.isIncremental)}
+                        onChange={(event) => updateSubtaskDraft({ isIncremental: event.target.checked })}
+                        className="h-4 w-4 rounded border-emerald-200 text-emerald-600 focus:ring-emerald-500"
+                      />
+                    </label>
+
+                    {subtaskDraft.isIncremental && (
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                          <input
+                            type="text"
+                            value={subtaskDraft.incrementIndicator || ""}
+                            onChange={(event) => updateSubtaskDraft({ incrementIndicator: event.target.value })}
+                            className="h-9 px-3 rounded-lg border border-emerald-100 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                            placeholder="Indicador ej. Predios"
+                          />
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={subtaskDraft.incrementTarget ?? 1}
+                            onChange={(event) => updateSubtaskDraft({ incrementTarget: Number(event.target.value) })}
+                            className="h-9 px-3 rounded-lg border border-emerald-100 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                            placeholder="Meta"
+                          />
+                          <select
+                            value={subtaskDraft.incrementMode || "manual"}
+                            onChange={(event) => updateSubtaskDraft({ incrementMode: event.target.value as "manual" | "rate_card" })}
+                            className="h-9 px-3 rounded-lg border border-emerald-100 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                          >
+                            <option value="manual">Incremento manual</option>
+                            <option value="rate_card">Auto por Rate Card</option>
+                          </select>
+                        </div>
+
+                        {subtaskDraft.incrementMode === "rate_card" && (
+                          <div className="space-y-2 rounded-lg border border-emerald-100 bg-white p-3">
+                            <select
+                              value={subtaskDraft.incrementRateCardId || ""}
+                              onChange={(event) => updateSubtaskDraft({ incrementRateCardId: event.target.value })}
+                              className="h-9 w-full px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                            >
+                              <option value="">Selecciona Rate Card</option>
+                              {rateCards.map((rateCard) => (
+                                <option key={rateCard.id} value={rateCard.id}>
+                                  {rateCard.name}
+                                </option>
+                              ))}
+                            </select>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              <label className="flex items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(subtaskDraft.incrementFilterByAssignee)}
+                                  onChange={(event) => updateSubtaskDraft({ incrementFilterByAssignee: event.target.checked })}
+                                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                />
+                                Filtrar por persona
+                              </label>
+                              <label className="flex items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(subtaskDraft.incrementFilterByDate)}
+                                  onChange={(event) => updateSubtaskDraft({ incrementFilterByDate: event.target.checked })}
+                                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                />
+                                Filtrar por fechas
+                              </label>
+                            </div>
+                            {subtaskDraft.incrementFilterByAssignee && (
+                              <select
+                                value={subtaskDraft.incrementAssigneeId || ""}
+                                onChange={(event) => updateSubtaskDraft({ incrementAssigneeId: event.target.value })}
+                                className="h-9 w-full px-3 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                              >
+                                <option value="">Selecciona persona</option>
+                                {teamMembers.map((member) => (
+                                  <option key={member.id} value={member.id}>
+                                    {member.name || member.email}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            {subtaskDraft.incrementFilterByDate && (
+                              <div className="grid grid-cols-2 gap-2">
+                                <input
+                                  type="date"
+                                  value={subtaskDraft.incrementStartDate || ""}
+                                  onChange={(event) => updateSubtaskDraft({ incrementStartDate: event.target.value })}
+                                  className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                                />
+                                <input
+                                  type="date"
+                                  value={subtaskDraft.incrementEndDate || ""}
+                                  onChange={(event) => updateSubtaskDraft({ incrementEndDate: event.target.value })}
+                                  className="h-9 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-xs"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className={`rounded-lg border px-3 py-2 text-[11px] font-semibold ${
                   subtaskDraft.completionForm
