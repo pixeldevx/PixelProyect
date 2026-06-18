@@ -263,14 +263,15 @@ export function EditTaskStructureModal({
     (task?.type === "state" || task?.type === "quantitative") && !task?.parentTaskId && onCreateSubtask
   );
   const hasDirectSubtasks = subtasks.length > 0;
+  const taskDelegatesIncrementToSubtasks = Boolean(task?.type === "quantitative" && hasDirectSubtasks);
   const canConfigureTaskIncrementRate = Boolean(task?.type === "quantitative" && !hasDirectSubtasks);
 
   useEffect(() => {
     if (!isOpen || !task) return;
     setTitle(getTaskTitle(task));
     setWorkflowSteps(toDraftSteps(task.workflowSteps || []));
-    setTaskIndicator(task.indicator || "avance");
-    setTaskIndicatorValue(Number(task.indicatorValue || 1));
+    setTaskIndicator(task.type === "quantitative" && hasDirectSubtasks ? "avance subtareas" : task.indicator || "avance");
+    setTaskIndicatorValue(task.type === "quantitative" && hasDirectSubtasks ? 100 : Number(task.indicatorValue || 1));
     setSubtaskDraft({
       title: "",
       description: "",
@@ -313,7 +314,7 @@ export function EditTaskStructureModal({
     setIncrementRateFilterByDate(incrementalBinding?.dateMode === "range");
     setIncrementRateStartDate(toDateInputValue(incrementalBinding?.startDate));
     setIncrementRateEndDate(toDateInputValue(incrementalBinding?.endDate));
-  }, [isOpen, task]);
+  }, [isOpen, task, hasDirectSubtasks]);
 
   useEffect(() => {
     if (!isOpen || !projectId) return;
@@ -625,7 +626,7 @@ export function EditTaskStructureModal({
     });
 
   const getCleanTaskRateCard = () => {
-    if (!taskRateCardEnabled) {
+    if (taskDelegatesIncrementToSubtasks || !taskRateCardEnabled) {
       return {
         isRateCardTask: false,
         rateCardMode: null,
@@ -858,17 +859,17 @@ export function EditTaskStructureModal({
       if (!validateWorkflowSteps()) return;
     }
 
-    if (taskRateCardEnabled && taskRateCardMode === "static" && !taskRateCardId) {
+    if (!taskDelegatesIncrementToSubtasks && taskRateCardEnabled && taskRateCardMode === "static" && !taskRateCardId) {
       toast.warning("Selecciona el Rate Card fijo de la tarea.");
       return;
     }
 
-    if (taskRateCardEnabled && isInvalidRateCardUnits(taskUnitsToAdd)) {
+    if (!taskDelegatesIncrementToSubtasks && taskRateCardEnabled && isInvalidRateCardUnits(taskUnitsToAdd)) {
       toast.warning("Define unidades de Rate Card en cero o mayores para la tarea.");
       return;
     }
 
-    if (task?.type === "quantitative") {
+    if (task?.type === "quantitative" && !taskDelegatesIncrementToSubtasks) {
       if (!taskIndicator.trim()) {
         toast.warning("Define la unidad o indicador incremental de esta tarea.");
         return;
@@ -907,10 +908,15 @@ export function EditTaskStructureModal({
       await onSave({
         title: cleanTitle,
         quantitative: task?.type === "quantitative"
-          ? {
-              indicator: taskIndicator.trim(),
-              indicatorValue: Number(taskIndicatorValue),
-            }
+          ? taskDelegatesIncrementToSubtasks
+            ? {
+                indicator: "avance subtareas",
+                indicatorValue: 100,
+              }
+            : {
+                indicator: taskIndicator.trim(),
+                indicatorValue: Number(taskIndicatorValue),
+              }
           : undefined,
         workflowSteps: canEditWorkflow
           ? getCleanWorkflowSteps()
@@ -1002,9 +1008,10 @@ export function EditTaskStructureModal({
                   </label>
                   <input
                     type="text"
-                    value={taskIndicator}
+                    value={taskDelegatesIncrementToSubtasks ? "avance subtareas" : taskIndicator}
                     onChange={(event) => setTaskIndicator(event.target.value)}
-                    className="h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    disabled={taskDelegatesIncrementToSubtasks}
+                    className="h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 disabled:cursor-not-allowed disabled:bg-emerald-50 disabled:text-emerald-700"
                     placeholder="Ej. predios, revisiones, unidades"
                   />
                 </div>
@@ -1016,17 +1023,39 @@ export function EditTaskStructureModal({
                     type="number"
                     min="0"
                     step="any"
-                    value={taskIndicatorValue}
+                    value={taskDelegatesIncrementToSubtasks ? 100 : taskIndicatorValue}
                     onChange={(event) => setTaskIndicatorValue(Number(event.target.value))}
-                    className="h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    disabled={taskDelegatesIncrementToSubtasks}
+                    className="h-10 w-full rounded-lg border border-emerald-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 disabled:cursor-not-allowed disabled:bg-emerald-50 disabled:text-emerald-700"
                     placeholder="Meta"
                   />
+                </div>
+              </div>
+              {taskDelegatesIncrementToSubtasks && (
+                <div className="mt-3 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-medium text-emerald-700">
+                  La tarea madre no tiene una meta directa: su 100% se calcula con la completitud promedio de sus subtareas incrementales.
+                </div>
+              )}
+            </div>
+          )}
+
+          {canEditTaskStructure && taskDelegatesIncrementToSubtasks && (
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4">
+              <div className="flex items-start gap-2">
+                <div className="mt-0.5 rounded-lg bg-white p-1.5 text-indigo-600 shadow-sm">
+                  <CreditCard size={15} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-800">Rate Cards en subtareas</h3>
+                  <p className="text-xs text-slate-500">
+                    Esta matriz consolida el avance de sus subtareas. Configura Rate Cards, metas y filtros en cada subtarea incremental.
+                  </p>
                 </div>
               </div>
             </div>
           )}
 
-          {canEditTaskStructure && (
+          {canEditTaskStructure && !taskDelegatesIncrementToSubtasks && (
             <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-2">

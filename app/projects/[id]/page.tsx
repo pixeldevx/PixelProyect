@@ -764,7 +764,7 @@ export default function ProjectDetailsPage() {
   };
 
   const handleUpdateTaskValue = async (taskId: string, newValue: number, task: any) => {
-    if (!task || !task.indicatorValue) return;
+    if (!task) return;
     if (!canEditTaskDetails) {
       toast.error('No tienes permisos para editar los detalles de tareas.');
       return;
@@ -776,6 +776,7 @@ export default function ProjectDetailsPage() {
       toast.info('Esta tarea incremental delega su avance en sus subtareas. Actualiza las subtareas para completar la matriz.');
       return;
     }
+    if (!task.indicatorValue) return;
     if (isRateDrivenIncrementalTask(task)) {
       toast.info('Esta tarea incremental se actualiza únicamente con el Rate Card configurado.');
       await syncRateDrivenTasksForRateIds([getIncrementalRateBinding(task)?.rateCardId]);
@@ -859,16 +860,18 @@ export default function ProjectDetailsPage() {
       return;
     }
 
-    if (!task || !task.indicatorValue) {
-      toast.warning('Esta tarea no tiene una meta válida configurada.');
-      return;
-    }
+    if (!task) return;
 
     const delegatesIncrementToSubtasks =
       task.type === 'quantitative' &&
       (task.incrementDelegatedToSubtasks || task.isParentTask || Number(task.totalSubtasks || 0) > 0);
     if (delegatesIncrementToSubtasks) {
       toast.info('Esta tarea incremental delega su avance en sus subtareas. Registra los incrementos en cada subtarea.');
+      return;
+    }
+
+    if (!task.indicatorValue) {
+      toast.warning('Esta tarea no tiene una meta válida configurada.');
       return;
     }
 
@@ -2431,6 +2434,16 @@ export default function ProjectDetailsPage() {
         isParentTask: true,
         totalSubtasks: currentSubtasks.length + 1,
         incrementDelegatedToSubtasks: parentIsIncremental ? true : Boolean(parentTask.incrementDelegatedToSubtasks),
+        ...(parentIsIncremental
+          ? {
+              indicator: 'avance subtareas',
+              indicatorValue: 100,
+              currentValue: Number(parentTask.progress || 0),
+              incrementSource: 'subtasks',
+              incrementalRateBinding: null,
+              incrementForm: null,
+            }
+          : {}),
         updatedAt: serverTimestamp(),
       });
 
@@ -2507,6 +2520,7 @@ export default function ProjectDetailsPage() {
         const currentTask = tasks.find((candidate) => candidate.id === taskId);
         if (!currentTask) return;
         const isWorkflowIteration = Boolean(currentTask.externalWorkflowId);
+        const isEditedIncrementalParent = currentTask.id === task.id && hasIncrementalSubtasks;
 
         const updateData: any = {
           title: isWorkflowIteration ? currentTask.externalWorkflowId : cleanTitle,
@@ -2542,14 +2556,21 @@ export default function ProjectDetailsPage() {
         }
 
         if (updates.quantitative && currentTask.id === task.id) {
-          updateData.indicator = updates.quantitative.indicator;
-          updateData.indicatorValue = Number(updates.quantitative.indicatorValue);
+          updateData.indicator = isEditedIncrementalParent ? 'avance subtareas' : updates.quantitative.indicator;
+          updateData.indicatorValue = isEditedIncrementalParent ? 100 : Number(updates.quantitative.indicatorValue);
+          if (isEditedIncrementalParent) {
+            updateData.currentValue = Number(currentTask.progress || 0);
+          }
         }
 
-        updateData.incrementalRateBinding = updates.incrementalRateBinding || null;
-        updateData.incrementSource = updates.incrementalRateBinding ? 'rate_card' : 'manual';
-        if (currentTask.id === task.id && hasIncrementalSubtasks) {
+        if (isEditedIncrementalParent) {
+          updateData.incrementalRateBinding = null;
+          updateData.incrementSource = 'subtasks';
           updateData.incrementDelegatedToSubtasks = true;
+          updateData.incrementForm = null;
+        } else {
+          updateData.incrementalRateBinding = updates.incrementalRateBinding || null;
+          updateData.incrementSource = updates.incrementalRateBinding ? 'rate_card' : 'manual';
         }
 
         batch.update(doc(db, 'projects', projectId, 'tasks', taskId), updateData);
@@ -2564,6 +2585,7 @@ export default function ProjectDetailsPage() {
       setTasks((currentTasks) =>
         currentTasks.map((currentTask) => {
           if (!dependentTaskIds.has(currentTask.id)) return currentTask;
+          const isEditedIncrementalParent = currentTask.id === task.id && hasIncrementalSubtasks;
 
           const updatedTask: any = {
             ...currentTask,
@@ -2600,14 +2622,21 @@ export default function ProjectDetailsPage() {
           }
 
           if (updates.quantitative && currentTask.id === task.id) {
-            updatedTask.indicator = updates.quantitative.indicator;
-            updatedTask.indicatorValue = Number(updates.quantitative.indicatorValue);
+            updatedTask.indicator = isEditedIncrementalParent ? 'avance subtareas' : updates.quantitative.indicator;
+            updatedTask.indicatorValue = isEditedIncrementalParent ? 100 : Number(updates.quantitative.indicatorValue);
+            if (isEditedIncrementalParent) {
+              updatedTask.currentValue = Number(currentTask.progress || 0);
+            }
           }
 
-          updatedTask.incrementalRateBinding = updates.incrementalRateBinding || null;
-          updatedTask.incrementSource = updatedTask.incrementalRateBinding ? 'rate_card' : 'manual';
-          if (currentTask.id === task.id && hasIncrementalSubtasks) {
+          if (isEditedIncrementalParent) {
+            updatedTask.incrementalRateBinding = null;
+            updatedTask.incrementSource = 'subtasks';
             updatedTask.incrementDelegatedToSubtasks = true;
+            updatedTask.incrementForm = null;
+          } else {
+            updatedTask.incrementalRateBinding = updates.incrementalRateBinding || null;
+            updatedTask.incrementSource = updatedTask.incrementalRateBinding ? 'rate_card' : 'manual';
           }
 
           return updatedTask;

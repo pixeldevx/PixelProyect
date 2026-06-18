@@ -228,6 +228,8 @@ export function CreateTaskModal({
   const [templateName, setTemplateName] = useState("");
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const templateScopeOrganizationKey = templateScopeOrganizationIds.join("|");
+  const quantitativeDelegatesToSubtasks =
+    newTaskType === "quantitative" && draftSubtasks.length > 0;
 
   React.useEffect(() => {
     if (isOpen) {
@@ -586,22 +588,22 @@ export function CreateTaskModal({
       }
     }
 
-    if (newTaskType === "quantitative" && Number(newTaskIndicatorValue) <= 0) {
+    if (newTaskType === "quantitative" && !quantitativeDelegatesToSubtasks && Number(newTaskIndicatorValue) <= 0) {
       toast.warning("Define una meta mayor a cero para la tarea cuantitativa.");
       return;
     }
 
-    if (newTaskType === "quantitative" && incrementRateBindingEnabled && !incrementRateCardId) {
+    if (newTaskType === "quantitative" && !quantitativeDelegatesToSubtasks && incrementRateBindingEnabled && !incrementRateCardId) {
       toast.warning("Selecciona el Rate Card que gobernará el avance incremental.");
       return;
     }
 
-    if (newTaskType === "quantitative" && incrementRateBindingEnabled && incrementRateFilterByAssignee && !incrementRateAssigneeId) {
+    if (newTaskType === "quantitative" && !quantitativeDelegatesToSubtasks && incrementRateBindingEnabled && incrementRateFilterByAssignee && !incrementRateAssigneeId) {
       toast.warning("Selecciona la persona que debe generar el Rate Card para contar el avance.");
       return;
     }
 
-    if (newTaskType === "quantitative" && incrementRateBindingEnabled && incrementRateFilterByDate) {
+    if (newTaskType === "quantitative" && !quantitativeDelegatesToSubtasks && incrementRateBindingEnabled && incrementRateFilterByDate) {
       if (!incrementRateStartDate || !incrementRateEndDate) {
         toast.warning("Define fecha inicial y final para el filtro del Rate Card incremental.");
         return;
@@ -639,12 +641,12 @@ export function CreateTaskModal({
       }
     }
 
-    if (newTaskIsRateCard && newTaskRateCardMode === "static" && !newTaskRateCardId) {
+    if (!quantitativeDelegatesToSubtasks && newTaskIsRateCard && newTaskRateCardMode === "static" && !newTaskRateCardId) {
       toast.warning("Selecciona el perfil de Rate Card que se va a afectar.");
       return;
     }
 
-    if (newTaskIsRateCard && isInvalidRateCardUnits(newTaskUnitsToAdd)) {
+    if (!quantitativeDelegatesToSubtasks && newTaskIsRateCard && isInvalidRateCardUnits(newTaskUnitsToAdd)) {
       toast.warning("Define unidades de Rate Card en cero o mayores.");
       return;
     }
@@ -672,11 +674,12 @@ export function CreateTaskModal({
         })
         .filter(Boolean);
       const usesStaticRateCard =
-        newTaskIsRateCard && newTaskRateCardMode === "static";
+        newTaskIsRateCard && newTaskRateCardMode === "static" && !quantitativeDelegatesToSubtasks;
       const usesDynamicRateCard =
-        newTaskIsRateCard && newTaskRateCardMode === "dynamic";
+        newTaskIsRateCard && newTaskRateCardMode === "dynamic" && !quantitativeDelegatesToSubtasks;
+      const taskUsesDirectRateCard = newTaskIsRateCard && !quantitativeDelegatesToSubtasks;
       const incrementalRateBinding =
-        newTaskType === "quantitative" && incrementRateBindingEnabled
+        newTaskType === "quantitative" && !quantitativeDelegatesToSubtasks && incrementRateBindingEnabled
           ? {
               enabled: true,
               rateCardId: incrementRateCardId,
@@ -697,9 +700,17 @@ export function CreateTaskModal({
         start: parentStartDate,
         end: parentEndDate,
         assignedTo: newTaskAssignedTo,
-        indicator: newTaskType === "quantitative" ? newTaskIndicator : null,
+        indicator: newTaskType === "quantitative"
+          ? quantitativeDelegatesToSubtasks
+            ? "avance subtareas"
+            : newTaskIndicator
+          : null,
         indicatorValue:
-          newTaskType === "quantitative" ? Number(newTaskIndicatorValue) : null,
+          newTaskType === "quantitative"
+            ? quantitativeDelegatesToSubtasks
+              ? 100
+              : Number(newTaskIndicatorValue)
+            : null,
         status: newTaskType === "state" ? "pending" : newTaskStatus,
         progress: newTaskType === "state" ? 0 : Number(newTaskProgress),
         type: newTaskType,
@@ -707,8 +718,8 @@ export function CreateTaskModal({
         assignedTeamMembers: newTaskType === "meeting" ? meetingParticipantIds : [],
         requiresDocument: newTaskRequiresDoc,
         linkedDocumentId: null,
-        isRateCardTask: newTaskIsRateCard,
-        rateCardMode: newTaskIsRateCard ? newTaskRateCardMode : null,
+        isRateCardTask: taskUsesDirectRateCard,
+        rateCardMode: taskUsesDirectRateCard ? newTaskRateCardMode : null,
         dynamicRateCard: usesDynamicRateCard,
         dynamicRateCardConfig: usesDynamicRateCard
           ? {
@@ -719,7 +730,7 @@ export function CreateTaskModal({
             }
           : null,
         rateCardId: usesStaticRateCard ? newTaskRateCardId : null,
-        unitsToAdd: newTaskIsRateCard ? Number(newTaskUnitsToAdd) : null,
+        unitsToAdd: taskUsesDirectRateCard ? Number(newTaskUnitsToAdd) : null,
         autoAddUnits: usesDynamicRateCard ? newTaskDynamicAutoAddUnits : true,
         syncExternal: usesStaticRateCard
           ? rateCards.find((rc) => rc.id === newTaskRateCardId)?.syncExternal ||
@@ -754,9 +765,13 @@ export function CreateTaskModal({
         groupId: newTaskGroupId || null,
         currentValue: 0,
         incrementForm:
-          newTaskType === "quantitative" ? incrementForm || null : null,
+          newTaskType === "quantitative" && !quantitativeDelegatesToSubtasks ? incrementForm || null : null,
         incrementalRateBinding,
-        incrementSource: incrementalRateBinding ? "rate_card" : "manual",
+        incrementSource: incrementalRateBinding
+          ? "rate_card"
+          : quantitativeDelegatesToSubtasks
+            ? "subtasks"
+            : "manual",
         incrementHistory: newTaskType === "quantitative" ? [] : null,
         displayOrder: tasksLength,
         createdAt: serverTimestamp(),
@@ -1775,9 +1790,10 @@ export function CreateTaskModal({
                     </label>
                     <input
                       type="text"
-                      value={newTaskIndicator}
+                      value={quantitativeDelegatesToSubtasks ? "Avance de subtareas" : newTaskIndicator}
                       onChange={(e) => setNewTaskIndicator(e.target.value)}
-                      className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                      disabled={quantitativeDelegatesToSubtasks}
+                      className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm disabled:cursor-not-allowed disabled:bg-emerald-50 disabled:text-emerald-700"
                       placeholder="Ej. Horas"
                     />
                   </div>
@@ -1787,15 +1803,25 @@ export function CreateTaskModal({
                     </label>
                     <input
                       type="number"
-                      value={newTaskIndicatorValue}
+                      value={quantitativeDelegatesToSubtasks ? 100 : newTaskIndicatorValue}
                       onChange={(e) =>
                         setNewTaskIndicatorValue(Number(e.target.value))
                       }
-                      className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
+                      disabled={quantitativeDelegatesToSubtasks}
+                      className="w-full h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm disabled:cursor-not-allowed disabled:bg-emerald-50 disabled:text-emerald-700"
                     />
                   </div>
                 </div>
 
+                {quantitativeDelegatesToSubtasks ? (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                    <p className="font-bold uppercase tracking-wider text-xs">Matriz incremental por subtareas</p>
+                    <p className="mt-1 text-xs leading-relaxed">
+                      La tarea madre no tendrá meta propia ni Rate Card directo. Su avance se calculará con el porcentaje promedio de las subtareas incrementales, y cada subtarea tendrá su propia meta, filtro y motor de incremento.
+                    </p>
+                  </div>
+                ) : (
+                  <>
                 <div className="rounded-xl border border-dashed border-indigo-200 bg-white p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
@@ -1931,6 +1957,8 @@ export function CreateTaskModal({
                     </div>
                   )}
                 </div>
+                  </>
+                )}
               </div>
             )}
 
