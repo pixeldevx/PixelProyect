@@ -11,6 +11,7 @@ import {
   FormRateCardItem,
   WorkflowStepFormBuilderModal,
 } from "@/components/projects/WorkflowStepFormBuilderModal";
+import { WorkflowRoutingBuilder } from "@/components/projects/WorkflowRoutingBuilder";
 import {
   getWorkflowTemplateScopeData,
   getWorkflowTemplateScopeLabel,
@@ -23,6 +24,12 @@ import {
   normalizeWorkflowScheduleMode,
   type WorkflowScheduleMode,
 } from "@/lib/workflow-schedule";
+import {
+  normalizeWorkflowRoutes,
+  routeOperatorNeedsValue,
+  type WorkflowConditionalRoute,
+  type WorkflowRouteTarget,
+} from "@/lib/workflow-routing";
 
 type WorkflowStepDraft = {
   assignedTo?: string;
@@ -43,6 +50,8 @@ type WorkflowStepDraft = {
   assignsNextStep?: boolean | null;
   isQualityGate?: boolean | null;
   plannedDurationDays?: number | null;
+  conditionalRoutes?: WorkflowConditionalRoute[];
+  defaultNextStepIndex?: WorkflowRouteTarget;
 };
 
 type SubtaskDraft = {
@@ -206,6 +215,8 @@ const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
     assignsNextStep: step?.assignsNextStep ?? null,
     isQualityGate: index === 0 ? false : step?.isQualityGate ?? null,
     plannedDurationDays: getWorkflowStepPlannedDuration(step),
+    conditionalRoutes: normalizeWorkflowRoutes(step?.conditionalRoutes || step?.routes || []),
+    defaultNextStepIndex: step?.defaultNextStepIndex ?? step?.defaultNextStepTarget ?? null,
   }));
 
 export function EditTaskStructureModal({
@@ -634,6 +645,14 @@ export function EditTaskStructureModal({
           : firstRateCard
             ? firstRateCard.autoAddUnits !== false
             : true,
+        conditionalRoutes: normalizeWorkflowRoutes(step.conditionalRoutes || []).map((route) => {
+          const field = step.form?.fields?.find((candidate) => candidate.id === route.fieldId);
+          return {
+            ...route,
+            fieldLabel: field?.label || route.fieldLabel || route.fieldId,
+          };
+        }),
+        defaultNextStepIndex: step.defaultNextStepIndex ?? null,
       };
     });
 
@@ -761,6 +780,17 @@ export function EditTaskStructureModal({
     );
     if (hasInvalidDuration) {
       toast.warning("Cada paso del workflow debe tener una duracion mayor a cero dias.");
+      return false;
+    }
+
+    const hasInvalidConditionalRoute = workflowSteps.some((step) =>
+      normalizeWorkflowRoutes(step.conditionalRoutes || []).some((route) => {
+        if (!route.fieldId || route.targetStepIndex === undefined || route.targetStepIndex === null) return true;
+        return routeOperatorNeedsValue(route.operator) && !String(route.value || "").trim();
+      })
+    );
+    if (hasInvalidConditionalRoute) {
+      toast.warning("Completa las condiciones del workflow: variable, valor y destino.");
       return false;
     }
 
@@ -1348,6 +1378,15 @@ export function EditTaskStructureModal({
                   </Button>
                 </div>
               </div>
+
+              {workflowSteps.length > 0 && (
+                <div className="mb-4">
+                  <WorkflowRoutingBuilder
+                    steps={workflowSteps}
+                    onChange={(nextSteps) => setWorkflowSteps(nextSteps)}
+                  />
+                </div>
+              )}
 
               <div className="space-y-3">
                 {workflowSteps.map((step, index) => (

@@ -23,6 +23,7 @@ import {
   isMeetingLocationUrl,
   isMeetingTask,
 } from '@/lib/calendar-utils';
+import { resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
 
 interface TaskDetailsModalProps {
   isOpen: boolean;
@@ -353,9 +354,12 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     const runtimeRateCardSources = getStaticRateCardSources(step).filter(
       (source) => source.assigneeMode === "runtime"
     );
-    const requiresNextAssignee = Boolean(
-      step.assignsNextStep && index < newSteps.length - 1
-    );
+    const plannedNextIndex = resolveWorkflowNextStepIndex({
+      steps: newSteps,
+      currentIndex: index,
+      formData: step?.formData || {},
+    });
+    const requiresNextAssignee = Boolean(step.assignsNextStep && plannedNextIndex !== null);
 
     if (
       currentStatus !== "listo" &&
@@ -389,18 +393,27 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         : {}),
     };
 
-    if (nextStatus === "listo" && index < newSteps.length - 1 && newSteps[index + 1]?.status !== "listo") {
-      newSteps[index + 1] = {
-        ...newSteps[index + 1],
+    const resolvedNextIndex =
+      nextStatus === "listo"
+        ? resolveWorkflowNextStepIndex({
+            steps: newSteps,
+            currentIndex: index,
+            formData: newSteps[index]?.formData || {},
+          })
+        : null;
+
+    if (nextStatus === "listo" && resolvedNextIndex !== null && newSteps[resolvedNextIndex]?.status !== "listo") {
+      newSteps[resolvedNextIndex] = {
+        ...newSteps[resolvedNextIndex],
         status: "en_curso",
-        startedAt: new Date(),
+        startedAt: newSteps[resolvedNextIndex]?.startedAt || new Date(),
         assignedAt: new Date(),
       };
     }
 
     if (nextStatus !== "listo") {
       setPendingNextStepNotification((current) =>
-        current?.stepIndex === index + 1 ? null : current
+        current?.stepIndex === resolvedNextIndex ? null : current
       );
     }
 
@@ -481,8 +494,13 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       completedBy: auth.currentUser?.uid || null,
     };
 
-    if (stepUnitPrompt.index < newSteps.length - 1) {
-      const nextIndex = stepUnitPrompt.index + 1;
+    const nextIndex = resolveWorkflowNextStepIndex({
+      steps: newSteps,
+      currentIndex: stepUnitPrompt.index,
+      formData: newSteps[stepUnitPrompt.index]?.formData || {},
+    });
+
+    if (nextIndex !== null) {
       newSteps[nextIndex] = {
         ...newSteps[nextIndex],
         status: newSteps[nextIndex]?.status === "listo" ? "listo" : "en_curso",

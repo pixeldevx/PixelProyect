@@ -46,6 +46,7 @@ import {
   isMeetingTask,
 } from '@/lib/calendar-utils';
 import { detectActionCandidates } from '@/lib/project-logbook/action-detection';
+import { resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
 
 const hasRequiredFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -1218,6 +1219,7 @@ export default function WorkflowTray() {
       let newStatus = task.status;
       let progress = task.progress || 0;
       const rateCardChargesToSync: any[] = [];
+      let assignedNextWorkflowIndex: number | null = null;
 
       const hasBeenActedUpon = task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex && (h.action === 'approve' || h.action === 'return'));
 
@@ -1335,24 +1337,29 @@ export default function WorkflowTray() {
           steps[currentIndex].formData = formData;
         }
 
-        if (currentIndex < steps.length - 1) {
-          nextIndex = currentIndex + 1;
+        const resolvedNextIndex = resolveWorkflowNextStepIndex({
+          steps,
+          currentIndex,
+          formData: Object.keys(formData).length > 0 ? formData : steps[currentIndex]?.formData || {},
+        });
+
+        if (resolvedNextIndex !== null) {
+          nextIndex = resolvedNextIndex;
+          assignedNextWorkflowIndex = resolvedNextIndex;
           steps[nextIndex] = {
             ...steps[nextIndex],
-            status: 'en_curso',
-            startedAt: actionTimestamp,
-            startedBy: user.uid,
-            startedByMemberId: memberId,
+            status: steps[nextIndex]?.status === 'listo' ? 'listo' : 'en_curso',
+            startedAt: steps[nextIndex]?.startedAt || actionTimestamp,
+            startedBy: steps[nextIndex]?.startedBy || user.uid,
+            startedByMemberId: steps[nextIndex]?.startedByMemberId || memberId,
             assignedAt: actionTimestamp,
           };
           newStatus = 'in_progress';
-          
-          // Apply dynamic assignee if configured
+
           if (currentStep.assignsNextStep && nextStepAssignee) {
             steps[nextIndex].assignedTo = nextStepAssignee;
           }
         } else {
-          // Last step approved
           newStatus = normalizeCompletionStatus('completed', task);
           
           // Task-level rate card update if whole workflow completes
@@ -1419,7 +1426,7 @@ export default function WorkflowTray() {
         };
       }
 
-      progress = Math.round((nextIndex / steps.length) * 100);
+      progress = Math.round((steps.filter((step) => step.status === 'listo').length / steps.length) * 100);
       if (newStatus === 'completed' || newStatus === 'completed_late') progress = 100;
 
       const taskUpdate: any = {
@@ -1450,7 +1457,8 @@ export default function WorkflowTray() {
           action: action,
           comment: actionComment,
           formData: action === 'approve' ? formData : null,
-          nextStepAssignee: action === 'approve' && currentStep.assignsNextStep ? nextStepAssignee : null,
+          nextStepAssignee: action === 'approve' && currentStep.assignsNextStep && assignedNextWorkflowIndex !== null ? nextStepAssignee : null,
+          nextStepIndex: assignedNextWorkflowIndex,
           dynamicRateCard: dynamicRateCardCharge,
           qualityEvent,
           performanceEntryId: workflowPerformanceEntry?.id || null,
@@ -1489,7 +1497,7 @@ export default function WorkflowTray() {
       }
 
       const shouldNotifyNextAssignee =
-        (action === 'approve' && currentIndex < steps.length - 1) ||
+        (action === 'approve' && assignedNextWorkflowIndex !== null) ||
         (action === 'return' && currentIndex > 0);
       if (shouldNotifyNextAssignee) {
         void notifyTaskAssignment({
@@ -2291,6 +2299,20 @@ export default function WorkflowTray() {
   const activeQualityGateStep = actionModal.isOpen
     ? actionModal.task?.workflowSteps?.[actionModal.task.currentStepIndex || 0]
     : null;
+  const activeWorkflowNextIndex =
+    actionModal.isOpen && actionModal.type === 'approve' && Array.isArray(actionModal.task?.workflowSteps)
+      ? resolveWorkflowNextStepIndex({
+          steps: actionModal.task.workflowSteps,
+          currentIndex: actionModal.task.currentStepIndex || 0,
+          formData,
+        })
+      : null;
+  const activeApproveNeedsNextAssignee = Boolean(
+    actionModal.isOpen &&
+      actionModal.type === 'approve' &&
+      activeQualityGateStep?.assignsNextStep &&
+      activeWorkflowNextIndex !== null
+  );
   const activeQualityGateRequiresCause =
     isQualityGateStep(activeQualityGateStep) && actionModal.type === 'return';
   const assignedTaskDynamicRateCardRequestsUnits = dynamicRateCardModal.task
@@ -3109,7 +3131,7 @@ export default function WorkflowTray() {
                 </div>
               )}
 
-              {actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && (
+              {activeApproveNeedsNextAssignee && (
                 <div className="mb-4">
                   <label className="block text-sm font-medium text-slate-700 mb-1">
                     Asignar siguiente paso a <span className="text-red-500">*</span>
@@ -3337,7 +3359,7 @@ export default function WorkflowTray() {
               </Button>
               <Button
                 onClick={confirmAction}
-                disabled={!actionComment.trim() || processingId === actionModal.task.id || (actionModal.type === 'approve' && actionModal.task.workflowSteps[actionModal.task.currentStepIndex || 0]?.assignsNextStep && !nextStepAssignee) || activeQualityGateRequiresCause && !qualityCauseId || hasMissingManualStaticUnits || hasMissingRuntimeStaticAssignees || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && isInvalidRateCardUnits(dynamicRateCardUnits))))}
+                disabled={!actionComment.trim() || processingId === actionModal.task.id || (activeApproveNeedsNextAssignee && !nextStepAssignee) || activeQualityGateRequiresCause && !qualityCauseId || hasMissingManualStaticUnits || hasMissingRuntimeStaticAssignees || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && isInvalidRateCardUnits(dynamicRateCardUnits))))}
                 className={
                   actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 
                   actionModal.type === 'return' ? 'bg-red-600 hover:bg-red-700 text-white' :

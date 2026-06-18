@@ -5,6 +5,7 @@ import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, update
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { WorkflowStepFormBuilderModal, CustomForm, FormRateCardItem } from '@/components/projects/WorkflowStepFormBuilderModal';
+import { WorkflowRoutingBuilder } from '@/components/projects/WorkflowRoutingBuilder';
 import { notifyTaskAssignment, TaskAssignmentNotificationPayload } from '@/lib/notifications';
 import {
   getWorkflowTemplateScopeData,
@@ -20,6 +21,12 @@ import {
   normalizeWorkflowScheduleMode,
   type WorkflowScheduleMode,
 } from '@/lib/workflow-schedule';
+import {
+  normalizeWorkflowRoutes,
+  routeOperatorNeedsValue,
+  type WorkflowConditionalRoute,
+  type WorkflowRouteTarget,
+} from '@/lib/workflow-routing';
 
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
@@ -194,6 +201,8 @@ export function CreateTaskModal({
       assignsNextStep?: boolean;
       isQualityGate?: boolean;
       plannedDurationDays?: number;
+      conditionalRoutes?: WorkflowConditionalRoute[];
+      defaultNextStepIndex?: WorkflowRouteTarget;
     }[]
   >([]);
   const [workflowScheduleMode, setWorkflowScheduleMode] = useState<WorkflowScheduleMode>("calendar");
@@ -372,6 +381,14 @@ export function CreateTaskModal({
           : firstRateCard
             ? firstRateCard.autoAddUnits !== false
             : true,
+        conditionalRoutes: normalizeWorkflowRoutes(step.conditionalRoutes || []).map((route) => {
+          const field = step.form?.fields?.find((candidate) => candidate.id === route.fieldId);
+          return {
+            ...route,
+            fieldLabel: field?.label || route.fieldLabel || route.fieldId,
+          };
+        }),
+        defaultNextStepIndex: step.defaultNextStepIndex ?? null,
       };
     });
 
@@ -438,6 +455,17 @@ export function CreateTaskModal({
     );
     if (hasInvalidDuration) {
       toast.warning("Cada paso del workflow debe tener una duración mayor a cero días.");
+      return false;
+    }
+
+    const hasInvalidConditionalRoute = workflowSteps.some((step) =>
+      normalizeWorkflowRoutes(step.conditionalRoutes || []).some((route) => {
+        if (!route.fieldId || route.targetStepIndex === undefined || route.targetStepIndex === null) return true;
+        return routeOperatorNeedsValue(route.operator) && !String(route.value || "").trim();
+      })
+    );
+    if (hasInvalidConditionalRoute) {
+      toast.warning("Completa las condiciones del workflow: variable, valor y destino.");
       return false;
     }
 
@@ -1441,6 +1469,13 @@ export function CreateTaskModal({
                     </Button>
                   </div>
                 </div>
+
+                {workflowSteps.length > 0 && (
+                  <WorkflowRoutingBuilder
+                    steps={workflowSteps}
+                    onChange={(nextSteps) => setWorkflowSteps(nextSteps)}
+                  />
+                )}
 
                 {workflowSteps.length === 0 ? (
                   <p className="text-[10px] text-slate-400 text-center py-2 italic">
