@@ -318,6 +318,33 @@ const normalizeKey = (value: string) =>
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '');
 
+const normalizeCategoryName = (value: string) => String(value || '').trim().replace(/\s+/g, ' ');
+
+const uniqueInventoryCategories = (values: Array<string | null | undefined>) => {
+  const seen = new Set<string>();
+  const categories: string[] = [];
+
+  values.forEach((value) => {
+    const cleanValue = normalizeCategoryName(String(value || ''));
+    if (!cleanValue) return;
+    const key = normalizeKey(cleanValue);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    categories.push(cleanValue);
+  });
+
+  return categories.sort((left, right) => left.localeCompare(right));
+};
+
+const resolveInventoryCategory = (value: string, categories: string[]) => {
+  const cleanValue = normalizeCategoryName(value);
+  if (!cleanValue) return categories[0] || null;
+  return categories.find((category) => normalizeKey(category) === normalizeKey(cleanValue)) || null;
+};
+
+const isDefaultInventoryCategory = (category: string) =>
+  INVENTORY_CATEGORIES.some((baseCategory) => normalizeKey(baseCategory) === normalizeKey(category));
+
 const splitDelimitedLine = (line: string, delimiter: string) => {
   const values: string[] = [];
   let current = '';
@@ -504,7 +531,16 @@ const parseBulkInventory = (
     const responsibleText = String(draft.responsibleName || '').trim();
     const responsibleMember = responsibleText ? resolveMember(responsibleText) : null;
     const needsRepair = Boolean(draft.needsRepair);
-    const category = String(draft.category || '').trim() || categories[0] || 'Otro';
+    const category = resolveInventoryCategory(String(draft.category || ''), categories);
+
+    if (!category) {
+      invalidRows.push({
+        line: (hasHeader ? index + 2 : index + 1),
+        reason: `La categoría "${String(draft.category || '').trim() || 'sin categoría'}" no existe en el catálogo.`,
+        raw: line,
+      });
+      return;
+    }
 
     validRows.push({
       name: cleanName,
@@ -557,6 +593,8 @@ export function ProjectInventory({
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
   const [assetActionForm, setAssetActionForm] = useState<AssetLifecycleForm | null>(null);
   const [savingAssetAction, setSavingAssetAction] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [savingCategory, setSavingCategory] = useState(false);
 
   const projectMemberIds = useMemo(
     () => new Set((project?.assignedTeamMembers || []).filter(Boolean)),
@@ -629,14 +667,49 @@ export function ProjectInventory({
     return { totalUnits, totalValue, repairCount, assignedCount, locations: locations.size };
   }, [items]);
 
-  const categories = useMemo(() => {
-    const values = new Set([...INVENTORY_CATEGORIES, ...items.map((item) => item.category).filter(Boolean) as string[]]);
-    return Array.from(values).sort((left, right) => left.localeCompare(right));
+  const customCategories = useMemo(
+    () => uniqueInventoryCategories(Array.isArray(project?.inventoryCategories) ? project.inventoryCategories : []),
+    [project?.inventoryCategories]
+  );
+
+  const catalogCategories = useMemo(
+    () => uniqueInventoryCategories([...INVENTORY_CATEGORIES, ...customCategories]),
+    [customCategories]
+  );
+
+  const legacyCategories = useMemo(
+    () => uniqueInventoryCategories(items.map((item) => item.category).filter(Boolean) as string[]),
+    [items]
+  );
+
+  const categories = useMemo(
+    () => uniqueInventoryCategories([...catalogCategories, ...legacyCategories]),
+    [catalogCategories, legacyCategories]
+  );
+
+  const formCategories = useMemo(
+    () => uniqueInventoryCategories([...catalogCategories, editingItem?.category]),
+    [catalogCategories, editingItem?.category]
+  );
+
+  const uncataloguedCategories = useMemo(
+    () => legacyCategories.filter((category) => !catalogCategories.some((catalogCategory) => normalizeKey(catalogCategory) === normalizeKey(category))),
+    [catalogCategories, legacyCategories]
+  );
+
+  const categoryUsageCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    items.forEach((item) => {
+      const key = normalizeKey(item.category || '');
+      if (!key) return;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    return counts;
   }, [items]);
 
   const bulkPreview = useMemo(
-    () => parseBulkInventory(bulkImportText, categories, resolveMember),
-    [bulkImportText, categories, resolveMember]
+    () => parseBulkInventory(bulkImportText, catalogCategories, resolveMember),
+    [bulkImportText, catalogCategories, resolveMember]
   );
 
   const filteredItems = useMemo(() => {
@@ -817,6 +890,92 @@ export function ProjectInventory({
     setIsBulkImportOpen(true);
   };
 
+  const getCustomCategoryPayload = (nextCategories: string[]) =>
+    uniqueInventoryCategories(nextCategories).filter((category) => !isDefaultInventoryCategory(category));
+
+  const saveCustomCategories = async (nextCategories: string[]) => {
+    await updateDoc(doc(db, 'projects', projectId), {
+      inventoryCategories: getCustomCategoryPayload(nextCategories),
+      updatedAt: serverTimestamp(),
+      updatedBy: currentUser?.uid || currentUser?.id || null,
+    });
+  };
+
+  const handleAddCategory = async () => {
+    if (!canManage) return;
+    const cleanCategory = normalizeCategoryName(newCategoryName);
+
+    if (!cleanCategory) {
+      toast.warning('Escribe el nombre de la categoría.');
+      return;
+    }
+
+    const exists = catalogCategories.some((category) => normalizeKey(category) === normalizeKey(cleanCategory));
+    if (exists) {
+      toast.info('Esa categoría ya existe en el catálogo.');
+      setNewCategoryName('');
+      return;
+    }
+
+    setSavingCategory(true);
+    try {
+      await saveCustomCategories([...customCategories, cleanCategory]);
+      setNewCategoryName('');
+      toast.success('Categoría creada para inventarios.');
+    } catch (error: any) {
+      console.error('Error saving inventory category:', error);
+      toast.error(error?.message || 'No se pudo crear la categoría.');
+    } finally {
+      setSavingCategory(false);
+    }
+  };
+
+  const handleRegisterUncataloguedCategories = async () => {
+    if (!canManage || uncataloguedCategories.length === 0) return;
+
+    setSavingCategory(true);
+    try {
+      await saveCustomCategories([...customCategories, ...uncataloguedCategories]);
+      toast.success('Categorías existentes agregadas al catálogo.');
+    } catch (error: any) {
+      console.error('Error registering inventory categories:', error);
+      toast.error(error?.message || 'No se pudieron agregar las categorías.');
+    } finally {
+      setSavingCategory(false);
+    }
+  };
+
+  const handleRemoveCategory = async (category: string) => {
+    if (!canManage) return;
+
+    if (isDefaultInventoryCategory(category)) {
+      toast.info('Las categorías base permanecen disponibles para todos los proyectos.');
+      return;
+    }
+
+    const usageCount = categoryUsageCounts.get(normalizeKey(category)) || 0;
+    if (usageCount > 0) {
+      toast.warning(`No se puede eliminar "${category}" porque tiene ${usageCount} activo(s) asociado(s).`);
+      return;
+    }
+
+    setSavingCategory(true);
+    try {
+      await saveCustomCategories(customCategories.filter((customCategory) => normalizeKey(customCategory) !== normalizeKey(category)));
+      if (categoryFilter === category) setCategoryFilter('all');
+      if (form.category === category) {
+        const fallbackCategory = catalogCategories.find((catalogCategory) => normalizeKey(catalogCategory) !== normalizeKey(category)) || emptyForm.category;
+        setForm((current) => ({ ...current, category: fallbackCategory }));
+      }
+      toast.success('Categoría eliminada del catálogo.');
+    } catch (error: any) {
+      console.error('Error removing inventory category:', error);
+      toast.error(error?.message || 'No se pudo eliminar la categoría.');
+    } finally {
+      setSavingCategory(false);
+    }
+  };
+
   const uploadPhotos = async (files: File[]) => {
     const uploaded: InventoryPhoto[] = [];
 
@@ -846,11 +1005,11 @@ export function ProjectInventory({
     }
 
     const cleanName = form.name.trim();
-    const cleanCategory = form.category.trim();
+    const cleanCategory = resolveInventoryCategory(form.category, formCategories);
     const quantity = Math.max(Number(form.quantity || 1), 1);
 
     if (!cleanName || !cleanCategory) {
-      toast.warning('Ingresa nombre y categoría del activo.');
+      toast.warning('Ingresa nombre y selecciona una categoría creada en el catálogo.');
       return;
     }
 
@@ -1412,6 +1571,95 @@ export function ProjectInventory({
         </div>
       </section>
 
+      {canManage && (
+        <section className="rounded-xl border border-emerald-100 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="max-w-3xl">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700">Dominios cerrados</p>
+              <h3 className="mt-1 text-lg font-black text-slate-950">Catálogo de categorías del inventario</h3>
+              <p className="mt-1 text-sm font-semibold leading-6 text-slate-500">
+                Las categorías se crean aquí y luego se seleccionan en formularios o cargas masivas. Así evitamos duplicados como computador, computadores o equipo cómputo.
+              </p>
+            </div>
+            <div className="flex w-full flex-col gap-2 sm:flex-row xl:max-w-lg">
+              <input
+                value={newCategoryName}
+                onChange={(event) => setNewCategoryName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    handleAddCategory();
+                  }
+                }}
+                className="h-11 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                placeholder="Nueva categoría cerrada"
+                disabled={savingCategory}
+              />
+              <Button
+                type="button"
+                onClick={handleAddCategory}
+                disabled={savingCategory}
+                className="h-11 bg-emerald-600 font-black text-white hover:bg-emerald-700"
+              >
+                <Plus size={16} className="mr-2" />
+                Crear
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {catalogCategories.map((category) => {
+              const usageCount = categoryUsageCounts.get(normalizeKey(category)) || 0;
+              const isBaseCategory = isDefaultInventoryCategory(category);
+              const canRemoveCategory = !isBaseCategory && usageCount === 0 && !savingCategory;
+              return (
+                <span
+                  key={category}
+                  className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-black text-slate-700"
+                >
+                  {category}
+                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-slate-400 ring-1 ring-slate-100">
+                    {isBaseCategory ? 'base' : `${formatNumber(usageCount)} activos`}
+                  </span>
+                  {!isBaseCategory && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveCategory(category)}
+                      disabled={!canRemoveCategory}
+                      className="rounded-full p-0.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={usageCount > 0 ? 'No se puede eliminar una categoría con activos asociados' : 'Eliminar categoría'}
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+
+          {uncataloguedCategories.length > 0 && (
+            <div className="mt-4 flex flex-col gap-3 rounded-xl border border-amber-100 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.16em] text-amber-700">Categorías heredadas detectadas</p>
+                <p className="mt-1 text-sm font-semibold text-amber-900">
+                  Hay {formatNumber(uncataloguedCategories.length)} categoría(s) usadas por activos anteriores que aún no hacen parte del catálogo cerrado.
+                </p>
+                <p className="mt-1 text-xs font-bold text-amber-800">{uncataloguedCategories.join(', ')}</p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleRegisterUncataloguedCategories}
+                disabled={savingCategory}
+                className="border-amber-200 bg-white font-black text-amber-800 hover:bg-amber-100"
+              >
+                Incorporar al catálogo
+              </Button>
+            </div>
+          )}
+        </section>
+      )}
+
       {isFormOpen && canManage && (
         <section className="rounded-xl border border-indigo-100 bg-indigo-50/30 p-5 shadow-sm">
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -1434,10 +1682,14 @@ export function ProjectInventory({
                 <input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} className={inputClass} placeholder="Ej. Portátil Dell, silla ergonómica, mesa sala 1" />
               </Field>
               <Field label="Categoría">
-                <input list="inventory-categories" value={form.category} onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))} className={inputClass} />
-                <datalist id="inventory-categories">
-                  {categories.map((category) => <option key={category} value={category} />)}
-                </datalist>
+                <select value={form.category} onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))} className={inputClass}>
+                  {formCategories.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                      {!catalogCategories.some((catalogCategory) => normalizeKey(catalogCategory) === normalizeKey(category)) ? ' (heredada)' : ''}
+                    </option>
+                  ))}
+                </select>
               </Field>
               <Field label="Cantidad">
                 <input type="number" min={1} value={form.quantity} onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))} className={inputClass} />
@@ -1587,7 +1839,7 @@ export function ProjectInventory({
                     nombre, categoria, codigo, serial, cantidad, ubicacion, latitud, longitud, responsable, estado, condicion, valor, observaciones, linkubicacion y reparacion.
                   </p>
                   <p className="mt-1">
-                    El responsable puede ser nombre o correo de una persona asignada al proyecto.
+                    La categoría debe existir en el catálogo cerrado del inventario. El responsable puede ser nombre o correo de una persona asignada al proyecto.
                   </p>
                 </div>
               </div>
