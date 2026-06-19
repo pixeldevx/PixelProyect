@@ -232,7 +232,7 @@ export default function ProjectDetailsPage() {
   const searchParams = useSearchParams();
   const projectId = params.id as string;
   const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
-  const { permissions: rolePermissions } = useRolePermissions(userRole);
+  const { permissions: rolePermissions, loading: rolePermissionsLoading } = useRolePermissions(userRole);
 
   const [project, setProject] = useState<any>(null);
   const [documents, setDocuments] = useState<any[]>([]);
@@ -605,10 +605,14 @@ export default function ProjectDetailsPage() {
   const canManageDriveRepositories =
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
+  const canViewProjectInventory = Boolean(rolePermissions.inventoryProjectView);
+  const hasInventoryManagementScope =
+    userRole !== 'org_admin' ||
+    !project?.organizationId ||
+    belongsToAnyOrganization(project, managedOrganizationIds);
   const canManageInventory =
-    canManageProject ||
-    userRole === 'manager' ||
-    (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
+    Boolean(rolePermissions.inventoryProjectManage) &&
+    hasInventoryManagementScope;
   const canDeleteLogbookEntries =
     userRole === 'admin' ||
     userRole === 'manager' ||
@@ -616,6 +620,13 @@ export default function ProjectDetailsPage() {
   const canManageWorkflowTemplates =
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
+
+  useEffect(() => {
+    if (rolePermissionsLoading || activeTab !== 'inventory' || canViewProjectInventory) return;
+    setActiveTab('tasks');
+    toast.error('No tienes permisos para ver el inventario de este proyecto.');
+  }, [activeTab, canViewProjectInventory, rolePermissionsLoading]);
+
   const taskGroups = React.useMemo(
     () =>
       Array.isArray(project?.taskGroups)
@@ -2926,19 +2937,21 @@ export default function ProjectDetailsPage() {
               Drive
             </div>
           </button>
-          <button
-            onClick={() => setActiveTab('inventory')}
-            className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
-              activeTab === 'inventory'
-                ? 'bg-indigo-50 text-indigo-700'
-                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <Package size={16} />
-              Inventario
-            </div>
-          </button>
+          {canViewProjectInventory && (
+            <button
+              onClick={() => setActiveTab('inventory')}
+              className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
+                activeTab === 'inventory'
+                  ? 'bg-indigo-50 text-indigo-700'
+                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Package size={16} />
+                Inventario
+              </div>
+            </button>
+          )}
           <button
             onClick={() => setActiveTab('map')}
             className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
@@ -3096,6 +3109,7 @@ export default function ProjectDetailsPage() {
           project={project}
           teamMembers={projectAssignableTeamMembers}
           currentUser={user}
+          canView={canViewProjectInventory}
           canManage={canManageInventory}
         />
       )}

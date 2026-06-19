@@ -9,6 +9,8 @@ export type PermissionKey =
   | 'activityCreate'
   | 'activityEditStatus'
   | 'activityDelete'
+  | 'inventoryProjectView'
+  | 'inventoryProjectManage'
   | 'inventoryOverview';
 
 export type RolePermissionSet = Record<PermissionKey, boolean>;
@@ -48,8 +50,10 @@ export const PERMISSION_GROUPS: Array<{
     ],
   },
   {
-    title: 'Overview',
+    title: 'Inventario',
     permissions: [
+      { key: 'inventoryProjectView', label: 'Ver inventario del proyecto' },
+      { key: 'inventoryProjectManage', label: 'Crear y editar activos del proyecto' },
       { key: 'inventoryOverview', label: 'Ver inventario global' },
     ],
   },
@@ -66,6 +70,8 @@ const allPermissions = (value: boolean): RolePermissionSet => ({
   activityCreate: value,
   activityEditStatus: value,
   activityDelete: value,
+  inventoryProjectView: value,
+  inventoryProjectManage: value,
   inventoryOverview: value,
 });
 

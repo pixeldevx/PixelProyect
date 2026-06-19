@@ -114,6 +114,7 @@ type ProjectInventoryProps = {
   project: any;
   teamMembers: any[];
   currentUser: any;
+  canView?: boolean;
   canManage: boolean;
 };
 
@@ -227,6 +228,7 @@ export function ProjectInventory({
   project,
   teamMembers,
   currentUser,
+  canView = true,
   canManage,
 }: ProjectInventoryProps) {
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -264,7 +266,11 @@ export function ProjectInventory({
   }, [teamMembers]);
 
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId || !canView) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
 
     const inventoryQuery = query(
       collection(db, 'projects', projectId, 'inventoryItems'),
@@ -281,7 +287,7 @@ export function ProjectInventory({
     });
 
     return () => unsubscribe();
-  }, [projectId]);
+  }, [canView, projectId]);
 
   useEffect(() => {
     setSelectedItem((current) => {
@@ -642,6 +648,20 @@ export function ProjectInventory({
     printWindow.focus();
     window.setTimeout(() => printWindow.print(), 250);
   };
+
+  if (!canView) {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-8 text-center shadow-sm">
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-amber-600 shadow-sm">
+          <AlertTriangle size={26} />
+        </div>
+        <h2 className="mt-4 text-2xl font-black text-slate-950">Inventario restringido</h2>
+        <p className="mx-auto mt-2 max-w-xl text-sm font-semibold leading-6 text-amber-900/80">
+          Tu rol no tiene permiso para visualizar el inventario de este proyecto. Un administrador puede habilitarlo desde la consola de permisos.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
