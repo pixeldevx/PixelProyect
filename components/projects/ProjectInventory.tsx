@@ -43,6 +43,7 @@ import {
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
 import { toast } from 'sonner';
+import { InventoryLocationMap, hasMapCoordinates, parseMapCoordinate } from '@/components/inventory/InventoryLocationMap';
 
 type InventoryPhoto = {
   name: string;
@@ -83,6 +84,8 @@ type InventoryItem = {
   quantity?: number;
   location?: string;
   mapUrl?: string;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
   responsibleId?: string;
   responsibleName?: string;
   condition?: string;
@@ -120,6 +123,8 @@ type InventoryForm = {
   quantity: string;
   location: string;
   mapUrl: string;
+  latitude: string;
+  longitude: string;
   responsibleId: string;
   condition: string;
   status: string;
@@ -157,6 +162,8 @@ type BulkInventoryRow = {
   quantity: number;
   location: string;
   mapUrl: string;
+  latitude: number | null;
+  longitude: number | null;
   responsibleId: string;
   responsibleName: string;
   condition: string;
@@ -218,6 +225,8 @@ const emptyForm: InventoryForm = {
   quantity: '1',
   location: '',
   mapUrl: '',
+  latitude: '',
+  longitude: '',
   responsibleId: '',
   condition: 'good',
   status: 'available',
@@ -246,9 +255,9 @@ const emptyLifecycleForm = (action: AssetActionType = 'reassign'): AssetLifecycl
 });
 
 const BULK_IMPORT_SAMPLE = [
-  'nombre,categoria,codigo,serial,cantidad,ubicacion,responsable,estado,condicion,valor,observaciones',
-  'Portatil Dell,Computador,INV-001,SN-7788,1,Oficina Bogota,sebastian@empresa.com,asignado,bueno,3500000,Equipo de campo',
-  'Silla ergonomica,Silla,INV-002,,3,Sala operativa,,disponible,excelente,420000,',
+  'nombre,categoria,codigo,serial,cantidad,ubicacion,latitud,longitud,responsable,estado,condicion,valor,observaciones',
+  'Portatil Dell,Computador,INV-001,SN-7788,1,Oficina Bogota,4.7110,-74.0721,sebastian@empresa.com,asignado,bueno,3500000,Equipo de campo',
+  'Silla ergonomica,Silla,INV-002,,3,Sala operativa,,,,disponible,excelente,420000,',
 ].join('\n');
 
 const formatCurrency = (value: number) =>
@@ -418,6 +427,13 @@ const HEADER_ALIASES: Record<string, keyof BulkInventoryRow | 'needsRepair'> = {
   notes: 'observations',
   mapurl: 'mapUrl',
   linkubicacion: 'mapUrl',
+  latitud: 'latitude',
+  latitude: 'latitude',
+  lat: 'latitude',
+  longitud: 'longitude',
+  longitude: 'longitude',
+  lng: 'longitude',
+  lon: 'longitude',
   reparacion: 'needsRepair',
   requierereparacion: 'needsRepair',
 };
@@ -472,6 +488,8 @@ const parseBulkInventory = (
         draft.estimatedValue = Math.max(parseLooseNumber(value), 0);
       } else if (key === 'needsRepair') {
         draft.needsRepair = normalizeBoolean(value);
+      } else if (key === 'latitude' || key === 'longitude') {
+        (draft as any)[key] = parseMapCoordinate(value);
       } else {
         (draft as any)[key] = value;
       }
@@ -496,6 +514,8 @@ const parseBulkInventory = (
       quantity: Math.max(Number(draft.quantity || 1), 1),
       location: String(draft.location || '').trim(),
       mapUrl: String(draft.mapUrl || '').trim(),
+      latitude: parseMapCoordinate(draft.latitude) ?? null,
+      longitude: parseMapCoordinate(draft.longitude) ?? null,
       responsibleId: responsibleMember?.id || '',
       responsibleName: responsibleMember?.name || responsibleMember?.email || responsibleText,
       condition: normalizeConditionValue(String(draft.condition || 'good')),
@@ -639,6 +659,8 @@ export function ProjectInventory({
         item.assetCode,
         item.serialNumber,
         item.location,
+        item.latitude,
+        item.longitude,
         item.observations,
         responsible,
       ]
@@ -775,6 +797,8 @@ export function ProjectInventory({
       quantity: String(item.quantity || 1),
       location: item.location || '',
       mapUrl: item.mapUrl || '',
+      latitude: item.latitude !== null && item.latitude !== undefined ? String(item.latitude) : '',
+      longitude: item.longitude !== null && item.longitude !== undefined ? String(item.longitude) : '',
       responsibleId: item.responsibleId || '',
       condition: item.condition || 'good',
       status: item.status || 'available',
@@ -842,6 +866,8 @@ export function ProjectInventory({
         quantity,
         location: form.location.trim(),
         mapUrl: form.mapUrl.trim(),
+        latitude: parseMapCoordinate(form.latitude),
+        longitude: parseMapCoordinate(form.longitude),
         responsibleId: form.responsibleId || null,
         responsibleName: responsibleMember?.name || responsibleMember?.email || null,
         condition: form.condition,
@@ -1167,6 +1193,8 @@ export function ProjectInventory({
       cantidad: item.quantity || 1,
       responsable: getResponsibleLabel(item),
       ubicacion: item.location || '',
+      latitud: item.latitude ?? '',
+      longitud: item.longitude ?? '',
       estado: getStatusMeta(item.status).label,
       condicion: getConditionMeta(item.condition).label,
       requiereReparacion: item.needsRepair ? 'Si' : 'No',
@@ -1176,7 +1204,7 @@ export function ProjectInventory({
     }));
 
   const downloadCsvReport = () => {
-    const headers = ['Activo', 'Categoría', 'Código', 'Serial', 'Cantidad', 'Responsable', 'Ubicación', 'Estado', 'Condición', 'Requiere reparación', 'Valor unitario', 'Eventos hoja de vida', 'Observaciones'];
+    const headers = ['Activo', 'Categoría', 'Código', 'Serial', 'Cantidad', 'Responsable', 'Ubicación', 'Latitud', 'Longitud', 'Estado', 'Condición', 'Requiere reparación', 'Valor unitario', 'Eventos hoja de vida', 'Observaciones'];
     const rows = buildReportRows();
     const csv = [
       headers.map(csvEscape).join(','),
@@ -1188,6 +1216,8 @@ export function ProjectInventory({
         row.cantidad,
         row.responsable,
         row.ubicacion,
+        row.latitud,
+        row.longitud,
         row.estado,
         row.condicion,
         row.requiereReparacion,
@@ -1432,9 +1462,42 @@ export function ProjectInventory({
               <Field label="Ubicación física" className="lg:col-span-2">
                 <input value={form.location} onChange={(event) => setForm((current) => ({ ...current, location: event.target.value }))} className={inputClass} placeholder="Bodega, oficina, ciudad, coordenadas..." />
               </Field>
-              <Field label="Link de localización" className="lg:col-span-2">
-                <input value={form.mapUrl} onChange={(event) => setForm((current) => ({ ...current, mapUrl: event.target.value }))} className={inputClass} placeholder="Google Maps, Drive o evidencia externa" />
+              <Field label="Coordenadas del activo" className="lg:col-span-2">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <input
+                    value={form.latitude}
+                    onChange={(event) => setForm((current) => ({ ...current, latitude: event.target.value }))}
+                    className={inputClass}
+                    placeholder="Latitud"
+                  />
+                  <input
+                    value={form.longitude}
+                    onChange={(event) => setForm((current) => ({ ...current, longitude: event.target.value }))}
+                    className={inputClass}
+                    placeholder="Longitud"
+                  />
+                </div>
               </Field>
+              <div className="lg:col-span-4">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="text-xs font-black uppercase tracking-[0.12em] text-slate-500">Ubicar en mapa</p>
+                  <p className="text-xs font-bold text-slate-500">Haz clic para fijar el punto del activo.</p>
+                </div>
+                <InventoryLocationMap
+                  key={editingItem?.id || 'new-inventory-location'}
+                  value={{
+                    latitude: parseMapCoordinate(form.latitude) ?? undefined,
+                    longitude: parseMapCoordinate(form.longitude) ?? undefined,
+                  }}
+                  onChange={(coordinate) => setForm((current) => ({
+                    ...current,
+                    latitude: coordinate.latitude.toFixed(6),
+                    longitude: coordinate.longitude.toFixed(6),
+                  }))}
+                  heightClassName="h-72"
+                  emptyLabel="Haz clic en el mapa para guardar latitud y longitud."
+                />
+              </div>
               <Field label="Estado">
                 <select value={form.status} onChange={(event) => setForm((current) => ({ ...current, status: event.target.value }))} className={inputClass}>
                   {STATUS_OPTIONS.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}
@@ -1521,7 +1584,7 @@ export function ProjectInventory({
                 <div className="rounded-xl border border-cyan-100 bg-cyan-50 p-4 text-sm font-semibold leading-6 text-cyan-900">
                   <p className="font-black">Columnas reconocidas</p>
                   <p className="mt-1">
-                    nombre, categoria, codigo, serial, cantidad, ubicacion, responsable, estado, condicion, valor, observaciones, linkubicacion y reparacion.
+                    nombre, categoria, codigo, serial, cantidad, ubicacion, latitud, longitud, responsable, estado, condicion, valor, observaciones, linkubicacion y reparacion.
                   </p>
                   <p className="mt-1">
                     El responsable puede ser nombre o correo de una persona asignada al proyecto.
@@ -1662,6 +1725,11 @@ export function ProjectInventory({
                       <p className="mt-1 text-xs font-bold text-slate-500">
                         {item.category || 'Sin categoría'} · {item.assetCode || item.serialNumber || 'Sin código'}
                       </p>
+                      {hasMapCoordinates(item) && (
+                        <span className="mt-2 inline-flex rounded bg-cyan-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-cyan-700 ring-1 ring-cyan-100">
+                          Georreferenciado
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -1746,6 +1814,22 @@ export function ProjectInventory({
                     Localización
                   </h4>
                   <p className="mt-2 text-sm font-semibold text-slate-600">{selectedItem.location || 'Sin ubicación registrada.'}</p>
+                  {hasMapCoordinates(selectedItem) && (
+                    <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                      <InventoryLocationMap
+                        key={`detail-${selectedItem.id}`}
+                        value={{
+                          latitude: parseMapCoordinate(selectedItem.latitude) ?? undefined,
+                          longitude: parseMapCoordinate(selectedItem.longitude) ?? undefined,
+                        }}
+                        heightClassName="h-56"
+                        emptyLabel="Activo sin punto geográfico."
+                      />
+                      <p className="border-t border-slate-100 px-3 py-2 text-xs font-bold text-slate-500">
+                        Lat {parseMapCoordinate(selectedItem.latitude)?.toFixed(6)} · Lng {parseMapCoordinate(selectedItem.longitude)?.toFixed(6)}
+                      </p>
+                    </div>
+                  )}
                   {selectedItem.mapUrl && (
                     <a href={selectedItem.mapUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex text-sm font-black text-indigo-700 hover:text-indigo-900">
                       Abrir ubicación

@@ -28,6 +28,12 @@ import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { useRolePermissions } from '@/hooks/useRolePermissions';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
+import {
+  InventoryLocationMap,
+  InventoryMapPoint,
+  hasMapCoordinates,
+  parseMapCoordinate,
+} from '@/components/inventory/InventoryLocationMap';
 
 type ProjectRow = {
   id: string;
@@ -68,6 +74,8 @@ type InventoryItem = {
   quantity?: number;
   location?: string;
   mapUrl?: string;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
   responsibleId?: string;
   responsibleName?: string;
   condition?: string;
@@ -78,6 +86,7 @@ type InventoryItem = {
   needsRepair?: boolean;
   photos?: InventoryPhoto[];
   maintenanceHistory?: MaintenanceEntry[];
+  lifecycleHistory?: MaintenanceEntry[];
   createdAt?: any;
   updatedAt?: any;
 };
@@ -88,6 +97,7 @@ const STATUS_OPTIONS = [
   { value: 'available', label: 'Disponible', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
   { value: 'assigned', label: 'Asignado', className: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
   { value: 'repair', label: 'En reparación', className: 'bg-orange-50 text-orange-700 ring-orange-100' },
+  { value: 'transferred', label: 'Trasladado', className: 'bg-violet-50 text-violet-700 ring-violet-100' },
   { value: 'retired', label: 'Retirado', className: 'bg-slate-100 text-slate-700 ring-slate-200' },
   { value: 'lost', label: 'No localizado', className: 'bg-red-50 text-red-700 ring-red-100' },
 ];
@@ -318,6 +328,8 @@ export default function InventoryOverviewPage() {
           item.assetCode,
           item.serialNumber,
           item.location,
+          item.latitude,
+          item.longitude,
           item.observations,
           getResponsibleLabel(item, membersById),
           project?.name,
@@ -328,6 +340,32 @@ export default function InventoryOverviewPage() {
       })
       .sort((left, right) => getTime(right.updatedAt || right.createdAt) - getTime(left.updatedAt || left.createdAt));
   }, [categoryFilter, inventoryItems, membersById, organizations, projectById, scopedProjectIds, searchTerm, selectedProjectId, statusFilter]);
+
+  const geolocatedItems = useMemo(() => visibleItems.filter(hasMapCoordinates), [visibleItems]);
+
+  const mapPoints = useMemo<InventoryMapPoint[]>(
+    () =>
+      geolocatedItems.map((item) => {
+        const project = projectById.get(item.projectId);
+        return {
+          id: `${item.projectId}::${item.id}`,
+          label: item.name || 'Activo',
+          latitude: item.latitude,
+          longitude: item.longitude,
+          tone: isRepairAsset(item)
+            ? 'bg-orange-600'
+            : item.status === 'retired'
+              ? 'bg-slate-500'
+              : item.status === 'transferred'
+                ? 'bg-violet-600'
+                : item.status === 'lost'
+                  ? 'bg-red-600'
+                  : 'bg-emerald-600',
+          meta: project?.name || item.projectId,
+        };
+      }),
+    [geolocatedItems, projectById]
+  );
 
   const selectedItem = useMemo(
     () =>
@@ -368,7 +406,7 @@ export default function InventoryOverviewPage() {
   }, [visibleItems]);
 
   const downloadCsvReport = () => {
-    const headers = ['Proyecto', 'Organización', 'Activo', 'Categoría', 'Código', 'Serial', 'Cantidad', 'Responsable', 'Ubicación', 'Estado', 'Condición', 'Valor unitario', 'Requiere reparación', 'Observaciones'];
+    const headers = ['Proyecto', 'Organización', 'Activo', 'Categoría', 'Código', 'Serial', 'Cantidad', 'Responsable', 'Ubicación', 'Latitud', 'Longitud', 'Estado', 'Condición', 'Valor unitario', 'Requiere reparación', 'Observaciones'];
     const csv = [
       headers.map(csvEscape).join(','),
       ...visibleItems.map((item) => {
@@ -383,6 +421,8 @@ export default function InventoryOverviewPage() {
           item.quantity || 1,
           getResponsibleLabel(item, membersById),
           item.location || '',
+          item.latitude ?? '',
+          item.longitude ?? '',
           getStatusMeta(item.status).label,
           getConditionMeta(item.condition).label,
           item.estimatedValue || 0,
@@ -443,7 +483,7 @@ export default function InventoryOverviewPage() {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <MetricCard label="Unidades" value={compactNumber(stats.totalUnits)} detail={`${compactNumber(visibleItems.length)} activos visibles`} icon={<PackageSearch size={21} />} tone="bg-indigo-50 text-indigo-700 ring-indigo-100" />
           <MetricCard label="Valor estimado" value={formatCurrency(stats.totalValue)} detail="Total inventariado" icon={<BriefcaseBusiness size={21} />} tone="bg-emerald-50 text-emerald-700 ring-emerald-100" />
-          <MetricCard label="Ubicaciones" value={compactNumber(stats.locations)} detail="Puntos físicos registrados" icon={<MapPin size={21} />} tone="bg-cyan-50 text-cyan-700 ring-cyan-100" />
+          <MetricCard label="Ubicaciones" value={compactNumber(stats.locations)} detail={`${compactNumber(geolocatedItems.length)} con coordenadas`} icon={<MapPin size={21} />} tone="bg-cyan-50 text-cyan-700 ring-cyan-100" />
           <MetricCard label="Responsables" value={compactNumber(stats.responsibleCount)} detail="Personas con activos" icon={<User size={21} />} tone="bg-violet-50 text-violet-700 ring-violet-100" />
           <MetricCard label="Reparación" value={compactNumber(stats.repairCount)} detail="Activos con novedad" icon={<Wrench size={21} />} tone="bg-orange-50 text-orange-700 ring-orange-100" />
         </div>
@@ -490,6 +530,40 @@ export default function InventoryOverviewPage() {
               ))}
             </select>
           </div>
+        </section>
+
+        <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="flex items-center gap-2 text-lg font-black text-slate-950">
+                <MapPin size={19} className="text-indigo-600" />
+                Mapa global de activos
+              </h2>
+              <p className="mt-1 text-xs font-bold text-slate-500">
+                {compactNumber(geolocatedItems.length)} activos con coordenadas dentro de los filtros actuales.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <span className="rounded bg-emerald-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-700 ring-1 ring-emerald-100">
+                Operativos
+              </span>
+              <span className="rounded bg-orange-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-orange-700 ring-1 ring-orange-100">
+                Reparación
+              </span>
+              <span className="rounded bg-red-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-red-700 ring-1 ring-red-100">
+                No localizados
+              </span>
+            </div>
+          </div>
+          <InventoryLocationMap
+            key={`${selectedProjectId}-${categoryFilter}-${statusFilter}-${mapPoints.length}`}
+            points={mapPoints}
+            selectedPointId={selectedItemKey}
+            onPointClick={(point) => setSelectedItemKey(point.id)}
+            heightClassName="h-[420px]"
+            emptyLabel="Registra coordenadas en los activos de tus proyectos para verlos en este mapa."
+            className="rounded-none border-0 shadow-none"
+          />
         </section>
 
         <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
@@ -557,6 +631,11 @@ export default function InventoryOverviewPage() {
                         <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Dónde está</p>
                         <p className="mt-1 truncate text-sm font-black text-slate-700">{item.location || 'Sin ubicación'}</p>
                         <p className="truncate text-xs font-bold text-slate-500">{getResponsibleLabel(item, membersById)}</p>
+                        {hasMapCoordinates(item) && (
+                          <p className="mt-1 truncate text-[11px] font-black text-cyan-700">
+                            Lat {parseMapCoordinate(item.latitude)?.toFixed(5)} · Lng {parseMapCoordinate(item.longitude)?.toFixed(5)}
+                          </p>
+                        )}
                       </div>
 
                       <div>
@@ -663,6 +742,23 @@ export default function InventoryOverviewPage() {
                     <InfoTile label="Cantidad" value={compactNumber(Number(selectedItem.quantity || 1))} icon={<PackageSearch size={16} />} />
                     <InfoTile label="Valor" value={formatCurrency(Number(selectedItem.estimatedValue || 0))} icon={<BriefcaseBusiness size={16} />} />
                   </div>
+
+                  {hasMapCoordinates(selectedItem) && (
+                    <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                      <InventoryLocationMap
+                        key={`global-detail-${selectedItem.projectId}-${selectedItem.id}`}
+                        value={{
+                          latitude: parseMapCoordinate(selectedItem.latitude) ?? undefined,
+                          longitude: parseMapCoordinate(selectedItem.longitude) ?? undefined,
+                        }}
+                        heightClassName="h-60"
+                        emptyLabel="Activo sin punto geográfico."
+                      />
+                      <p className="border-t border-slate-100 px-3 py-2 text-xs font-bold text-slate-500">
+                        Lat {parseMapCoordinate(selectedItem.latitude)?.toFixed(6)} · Lng {parseMapCoordinate(selectedItem.longitude)?.toFixed(6)}
+                      </p>
+                    </div>
+                  )}
 
                   {selectedItem.mapUrl && (
                     <a href={selectedItem.mapUrl} target="_blank" rel="noreferrer" className="mt-4 inline-flex h-10 items-center rounded-lg border border-indigo-100 bg-indigo-50 px-3 text-sm font-black text-indigo-700 transition hover:bg-indigo-100">
