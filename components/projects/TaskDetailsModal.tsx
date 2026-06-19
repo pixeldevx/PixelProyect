@@ -23,7 +23,7 @@ import {
   isMeetingLocationUrl,
   isMeetingTask,
 } from '@/lib/calendar-utils';
-import { resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
+import { resolveWorkflowActiveStepIndex, resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
 
 interface TaskDetailsModalProps {
   isOpen: boolean;
@@ -188,13 +188,10 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
           (s) => s.status === "listo",
         ).length;
         newProgress = Math.round((approvedCount / workflowSteps.length) * 100);
-        const firstOpenStepIndex = workflowSteps.findIndex(
-          (step) => step.status !== "listo",
-        );
-        newCurrentStepIndex =
-          firstOpenStepIndex === -1
-            ? Math.max(0, workflowSteps.length - 1)
-            : firstOpenStepIndex;
+        newCurrentStepIndex = resolveWorkflowActiveStepIndex({
+          steps: workflowSteps,
+          currentIndex: task.currentStepIndex || 0,
+        });
 
         if (newProgress === 100) {
           newStatus = getCompletionStatusForTask("completed", task);

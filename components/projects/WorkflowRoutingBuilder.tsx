@@ -55,6 +55,27 @@ const getStepTitle = (step: any, index: number) =>
 const getDefaultRouteTarget = (currentIndex: number, stepCount: number): WorkflowRouteTarget =>
   currentIndex < stepCount - 1 ? currentIndex + 1 : "complete";
 
+type WorkflowNodePosition = {
+  x: number;
+  y: number;
+};
+
+const normalizeWorkflowNodePosition = (value: any): WorkflowNodePosition | null => {
+  const x = Number(value?.x);
+  const y = Number(value?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+};
+
+const getDefaultWorkflowNodePosition = (index: number): WorkflowNodePosition => ({
+  x: index * 360,
+  y: index % 2 === 0 ? 0 : 36,
+});
+
+const getWorkflowNodePosition = (step: any, index: number): WorkflowNodePosition =>
+  normalizeWorkflowNodePosition(step?.visualPosition || step?.workflowPosition || step?.nodePosition) ||
+  getDefaultWorkflowNodePosition(index);
+
 const getTargetOptions = (steps: any[], currentIndex: number) => {
   const futureSteps = steps
     .map((step, index) => ({ step, index }))
@@ -93,7 +114,7 @@ function WorkflowStepNode({ data, selected }: NodeProps) {
 
   return (
     <div
-      className={`w-[260px] rounded-2xl border bg-white shadow-xl transition-all ${
+      className={`w-[260px] cursor-grab rounded-2xl border bg-white shadow-xl transition-all active:cursor-grabbing ${
         selected
           ? "border-indigo-500 ring-4 ring-indigo-500/15"
           : "border-slate-200 hover:border-indigo-200 hover:shadow-2xl"
@@ -300,6 +321,10 @@ function WorkflowVisualEditorModal({
 
   const addStepFromCanvas = () => {
     const nextIndex = steps.length;
+    const lastPosition = steps.length > 0
+      ? getWorkflowNodePosition(steps[steps.length - 1], steps.length - 1)
+      : getDefaultWorkflowNodePosition(0);
+
     onChange([
       ...steps,
       {
@@ -309,6 +334,10 @@ function WorkflowVisualEditorModal({
         autoAddUnits: true,
         rateCards: [],
         plannedDurationDays: 1,
+        visualPosition: {
+          x: Math.round(lastPosition.x + 360),
+          y: Math.round(lastPosition.y + (nextIndex % 2 === 0 ? -36 : 36)),
+        },
       },
     ]);
     setSelectedStepIndex(nextIndex);
@@ -342,7 +371,23 @@ function WorkflowVisualEditorModal({
     });
   };
 
+  const handleNodeDragStop = (_event: React.MouseEvent, node: Node) => {
+    const nodeId = String(node.id || "");
+    if (!nodeId.startsWith("workflow-step-")) return;
+
+    const stepIndex = Number(nodeId.replace("workflow-step-", ""));
+    if (!Number.isFinite(stepIndex) || !steps[stepIndex]) return;
+
+    updateStep(stepIndex, {
+      visualPosition: {
+        x: Math.round(node.position.x),
+        y: Math.round(node.position.y),
+      },
+    });
+  };
+
   const nodes = useMemo<Node[]>(() => {
+    const stepPositions = steps.map((step, index) => getWorkflowNodePosition(step, index));
     const stepNodes = steps.map((step, index) => {
       const fields = getWorkflowStepFormFields(step);
       const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
@@ -350,7 +395,7 @@ function WorkflowVisualEditorModal({
       return {
         id: `workflow-step-${index}`,
         type: "workflowStep",
-        position: { x: index * 360, y: index % 2 === 0 ? 0 : 36 },
+        position: stepPositions[index],
         data: {
           index,
           title: getStepTitle(step, index),
@@ -368,12 +413,17 @@ function WorkflowVisualEditorModal({
       } satisfies Node;
     });
 
+    const maxStepX = stepPositions.reduce((max, position) => Math.max(max, position.x), 0);
+    const averageStepY = stepPositions.length > 0
+      ? stepPositions.reduce((sum, position) => sum + position.y, 0) / stepPositions.length
+      : 18;
+
     return [
       ...stepNodes,
       {
         id: COMPLETE_NODE_ID,
         type: "workflowComplete",
-        position: { x: Math.max(steps.length, 1) * 360, y: 18 },
+        position: { x: Math.round(maxStepX + 360), y: Math.round(averageStepY) },
         data: {},
       } satisfies Node,
     ];
@@ -491,7 +541,7 @@ function WorkflowVisualEditorModal({
             nodes={nodes}
             edges={edges}
             nodeTypes={workflowNodeTypes}
-            nodesDraggable={false}
+            nodesDraggable
             nodesConnectable={false}
             elementsSelectable
             fitView
@@ -502,6 +552,7 @@ function WorkflowVisualEditorModal({
               const index = Number(String(node.id).replace("workflow-step-", ""));
               if (Number.isFinite(index)) setSelectedStepIndex(index);
             }}
+            onNodeDragStop={handleNodeDragStop}
             fitViewOptions={{ padding: 0.18 }}
             attributionPosition="bottom-left"
           >
@@ -511,7 +562,7 @@ function WorkflowVisualEditorModal({
                 Lienzo interactivo
               </p>
               <p className="mt-1 max-w-sm text-[11px] font-semibold text-slate-500">
-                Usa zoom y arrastre para recorrer el flujo. Las lineas punteadas son rutas por defecto.
+                Arrastra nodos para ordenar el flujo. Usa zoom y desplaza el lienzo para navegar; las lineas punteadas son rutas por defecto.
               </p>
             </div>
             <Controls showInteractive={false} />

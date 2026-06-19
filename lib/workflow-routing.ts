@@ -195,6 +195,56 @@ export const resolveWorkflowNextStepIndex = ({
   return runtimeDefault === undefined ? linearNext : runtimeDefault;
 };
 
+export const resolveWorkflowPreviousStepIndex = ({
+  steps,
+  currentIndex,
+}: {
+  steps: any[];
+  currentIndex: number;
+}): number | null => {
+  const stepCount = Array.isArray(steps) ? steps.length : 0;
+  if (stepCount === 0 || currentIndex <= 0 || currentIndex >= stepCount) return null;
+
+  for (let sourceIndex = currentIndex - 1; sourceIndex >= 0; sourceIndex -= 1) {
+    const sourceStep = steps[sourceIndex];
+    const sourceWasUsed = String(sourceStep?.status || "") === "listo" || Boolean(sourceStep?.completedAt);
+    if (!sourceWasUsed) continue;
+
+    const target = resolveWorkflowNextStepIndex({
+      steps,
+      currentIndex: sourceIndex,
+      formData: sourceStep?.formData || {},
+    });
+    if (target === currentIndex) return sourceIndex;
+  }
+
+  return currentIndex - 1;
+};
+
+const ACTIVE_WORKFLOW_STEP_STATUSES = new Set(["en_curso", "reproceso", "detenido"]);
+
+export const resolveWorkflowActiveStepIndex = ({
+  steps,
+  currentIndex = 0,
+}: {
+  steps: any[];
+  currentIndex?: number;
+}) => {
+  const stepCount = Array.isArray(steps) ? steps.length : 0;
+  if (stepCount === 0) return 0;
+
+  const boundedCurrentIndex = Math.min(Math.max(0, Number(currentIndex) || 0), stepCount - 1);
+  const explicitActiveIndex = steps.findIndex((step) =>
+    ACTIVE_WORKFLOW_STEP_STATUSES.has(String(step?.status || ""))
+  );
+
+  if (explicitActiveIndex !== -1) return explicitActiveIndex;
+  if (String(steps[boundedCurrentIndex]?.status || "") !== "listo") return boundedCurrentIndex;
+
+  const firstOpenStepIndex = steps.findIndex((step) => String(step?.status || "") !== "listo");
+  return firstOpenStepIndex === -1 ? stepCount - 1 : firstOpenStepIndex;
+};
+
 export const getWorkflowTargetLabel = (
   target: WorkflowRouteTarget | undefined,
   steps: any[],

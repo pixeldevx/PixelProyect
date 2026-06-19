@@ -46,7 +46,7 @@ import {
   isMeetingTask,
 } from '@/lib/calendar-utils';
 import { detectActionCandidates } from '@/lib/project-logbook/action-detection';
-import { resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
+import { resolveWorkflowNextStepIndex, resolveWorkflowPreviousStepIndex } from '@/lib/workflow-routing';
 
 const hasRequiredFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -1144,6 +1144,12 @@ export default function WorkflowTray() {
     const action = actionModal.type;
     const currentIndex = task.currentStepIndex || 0;
     const currentStep = task.workflowSteps[currentIndex];
+    const returnTargetIndex = action === 'return'
+      ? resolveWorkflowPreviousStepIndex({
+          steps: task.workflowSteps || [],
+          currentIndex,
+        })
+      : null;
     const currentStepIsQualityGate = isQualityGateStep(currentStep);
     const selectedQualityCause = projectQualityCauses.find((cause) => cause.id === qualityCauseId);
     const staticRateCardSources = getStaticRateCardSources(currentStep);
@@ -1205,6 +1211,11 @@ export default function WorkflowTray() {
 
     if (currentStepIsQualityGate && currentIndex === 0 && (action === 'approve' || action === 'return')) {
       toast.error("Este control de calidad no tiene un paso anterior. Edita el workflow y mueve calidad después del paso que envía a revisión.");
+      return;
+    }
+
+    if (action === 'return' && returnTargetIndex === null) {
+      toast.warning("No hay una ruta anterior configurada para devolver este workflow.");
       return;
     }
     
@@ -1400,8 +1411,8 @@ export default function WorkflowTray() {
           completedLate: Boolean(workflowPerformanceEntry?.completedLate),
         };
         
-        if (currentIndex > 0) {
-          nextIndex = currentIndex - 1;
+        if (returnTargetIndex !== null) {
+          nextIndex = returnTargetIndex;
           steps[nextIndex] = {
             ...steps[nextIndex],
             status: 'reproceso',
@@ -1458,7 +1469,7 @@ export default function WorkflowTray() {
           comment: actionComment,
           formData: action === 'approve' ? formData : null,
           nextStepAssignee: action === 'approve' && currentStep.assignsNextStep && assignedNextWorkflowIndex !== null ? nextStepAssignee : null,
-          nextStepIndex: assignedNextWorkflowIndex,
+          nextStepIndex: action === 'return' ? nextIndex : assignedNextWorkflowIndex,
           dynamicRateCard: dynamicRateCardCharge,
           qualityEvent,
           performanceEntryId: workflowPerformanceEntry?.id || null,
@@ -1498,7 +1509,7 @@ export default function WorkflowTray() {
 
       const shouldNotifyNextAssignee =
         (action === 'approve' && assignedNextWorkflowIndex !== null) ||
-        (action === 'return' && currentIndex > 0);
+        (action === 'return' && returnTargetIndex !== null);
       if (shouldNotifyNextAssignee) {
         void notifyTaskAssignment({
           projectId: task.projectId,
@@ -2475,6 +2486,7 @@ export default function WorkflowTray() {
     const currentStep = workflowSteps[currentIndex] || {};
     const isStopped = currentStep?.status === 'detenido';
     const isProcessing = processingId === task.id;
+    const returnTargetIndex = resolveWorkflowPreviousStepIndex({ steps: workflowSteps, currentIndex });
 
     const openWorkflowAction = (type: 'approve' | 'return' | 'stop' | 'resume') => {
       onCloseModal?.();
@@ -2510,8 +2522,9 @@ export default function WorkflowTray() {
           variant="outline"
           size="sm"
           onClick={() => openWorkflowAction('return')}
-          disabled={isProcessing || currentIndex === 0 || isStopped}
+          disabled={isProcessing || returnTargetIndex === null || isStopped}
           className="h-8 text-red-600"
+          title={returnTargetIndex === null ? 'No hay una ruta anterior para devolver' : 'Devolver por la ruta configurada'}
         >
           <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
           Devolver
@@ -2678,6 +2691,7 @@ export default function WorkflowTray() {
     const stepStatus = currentWorkflowStep?.status;
     const isReturned = stepStatus === 'devuelto' || stepStatus === 'returned';
     const isStopped = stepStatus === 'detenido';
+    const returnTargetIndex = resolveWorkflowPreviousStepIndex({ steps: workflowSteps, currentIndex });
     const workflowUrgencyStyles = isReturned ? getInboxUrgencyStyles('overdue') : urgencyStyles;
     const workflowHistoryCount = getInteractionHistory(task).length;
     const attentionBadge = getWorkflowAttentionBadge(stepStatus);
@@ -2757,9 +2771,9 @@ export default function WorkflowTray() {
                 variant="outline"
                 size="sm"
                 onClick={() => openActionModal(task, 'return')}
-                disabled={processingId === task.id || currentIndex === 0 || isStopped}
+                disabled={processingId === task.id || returnTargetIndex === null || isStopped}
                 className="h-7 px-2 text-red-600 hover:bg-white/80"
-                title="Devolver"
+                title={returnTargetIndex === null ? 'No hay una ruta anterior para devolver' : 'Devolver por la ruta configurada'}
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
               </Button>
