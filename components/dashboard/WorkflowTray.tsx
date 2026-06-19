@@ -854,7 +854,7 @@ export default function WorkflowTray() {
   );
   
   const [actionModal, setActionModal] = useState<{ isOpen: boolean, task: any, type: 'approve' | 'return' | 'stop' | 'resume' }>({ isOpen: false, task: null, type: 'approve' });
-  const [staticRateCardUnits, setStaticRateCardUnits] = useState<Record<string, number | ''>>({});
+  const [staticRateCardUnits, setStaticRateCardUnits] = useState<Record<string, string>>({});
   const [staticRateCardAssignees, setStaticRateCardAssignees] = useState<Record<string, string>>({});
   const [actionComment, setActionComment] = useState('');
   const [formData, setFormData] = useState<Record<string, any>>({});
@@ -865,7 +865,7 @@ export default function WorkflowTray() {
   const [qualityCauseId, setQualityCauseId] = useState('');
   const [dynamicRateCardAssignee, setDynamicRateCardAssignee] = useState('');
   const [dynamicRateCardId, setDynamicRateCardId] = useState('');
-  const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState<number | ''>(1);
+  const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState('1');
   const [dynamicRateCardModal, setDynamicRateCardModal] = useState<{
     isOpen: boolean;
     task: any;
@@ -1094,7 +1094,7 @@ export default function WorkflowTray() {
   const resetDynamicRateCardFields = (source: any = null, defaultAssignee = '') => {
     setDynamicRateCardAssignee(defaultAssignee);
     setDynamicRateCardId('');
-    setDynamicRateCardUnits(getDynamicRateCardUnits(source));
+    setDynamicRateCardUnits(String(getDynamicRateCardUnits(source)));
     setDynamicRateCardComment('');
   };
 
@@ -1303,7 +1303,7 @@ export default function WorkflowTray() {
       if (staticRateCardSources.length > 0 && (action === 'approve' || action === 'return')) {
         staticRateCardSources.forEach((staticRateCardSource) => {
           const units = staticRateCardSource.autoAddUnits === false
-            ? Number(staticRateCardUnits[staticRateCardSource.key] || 0)
+            ? normalizeRateCardUnits(staticRateCardUnits[staticRateCardSource.key], 0)
             : normalizeRateCardUnits(staticRateCardSource.unitsToAdd);
           const assignedUser = getStaticRateCardAssignee(
             staticRateCardSource,
@@ -1341,7 +1341,7 @@ export default function WorkflowTray() {
           rateCardId: dynamicRateCardId,
           assigneeId: dynamicRateCardAssignee,
           units: workflowDynamicRateCardRequestsUnits
-            ? Number(dynamicRateCardUnits)
+            ? normalizeRateCardUnits(dynamicRateCardUnits, 0)
             : getDynamicRateCardUnits(workflowDynamicRateCardSource.sourceConfig),
           source: workflowDynamicRateCardSource.source,
           stepIndex: workflowDynamicRateCardSource.stepIndex,
@@ -1623,7 +1623,7 @@ export default function WorkflowTray() {
     
     const staticRateCardSources = getStaticRateCardSources(currentStep);
     setStaticRateCardUnits(
-      Object.fromEntries(staticRateCardSources.map((source) => [source.key, normalizeRateCardUnits(source.unitsToAdd)]))
+      Object.fromEntries(staticRateCardSources.map((source) => [source.key, String(normalizeRateCardUnits(source.unitsToAdd))]))
     );
     setStaticRateCardAssignees(
       Object.fromEntries(
@@ -1776,7 +1776,7 @@ export default function WorkflowTray() {
         const staticSources = getStaticRateCardSources({ form: completionForm });
         staticSources.forEach((source) => {
           const units = source.autoAddUnits === false
-            ? Number(completionSubmission.staticRateCardUnits[source.key] ?? 0)
+            ? normalizeRateCardUnits(completionSubmission.staticRateCardUnits[source.key], 0)
             : normalizeRateCardUnits(source.unitsToAdd);
           const assigneeId = getStaticRateCardAssignee(
             source,
@@ -2112,7 +2112,7 @@ export default function WorkflowTray() {
     await updateAssignedTaskStatus(task, dynamicRateCardModal.nextStatus, {
       assigneeId: dynamicRateCardAssignee,
       rateCardId: dynamicRateCardId,
-      units: taskRequestsUnits ? Number(dynamicRateCardUnits) : getDynamicRateCardUnits(task),
+      units: taskRequestsUnits ? normalizeRateCardUnits(dynamicRateCardUnits, 0) : getDynamicRateCardUnits(task),
       comment: dynamicRateCardComment.trim() || null,
     });
 
@@ -3343,11 +3343,11 @@ export default function WorkflowTray() {
                           Unidades <span className="text-red-500">*</span>
                         </label>
                         <input
-                          type="number"
-                          min="0"
-                          step="any"
+                          type="text"
+                          inputMode="decimal"
+                          pattern="[0-9]*[.,]?[0-9]*"
                           value={dynamicRateCardUnits}
-                          onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                          onChange={(e) => setDynamicRateCardUnits(e.target.value)}
                           className="w-full rounded-lg border border-emerald-100 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
                         />
                       </div>
@@ -3378,17 +3378,16 @@ export default function WorkflowTray() {
                             {rateCard?.name || 'Rate Card'}
                           </span>
                           <input
-                            type="number"
-                            min="0"
-                            step="any"
-                            value={staticRateCardUnits[source.key] ?? source.unitsToAdd}
-                            onChange={(e) => {
-                              const nextValue = e.target.value === '' ? '' : Number(e.target.value);
+                            type="text"
+                            inputMode="decimal"
+                            pattern="[0-9]*[.,]?[0-9]*"
+                            value={staticRateCardUnits[source.key] ?? String(source.unitsToAdd ?? '')}
+                            onChange={(e) =>
                               setStaticRateCardUnits((current) => ({
                                 ...current,
-                                [source.key]: nextValue,
-                              }));
-                            }}
+                                [source.key]: e.target.value,
+                              }))
+                            }
                             className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                             required
                           />
@@ -3860,11 +3859,11 @@ export default function WorkflowTray() {
                     Unidades <span className="text-red-500">*</span>
                   </label>
                   <input
-                    type="number"
-                    min="0"
-                    step="any"
+                    type="text"
+                    inputMode="decimal"
+                    pattern="[0-9]*[.,]?[0-9]*"
                     value={dynamicRateCardUnits}
-                    onChange={(e) => setDynamicRateCardUnits(e.target.value === '' ? '' : Number(e.target.value))}
+                    onChange={(e) => setDynamicRateCardUnits(e.target.value)}
                     className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                   />
                 </div>

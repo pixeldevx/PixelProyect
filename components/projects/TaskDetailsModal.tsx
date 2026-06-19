@@ -47,7 +47,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   const [workflowSteps, setWorkflowSteps] = useState<any[]>([]);
   const [stepUnitPrompt, setStepUnitPrompt] = useState<{
     index: number;
-    unitsByKey: Record<string, number | ''>;
+    unitsByKey: Record<string, string>;
     assigneesByKey: Record<string, string>;
     requiresNextAssignee?: boolean;
     nextAssignee?: string;
@@ -373,7 +373,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       setStepUnitPrompt({
         index,
         unitsByKey: Object.fromEntries(
-          manualRateCardSources.map((source) => [source.key, normalizeRateCardUnits(source.unitsToAdd)])
+          manualRateCardSources.map((source) => [source.key, String(normalizeRateCardUnits(source.unitsToAdd))])
         ),
         assigneesByKey: Object.fromEntries(
           runtimeRateCardSources.map((source) => [source.key, source.assignedTo || ""])
@@ -445,7 +445,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     let updatedStep = { ...currentStep };
 
     sources.forEach((source) => {
-      const units = Number(stepUnitPrompt.unitsByKey[source.key] || 0);
+      const units = normalizeRateCardUnits(stepUnitPrompt.unitsByKey[source.key], 0);
       const assignedTo = stepUnitPrompt.assigneesByKey[source.key] || "";
       const updates: any = {};
       if (source.autoAddUnits === false) updates.unitsToAdd = units;
@@ -817,16 +817,16 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                     Unidades acumuladas {sourceIndex + 1}
                   </span>
                   <input
-                    type="number"
-                    min="0"
-                    step="any"
+                    type="text"
+                    inputMode="decimal"
+                    pattern="[0-9]*[.,]?[0-9]*"
                     value={stepUnitPrompt.unitsByKey[source.key] || ''}
                     onChange={(e) =>
                       setStepUnitPrompt({
                         ...stepUnitPrompt,
                         unitsByKey: {
                           ...stepUnitPrompt.unitsByKey,
-                          [source.key]: e.target.value === '' ? '' : Number(e.target.value),
+                          [source.key]: e.target.value,
                         },
                       })
                     }

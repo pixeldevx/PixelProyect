@@ -2063,8 +2063,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                             </TableCell>
                             <TableCell>
                               <input
-                                type="number"
-                                step="any"
+                                type="text"
+                                inputMode="decimal"
+                                pattern="[0-9]*[.,]?[0-9]*"
                                 value={draft.units}
                                 onChange={(event) => updateEntryDraft(entry.id, { units: event.target.value })}
                                 disabled={maintenanceLoading}

@@ -16,7 +16,7 @@ import { toast } from "sonner";
 export type SubtaskCompletionSubmission = {
   formData: Record<string, any>;
   comment: string | null;
-  staticRateCardUnits: Record<string, number | "">;
+  staticRateCardUnits: Record<string, string>;
   staticRateCardAssignees: Record<string, string>;
   dynamicRateCard?: {
     assigneeId: string;
@@ -90,11 +90,11 @@ export function CompleteSubtaskFormModal({
 
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [comment, setComment] = useState("");
-  const [staticRateCardUnits, setStaticRateCardUnits] = useState<Record<string, number | "">>({});
+  const [staticRateCardUnits, setStaticRateCardUnits] = useState<Record<string, string>>({});
   const [staticRateCardAssignees, setStaticRateCardAssignees] = useState<Record<string, string>>({});
   const [dynamicRateCardAssignee, setDynamicRateCardAssignee] = useState("");
   const [dynamicRateCardId, setDynamicRateCardId] = useState("");
-  const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState<number | "">(1);
+  const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState("1");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
@@ -103,7 +103,7 @@ export function CompleteSubtaskFormModal({
     setFormData(task.completionFormData || {});
     setComment("");
     setStaticRateCardUnits(
-      Object.fromEntries(staticRateCardSources.map((source) => [source.key, normalizeRateCardUnits(source.unitsToAdd)]))
+      Object.fromEntries(staticRateCardSources.map((source) => [source.key, String(normalizeRateCardUnits(source.unitsToAdd))]))
     );
     setStaticRateCardAssignees(
       Object.fromEntries(
@@ -112,7 +112,7 @@ export function CompleteSubtaskFormModal({
     );
     setDynamicRateCardAssignee(task.assignedTo || user?.uid || "");
     setDynamicRateCardId("");
-    setDynamicRateCardUnits(getDynamicRateCardUnits(completionForm));
+    setDynamicRateCardUnits(String(getDynamicRateCardUnits(completionForm)));
     setIsSubmitting(false);
   }, [completionForm, isOpen, runtimeStaticSources, staticRateCardSources, task, user?.uid]);
 
@@ -180,7 +180,7 @@ export function CompleteSubtaskFormModal({
           ? {
               assigneeId: dynamicRateCardAssignee,
               rateCardId: dynamicRateCardId,
-              units: dynamicRequestsUnits ? Number(dynamicRateCardUnits) : getDynamicRateCardUnits(completionForm),
+              units: dynamicRequestsUnits ? normalizeRateCardUnits(dynamicRateCardUnits, 0) : getDynamicRateCardUnits(completionForm),
             }
           : null,
       });
@@ -348,14 +348,14 @@ export function CompleteSubtaskFormModal({
                       <label key={source.key} className="grid grid-cols-[minmax(0,1fr)_120px] items-center gap-2">
                         <span className="truncate text-xs font-bold text-slate-700">{rateCard?.name || "Rate Card"}</span>
                         <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={staticRateCardUnits[source.key] ?? source.unitsToAdd}
+                          type="text"
+                          inputMode="decimal"
+                          pattern="[0-9]*[.,]?[0-9]*"
+                          value={staticRateCardUnits[source.key] ?? String(source.unitsToAdd ?? "")}
                           onChange={(event) =>
                             setStaticRateCardUnits({
                               ...staticRateCardUnits,
-                              [source.key]: event.target.value === "" ? "" : Number(event.target.value),
+                              [source.key]: event.target.value,
                             })
                           }
                           className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
@@ -433,11 +433,11 @@ export function CompleteSubtaskFormModal({
                     <div className="md:col-span-2">
                       <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-emerald-700">Unidades</label>
                       <input
-                        type="number"
-                        min="0"
-                        step="any"
+                        type="text"
+                        inputMode="decimal"
+                        pattern="[0-9]*[.,]?[0-9]*"
                         value={dynamicRateCardUnits}
-                        onChange={(event) => setDynamicRateCardUnits(event.target.value === "" ? "" : Number(event.target.value))}
+                        onChange={(event) => setDynamicRateCardUnits(event.target.value)}
                         className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
                       />
                     </div>
