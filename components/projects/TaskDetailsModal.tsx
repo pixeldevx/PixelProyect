@@ -23,7 +23,7 @@ import {
   isMeetingLocationUrl,
   isMeetingTask,
 } from '@/lib/calendar-utils';
-import { isWorkflowTaskType, resolveWorkflowActiveStepIndex, resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
+import { isDynamicWorkflowAssignee, isWorkflowTaskType, resolveWorkflowActiveStepIndex, resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
 
 interface TaskDetailsModalProps {
   isOpen: boolean;
@@ -298,6 +298,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
             comment:
               "Avance manual desde detalles de la tarea. Se asignó el siguiente paso.",
             nextStepAssignee: pendingNextStepNotification.assigneeId,
+            nextStepIndex: pendingNextStepNotification.stepIndex,
             timestamp: Timestamp.now(),
           });
         }
@@ -356,7 +357,12 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       currentIndex: index,
       formData: step?.formData || {},
     });
-    const requiresNextAssignee = Boolean(step.assignsNextStep && plannedNextIndex !== null);
+    const plannedNextStepRequiresDynamicAssignee = Boolean(
+      plannedNextIndex !== null && isDynamicWorkflowAssignee(newSteps[plannedNextIndex]?.assignedTo)
+    );
+    const requiresNextAssignee = Boolean(
+      plannedNextIndex !== null && (step.assignsNextStep || plannedNextStepRequiresDynamicAssignee)
+    );
 
     if (
       currentStatus !== "listo" &&

@@ -47,9 +47,11 @@ import {
 } from '@/lib/calendar-utils';
 import { detectActionCandidates } from '@/lib/project-logbook/action-detection';
 import {
+  isDynamicWorkflowAssignee,
   isVariableWorkflowTaskType,
   isWorkflowTaskType,
   resolveWorkflowNextStepIndex,
+  resolveWorkflowQualitySourceStepIndex,
   resolveWorkflowPreviousStepIndex,
 } from '@/lib/workflow-routing';
 
@@ -617,10 +619,26 @@ const getWorkflowDynamicRateCardSource = (task: any, action: string) => {
 const isQualityGateStep = (step: any) =>
   Boolean(step?.isQualityGate || step?.type === 'quality_gate' || step?.taskType === 'quality_gate');
 
-const getQualityParticipantIds = (task: any, currentIndex: number, currentStep: any, reviewerId: string | null, userId?: string) => {
-  const previousStep = currentIndex > 0 ? task.workflowSteps?.[currentIndex - 1] : null;
+const getQualityParticipantIds = (
+  task: any,
+  currentIndex: number,
+  currentStep: any,
+  reviewerId: string | null,
+  userId?: string,
+  sourceStepIndex?: number | null
+) => {
+  const previousStep =
+    typeof sourceStepIndex === 'number'
+      ? task.workflowSteps?.[sourceStepIndex]
+      : currentIndex > 0
+        ? task.workflowSteps?.[currentIndex - 1]
+        : null;
   const professionalId =
-    (previousStep?.assignedTo && previousStep.assignedTo !== 'DYNAMIC' ? previousStep.assignedTo : null) ||
+    previousStep?.completedByMemberId ||
+    (Array.isArray(previousStep?.completedByIds) ? previousStep.completedByIds.find(Boolean) : null) ||
+    previousStep?.completedBy ||
+    previousStep?.startedByMemberId ||
+    (previousStep?.assignedTo && !isDynamicWorkflowAssignee(previousStep.assignedTo) ? previousStep.assignedTo : null) ||
     task.assignedTo ||
     task.assignedTeamMembers?.[0] ||
     task.assignedUsers?.[0] ||
@@ -628,9 +646,9 @@ const getQualityParticipantIds = (task: any, currentIndex: number, currentStep: 
     null;
 
   const qualityReviewerId =
-    (currentStep?.assignedTo && currentStep.assignedTo !== 'DYNAMIC' ? currentStep.assignedTo : null) ||
     reviewerId ||
     userId ||
+    (currentStep?.assignedTo && !isDynamicWorkflowAssignee(currentStep.assignedTo) ? currentStep.assignedTo : null) ||
     null;
 
   return { professionalId, reviewerId: qualityReviewerId };
@@ -1148,16 +1166,47 @@ export default function WorkflowTray() {
     const task = actionModal.task;
     const action = actionModal.type;
     const currentIndex = task.currentStepIndex || 0;
-    const currentStep = task.workflowSteps[currentIndex];
+    const workflowStepsForRouting = task.workflowSteps || [];
+    const currentStep = workflowStepsForRouting[currentIndex];
     const isVariableWorkflow = isVariableWorkflowTaskType(task.type);
+    const approveFormData =
+      action === 'approve'
+        ? Object.keys(formData).length > 0
+          ? formData
+          : currentStep?.formData || {}
+        : {};
+    const approveNextIndex =
+      action === 'approve'
+        ? resolveWorkflowNextStepIndex({
+            steps: workflowStepsForRouting,
+            currentIndex,
+            formData: approveFormData,
+          })
+        : null;
+    const approveNextStepRequiresDynamicAssignee = Boolean(
+      approveNextIndex !== null &&
+        isDynamicWorkflowAssignee(workflowStepsForRouting[approveNextIndex]?.assignedTo)
+    );
+    const approveNeedsNextAssignee = Boolean(
+      action === 'approve' &&
+        approveNextIndex !== null &&
+        (currentStep?.assignsNextStep || approveNextStepRequiresDynamicAssignee)
+    );
     const returnTargetIndex = action === 'return'
       ? resolveWorkflowPreviousStepIndex({
-          steps: task.workflowSteps || [],
+          steps: workflowStepsForRouting,
           currentIndex,
           history: task.workflowHistory || [],
         })
       : null;
     const currentStepIsQualityGate = isQualityGateStep(currentStep);
+    const qualitySourceStepIndex = currentStepIsQualityGate
+      ? resolveWorkflowQualitySourceStepIndex({
+          steps: workflowStepsForRouting,
+          currentIndex,
+          history: task.workflowHistory || [],
+        })
+      : null;
     const selectedQualityCause = projectQualityCauses.find((cause) => cause.id === qualityCauseId);
     const staticRateCardSources = getStaticRateCardSources(currentStep);
     const runtimeStaticRateCardSources = staticRateCardSources.filter((source) => source.assigneeMode === 'runtime');
@@ -1216,13 +1265,22 @@ export default function WorkflowTray() {
       return;
     }
 
-    if (currentStepIsQualityGate && currentIndex === 0 && (action === 'approve' || action === 'return')) {
-      toast.error("Este control de calidad no tiene un paso anterior. Edita el workflow y mueve calidad después del paso que envía a revisión.");
+    if (currentStepIsQualityGate && (action === 'approve' || action === 'return') && qualitySourceStepIndex === null) {
+      toast.error("Este control de calidad no tiene un paso origen trazable. Revisa la ruta que envía a calidad antes de aprobar o devolver.");
       return;
     }
 
     if (action === 'return' && returnTargetIndex === null) {
       toast.warning("No hay una ruta anterior configurada para devolver este workflow.");
+      return;
+    }
+
+    if (approveNeedsNextAssignee && !nextStepAssignee) {
+      toast.warning(
+        approveNextStepRequiresDynamicAssignee
+          ? "El siguiente paso resuelto por la ruta tiene responsable dinámico. Selecciona quién lo recibirá."
+          : "Selecciona el responsable del siguiente paso."
+      );
       return;
     }
     
@@ -1297,7 +1355,8 @@ export default function WorkflowTray() {
       if (currentStepIsQualityGate && (action === 'approve' || action === 'return')) {
         const eventRef = doc(collection(db, 'projects', task.projectId, 'qualityEvents'));
         const now = new Date();
-        const participants = getQualityParticipantIds(task, currentIndex, currentStep, memberId, user.uid);
+        const sourceStep = qualitySourceStepIndex !== null ? workflowStepsForRouting[qualitySourceStepIndex] : null;
+        const participants = getQualityParticipantIds(task, currentIndex, currentStep, memberId, user.uid, qualitySourceStepIndex);
         const result = action === 'approve' ? 'accepted' : 'rejected';
         qualityEvent = {
           id: eventRef.id,
@@ -1306,6 +1365,9 @@ export default function WorkflowTray() {
           taskTitle: task.title || task.name || 'Tarea',
           stepIndex: currentIndex,
           stepLabel: currentStep?.label || `Paso ${currentIndex + 1}`,
+          sourceStepIndex: qualitySourceStepIndex,
+          sourceStepLabel: sourceStep?.label || (qualitySourceStepIndex !== null ? `Paso ${qualitySourceStepIndex + 1}` : null),
+          sourceStepAssignee: sourceStep?.assignedTo || null,
           result,
           action: result,
           professionalId: participants.professionalId,
@@ -1379,7 +1441,7 @@ export default function WorkflowTray() {
           };
           newStatus = 'in_progress';
 
-          if (currentStep.assignsNextStep && nextStepAssignee) {
+          if ((currentStep.assignsNextStep || isDynamicWorkflowAssignee(steps[nextIndex]?.assignedTo)) && nextStepAssignee) {
             steps[nextIndex].assignedTo = nextStepAssignee;
           }
         } else {
@@ -1480,7 +1542,7 @@ export default function WorkflowTray() {
           action: action,
           comment: actionComment,
           formData: action === 'approve' ? formData : null,
-          nextStepAssignee: action === 'approve' && currentStep.assignsNextStep && assignedNextWorkflowIndex !== null ? nextStepAssignee : null,
+          nextStepAssignee: action === 'approve' && approveNeedsNextAssignee && assignedNextWorkflowIndex !== null ? nextStepAssignee : null,
           nextStepIndex: action === 'return' ? nextIndex : assignedNextWorkflowIndex,
           dynamicRateCard: dynamicRateCardCharge,
           qualityEvent,
@@ -1573,7 +1635,12 @@ export default function WorkflowTray() {
     const dynamicSource = getWorkflowDynamicRateCardSource(task, type);
     resetDynamicRateCardFields(dynamicSource?.sourceConfig, currentStep?.assignedTo || task.assignedTo || memberId || user?.uid || '');
 
-    if ((type === 'approve' && currentStep?.assignsNextStep) || dynamicSource || staticRateCardSources.length > 0 || isQualityGateStep(currentStep)) {
+    const workflowHasDynamicTargets =
+      type === 'approve' &&
+      Array.isArray(task.workflowSteps) &&
+      task.workflowSteps.some((step: any) => isDynamicWorkflowAssignee(step?.assignedTo));
+
+    if ((type === 'approve' && currentStep?.assignsNextStep) || workflowHasDynamicTargets || dynamicSource || staticRateCardSources.length > 0 || isQualityGateStep(currentStep)) {
       await loadProjectRateCardContext(task.projectId);
     }
   };
@@ -2327,13 +2394,18 @@ export default function WorkflowTray() {
       ? resolveWorkflowNextStepIndex({
           steps: actionModal.task.workflowSteps,
           currentIndex: actionModal.task.currentStepIndex || 0,
-          formData,
+          formData: Object.keys(formData).length > 0 ? formData : activeQualityGateStep?.formData || {},
         })
       : null;
+  const activeApproveNextStepRequiresDynamicAssignee = Boolean(
+    actionModal.isOpen &&
+      activeWorkflowNextIndex !== null &&
+      isDynamicWorkflowAssignee(actionModal.task?.workflowSteps?.[activeWorkflowNextIndex]?.assignedTo)
+  );
   const activeApproveNeedsNextAssignee = Boolean(
     actionModal.isOpen &&
       actionModal.type === 'approve' &&
-      activeQualityGateStep?.assignsNextStep &&
+      (activeQualityGateStep?.assignsNextStep || activeApproveNextStepRequiresDynamicAssignee) &&
       activeWorkflowNextIndex !== null
   );
   const activeQualityGateRequiresCause =
@@ -3181,6 +3253,11 @@ export default function WorkflowTray() {
                       <option key={member.id} value={member.id}>{member.name}</option>
                     ))}
                   </select>
+                  {activeApproveNextStepRequiresDynamicAssignee && (
+                    <p className="mt-1 text-xs font-medium text-indigo-600">
+                      La ruta evaluada llega a un paso con asignación dinámica.
+                    </p>
+                  )}
                 </div>
               )}
 

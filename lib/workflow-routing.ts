@@ -33,6 +33,9 @@ export const isVariableWorkflowTaskType = (type: any) =>
 export const getWorkflowTaskTypeLabel = (type: any) =>
   isVariableWorkflowTaskType(type) ? "Workflow variable" : "Workflow";
 
+export const isDynamicWorkflowAssignee = (value: any) =>
+  String(value || "").toUpperCase() === "DYNAMIC";
+
 export const WORKFLOW_ROUTE_OPERATORS: Array<{
   value: WorkflowRouteOperator;
   label: string;
@@ -208,7 +211,7 @@ export const resolveWorkflowNextStepIndex = ({
   return runtimeDefault === undefined ? linearNext : runtimeDefault;
 };
 
-export const resolveWorkflowPreviousStepIndex = ({
+export const resolveWorkflowInboundStepIndex = ({
   steps,
   currentIndex,
   history = [],
@@ -218,7 +221,7 @@ export const resolveWorkflowPreviousStepIndex = ({
   history?: any[];
 }): number | null => {
   const stepCount = Array.isArray(steps) ? steps.length : 0;
-  if (stepCount === 0 || currentIndex <= 0 || currentIndex >= stepCount) return null;
+  if (stepCount === 0 || currentIndex < 0 || currentIndex >= stepCount) return null;
 
   const routedTrail = [...(Array.isArray(history) ? history : [])]
     .reverse()
@@ -239,6 +242,26 @@ export const resolveWorkflowPreviousStepIndex = ({
 
   if (routedTrail) return Number(routedTrail.stepIndex);
 
+  return null;
+};
+
+export const resolveWorkflowPreviousStepIndex = ({
+  steps,
+  currentIndex,
+  history = [],
+}: {
+  steps: any[];
+  currentIndex: number;
+  history?: any[];
+}): number | null => {
+  const stepCount = Array.isArray(steps) ? steps.length : 0;
+  if (stepCount === 0 || currentIndex < 0 || currentIndex >= stepCount) return null;
+
+  const inboundStepIndex = resolveWorkflowInboundStepIndex({ steps, currentIndex, history });
+  if (inboundStepIndex !== null) return inboundStepIndex;
+
+  if (currentIndex <= 0) return null;
+
   for (let sourceIndex = currentIndex - 1; sourceIndex >= 0; sourceIndex -= 1) {
     const sourceStep = steps[sourceIndex];
     const sourceWasUsed = String(sourceStep?.status || "") === "listo" || Boolean(sourceStep?.completedAt);
@@ -253,6 +276,19 @@ export const resolveWorkflowPreviousStepIndex = ({
   }
 
   return currentIndex - 1;
+};
+
+export const resolveWorkflowQualitySourceStepIndex = ({
+  steps,
+  currentIndex,
+  history = [],
+}: {
+  steps: any[];
+  currentIndex: number;
+  history?: any[];
+}): number | null => {
+  const sourceStepIndex = resolveWorkflowPreviousStepIndex({ steps, currentIndex, history });
+  return sourceStepIndex === currentIndex ? null : sourceStepIndex;
 };
 
 const ACTIVE_WORKFLOW_STEP_STATUSES = new Set(["en_curso", "reproceso", "detenido"]);
