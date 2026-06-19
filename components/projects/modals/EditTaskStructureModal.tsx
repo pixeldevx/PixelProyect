@@ -988,7 +988,7 @@ export function EditTaskStructureModal({
 
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl flex flex-col max-h-[90vh]">
+      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
         <div className="flex items-start justify-between p-6 border-b border-slate-100">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -1308,18 +1308,18 @@ export function EditTaskStructureModal({
 
           {canEditWorkflow ? (
             <div>
-              <div className="flex items-center justify-between mb-4">
-                <div>
+              <div className="mb-4 flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <div className="min-w-0">
                   <h3 className="text-sm font-semibold text-slate-800">Pasos del workflow</h3>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Cambia nombres, responsables, formularios y duracion de cada paso.
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center justify-end gap-2">
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center xl:justify-end">
                   <select
                     value={workflowScheduleMode}
                     onChange={(event) => setWorkflowScheduleMode(normalizeWorkflowScheduleMode(event.target.value))}
-                    className="h-8 rounded-lg border border-indigo-200 bg-white px-2 text-xs font-semibold text-slate-700"
+                    className="h-9 min-w-0 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 sm:w-[160px]"
                     title="Modo de calculo de fechas"
                   >
                     <option value="calendar">Dias calendario</option>
@@ -1327,7 +1327,7 @@ export function EditTaskStructureModal({
                   </select>
                   {workflowTemplates.length > 0 && (
                     <select
-                      className="h-8 rounded-lg border border-indigo-200 bg-white px-2 text-xs text-slate-700"
+                      className="h-9 min-w-0 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 sm:w-[220px] lg:w-[260px]"
                       onChange={(event) => handleLoadTemplate(event.target.value)}
                       defaultValue=""
                     >
@@ -1360,7 +1360,7 @@ export function EditTaskStructureModal({
                       onClick={() => setShowTemplateModal(true)}
                       size="sm"
                       variant="outline"
-                      className="h-8 text-xs text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+                      className="h-9 shrink-0 rounded-lg border-indigo-200 px-3 text-xs text-indigo-600 hover:bg-indigo-50"
                     >
                       <ClipboardList size={14} className="mr-1" />
                       Guardar workflow
@@ -1371,7 +1371,7 @@ export function EditTaskStructureModal({
                     onClick={addStep}
                     size="sm"
                     variant="outline"
-                    className="h-8 text-xs"
+                    className="h-9 shrink-0 rounded-lg border-indigo-200 px-3 text-xs font-bold text-indigo-600 hover:bg-indigo-50"
                   >
                     <Plus size={14} className="mr-1" />
                     Agregar paso

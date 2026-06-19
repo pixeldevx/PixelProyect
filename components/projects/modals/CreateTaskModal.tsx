@@ -1060,7 +1060,7 @@ export function CreateTaskModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
+      <div className="w-full max-w-2xl overflow-x-hidden overflow-y-auto rounded-2xl bg-white shadow-2xl max-h-[90vh] animate-in fade-in zoom-in-95 duration-200">
         <div className="flex items-center justify-between p-6 border-b border-slate-100 sticky top-0 bg-white z-10">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-indigo-50 rounded-lg text-indigo-600">
@@ -1371,7 +1371,7 @@ export function CreateTaskModal({
             )}
 
             {newTaskType === "workflow" && (
-              <div className="space-y-4 p-4 bg-indigo-50/50 rounded-xl border border-indigo-100">
+              <div className="min-w-0 space-y-4 overflow-hidden rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
                 <div className="space-y-2 mb-4">
                   <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">
                     Cantidad de Repeticiones (Sub-tareas)
@@ -1408,14 +1408,19 @@ export function CreateTaskModal({
                   </select>
                 </div>
 
-                <div className="flex items-center justify-between border-t border-indigo-100 pt-4">
-                  <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">
-                    Pasos del Workflow
-                  </label>
-                  <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-col gap-3 border-t border-indigo-100 pt-4 xl:flex-row xl:items-center xl:justify-between">
+                  <div className="min-w-0">
+                    <label className="text-xs font-bold uppercase tracking-wider text-indigo-600">
+                      Pasos del Workflow
+                    </label>
+                    <p className="mt-1 text-[10px] font-medium text-slate-500">
+                      Agrega pasos, carga plantillas y abre el editor visual sin salir del modal.
+                    </p>
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center xl:justify-end">
                     {workflowTemplates.length > 0 && (
                       <select
-                        className="h-7 text-[10px] rounded border border-indigo-200 px-2 bg-white"
+                        className="h-9 min-w-0 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 sm:w-[220px] lg:w-[260px]"
                         onChange={(e) => handleLoadTemplate(e.target.value)}
                         defaultValue=""
                       >
@@ -1448,7 +1453,7 @@ export function CreateTaskModal({
                         variant="outline"
                         size="sm"
                         onClick={() => setShowTemplateModal(true)}
-                        className="h-7 text-[10px] font-bold text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+                        className="h-9 shrink-0 rounded-lg border-indigo-200 px-3 text-xs font-bold text-indigo-600 hover:bg-indigo-50"
                       >
                         GUARDAR PLANTILLA
                       </Button>
@@ -1463,9 +1468,9 @@ export function CreateTaskModal({
                           { assignedTo: "", label: "", unitsToAdd: 1, autoAddUnits: true, rateCards: [], plannedDurationDays: 1 },
                         ])
                       }
-                      className="h-7 text-[10px] font-bold text-indigo-600 hover:bg-indigo-100"
+                      className="h-9 shrink-0 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-bold text-indigo-600 hover:bg-indigo-50"
                     >
-                      <Plus size={12} className="mr-1" /> AGREGAR PASO
+                      <Plus size={14} className="mr-1.5" /> AGREGAR PASO
                     </Button>
                   </div>
                 </div>
