@@ -336,7 +336,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
 
   return (
     <div className={`fixed inset-0 bg-slate-900/50 backdrop-blur-sm ${overlayClassName} flex items-center justify-center p-4`}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl flex flex-col max-h-[90vh]">
+      <div className="bg-white text-slate-900 rounded-2xl shadow-xl w-full max-w-2xl flex flex-col max-h-[90vh]">
         <div className="flex items-center justify-between p-6 border-b border-slate-100">
           <div>
             <h2 className="text-xl font-bold text-slate-800">Formulario Personalizado</h2>
@@ -361,7 +361,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full px-4 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              className="w-full px-4 py-2 border border-slate-200 rounded-xl bg-white text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
               placeholder="Ej: Formulario de Aprobación"
             />
           </div>
@@ -388,7 +388,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
 
                     setFormRateCardMode('none');
                   }}
-                  className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                 >
                   <option value="none">Sin Rate Card</option>
                   <option value="static">Rate Cards fijos</option>
@@ -414,7 +414,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                       step="any"
                       value={formUnitsToAdd}
                       onChange={(event) => setFormUnitsToAdd(Number(event.target.value))}
-                      className="h-10 w-24 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      className="h-10 w-24 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                       placeholder="Unid."
                     />
                   )}
@@ -433,7 +433,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                     onClick={addFormRateCard}
                     size="sm"
                     variant="outline"
-                    className="h-8 text-xs"
+                    className="h-8 text-xs text-slate-700"
                   >
                     <Plus size={14} className="mr-1" />
                     Agregar Rate Card
@@ -451,7 +451,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                         <select
                           value={item.rateCardId}
                           onChange={(event) => updateFormRateCard(item.id, { rateCardId: event.target.value })}
-                          className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                          className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                         >
                           <option value="">Selecciona Rate Card</option>
                           {rateCards.map((rateCard) => (
@@ -475,7 +475,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                           step="any"
                           value={item.unitsToAdd}
                           onChange={(event) => updateFormRateCard(item.id, { unitsToAdd: Number(event.target.value) })}
-                          className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 md:w-24"
+                          className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 md:w-24"
                           placeholder="Unid."
                         />
                         <button
@@ -508,7 +508,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                           <select
                             value={item.assignedTo || ''}
                             onChange={(event) => updateFormRateCard(item.id, { assignedTo: event.target.value })}
-                            className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                            className="h-9 min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                           >
                             <option value="">Selecciona profesional</option>
                             {teamMembers.map((member) => (
@@ -543,7 +543,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
               <label className="block text-sm font-medium text-slate-700">
                 Campos del Formulario
               </label>
-              <Button onClick={addField} size="sm" variant="outline" className="h-8 text-xs">
+              <Button type="button" onClick={addField} size="sm" variant="outline" className="h-8 text-xs text-slate-700">
                 <Plus size={14} className="mr-1" /> Agregar Campo
               </Button>
             </div>
@@ -552,6 +552,9 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
               <div className="text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-200">
                 <p className="text-sm text-slate-500">No hay campos definidos.</p>
                 <p className="text-xs text-slate-400 mt-1">Agrega campos para solicitar información en este paso.</p>
+                <Button type="button" onClick={addField} size="sm" variant="outline" className="mt-4 h-8 text-xs text-slate-700">
+                  <Plus size={14} className="mr-1" /> Crear primer campo
+                </Button>
               </div>
             ) : (
               <div className="space-y-3">
@@ -568,7 +571,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                             value={field.label}
                             onChange={(e) => updateField(index, { label: e.target.value })}
                             placeholder="Nombre del campo"
-                            className="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                            className="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500"
                           />
                         </div>
                         <div className="w-40">
@@ -586,7 +589,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                                   : {}),
                               });
                             }}
-                            className="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                            className="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500"
                           >
                             <option value="text">Texto corto</option>
                             <option value="number">Número</option>
@@ -611,7 +614,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                                   selectionMode: e.target.value as FormField['selectionMode'],
                                 })
                               }
-                              className="h-8 px-2 text-xs border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white"
+                              className="h-8 px-2 text-xs border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-slate-900"
                             >
                               <option value="single">Selección única</option>
                               <option value="multiple">Selección múltiple</option>
@@ -626,7 +629,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                                   value={option}
                                   onChange={(e) => updateOption(index, optionIndex, e.target.value)}
                                   placeholder={`Opción ${optionIndex + 1}`}
-                                  className="flex-1 px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white"
+                                  className="flex-1 px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-slate-900 placeholder:text-slate-400"
                                 />
                                 <button
                                   type="button"
@@ -645,7 +648,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                             onClick={() => addOption(index)}
                             size="sm"
                             variant="outline"
-                            className="h-8 text-xs"
+                            className="h-8 text-xs text-slate-700"
                           >
                             <Plus size={14} className="mr-1" />
                             Agregar opción
@@ -667,6 +670,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                       </div>
                     </div>
                     <button
+                      type="button"
                       onClick={() => removeField(index)}
                       className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                     >
@@ -680,10 +684,10 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
         </div>
 
         <div className="p-6 border-t border-slate-100 flex justify-end gap-3 bg-slate-50 rounded-b-2xl">
-          <Button variant="outline" onClick={onClose}>
+          <Button type="button" variant="outline" onClick={onClose} className="text-slate-700">
             Cancelar
           </Button>
-          <Button onClick={handleSave} className="bg-indigo-600 hover:bg-indigo-700 text-white">
+          <Button type="button" onClick={handleSave} className="bg-indigo-600 hover:bg-indigo-700 text-white">
             Guardar Formulario
           </Button>
         </div>
