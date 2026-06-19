@@ -52,6 +52,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [maintenanceLoading, setMaintenanceLoading] = useState(false);
   const [maintenanceConfirm, setMaintenanceConfirm] = useState<{ type: 'reset' | 'deleteEntry'; entry?: any } | null>(null);
 
+  const EPSILON = 0.000001;
+
   useEffect(() => {
     const q = query(collection(db, 'projects', projectId, 'rateCards'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -246,6 +248,17 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     return `${year}-${month}-${day}`;
   };
 
+  const getEntryPeriodKeys = (date = new Date()) => {
+    const year = date.getFullYear();
+    const dateKey = toDateKey(date);
+    const monthKey = `${year}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const startOfYear = new Date(year, 0, 1);
+    const dayOfYear = Math.floor((date.getTime() - startOfYear.getTime()) / 86400000) + 1;
+    const weekKey = `${year}-W${String(Math.ceil(dayOfYear / 7)).padStart(2, '0')}`;
+
+    return { dateKey, weekKey, monthKey };
+  };
+
   const parseDateLike = (value: any): Date | null => {
     if (!value) return null;
     if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
@@ -314,6 +327,102 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
   const getRateCardById = (rateCardId: string) =>
     rateCards.find(card => card.id === rateCardId);
+
+  const sumNumberRecord = (record: Record<string, any> = {}) =>
+    Object.values(record || {}).reduce((sum: number, value: any) => sum + normalizeDecimalInput(value, 0), 0);
+
+  const sumAbsoluteNumberRecord = (record: Record<string, any> = {}) =>
+    Object.values(record || {}).reduce((sum: number, value: any) => sum + Math.abs(normalizeDecimalInput(value, 0)), 0);
+
+  const buildMaintenanceHistoricalRows = (card: any, entries: any[]) => {
+    if (!card) return [];
+
+    const trackedProductionByUser: Record<string, number> = {};
+    const trackedReworkByUser: Record<string, number> = {};
+    let trackedProductionTotal = 0;
+    let trackedReworkTotal = 0;
+
+    entries.forEach((entry: any) => {
+      const units = normalizeDecimalInput(entry.units, 0);
+      const userId = entry.assignedTo || '__unassigned__';
+
+      if (entry.isRework) {
+        const absoluteUnits = Math.abs(units);
+        trackedReworkTotal += absoluteUnits;
+        trackedReworkByUser[userId] = (trackedReworkByUser[userId] || 0) + absoluteUnits;
+      } else {
+        trackedProductionTotal += units;
+        trackedProductionByUser[userId] = (trackedProductionByUser[userId] || 0) + units;
+      }
+    });
+
+    const rows: Array<{
+      id: string;
+      assignedTo: string;
+      units: number;
+      isRework: boolean;
+      source: string;
+      taskTitle: string;
+    }> = [];
+
+    const addGapRow = (
+      assignedTo: string,
+      totalUnits: number,
+      trackedUnits: number,
+      isRework: boolean,
+    ) => {
+      const units = totalUnits - trackedUnits;
+      if (units <= EPSILON) return;
+
+      const userKey = assignedTo || 'sin-profesional';
+      rows.push({
+        id: `${card.id}-${isRework ? 'rework' : 'production'}-${userKey}`,
+        assignedTo,
+        units,
+        isRework,
+        source: isRework ? 'historical_rework_stats' : 'historical_user_stats',
+        taskTitle: isRework ? 'Reproceso histórico sin detalle' : 'Producción histórica sin detalle',
+      });
+    };
+
+    const productionStats = card.userStats || {};
+    const productionUsers = Object.keys(productionStats);
+    if (productionUsers.length > 0) {
+      productionUsers.forEach((assignedTo) => {
+        addGapRow(
+          assignedTo,
+          normalizeDecimalInput(productionStats[assignedTo], 0),
+          trackedProductionByUser[assignedTo] || 0,
+          false,
+        );
+      });
+
+      const unassignedTotal = normalizeDecimalInput(card.currentValue, 0) - sumNumberRecord(productionStats);
+      addGapRow('', unassignedTotal, trackedProductionByUser.__unassigned__ || 0, false);
+    } else {
+      addGapRow('', normalizeDecimalInput(card.currentValue, 0), trackedProductionTotal, false);
+    }
+
+    const reworkStats = card.userReworkStats || {};
+    const reworkUsers = Object.keys(reworkStats);
+    if (reworkUsers.length > 0) {
+      reworkUsers.forEach((assignedTo) => {
+        addGapRow(
+          assignedTo,
+          Math.abs(normalizeDecimalInput(reworkStats[assignedTo], 0)),
+          trackedReworkByUser[assignedTo] || 0,
+          true,
+        );
+      });
+
+      const unassignedTotal = Math.abs(normalizeDecimalInput(card.reworkValue, 0)) - sumAbsoluteNumberRecord(reworkStats);
+      addGapRow('', unassignedTotal, trackedReworkByUser.__unassigned__ || 0, true);
+    } else {
+      addGapRow('', Math.abs(normalizeDecimalInput(card.reworkValue, 0)), trackedReworkTotal, true);
+    }
+
+    return rows;
+  };
 
   const buildReportRow = (entry: any, card: any) => {
     const units = Number(entry.units || 0);
@@ -430,6 +539,16 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       }))
       .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || ''))
     : [];
+  const maintenanceHistoricalRows = maintenanceRateCard
+    ? buildMaintenanceHistoricalRows(maintenanceRateCard, maintenanceEntries)
+    : [];
+  const maintenanceHasHistoricalBalance = maintenanceHistoricalRows.length > 0;
+  const maintenanceHistoricalProduction = maintenanceHistoricalRows
+    .filter(row => !row.isRework)
+    .reduce((sum, row) => sum + row.units, 0);
+  const maintenanceHistoricalRework = maintenanceHistoricalRows
+    .filter(row => row.isRework)
+    .reduce((sum, row) => sum + row.units, 0);
   const chartDisplayData = userChartData.slice(0, 8);
   const activeUserCount = userChartData.filter(row => row.income > 0 || row.cost > 0 || row.output > 0 || row.reworkCost > 0).length;
   const totalMovements = rateCardEntries.length;
@@ -623,6 +742,11 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const handleRecalculateMaintenanceRateCard = async () => {
     if (!maintenanceRateCard) return;
 
+    if (maintenanceHasHistoricalBalance) {
+      toast.warning('Este rate card tiene saldo acumulado sin movimientos detallados. Convierte primero el saldo en movimiento editable o usa Reiniciar si quieres dejarlo en cero.');
+      return;
+    }
+
     setMaintenanceLoading(true);
     try {
       await recalculateRateCardFromEntries(maintenanceRateCard, rateCardEntries.filter(entry => entry.rateCardId === maintenanceRateCard.id));
@@ -630,6 +754,68 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     } catch (error: any) {
       console.error('Error recalculating rate card:', error);
       toast.error(`No se pudo recalcular el rate card: ${error.message}`);
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
+  const handleCreateHistoricalMaintenanceEntries = async () => {
+    if (!maintenanceRateCard || maintenanceHistoricalRows.length === 0) return;
+
+    setMaintenanceLoading(true);
+    try {
+      const batch = writeBatch(db);
+      const now = new Date();
+      const periodKeys = getEntryPeriodKeys(now);
+      const nextHistoricalEntries = maintenanceHistoricalRows.map((row) => {
+        const entryRef = doc(collection(db, 'projects', projectId, 'rateCardEntries'));
+        const entryData = {
+          projectId,
+          taskId: null,
+          taskTitle: row.taskTitle,
+          rateCardId: maintenanceRateCard.id,
+          rateCardName: maintenanceRateCard.name || null,
+          assignedTo: row.assignedTo || null,
+          units: row.units,
+          source: row.source,
+          comment: 'Movimiento creado desde saneamiento para convertir un acumulado histórico sin detalle en historial editable.',
+          isRework: row.isRework,
+          historicalBalance: true,
+          manuallyAdjusted: true,
+          ...periodKeys,
+          createdAt: serverTimestamp(),
+          createdBy: currentUser?.uid || null,
+          createdByEmail: currentUser?.email || null,
+        };
+
+        batch.set(entryRef, entryData);
+
+        return {
+          id: entryRef.id,
+          ...entryData,
+          createdAt: now,
+        };
+      });
+
+      const nextEntries = [...maintenanceEntries, ...nextHistoricalEntries];
+      batch.update(
+        doc(db, 'projects', projectId, 'rateCards', maintenanceRateCard.id),
+        buildRateCardStateFromEntries(maintenanceRateCard, nextEntries),
+      );
+
+      await batch.commit();
+      await syncRateDrivenIncrementalTasksForRate({
+        projectId,
+        rateCardId: maintenanceRateCard.id,
+      });
+      setEntryDrafts(previous => ({
+        ...previous,
+        ...buildEntryDrafts(nextHistoricalEntries),
+      }));
+      toast.success(`Se creó ${nextHistoricalEntries.length} movimiento${nextHistoricalEntries.length === 1 ? '' : 's'} de ajuste histórico.`);
+    } catch (error: any) {
+      console.error('Error creating historical rate card entries:', error);
+      toast.error(`No se pudo crear el ajuste histórico: ${error.message}`);
     } finally {
       setMaintenanceLoading(false);
     }
@@ -676,6 +862,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       subtask_completion_form_dynamic: 'Formulario dinámico',
       subtask_completion_form_reversal: 'Reverso formulario',
       manual_adjustment: 'Ajuste manual',
+      historical_user_stats: 'Balance histórico',
+      historical_rework_stats: 'Reproceso histórico',
     };
 
     return labels[source] || source || 'Movimiento';
@@ -1767,12 +1955,61 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
             </div>
 
             <div className="min-h-0 flex-1 overflow-auto bg-slate-50/70 p-5">
+              {maintenanceHasHistoricalBalance && (
+                <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0">
+                      <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">
+                        <AlertCircle size={13} />
+                        Saldo histórico sin detalle
+                      </div>
+                      <h4 className="mt-3 text-base font-black text-slate-950">
+                        Hay producción acumulada, pero faltan movimientos individuales para editarla.
+                      </h4>
+                      <p className="mt-1 max-w-3xl text-sm font-semibold leading-6 text-amber-900/80">
+                        No es por la unidad de medida. El acumulado viene de campos antiguos del rate card
+                        como producción, reproceso o estadísticas por usuario; la tabla solo lista entradas
+                        históricas guardadas como movimientos.
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs font-black">
+                        {maintenanceHistoricalProduction > EPSILON && (
+                          <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-800">
+                            Producción por convertir: {formatRateCardUnits(maintenanceHistoricalProduction, maintenanceRateCard, 2)}
+                          </span>
+                        )}
+                        {maintenanceHistoricalRework > EPSILON && (
+                          <span className="rounded-full bg-rose-100 px-3 py-1 text-rose-800">
+                            Reproceso por convertir: {formatRateCardUnits(maintenanceHistoricalRework, maintenanceRateCard, 2)}
+                          </span>
+                        )}
+                        <span className="rounded-full bg-white px-3 py-1 text-slate-700">
+                          {maintenanceHistoricalRows.length} ajuste{maintenanceHistoricalRows.length === 1 ? '' : 's'} posible{maintenanceHistoricalRows.length === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      onClick={handleCreateHistoricalMaintenanceEntries}
+                      disabled={maintenanceLoading}
+                      className="shrink-0 bg-amber-600 text-white hover:bg-amber-700"
+                    >
+                      <Save size={15} className="mr-2" />
+                      Convertir en movimiento editable
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               {maintenanceEntries.length === 0 ? (
                 <div className="flex min-h-[280px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white text-center">
                   <CreditCard className="mb-3 h-10 w-10 text-slate-300" />
-                  <h4 className="text-lg font-black text-slate-900">Sin movimientos registrados</h4>
+                  <h4 className="text-lg font-black text-slate-900">
+                    {maintenanceHasHistoricalBalance ? 'Sin movimientos editables todavía' : 'Sin movimientos registrados'}
+                  </h4>
                   <p className="mt-1 max-w-md text-sm font-medium text-slate-500">
-                    Este rate card no tiene entradas históricas. Puedes recalcularlo o reiniciarlo para dejar sus acumulados en cero.
+                    {maintenanceHasHistoricalBalance
+                      ? 'Convierte el saldo histórico en un movimiento editable para poder corregirlo desde este panel.'
+                      : 'Este rate card no tiene entradas históricas. Puedes reiniciarlo si necesitas dejar sus acumulados en cero.'}
                   </p>
                 </div>
               ) : (
@@ -1909,7 +2146,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 </h4>
                 <p className="mt-2 text-sm font-medium leading-6 text-slate-600">
                   {maintenanceConfirm.type === 'reset'
-                    ? `Se eliminarán ${maintenanceEntries.length} movimiento${maintenanceEntries.length === 1 ? '' : 's'} y los acumulados de "${maintenanceRateCard.name}" quedarán en cero.`
+                    ? `Se eliminarán ${maintenanceEntries.length} movimiento${maintenanceEntries.length === 1 ? '' : 's'}${maintenanceHasHistoricalBalance ? ' y el saldo histórico sin detalle' : ''}; los acumulados de "${maintenanceRateCard.name}" quedarán en cero.`
                     : `Se eliminará este movimiento de "${maintenanceRateCard.name}" y se recalcularán sus totales.`}
                 </p>
               </div>
