@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   Background,
   Controls,
@@ -254,12 +254,7 @@ function WorkflowVisualEditorModal({
 }) {
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [formStepIndex, setFormStepIndex] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (selectedStepIndex >= steps.length) {
-      setSelectedStepIndex(Math.max(0, steps.length - 1));
-    }
-  }, [selectedStepIndex, steps.length]);
+  const activeSelectedStepIndex = Math.min(selectedStepIndex, Math.max(0, steps.length - 1));
 
   const updateStep = (stepIndex: number, updates: Record<string, any>) => {
     onChange(
@@ -441,11 +436,11 @@ function WorkflowVisualEditorModal({
     return nextEdges;
   }, [steps]);
 
-  const selectedStep = steps[selectedStepIndex];
+  const selectedStep = steps[activeSelectedStepIndex];
   const selectedFields = getWorkflowStepFormFields(selectedStep);
   const selectedRoutes = normalizeWorkflowRoutes(selectedStep?.conditionalRoutes || []);
   const selectedDefaultTarget = selectedStep?.defaultNextStepIndex ?? selectedStep?.defaultNextStepTarget;
-  const selectedTargetOptions = getTargetOptions(steps, selectedStepIndex);
+  const selectedTargetOptions = getTargetOptions(steps, activeSelectedStepIndex);
 
   return (
     <div className="fixed inset-0 z-[70] flex flex-col bg-slate-950 text-white">
@@ -543,8 +538,8 @@ function WorkflowVisualEditorModal({
                 </p>
                 <input
                   value={selectedStep.label || ""}
-                  onChange={(event) => updateStep(selectedStepIndex, { label: event.target.value })}
-                  placeholder={`Paso ${selectedStepIndex + 1}`}
+                  onChange={(event) => updateStep(activeSelectedStepIndex, { label: event.target.value })}
+                  placeholder={`Paso ${activeSelectedStepIndex + 1}`}
                   className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-white px-3 text-sm font-black text-slate-950 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/20"
                 />
                 <div className="mt-3 grid grid-cols-2 gap-2">
@@ -571,7 +566,7 @@ function WorkflowVisualEditorModal({
                   </div>
                   <Button
                     type="button"
-                    onClick={() => setFormStepIndex(selectedStepIndex)}
+                    onClick={() => setFormStepIndex(activeSelectedStepIndex)}
                     className="h-9 shrink-0 rounded-xl bg-cyan-400 px-3 text-xs font-black text-slate-950 hover:bg-cyan-300"
                   >
                     <ClipboardList size={14} className="mr-2" />
@@ -606,9 +601,9 @@ function WorkflowVisualEditorModal({
                   Ruta si ninguna condicion coincide
                 </label>
                 <select
-                  value={targetToSelectValue(selectedDefaultTarget, selectedStepIndex, steps.length)}
+                  value={targetToSelectValue(selectedDefaultTarget, activeSelectedStepIndex, steps.length)}
                   onChange={(event) =>
-                    updateStep(selectedStepIndex, {
+                    updateStep(activeSelectedStepIndex, {
                       defaultNextStepIndex: selectValueToTarget(event.target.value),
                     })
                   }
@@ -628,7 +623,7 @@ function WorkflowVisualEditorModal({
                   <Button
                     type="button"
                     size="sm"
-                    onClick={() => addRoute(selectedStepIndex)}
+                    onClick={() => addRoute(activeSelectedStepIndex)}
                     disabled={selectedFields.length === 0}
                     className="h-8 rounded-xl bg-indigo-500 px-3 text-[10px] font-black text-white hover:bg-indigo-400 disabled:opacity-40"
                   >
@@ -654,7 +649,7 @@ function WorkflowVisualEditorModal({
                             value={route.fieldId}
                             onChange={(event) => {
                               const field = selectedFields.find((candidate: any) => candidate.id === event.target.value);
-                              updateRoute(selectedStepIndex, route.id, {
+                              updateRoute(activeSelectedStepIndex, route.id, {
                                 fieldId: event.target.value,
                                 fieldLabel: field?.label || "",
                               });
@@ -671,7 +666,7 @@ function WorkflowVisualEditorModal({
                             <select
                               value={route.operator}
                               onChange={(event) =>
-                                updateRoute(selectedStepIndex, route.id, {
+                                updateRoute(activeSelectedStepIndex, route.id, {
                                   operator: event.target.value as WorkflowRouteOperator,
                                   value: routeOperatorNeedsValue(event.target.value) ? route.value || "" : "",
                                 })
@@ -687,7 +682,7 @@ function WorkflowVisualEditorModal({
                             {needsValue ? (
                               <input
                                 value={route.value || ""}
-                                onChange={(event) => updateRoute(selectedStepIndex, route.id, { value: event.target.value })}
+                                onChange={(event) => updateRoute(activeSelectedStepIndex, route.id, { value: event.target.value })}
                                 placeholder="Valor esperado"
                                 className="h-9 rounded-xl border border-white/10 bg-white px-3 text-xs font-bold text-slate-800 outline-none"
                               />
@@ -699,9 +694,9 @@ function WorkflowVisualEditorModal({
                           </div>
                           <div className="grid grid-cols-[minmax(0,1fr)_38px] gap-2">
                             <select
-                              value={targetToSelectValue(route.targetStepIndex, selectedStepIndex, steps.length)}
+                              value={targetToSelectValue(route.targetStepIndex, activeSelectedStepIndex, steps.length)}
                               onChange={(event) =>
-                                updateRoute(selectedStepIndex, route.id, {
+                                updateRoute(activeSelectedStepIndex, route.id, {
                                   targetStepIndex: selectValueToTarget(event.target.value),
                                 })
                               }
@@ -715,7 +710,7 @@ function WorkflowVisualEditorModal({
                             </select>
                             <button
                               type="button"
-                              onClick={() => removeRoute(selectedStepIndex, route.id)}
+                              onClick={() => removeRoute(activeSelectedStepIndex, route.id)}
                               className="flex h-9 items-center justify-center rounded-xl border border-red-400/20 bg-red-500/10 text-red-200 hover:bg-red-500/20"
                               title="Eliminar condicion"
                             >
