@@ -4,6 +4,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
 import {
   AlertTriangle,
+  Archive,
+  ArrowRightLeft,
   Calendar,
   Camera,
   CheckCircle2,
@@ -36,6 +38,7 @@ import {
   query,
   serverTimestamp,
   updateDoc,
+  writeBatch,
 } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
@@ -46,6 +49,29 @@ type InventoryPhoto = {
   url: string;
   storagePath: string;
   uploadedAt: string;
+};
+
+type LifecycleEventType =
+  | 'created'
+  | 'imported'
+  | 'updated'
+  | 'reassigned'
+  | 'transferred'
+  | 'retired'
+  | 'maintenance';
+
+type LifecycleEntry = {
+  id: string;
+  type: LifecycleEventType;
+  date: string;
+  title: string;
+  description: string;
+  from?: string | null;
+  to?: string | null;
+  actorId?: string | null;
+  actorEmail?: string | null;
+  metadata?: Record<string, any>;
+  createdAt: string;
 };
 
 type InventoryItem = {
@@ -67,6 +93,9 @@ type InventoryItem = {
   needsRepair?: boolean;
   photos?: InventoryPhoto[];
   maintenanceHistory?: MaintenanceEntry[];
+  lifecycleHistory?: LifecycleEntry[];
+  transferredToProject?: string;
+  retiredAt?: string | null;
   createdAt?: any;
   updatedAt?: any;
 };
@@ -109,6 +138,40 @@ type MaintenanceForm = {
   result: string;
 };
 
+type AssetActionType = 'reassign' | 'transfer' | 'retire';
+
+type AssetLifecycleForm = {
+  action: AssetActionType;
+  date: string;
+  responsibleId: string;
+  targetProject: string;
+  targetLocation: string;
+  reason: string;
+};
+
+type BulkInventoryRow = {
+  name: string;
+  category: string;
+  assetCode: string;
+  serialNumber: string;
+  quantity: number;
+  location: string;
+  mapUrl: string;
+  responsibleId: string;
+  responsibleName: string;
+  condition: string;
+  status: string;
+  acquisitionDate: string;
+  estimatedValue: number;
+  observations: string;
+  needsRepair: boolean;
+};
+
+type BulkInventoryPreview = {
+  validRows: BulkInventoryRow[];
+  invalidRows: Array<{ line: number; reason: string; raw: string }>;
+};
+
 type ProjectInventoryProps = {
   projectId: string;
   project: any;
@@ -135,6 +198,7 @@ const STATUS_OPTIONS = [
   { value: 'available', label: 'Disponible', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
   { value: 'assigned', label: 'Asignado', className: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
   { value: 'repair', label: 'En reparación', className: 'bg-orange-50 text-orange-700 ring-orange-100' },
+  { value: 'transferred', label: 'Trasladado', className: 'bg-violet-50 text-violet-700 ring-violet-100' },
   { value: 'retired', label: 'Retirado', className: 'bg-slate-100 text-slate-700 ring-slate-200' },
   { value: 'lost', label: 'No localizado', className: 'bg-red-50 text-red-700 ring-red-100' },
 ];
@@ -171,6 +235,21 @@ const emptyMaintenanceForm: MaintenanceForm = {
   cost: '',
   result: '',
 };
+
+const emptyLifecycleForm = (action: AssetActionType = 'reassign'): AssetLifecycleForm => ({
+  action,
+  date: new Date().toISOString().slice(0, 10),
+  responsibleId: '',
+  targetProject: '',
+  targetLocation: '',
+  reason: '',
+});
+
+const BULK_IMPORT_SAMPLE = [
+  'nombre,categoria,codigo,serial,cantidad,ubicacion,responsable,estado,condicion,valor,observaciones',
+  'Portatil Dell,Computador,INV-001,SN-7788,1,Oficina Bogota,sebastian@empresa.com,asignado,bueno,3500000,Equipo de campo',
+  'Silla ergonomica,Silla,INV-002,,3,Sala operativa,,disponible,excelente,420000,',
+].join('\n');
 
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat('es-CO', {
@@ -223,6 +302,214 @@ const htmlEscape = (value: any) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+const normalizeKey = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '');
+
+const splitDelimitedLine = (line: string, delimiter: string) => {
+  const values: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+
+    if (char === '"' && next === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === delimiter && !inQuotes) {
+      values.push(current.trim());
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  values.push(current.trim());
+  return values;
+};
+
+const detectDelimiter = (line: string) => {
+  const candidates = ['\t', ';', ','];
+  return candidates
+    .map((delimiter) => ({ delimiter, count: line.split(delimiter).length - 1 }))
+    .sort((left, right) => right.count - left.count)[0]?.delimiter || ',';
+};
+
+const parseLooseNumber = (value: string) => {
+  const clean = String(value || '')
+    .replace(/\s/g, '')
+    .replace(/\./g, '')
+    .replace(',', '.')
+    .replace(/[^\d.-]/g, '');
+  const parsed = Number(clean);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const normalizeStatusValue = (value: string, needsRepair = false) => {
+  if (needsRepair) return 'repair';
+  const normalized = normalizeKey(value);
+  if (['asignado', 'assigned', 'entregado'].includes(normalized)) return 'assigned';
+  if (['reparacion', 'enreparacion', 'repair', 'mantenimiento'].includes(normalized)) return 'repair';
+  if (['retirado', 'baja', 'dadodebaja', 'retired'].includes(normalized)) return 'retired';
+  if (['trasladado', 'transferido', 'transferred'].includes(normalized)) return 'transferred';
+  if (['perdido', 'nolocalizado', 'lost'].includes(normalized)) return 'lost';
+  return 'available';
+};
+
+const normalizeConditionValue = (value: string) => {
+  const normalized = normalizeKey(value);
+  if (['excelente', 'excellent', 'nuevo'].includes(normalized)) return 'excellent';
+  if (['regular', 'fair'].includes(normalized)) return 'fair';
+  if (['danado', 'deteriorado', 'malo', 'damaged'].includes(normalized)) return 'damaged';
+  return 'good';
+};
+
+const normalizeBoolean = (value: string) => ['si', 'sí', 'true', '1', 'x', 'yes'].includes(String(value || '').trim().toLowerCase());
+
+const HEADER_ALIASES: Record<string, keyof BulkInventoryRow | 'needsRepair'> = {
+  nombre: 'name',
+  activo: 'name',
+  name: 'name',
+  categoria: 'category',
+  category: 'category',
+  tipo: 'category',
+  codigo: 'assetCode',
+  codigointerno: 'assetCode',
+  placa: 'assetCode',
+  assetcode: 'assetCode',
+  serial: 'serialNumber',
+  serialnumber: 'serialNumber',
+  serie: 'serialNumber',
+  cantidad: 'quantity',
+  quantity: 'quantity',
+  ubicacion: 'location',
+  localizacion: 'location',
+  location: 'location',
+  responsable: 'responsibleName',
+  responsible: 'responsibleName',
+  responsablecorreo: 'responsibleName',
+  emailresponsable: 'responsibleName',
+  estado: 'status',
+  status: 'status',
+  condicion: 'condition',
+  condition: 'condition',
+  adquisicion: 'acquisitionDate',
+  fechaadquisicion: 'acquisitionDate',
+  acquisitiondate: 'acquisitionDate',
+  valor: 'estimatedValue',
+  valorunitario: 'estimatedValue',
+  estimatedvalue: 'estimatedValue',
+  observaciones: 'observations',
+  observacion: 'observations',
+  notes: 'observations',
+  mapurl: 'mapUrl',
+  linkubicacion: 'mapUrl',
+  reparacion: 'needsRepair',
+  requierereparacion: 'needsRepair',
+};
+
+const DEFAULT_BULK_COLUMNS: Array<keyof BulkInventoryRow | 'needsRepair'> = [
+  'name',
+  'category',
+  'assetCode',
+  'serialNumber',
+  'quantity',
+  'location',
+  'responsibleName',
+  'status',
+  'condition',
+  'estimatedValue',
+  'observations',
+];
+
+const parseBulkInventory = (
+  rawInput: string,
+  categories: string[],
+  resolveMember: (value: string) => any | null
+): BulkInventoryPreview => {
+  const lines = rawInput
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return { validRows: [], invalidRows: [] };
+
+  const delimiter = detectDelimiter(lines[0]);
+  const firstValues = splitDelimitedLine(lines[0], delimiter);
+  const headerFields = firstValues.map((value) => HEADER_ALIASES[normalizeKey(value)]).filter(Boolean);
+  const hasHeader = headerFields.length >= 2;
+  const columns = hasHeader
+    ? firstValues.map((value) => HEADER_ALIASES[normalizeKey(value)] || null)
+    : DEFAULT_BULK_COLUMNS;
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+  const invalidRows: BulkInventoryPreview['invalidRows'] = [];
+  const validRows: BulkInventoryRow[] = [];
+
+  dataLines.forEach((line, index) => {
+    const values = splitDelimitedLine(line, delimiter);
+    const draft: Partial<BulkInventoryRow> & { needsRepair?: boolean } = {};
+
+    values.forEach((value, valueIndex) => {
+      const key = columns[valueIndex];
+      if (!key) return;
+      if (key === 'quantity') {
+        draft.quantity = Math.max(Math.round(parseLooseNumber(value) || 1), 1);
+      } else if (key === 'estimatedValue') {
+        draft.estimatedValue = Math.max(parseLooseNumber(value), 0);
+      } else if (key === 'needsRepair') {
+        draft.needsRepair = normalizeBoolean(value);
+      } else {
+        (draft as any)[key] = value;
+      }
+    });
+
+    const cleanName = String(draft.name || '').trim();
+    if (!cleanName) {
+      invalidRows.push({ line: (hasHeader ? index + 2 : index + 1), reason: 'Falta el nombre del activo.', raw: line });
+      return;
+    }
+
+    const responsibleText = String(draft.responsibleName || '').trim();
+    const responsibleMember = responsibleText ? resolveMember(responsibleText) : null;
+    const needsRepair = Boolean(draft.needsRepair);
+    const category = String(draft.category || '').trim() || categories[0] || 'Otro';
+
+    validRows.push({
+      name: cleanName,
+      category,
+      assetCode: String(draft.assetCode || '').trim(),
+      serialNumber: String(draft.serialNumber || '').trim(),
+      quantity: Math.max(Number(draft.quantity || 1), 1),
+      location: String(draft.location || '').trim(),
+      mapUrl: String(draft.mapUrl || '').trim(),
+      responsibleId: responsibleMember?.id || '',
+      responsibleName: responsibleMember?.name || responsibleMember?.email || responsibleText,
+      condition: normalizeConditionValue(String(draft.condition || 'good')),
+      status: normalizeStatusValue(String(draft.status || ''), needsRepair),
+      acquisitionDate: String(draft.acquisitionDate || '').trim(),
+      estimatedValue: Math.max(Number(draft.estimatedValue || 0), 0),
+      observations: String(draft.observations || '').trim(),
+      needsRepair,
+    });
+  });
+
+  return { validRows, invalidRows };
+};
+
 export function ProjectInventory({
   projectId,
   project,
@@ -244,6 +531,12 @@ export function ProjectInventory({
   const [saving, setSaving] = useState(false);
   const [maintenanceForm, setMaintenanceForm] = useState<MaintenanceForm>(emptyMaintenanceForm);
   const [savingMaintenance, setSavingMaintenance] = useState(false);
+  const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
+  const [bulkImportText, setBulkImportText] = useState('');
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
+  const [assetActionForm, setAssetActionForm] = useState<AssetLifecycleForm | null>(null);
+  const [savingAssetAction, setSavingAssetAction] = useState(false);
 
   const projectMemberIds = useMemo(
     () => new Set((project?.assignedTeamMembers || []).filter(Boolean)),
@@ -264,6 +557,16 @@ export function ProjectInventory({
     });
     return map;
   }, [teamMembers]);
+
+  const resolveMember = useMemo(() => {
+    const lookup = new Map<string, any>();
+    projectMembers.forEach((member) => {
+      [member.id, member.authUserId, member.uid, member.email, member.name]
+        .filter(Boolean)
+        .forEach((value) => lookup.set(String(value).trim().toLowerCase(), member));
+    });
+    return (value: string) => lookup.get(String(value || '').trim().toLowerCase()) || null;
+  }, [projectMembers]);
 
   useEffect(() => {
     if (!projectId || !canView) {
@@ -311,6 +614,11 @@ export function ProjectInventory({
     return Array.from(values).sort((left, right) => left.localeCompare(right));
   }, [items]);
 
+  const bulkPreview = useMemo(
+    () => parseBulkInventory(bulkImportText, categories, resolveMember),
+    [bulkImportText, categories, resolveMember]
+  );
+
   const filteredItems = useMemo(() => {
     const search = searchTerm.trim().toLowerCase();
     return items.filter((item) => {
@@ -342,6 +650,105 @@ export function ProjectInventory({
   const getResponsibleLabel = (item: InventoryItem) => {
     const member = item.responsibleId ? memberById.get(item.responsibleId) : null;
     return item.responsibleName || member?.name || member?.email || 'Sin responsable';
+  };
+
+  const buildLifecycleEntry = (
+    type: LifecycleEventType,
+    title: string,
+    description: string,
+    details: Partial<LifecycleEntry> = {}
+  ): LifecycleEntry => ({
+    id: `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    date: details.date || new Date().toISOString().slice(0, 10),
+    title,
+    description,
+    from: details.from ?? null,
+    to: details.to ?? null,
+    actorId: currentUser?.uid || currentUser?.id || null,
+    actorEmail: currentUser?.email || null,
+    metadata: details.metadata || {},
+    createdAt: new Date().toISOString(),
+  });
+
+  const getLifecycleEntries = (item: InventoryItem) => {
+    const lifecycleEntries = item.lifecycleHistory || [];
+    const lifecycleMaintenanceIds = new Set(
+      lifecycleEntries
+        .map((entry) => entry.metadata?.maintenanceId)
+        .filter(Boolean)
+    );
+    const legacyMaintenanceEntries: LifecycleEntry[] = (item.maintenanceHistory || [])
+      .filter((entry) => !lifecycleMaintenanceIds.has(entry.id))
+      .map((entry) => ({
+        id: `legacy-maintenance-${entry.id}`,
+        type: 'maintenance',
+        date: entry.date,
+        title: entry.type || 'Novedad',
+        description: entry.description,
+        actorId: entry.createdBy || null,
+        actorEmail: null,
+        metadata: {
+          maintenanceId: entry.id,
+          technician: entry.technician,
+          cost: entry.cost,
+          result: entry.result,
+          legacy: true,
+        },
+        createdAt: entry.createdAt || entry.date,
+      }));
+
+    return [...lifecycleEntries, ...legacyMaintenanceEntries].sort((left, right) => {
+      const rightDate = new Date(right.createdAt || right.date).getTime();
+      const leftDate = new Date(left.createdAt || left.date).getTime();
+      return rightDate - leftDate;
+    });
+  };
+
+  const buildUpdateLifecycleEvents = (previous: InventoryItem, next: any, uploadedPhotoCount: number) => {
+    const events: LifecycleEntry[] = [];
+    const previousResponsible = getResponsibleLabel(previous);
+    const nextResponsible = next.responsibleName || 'Sin responsable';
+
+    if ((previous.responsibleId || '') !== (next.responsibleId || '')) {
+      events.push(buildLifecycleEntry(
+        'reassigned',
+        'Responsable actualizado',
+        `El activo fue reasignado de ${previousResponsible} a ${nextResponsible}.`,
+        { from: previousResponsible, to: nextResponsible }
+      ));
+    }
+
+    if ((previous.status || 'available') !== next.status) {
+      const from = getStatusMeta(previous.status).label;
+      const to = getStatusMeta(next.status).label;
+      events.push(buildLifecycleEntry(
+        next.status === 'retired' ? 'retired' : next.status === 'transferred' ? 'transferred' : 'updated',
+        'Estado actualizado',
+        `El estado cambió de ${from} a ${to}.`,
+        { from, to }
+      ));
+    }
+
+    if ((previous.location || '') !== (next.location || '')) {
+      events.push(buildLifecycleEntry(
+        'updated',
+        'Ubicación actualizada',
+        `La ubicación cambió de ${previous.location || 'Sin ubicación'} a ${next.location || 'Sin ubicación'}.`,
+        { from: previous.location || null, to: next.location || null }
+      ));
+    }
+
+    if (uploadedPhotoCount > 0) {
+      events.push(buildLifecycleEntry(
+        'updated',
+        'Evidencia fotográfica agregada',
+        `Se agregaron ${uploadedPhotoCount} foto(s) al activo.`,
+        { metadata: { uploadedPhotoCount } }
+      ));
+    }
+
+    return events;
   };
 
   const resetForm = () => {
@@ -378,6 +785,12 @@ export function ProjectInventory({
     });
     setPhotoFiles([]);
     setIsFormOpen(true);
+  };
+
+  const openBulkImport = () => {
+    setBulkImportText((current) => current || BULK_IMPORT_SAMPLE);
+    setBulkProgress({ done: 0, total: 0 });
+    setIsBulkImportOpen(true);
   };
 
   const uploadPhotos = async (files: File[]) => {
@@ -442,16 +855,34 @@ export function ProjectInventory({
       };
 
       if (editingItem) {
-        await updateDoc(doc(db, 'projects', projectId, 'inventoryItems', editingItem.id), {
+        const lifecycleEvents = buildUpdateLifecycleEvents(editingItem, payload, uploadedPhotos.length);
+        const updatePayload: Record<string, any> = {
           ...payload,
           photos: [...(editingItem.photos || []), ...uploadedPhotos],
-        });
+        };
+        if (lifecycleEvents.length > 0) {
+          updatePayload.lifecycleHistory = arrayUnion(...lifecycleEvents);
+        }
+        if (payload.status === 'retired') {
+          updatePayload.retiredAt = editingItem.retiredAt || new Date().toISOString();
+        }
+        if (payload.status !== 'retired') {
+          updatePayload.retiredAt = null;
+        }
+        await updateDoc(doc(db, 'projects', projectId, 'inventoryItems', editingItem.id), updatePayload);
         toast.success('Activo actualizado.');
       } else {
+        const createdEntry = buildLifecycleEntry(
+          'created',
+          'Activo creado',
+          `Activo creado en el inventario del proyecto ${project?.name || 'actual'}.`
+        );
         await addDoc(collection(db, 'projects', projectId, 'inventoryItems'), {
           ...payload,
           photos: uploadedPhotos,
           maintenanceHistory: [],
+          lifecycleHistory: [createdEntry],
+          retiredAt: payload.status === 'retired' ? new Date().toISOString() : null,
           createdAt: serverTimestamp(),
           createdBy: currentUser?.uid || null,
         });
@@ -487,6 +918,182 @@ export function ProjectInventory({
     }
   };
 
+  const handleBulkImport = async () => {
+    if (!canManage) {
+      toast.error('No tienes permisos para administrar el inventario.');
+      return;
+    }
+
+    if (bulkPreview.validRows.length === 0) {
+      toast.warning('No hay filas válidas para importar.');
+      return;
+    }
+
+    setBulkImporting(true);
+    setBulkProgress({ done: 0, total: bulkPreview.validRows.length });
+
+    try {
+      const inventoryCollection = collection(db, 'projects', projectId, 'inventoryItems');
+      const chunkSize = 150;
+
+      for (let index = 0; index < bulkPreview.validRows.length; index += chunkSize) {
+        const chunk = bulkPreview.validRows.slice(index, index + chunkSize);
+        const batch = writeBatch(db);
+
+        chunk.forEach((row) => {
+          const rowRef = doc(inventoryCollection);
+          const importedEntry = buildLifecycleEntry(
+            'imported',
+            'Activo importado',
+            `Activo importado por carga masiva en ${project?.name || 'este proyecto'}.`,
+            {
+              metadata: {
+                source: 'bulk_import',
+                assetCode: row.assetCode || null,
+                serialNumber: row.serialNumber || null,
+              },
+            }
+          );
+
+          batch.set(rowRef, {
+            ...row,
+            responsibleId: row.responsibleId || null,
+            responsibleName: row.responsibleName || null,
+            acquisitionDate: row.acquisitionDate || null,
+            status: row.needsRepair ? 'repair' : row.status,
+            photos: [],
+            maintenanceHistory: [],
+            lifecycleHistory: [importedEntry],
+            retiredAt: row.status === 'retired' ? new Date().toISOString() : null,
+            createdAt: serverTimestamp(),
+            createdBy: currentUser?.uid || null,
+            updatedAt: serverTimestamp(),
+            updatedBy: currentUser?.uid || null,
+          });
+        });
+
+        await batch.commit();
+        setBulkProgress({ done: Math.min(index + chunk.length, bulkPreview.validRows.length), total: bulkPreview.validRows.length });
+      }
+
+      toast.success(`${bulkPreview.validRows.length} activo(s) importados.`);
+      setIsBulkImportOpen(false);
+      setBulkImportText('');
+      setBulkProgress({ done: 0, total: 0 });
+    } catch (error: any) {
+      console.error('Error importing inventory:', error);
+      toast.error(error?.message || 'No se pudo completar la carga masiva.');
+    } finally {
+      setBulkImporting(false);
+    }
+  };
+
+  const openAssetAction = (action: AssetActionType) => {
+    if (!selectedItem) return;
+    setAssetActionForm({
+      ...emptyLifecycleForm(action),
+      responsibleId: action === 'reassign' ? selectedItem.responsibleId || '' : '',
+      targetLocation: selectedItem.location || '',
+    });
+  };
+
+  const handleAssetLifecycleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedItem || !assetActionForm || !canManage) return;
+
+    const reason = assetActionForm.reason.trim();
+    const updatePayload: Record<string, any> = {
+      updatedAt: serverTimestamp(),
+      updatedBy: currentUser?.uid || null,
+    };
+    let lifecycleEntry: LifecycleEntry;
+
+    if (assetActionForm.action === 'reassign') {
+      const nextMember = assetActionForm.responsibleId ? memberById.get(assetActionForm.responsibleId) : null;
+      if (!nextMember) {
+        toast.warning('Selecciona el nuevo responsable del activo.');
+        return;
+      }
+      const previousResponsible = getResponsibleLabel(selectedItem);
+      const nextResponsible = nextMember.name || nextMember.email || 'Responsable seleccionado';
+      lifecycleEntry = buildLifecycleEntry(
+        'reassigned',
+        'Activo reasignado',
+        reason || `El activo fue reasignado de ${previousResponsible} a ${nextResponsible}.`,
+        {
+          date: assetActionForm.date,
+          from: previousResponsible,
+          to: nextResponsible,
+        }
+      );
+      updatePayload.responsibleId = nextMember.id;
+      updatePayload.responsibleName = nextResponsible;
+      updatePayload.status = 'assigned';
+      updatePayload.retiredAt = null;
+    } else if (assetActionForm.action === 'transfer') {
+      const targetProject = assetActionForm.targetProject.trim();
+      if (!targetProject) {
+        toast.warning('Ingresa el proyecto destino del traslado.');
+        return;
+      }
+      lifecycleEntry = buildLifecycleEntry(
+        'transferred',
+        'Activo trasladado',
+        reason || `El activo fue trasladado al proyecto ${targetProject}.`,
+        {
+          date: assetActionForm.date,
+          from: project?.name || 'Proyecto actual',
+          to: targetProject,
+          metadata: {
+            targetLocation: assetActionForm.targetLocation.trim() || null,
+          },
+        }
+      );
+      updatePayload.status = 'transferred';
+      updatePayload.transferredToProject = targetProject;
+      updatePayload.location = assetActionForm.targetLocation.trim() || selectedItem.location || '';
+      updatePayload.retiredAt = null;
+    } else {
+      if (!reason) {
+        toast.warning('Describe por qué se da de baja el activo.');
+        return;
+      }
+      lifecycleEntry = buildLifecycleEntry(
+        'retired',
+        'Activo dado de baja',
+        reason,
+        {
+          date: assetActionForm.date,
+          from: getStatusMeta(selectedItem.status).label,
+          to: 'Retirado',
+        }
+      );
+      updatePayload.status = 'retired';
+      updatePayload.needsRepair = false;
+      updatePayload.retiredAt = new Date(`${assetActionForm.date}T00:00:00`).toISOString();
+    }
+
+    setSavingAssetAction(true);
+    try {
+      await updateDoc(doc(db, 'projects', projectId, 'inventoryItems', selectedItem.id), {
+        ...updatePayload,
+        lifecycleHistory: arrayUnion(lifecycleEntry),
+      });
+      setSelectedItem((current) => current ? {
+        ...current,
+        ...updatePayload,
+        lifecycleHistory: [...(current.lifecycleHistory || []), lifecycleEntry],
+      } : current);
+      setAssetActionForm(null);
+      toast.success('Hoja de vida del activo actualizada.');
+    } catch (error: any) {
+      console.error('Error saving asset lifecycle action:', error);
+      toast.error(error?.message || 'No se pudo guardar la acción del activo.');
+    } finally {
+      setSavingAssetAction(false);
+    }
+  };
+
   const handleMaintenanceSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selectedItem || !canManage) return;
@@ -511,8 +1118,23 @@ export function ProjectInventory({
 
     setSavingMaintenance(true);
     try {
+      const lifecycleEntry = buildLifecycleEntry(
+        'maintenance',
+        entry.type || 'Novedad registrada',
+        entry.description,
+        {
+          date: entry.date,
+          metadata: {
+            maintenanceId: entry.id,
+            technician: entry.technician || null,
+            cost: entry.cost || 0,
+            result: entry.result || null,
+          },
+        }
+      );
       await updateDoc(doc(db, 'projects', projectId, 'inventoryItems', selectedItem.id), {
         maintenanceHistory: arrayUnion(entry),
+        lifecycleHistory: arrayUnion(lifecycleEntry),
         needsRepair: maintenanceForm.type === 'reparacion' ? false : selectedItem.needsRepair,
         status: maintenanceForm.type === 'reparacion' ? 'assigned' : selectedItem.status,
         condition: maintenanceForm.type === 'reparacion' && selectedItem.condition === 'damaged' ? 'good' : selectedItem.condition,
@@ -521,6 +1143,7 @@ export function ProjectInventory({
       setSelectedItem((current) => current ? {
         ...current,
         maintenanceHistory: [...(current.maintenanceHistory || []), entry],
+        lifecycleHistory: [...(current.lifecycleHistory || []), lifecycleEntry],
         needsRepair: maintenanceForm.type === 'reparacion' ? false : current.needsRepair,
         status: maintenanceForm.type === 'reparacion' ? 'assigned' : current.status,
         condition: maintenanceForm.type === 'reparacion' && current.condition === 'damaged' ? 'good' : current.condition,
@@ -548,11 +1171,12 @@ export function ProjectInventory({
       condicion: getConditionMeta(item.condition).label,
       requiereReparacion: item.needsRepair ? 'Si' : 'No',
       valor: item.estimatedValue || 0,
+      eventos: getLifecycleEntries(item).length,
       observaciones: item.observations || '',
     }));
 
   const downloadCsvReport = () => {
-    const headers = ['Activo', 'Categoría', 'Código', 'Serial', 'Cantidad', 'Responsable', 'Ubicación', 'Estado', 'Condición', 'Requiere reparación', 'Valor unitario', 'Observaciones'];
+    const headers = ['Activo', 'Categoría', 'Código', 'Serial', 'Cantidad', 'Responsable', 'Ubicación', 'Estado', 'Condición', 'Requiere reparación', 'Valor unitario', 'Eventos hoja de vida', 'Observaciones'];
     const rows = buildReportRows();
     const csv = [
       headers.map(csvEscape).join(','),
@@ -568,6 +1192,7 @@ export function ProjectInventory({
         row.condicion,
         row.requiereReparacion,
         row.valor,
+        row.eventos,
         row.observaciones,
       ].map(csvEscape).join(',')),
     ].join('\n');
@@ -689,10 +1314,16 @@ export function ProjectInventory({
                 Reporte
               </Button>
               {canManage && (
-                <Button type="button" onClick={openCreateForm} className="bg-cyan-400 font-black text-slate-950 hover:bg-cyan-300">
-                  <Plus size={16} className="mr-2" />
-                  Nuevo activo
-                </Button>
+                <>
+                  <Button type="button" variant="outline" onClick={openBulkImport} className="border-white/15 bg-white/10 text-white hover:bg-white/15">
+                    <Upload size={16} className="mr-2" />
+                    Carga masiva
+                  </Button>
+                  <Button type="button" onClick={openCreateForm} className="bg-cyan-400 font-black text-slate-950 hover:bg-cyan-300">
+                    <Plus size={16} className="mr-2" />
+                    Nuevo activo
+                  </Button>
+                </>
               )}
             </div>
           </div>
@@ -852,6 +1483,131 @@ export function ProjectInventory({
             </div>
           </form>
         </section>
+      )}
+
+      {isBulkImportOpen && canManage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
+              <div>
+                <p className="inline-flex items-center gap-2 rounded-md bg-emerald-50 px-3 py-1 text-xs font-black uppercase tracking-[0.16em] text-emerald-700 ring-1 ring-emerald-100">
+                  <Upload size={14} />
+                  Carga masiva de inventario
+                </p>
+                <h3 className="mt-3 text-2xl font-black tracking-tight text-slate-950">Importar activos por tabla</h3>
+                <p className="mt-1 text-sm font-semibold text-slate-500">
+                  Pega datos desde Excel, CSV o texto separado por comas. Las columnas con encabezado se detectan automáticamente.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => !bulkImporting && setIsBulkImportOpen(false)}
+                className="rounded-md p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={bulkImporting}
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 overflow-y-auto lg:grid-cols-[1.4fr_.8fr]">
+              <div className="space-y-4 border-b border-slate-200 p-5 lg:border-b-0 lg:border-r">
+                <textarea
+                  value={bulkImportText}
+                  onChange={(event) => setBulkImportText(event.target.value)}
+                  className="min-h-[360px] w-full resize-y rounded-xl border border-slate-200 bg-slate-950 p-4 font-mono text-sm font-semibold leading-6 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-emerald-400 focus:ring-4 focus:ring-emerald-400/10"
+                  placeholder={BULK_IMPORT_SAMPLE}
+                  disabled={bulkImporting}
+                />
+                <div className="rounded-xl border border-cyan-100 bg-cyan-50 p-4 text-sm font-semibold leading-6 text-cyan-900">
+                  <p className="font-black">Columnas reconocidas</p>
+                  <p className="mt-1">
+                    nombre, categoria, codigo, serial, cantidad, ubicacion, responsable, estado, condicion, valor, observaciones, linkubicacion y reparacion.
+                  </p>
+                  <p className="mt-1">
+                    El responsable puede ser nombre o correo de una persona asignada al proyecto.
+                  </p>
+                </div>
+              </div>
+
+              <aside className="space-y-4 bg-slate-50 p-5">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700">Listos</p>
+                    <p className="mt-2 text-3xl font-black text-emerald-900">{formatNumber(bulkPreview.validRows.length)}</p>
+                  </div>
+                  <div className="rounded-xl border border-red-100 bg-red-50 p-4">
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-red-700">Con error</p>
+                    <p className="mt-2 text-3xl font-black text-red-900">{formatNumber(bulkPreview.invalidRows.length)}</p>
+                  </div>
+                </div>
+
+                {bulkProgress.total > 0 && (
+                  <div className="rounded-xl border border-indigo-100 bg-white p-4">
+                    <div className="flex items-center justify-between text-xs font-black text-slate-500">
+                      <span>Progreso</span>
+                      <span>{formatNumber(bulkProgress.done)} / {formatNumber(bulkProgress.total)}</span>
+                    </div>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-emerald-500 transition-all"
+                        style={{ width: `${bulkProgress.total ? Math.round((bulkProgress.done / bulkProgress.total) * 100) : 0}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="rounded-xl border border-slate-200 bg-white p-4">
+                  <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">Vista previa</p>
+                  <div className="mt-3 max-h-52 space-y-2 overflow-y-auto">
+                    {bulkPreview.validRows.slice(0, 8).map((row, index) => (
+                      <div key={`${row.name}-${index}`} className="rounded-lg bg-slate-50 px-3 py-2">
+                        <p className="truncate text-sm font-black text-slate-900">{row.name}</p>
+                        <p className="truncate text-xs font-bold text-slate-500">{row.category} · {row.assetCode || row.serialNumber || 'Sin código'}</p>
+                      </div>
+                    ))}
+                    {bulkPreview.validRows.length === 0 && (
+                      <p className="rounded-lg border border-dashed border-slate-200 p-4 text-center text-sm font-semibold text-slate-500">
+                        Pega una tabla para ver la vista previa.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {bulkPreview.invalidRows.length > 0 && (
+                  <div className="rounded-xl border border-red-100 bg-white p-4">
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-red-500">Errores detectados</p>
+                    <div className="mt-3 max-h-40 space-y-2 overflow-y-auto">
+                      {bulkPreview.invalidRows.slice(0, 6).map((row) => (
+                        <div key={`${row.line}-${row.raw}`} className="rounded-lg bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
+                          Línea {row.line}: {row.reason}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </aside>
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs font-semibold text-slate-500">
+                Cada activo importado queda con evento de creación en la hoja de vida.
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setIsBulkImportOpen(false)} disabled={bulkImporting}>
+                  Cancelar
+                </Button>
+                <Button
+                  type="button"
+                  onClick={handleBulkImport}
+                  disabled={bulkImporting || bulkPreview.validRows.length === 0}
+                  className="bg-emerald-600 font-black text-white hover:bg-emerald-700"
+                >
+                  {bulkImporting ? 'Importando...' : `Importar ${formatNumber(bulkPreview.validRows.length)}`}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -1020,41 +1776,143 @@ export function ProjectInventory({
                   )}
                 </div>
 
+                {canManage && (
+                  <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                    <button
+                      type="button"
+                      onClick={() => openAssetAction('reassign')}
+                      className="flex items-center justify-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700 transition hover:bg-indigo-100"
+                    >
+                      <User size={15} />
+                      Reasignar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openAssetAction('transfer')}
+                      className="flex items-center justify-center gap-2 rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs font-black text-violet-700 transition hover:bg-violet-100"
+                    >
+                      <ArrowRightLeft size={15} />
+                      Trasladar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openAssetAction('retire')}
+                      className="flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black text-slate-700 transition hover:bg-slate-100"
+                    >
+                      <Archive size={15} />
+                      Dar de baja
+                    </button>
+                  </div>
+                )}
+
                 <section className="mt-5 rounded-xl border border-slate-200 bg-white">
                   <div className="border-b border-slate-100 p-4">
                     <h4 className="flex items-center gap-2 text-lg font-black text-slate-950">
                       <ClipboardList size={18} className="text-indigo-600" />
                       Hoja de vida
                     </h4>
-                    <p className="mt-1 text-sm font-medium text-slate-500">Intervenciones, reparaciones, inspecciones y novedades del activo.</p>
+                    <p className="mt-1 text-sm font-medium text-slate-500">Creación, importación, reasignaciones, traslados, bajas, intervenciones y novedades.</p>
                   </div>
 
                   <div className="max-h-72 divide-y divide-slate-100 overflow-y-auto">
-                    {(selectedItem.maintenanceHistory || []).length === 0 ? (
+                    {getLifecycleEntries(selectedItem).length === 0 ? (
                       <div className="p-6 text-center text-sm font-medium text-slate-500">Sin eventos registrados.</div>
                     ) : (
-                      [...(selectedItem.maintenanceHistory || [])]
-                        .sort((left, right) => String(right.date || '').localeCompare(String(left.date || '')))
+                      getLifecycleEntries(selectedItem)
                         .map((entry) => (
                           <div key={entry.id} className="p-4">
                             <div className="flex items-start justify-between gap-3">
                               <div>
-                                <span className="rounded bg-indigo-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-indigo-700 ring-1 ring-indigo-100">
-                                  {entry.type || 'Novedad'}
+                                <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${getLifecycleTone(entry.type)}`}>
+                                  {getLifecycleLabel(entry.type)}
                                 </span>
-                                <p className="mt-2 text-sm font-black text-slate-950">{entry.description}</p>
+                                <p className="mt-2 text-sm font-black text-slate-950">{entry.title}</p>
+                                <p className="mt-1 text-sm font-semibold leading-5 text-slate-600">{entry.description}</p>
                                 <p className="mt-1 text-xs font-bold text-slate-500">
-                                  {formatDate(entry.date)} · {entry.technician || 'Sin técnico'} {entry.cost ? `· ${formatCurrency(Number(entry.cost))}` : ''}
+                                  {formatDate(entry.date)}
+                                  {entry.actorEmail ? ` · ${entry.actorEmail}` : ''}
+                                  {entry.from || entry.to ? ` · ${entry.from || 'Sin origen'} → ${entry.to || 'Sin destino'}` : ''}
                                 </p>
                               </div>
-                              {entry.result && <CheckCircle2 size={18} className="text-emerald-600" />}
+                              {entry.type === 'maintenance' && <CheckCircle2 size={18} className="text-emerald-600" />}
                             </div>
-                            {entry.result && <p className="mt-2 text-xs font-semibold text-slate-500">{entry.result}</p>}
+                            {entry.metadata?.result && <p className="mt-2 text-xs font-semibold text-slate-500">{entry.metadata.result}</p>}
+                            {Number(entry.metadata?.cost || 0) > 0 && (
+                              <p className="mt-2 text-xs font-black text-slate-700">Costo: {formatCurrency(Number(entry.metadata?.cost || 0))}</p>
+                            )}
                           </div>
                         ))
                     )}
                   </div>
                 </section>
+
+                {assetActionForm && canManage && (
+                  <form onSubmit={handleAssetLifecycleSubmit} className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                          {assetActionForm.action === 'reassign' ? 'Reasignación' : assetActionForm.action === 'transfer' ? 'Traslado de proyecto' : 'Baja de activo'}
+                        </p>
+                        <h4 className="mt-1 text-base font-black text-slate-950">
+                          Registrar acción patrimonial
+                        </h4>
+                      </div>
+                      <button type="button" onClick={() => setAssetActionForm(null)} className="rounded-md p-1 text-slate-400 hover:bg-white hover:text-slate-700">
+                        <X size={17} />
+                      </button>
+                    </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <input
+                        type="date"
+                        value={assetActionForm.date}
+                        onChange={(event) => setAssetActionForm((current) => current ? ({ ...current, date: event.target.value }) : current)}
+                        className={inputClass}
+                      />
+                      {assetActionForm.action === 'reassign' && (
+                        <select
+                          value={assetActionForm.responsibleId}
+                          onChange={(event) => setAssetActionForm((current) => current ? ({ ...current, responsibleId: event.target.value }) : current)}
+                          className={inputClass}
+                        >
+                          <option value="">Seleccionar nuevo responsable</option>
+                          {projectMembers.map((member) => (
+                            <option key={member.id} value={member.id}>{member.name || member.email}</option>
+                          ))}
+                        </select>
+                      )}
+                      {assetActionForm.action === 'transfer' && (
+                        <>
+                          <input
+                            value={assetActionForm.targetProject}
+                            onChange={(event) => setAssetActionForm((current) => current ? ({ ...current, targetProject: event.target.value }) : current)}
+                            className={inputClass}
+                            placeholder="Proyecto destino"
+                          />
+                          <input
+                            value={assetActionForm.targetLocation}
+                            onChange={(event) => setAssetActionForm((current) => current ? ({ ...current, targetLocation: event.target.value }) : current)}
+                            className={inputClass}
+                            placeholder="Nueva ubicación física"
+                          />
+                        </>
+                      )}
+                      <textarea
+                        value={assetActionForm.reason}
+                        onChange={(event) => setAssetActionForm((current) => current ? ({ ...current, reason: event.target.value }) : current)}
+                        className={`${inputClass} min-h-20 resize-y py-3 md:col-span-2`}
+                        placeholder={assetActionForm.action === 'retire' ? 'Motivo obligatorio de la baja' : 'Argumento o contexto de la acción'}
+                      />
+                    </div>
+                    <div className="mt-3 flex justify-end gap-2">
+                      <Button type="button" variant="outline" onClick={() => setAssetActionForm(null)} disabled={savingAssetAction}>
+                        Cancelar
+                      </Button>
+                      <Button type="submit" disabled={savingAssetAction} className="bg-slate-950 font-black text-white hover:bg-slate-800">
+                        {savingAssetAction ? 'Guardando...' : 'Guardar en hoja de vida'}
+                      </Button>
+                    </div>
+                  </form>
+                )}
 
                 {canManage && (
                   <form onSubmit={handleMaintenanceSubmit} className="mt-5 rounded-xl border border-indigo-100 bg-indigo-50/30 p-4">
@@ -1090,6 +1948,32 @@ export function ProjectInventory({
       )}
     </div>
   );
+}
+
+function getLifecycleLabel(type: LifecycleEventType) {
+  const labels: Record<LifecycleEventType, string> = {
+    created: 'Creación',
+    imported: 'Importación',
+    updated: 'Actualización',
+    reassigned: 'Reasignación',
+    transferred: 'Traslado',
+    retired: 'Baja',
+    maintenance: 'Mantenimiento',
+  };
+  return labels[type] || 'Novedad';
+}
+
+function getLifecycleTone(type: LifecycleEventType) {
+  const tones: Record<LifecycleEventType, string> = {
+    created: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
+    imported: 'bg-cyan-50 text-cyan-700 ring-cyan-100',
+    updated: 'bg-slate-100 text-slate-700 ring-slate-200',
+    reassigned: 'bg-indigo-50 text-indigo-700 ring-indigo-100',
+    transferred: 'bg-violet-50 text-violet-700 ring-violet-100',
+    retired: 'bg-red-50 text-red-700 ring-red-100',
+    maintenance: 'bg-orange-50 text-orange-700 ring-orange-100',
+  };
+  return tones[type] || tones.updated;
 }
 
 const inputClass =
