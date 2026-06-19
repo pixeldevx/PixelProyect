@@ -38,6 +38,7 @@ import {
 import { differenceInCalendarDays, format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { getTaskDisplayTitle } from '@/lib/task-title';
+import { isWorkflowTaskType } from '@/lib/workflow-routing';
 
 type DashboardProject = {
   id: string;
@@ -209,7 +210,7 @@ const isTaskAssignedToUser = (task: DashboardTask, assignedIds: string[]) => {
   if (Array.isArray(task.assignedUsers) && task.assignedUsers.some((id) => assignedIds.includes(id))) return true;
   if (Array.isArray(task.assignedTeamMembers) && task.assignedTeamMembers.some((id) => assignedIds.includes(id))) return true;
 
-  if (task.type === 'workflow' && Array.isArray(task.workflowSteps)) {
+  if (isWorkflowTaskType(task.type) && Array.isArray(task.workflowSteps)) {
     const currentStep = task.workflowSteps[task.currentStepIndex || 0];
     return Boolean(currentStep?.assignedTo && assignedIds.includes(currentStep.assignedTo));
   }
@@ -237,7 +238,7 @@ const calculateStats = (tasks: DashboardTask[]): DashboardStats => {
     overdue: openTasks.filter((task) => getScheduleState(task) === 'overdue').length,
     dueSoon: openTasks.filter((task) => getScheduleState(task) === 'due_soon').length,
     highPriority: openTasks.filter((task) => task.priority === 'high').length,
-    workflows: openTasks.filter((task) => task.type === 'workflow').length,
+    workflows: openTasks.filter((task) => isWorkflowTaskType(task.type)).length,
     averageProgress: total ? Math.round(safeTasks.reduce((sum, task) => sum + Number(task.progress || 0), 0) / total) : 0,
     completionRate: total ? Math.round(((completed + completedLate) / total) * 100) : 0,
   };

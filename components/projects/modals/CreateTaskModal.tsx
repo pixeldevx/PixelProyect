@@ -22,6 +22,8 @@ import {
   type WorkflowScheduleMode,
 } from '@/lib/workflow-schedule';
 import {
+  isVariableWorkflowTaskType,
+  isWorkflowTaskType,
   normalizeWorkflowRoutes,
   routeOperatorNeedsValue,
   type WorkflowConditionalRoute,
@@ -30,7 +32,7 @@ import {
 
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
-type TaskType = "quantitative" | "state" | "workflow" | "meeting";
+type TaskType = "quantitative" | "state" | "workflow" | "workflow_variable" | "meeting";
 type MeetingRecurrenceFrequency = "none" | "daily" | "weekly" | "monthly";
 
 const createStepRateCardItem = (): FormRateCardItem => ({
@@ -281,10 +283,13 @@ export function CreateTaskModal({
   const assignableTaskGroups = taskGroups.filter((group) => group.id !== DEFAULT_TASK_GROUP_ID);
   const taskTypeLabel: Record<TaskType, string> = {
     workflow: "Workflow",
+    workflow_variable: "Workflow variable",
     quantitative: "Cuantitativa",
     state: "Estado",
     meeting: "Reunion",
   };
+  const isWorkflowTypeSelected = isWorkflowTaskType(newTaskType);
+  const isVariableWorkflowSelected = isVariableWorkflowTaskType(newTaskType);
   const projectMembers = teamMembers.filter(Boolean);
   const toggleMeetingAttendee = (attendeeId: string) => {
     setMeetingAttendeeIds((currentIds) =>
@@ -393,7 +398,7 @@ export function CreateTaskModal({
     });
 
   const validateWorkflowSteps = () => {
-    if (newTaskType !== "workflow") return true;
+    if (!isWorkflowTypeSelected) return true;
 
     if (workflowSteps.length === 0) {
       toast.warning("Agrega al menos un paso para el workflow.");
@@ -708,9 +713,9 @@ export function CreateTaskModal({
       const taskTitle = newTaskTitle.trim();
       const parentStartDate = new Date(newTaskStart + "T00:00:00");
       const parentEndDate = new Date(newTaskEnd + "T00:00:00");
-      const cleanWorkflowSteps = newTaskType === "workflow" ? sanitizeWorkflowSteps(workflowSteps) : [];
+      const cleanWorkflowSteps = isWorkflowTypeSelected ? sanitizeWorkflowSteps(workflowSteps) : [];
       const workflowSchedule =
-        newTaskType === "workflow"
+        isWorkflowTypeSelected
           ? applyWorkflowStepSchedule(cleanWorkflowSteps, parentStartDate, workflowScheduleMode)
           : null;
       const effectiveParentStartDate = workflowSchedule?.workflowStartDate || parentStartDate;
@@ -950,7 +955,7 @@ export function CreateTaskModal({
         taskData.rateCardId &&
         taskData.unitsToAdd &&
         taskData.progress > 0 &&
-        taskData.type !== "workflow"
+        !isWorkflowTaskType(taskData.type)
       ) {
         const rcRef = doc(
           db,
@@ -969,7 +974,7 @@ export function CreateTaskModal({
         batch.update(rcRef, updateData);
       }
 
-      if (newTaskType === "workflow") {
+      if (isWorkflowTypeSelected) {
         taskData.workflowSteps = (workflowSchedule?.steps || cleanWorkflowSteps).map((step) => {
           const cleanStep: any = {
             ...step,
@@ -990,6 +995,9 @@ export function CreateTaskModal({
         taskData.workflowTotalPlannedDays = getWorkflowTotalPlannedDays(cleanWorkflowSteps);
         taskData.workflowCycles = workflowCycles;
         taskData.currentCycle = 1;
+        taskData.workflowMode = isVariableWorkflowSelected ? "variable" : "linear";
+        taskData.isVariableWorkflow = isVariableWorkflowSelected;
+        taskData.workflowExecutionTrail = [];
 
         if (workflowCycles > 1) {
           taskData.isParentTask = true;
@@ -1021,7 +1029,7 @@ export function CreateTaskModal({
         } else {
           batch.set(taskRef, taskData);
           addManualSubtasksToBatch(taskRef.id, tasksLength + 1);
-          if (newTaskType !== "workflow") {
+          if (!isWorkflowTypeSelected) {
             queueTaskNotification(taskRef.id, newTaskAssignedTo, taskData.status, "task_created");
           }
           await batch.commit();
@@ -1211,6 +1219,7 @@ export function CreateTaskModal({
                   className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                 >
                   <option value="workflow">Workflow (Flujo)</option>
+                  <option value="workflow_variable">Workflow variable</option>
                   <option value="meeting">Reunión</option>
                   <option value="quantitative">Cuantitativa</option>
                   <option value="state">Por Estado</option>
@@ -1370,7 +1379,7 @@ export function CreateTaskModal({
               </div>
             )}
 
-            {newTaskType === "workflow" && (
+            {isWorkflowTypeSelected && (
               <div className="min-w-0 space-y-4 overflow-hidden rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
                 <div className="space-y-2 mb-4">
                   <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">
@@ -1411,10 +1420,12 @@ export function CreateTaskModal({
                 <div className="flex min-w-0 flex-col gap-3 border-t border-indigo-100 pt-4 xl:flex-row xl:items-center xl:justify-between">
                   <div className="min-w-0">
                     <label className="text-xs font-bold uppercase tracking-wider text-indigo-600">
-                      Pasos del Workflow
+                      Pasos del {isVariableWorkflowSelected ? "Workflow variable" : "Workflow"}
                     </label>
                     <p className="mt-1 text-[10px] font-medium text-slate-500">
-                      Agrega pasos, carga plantillas y abre el editor visual sin salir del modal.
+                      {isVariableWorkflowSelected
+                        ? "Agrega pasos y abre el editor visual para crear rutas, saltos y salidas alternativas."
+                        : "Agrega pasos, carga plantillas y abre el editor visual sin salir del modal."}
                     </p>
                   </div>
                   <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center xl:justify-end">
@@ -1480,6 +1491,7 @@ export function CreateTaskModal({
                     steps={workflowSteps}
                     rateCards={rateCards}
                     teamMembers={teamMembers}
+                    allowAnyTarget={isVariableWorkflowSelected}
                     onChange={(nextSteps) => setWorkflowSteps(nextSteps)}
                   />
                 )}
@@ -2525,7 +2537,7 @@ export function CreateTaskModal({
                 <p className="col-span-2 text-[10px] text-emerald-600">
                   {newTaskRateCardMode === "dynamic"
                     ? "El cargo se guardará en un historial por persona, día, semana y mes para reportes."
-                    : newTaskType === "workflow"
+                    : isWorkflowTypeSelected
                     ? "Las unidades se sumarán automáticamente al finalizar todo el workflow."
                     : "Las unidades se sumarán proporcionalmente al progreso de la tarea."}
                 </p>

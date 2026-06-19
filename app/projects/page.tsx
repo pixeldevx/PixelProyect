@@ -31,6 +31,7 @@ import Image from 'next/image';
 import { belongsToAnyOrganization } from '@/lib/organizations';
 import { differenceInCalendarDays, format } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { isWorkflowTaskType } from '@/lib/workflow-routing';
 
 type ProjectTask = {
   id: string;
@@ -156,7 +157,7 @@ const calculateProjectStats = (tasks: ProjectTask[]): ProjectStats => {
     overdue: openTasks.filter((task) => getScheduleState(task) === 'overdue').length,
     dueSoon: openTasks.filter((task) => getScheduleState(task) === 'due_soon').length,
     highPriority: openTasks.filter((task) => String(task.priority || '').toLowerCase() === 'high').length,
-    workflows: safeTasks.filter((task) => task.type === 'workflow' || Array.isArray(task.workflowSteps)).length,
+    workflows: safeTasks.filter((task) => isWorkflowTaskType(task.type) || Array.isArray(task.workflowSteps)).length,
     averageProgress: total ? Math.round(safeTasks.reduce((sum, task) => sum + Number(task.progress || 0), 0) / total) : 0,
     completionRate: total ? Math.round(((safeTasks.filter(isCompletedTask).length) / total) * 100) : 0,
     nextDueDate: dueDates[0] || null,

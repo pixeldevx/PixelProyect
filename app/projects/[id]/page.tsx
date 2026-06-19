@@ -69,6 +69,7 @@ import {
   getWorkflowTotalPlannedDays,
   normalizeWorkflowScheduleMode,
 } from '@/lib/workflow-schedule';
+import { isWorkflowTaskType } from '@/lib/workflow-routing';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
@@ -140,7 +141,7 @@ const stripWorkflowStepRuntime = (step: any = {}) => {
 };
 
 const taskReceivesWorkflowStructure = (task: any) =>
-  task?.type === 'workflow' || Array.isArray(task?.workflowSteps);
+  isWorkflowTaskType(task?.type) || Array.isArray(task?.workflowSteps);
 
 const mergeWorkflowStepStructure = (currentStep: any = {}, structuralStep: any = {}, index: number) => ({
   ...currentStep,
@@ -668,7 +669,7 @@ export default function ProjectDetailsPage() {
       toast.error('No tienes permisos para editar los detalles de tareas.');
       return;
     }
-    if (task.type === 'workflow' && newProgress >= 100) {
+    if (isWorkflowTaskType(task.type) && newProgress >= 100) {
       toast.warning('Los workflows se finalizan aprobando sus pasos. Desde la tarea general solo se pueden iniciar en Trabajando.');
       return;
     }
@@ -693,7 +694,7 @@ export default function ProjectDetailsPage() {
 
       // Handle Rate Card update
       if (task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
-        if (task.type !== 'workflow') {
+        if (!isWorkflowTaskType(task.type)) {
           // Proportional for non-workflow
           const oldProgress = task.progress || 0;
           const deltaProgress = newProgress - oldProgress;
@@ -801,7 +802,7 @@ export default function ProjectDetailsPage() {
       const taskRef = doc(db, 'projects', projectId, 'tasks', taskId);
 
       // Handle Rate Card update for non-workflow tasks
-      if (task.type !== 'workflow' && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
+      if (!isWorkflowTaskType(task.type) && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
         const oldProgress = task.progress || 0;
         const deltaProgress = progress - oldProgress;
         const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
@@ -918,7 +919,7 @@ export default function ProjectDetailsPage() {
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', projectId, 'tasks', task.id);
 
-      if (task.type !== 'workflow' && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
+      if (!isWorkflowTaskType(task.type) && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
         const oldProgress = task.progress || 0;
         const deltaProgress = progress - oldProgress;
         const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
@@ -1100,12 +1101,12 @@ export default function ProjectDetailsPage() {
         return;
       }
 
-      if (task.type === 'workflow' && isWorkflowManualCompletionStatus(newStatus)) {
+      if (isWorkflowTaskType(task.type) && isWorkflowManualCompletionStatus(newStatus)) {
         toast.warning('Un workflow no se puede marcar como Listo manualmente. Debe completarse aprobando todos sus pasos.');
         return;
       }
 
-      if (task.type === 'workflow' && !['in_progress', 'stuck', 'rescheduled'].includes(newStatus) && newStatus !== task.status) {
+      if (isWorkflowTaskType(task.type) && !['in_progress', 'stuck', 'rescheduled'].includes(newStatus) && newStatus !== task.status) {
         toast.warning('Desde el estado general solo puedes iniciar, estancar o reprogramar el workflow.');
         return;
       }
@@ -1119,7 +1120,7 @@ export default function ProjectDetailsPage() {
       const finalStatus = isRescheduleAction ? 'in_progress' : normalizeCompletedTaskStatus(newStatus, task);
 
       // If it's a workflow and moving to in-progress, show the start modal
-      if (!isRescheduleAction && task.type === 'workflow' && finalStatus === 'in_progress' && task.status === 'todo') {
+      if (!isRescheduleAction && isWorkflowTaskType(task.type) && finalStatus === 'in_progress' && task.status === 'todo') {
         setSelectedTaskForStartWorkflow(task);
         setIsStartWorkflowModalOpen(true);
         return;
@@ -1230,7 +1231,7 @@ export default function ProjectDetailsPage() {
 
       // Handle Rate Card update
       if (task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
-        if (task.type !== 'workflow') {
+        if (!isWorkflowTaskType(task.type)) {
           if (!taskHasManualStaticRateCard) {
             // Proportional for non-workflow tasks with automatic units.
             const oldProgress = task.progress || 0;
@@ -1716,7 +1717,7 @@ export default function ProjectDetailsPage() {
       const revertRateCard = (t: any, batchToUse: ReturnType<typeof writeBatch>) => {
         if (t.isRateCardTask && t.rateCardId && t.unitsToAdd) {
           const rcRef = doc(db, 'projects', projectId, 'rateCards', t.rateCardId);
-          if (t.type !== 'workflow') {
+          if (!isWorkflowTaskType(t.type)) {
             const units = (t.progress / 100) * t.unitsToAdd;
             if (units !== 0) {
               const updateData: any = { currentValue: increment(-units) };
@@ -1732,7 +1733,7 @@ export default function ProjectDetailsPage() {
         }
 
         // Revert step-level rate cards
-        if (t.type === 'workflow' && t.workflowSteps) {
+        if (isWorkflowTaskType(t.type) && t.workflowSteps) {
           t.workflowSteps.forEach((step: any) => {
             const stepRateCardSources = getStaticRateCardSources(step);
             if (step.completed && stepRateCardSources.length > 0) {
@@ -2035,7 +2036,7 @@ export default function ProjectDetailsPage() {
         indicatorValue: firstChild.indicatorValue || null,
         status,
         progress,
-        type: firstChild.type === 'workflow' || structuralWorkflowSteps.length > 0 ? 'workflow' : (firstChild.type || 'state'),
+        type: isWorkflowTaskType(firstChild.type) ? firstChild.type : structuralWorkflowSteps.length > 0 ? 'workflow' : (firstChild.type || 'state'),
         requiresDocument: Boolean(firstChild.requiresDocument || matrixTask.requiresDocument),
         linkedDocumentId: null,
         isRateCardTask: Boolean(firstChild.isRateCardTask || matrixTask.isRateCardTask),
@@ -2689,7 +2690,7 @@ export default function ProjectDetailsPage() {
   };
 
   const handleResetWorkflowTask = async (task: any) => {
-    if (!task || task.type !== 'workflow') return;
+    if (!task || !isWorkflowTaskType(task.type)) return;
 
     if (!canEditTaskDetails) {
       toast.error('No tienes permisos para reiniciar workflows.');
@@ -3233,7 +3234,7 @@ export default function ProjectDetailsPage() {
         currentUser={user}
         teamMembers={teamMembersForAssignment}
         footerActions={
-          selectedTaskForComments?.type === 'workflow' && canEditTaskDetails ? (
+          isWorkflowTaskType(selectedTaskForComments?.type) && canEditTaskDetails ? (
             <Button
               type="button"
               variant="outline"

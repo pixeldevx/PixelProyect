@@ -7,6 +7,7 @@ import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { toast } from 'sonner';
 import { getCompletionStatusForTask } from '@/lib/taskProgress';
 import { normalizeRateCardUnits } from '@/lib/rate-card-config';
+import { isWorkflowTaskType } from '@/lib/workflow-routing';
 
 interface CompleteTaskModalProps {
   isOpen: boolean;
@@ -57,7 +58,7 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
         : task;
 
       if (taskForCompletion && taskForCompletion.isRateCardTask && taskForCompletion.rateCardId && taskForCompletion.unitsToAdd) {
-        if (taskForCompletion.type !== 'workflow') {
+        if (!isWorkflowTaskType(taskForCompletion.type)) {
           const oldProgress = taskForCompletion.progress || 0;
           const deltaProgress = 100 - oldProgress;
           const unitsDelta = (deltaProgress / 100) * taskForCompletion.unitsToAdd;

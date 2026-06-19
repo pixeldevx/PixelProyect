@@ -5,6 +5,7 @@ import { collection, getDocs, onSnapshot, query, where } from '@/lib/supabase/do
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { canLoadProjectForUser } from '@/lib/project-access';
+import { isWorkflowTaskType } from '@/lib/workflow-routing';
 
 const terminalStatuses = new Set(['completed', 'completed_late', 'listo']);
 
@@ -16,7 +17,7 @@ const isAssignedToCurrentUser = (task: any, assignedIds: string[]) => {
 };
 
 const isWorkflowPendingForUser = (task: any, assignedIds: string[]) => {
-  if (task?.type !== 'workflow' || !Array.isArray(task?.workflowSteps)) return false;
+  if (!isWorkflowTaskType(task?.type) || !Array.isArray(task?.workflowSteps)) return false;
   const currentStep = task.workflowSteps[task.currentStepIndex || 0];
   return Boolean(
     currentStep?.assignedTo &&
@@ -28,7 +29,7 @@ const isWorkflowPendingForUser = (task: any, assignedIds: string[]) => {
 const isTaskPendingForUser = (task: any, assignedIds: string[]) => {
   const status = task?.status || 'todo';
   if (terminalStatuses.has(status)) return false;
-  if (task?.type === 'workflow' && Array.isArray(task?.workflowSteps)) {
+  if (isWorkflowTaskType(task?.type) && Array.isArray(task?.workflowSteps)) {
     return isWorkflowPendingForUser(task, assignedIds);
   }
   return isAssignedToCurrentUser(task, assignedIds);

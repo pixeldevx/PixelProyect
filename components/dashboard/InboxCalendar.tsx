@@ -29,6 +29,7 @@ import { organizationNameFor } from '@/lib/organizations';
 import { canLoadProjectForUser } from '@/lib/project-access';
 import { getTaskDisplayTitle } from '@/lib/task-title';
 import { getTaskDateValue, isCompletedTaskStatus } from '@/lib/taskProgress';
+import { isWorkflowTaskType } from '@/lib/workflow-routing';
 import {
   createGoogleCalendarUrl,
   getMeetingEndDate,
@@ -102,7 +103,7 @@ const isSameMonth = (left: Date, right: Date) =>
 const normalizeIds = (ids: any[] = []) =>
   Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
 
-const isWorkflowTask = (task: any) => task?.type === 'workflow' && Array.isArray(task?.workflowSteps);
+const isWorkflowTask = (task: any) => isWorkflowTaskType(task?.type) && Array.isArray(task?.workflowSteps);
 
 const isOpenTask = (task: any) => !isCompletedTaskStatus(task?.status || 'todo');
 

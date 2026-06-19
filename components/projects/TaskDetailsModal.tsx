@@ -23,7 +23,7 @@ import {
   isMeetingLocationUrl,
   isMeetingTask,
 } from '@/lib/calendar-utils';
-import { resolveWorkflowActiveStepIndex, resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
+import { isWorkflowTaskType, resolveWorkflowActiveStepIndex, resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
 
 interface TaskDetailsModalProps {
   isOpen: boolean;
@@ -73,7 +73,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
 
   const canResetWorkflow = Boolean(
     onResetWorkflowTask &&
-    task.type === "workflow" &&
+    isWorkflowTaskType(task.type) &&
     !task.isParentTask &&
     (task.status !== "todo" || (task.progress || 0) > 0 || task.externalWorkflowId)
   );
@@ -183,7 +183,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       let newStatus = task.status;
       let newCurrentStepIndex = task.currentStepIndex || 0;
 
-      if (task.type === "workflow" && workflowSteps.length > 0) {
+      if (isWorkflowTaskType(task.type) && workflowSteps.length > 0) {
         const approvedCount = workflowSteps.filter(
           (s) => s.status === "listo",
         ).length;
@@ -244,7 +244,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       });
 
       // 2. Check task-level rate card changes (when whole workflow completes)
-      if (task.type === "workflow" && task.isRateCardTask && task.rateCardId) {
+      if (isWorkflowTaskType(task.type) && task.isRateCardTask && task.rateCardId) {
         const wasAllApproved =
           oldSteps.length > 0 &&
           oldSteps.every((s: any) => s.status === "listo");
@@ -283,7 +283,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         updatedAt: serverTimestamp(),
       };
 
-      if (task.type === "workflow") {
+      if (isWorkflowTaskType(task.type)) {
         taskUpdate.currentStepIndex = newCurrentStepIndex;
 
         if (pendingNextStepNotification) {
@@ -741,7 +741,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
 
           {/* Add Cycles for Workflow Tasks */}
           {(task.isParentTask ||
-            (task.type === "workflow" && !task.parentTaskId)) && (
+            (isWorkflowTaskType(task.type) && !task.parentTaskId)) && (
             <div className="pt-6 border-t border-slate-100">
               <h3 className="text-sm font-semibold text-slate-800 mb-4 uppercase tracking-wider">
                 Agregar Repeticiones (Sub-tareas)

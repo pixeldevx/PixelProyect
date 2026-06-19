@@ -25,6 +25,8 @@ import {
   type WorkflowScheduleMode,
 } from "@/lib/workflow-schedule";
 import {
+  isVariableWorkflowTaskType,
+  isWorkflowTaskType,
   normalizeWorkflowRoutes,
   routeOperatorNeedsValue,
   type WorkflowConditionalRoute,
@@ -278,7 +280,8 @@ export function EditTaskStructureModal({
   const [incrementRateEndDate, setIncrementRateEndDate] = useState("");
   const templateScopeOrganizationKey = templateScopeOrganizationIds.join("|");
 
-  const canEditWorkflow = Boolean(canEditTaskStructure && (task?.type === "workflow" || (task?.workflowSteps?.length || 0) > 0));
+  const isVariableWorkflow = isVariableWorkflowTaskType(task?.type);
+  const canEditWorkflow = Boolean(canEditTaskStructure && (isWorkflowTaskType(task?.type) || (task?.workflowSteps?.length || 0) > 0));
   const canManageSubtasks = Boolean(
     (task?.type === "state" || task?.type === "quantitative") && !task?.parentTaskId && onCreateSubtask
   );
@@ -1385,6 +1388,7 @@ export function EditTaskStructureModal({
                     steps={workflowSteps}
                     rateCards={rateCards}
                     teamMembers={teamMembers}
+                    allowAnyTarget={isVariableWorkflow}
                     onChange={(nextSteps) => setWorkflowSteps(nextSteps)}
                   />
                 </div>

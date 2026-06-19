@@ -46,7 +46,12 @@ import {
   isMeetingTask,
 } from '@/lib/calendar-utils';
 import { detectActionCandidates } from '@/lib/project-logbook/action-detection';
-import { resolveWorkflowNextStepIndex, resolveWorkflowPreviousStepIndex } from '@/lib/workflow-routing';
+import {
+  isVariableWorkflowTaskType,
+  isWorkflowTaskType,
+  resolveWorkflowNextStepIndex,
+  resolveWorkflowPreviousStepIndex,
+} from '@/lib/workflow-routing';
 
 const hasRequiredFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0;
@@ -109,7 +114,7 @@ const renderHistoryFormValue = (value: any, field?: any) => {
 };
 
 const isWorkflowItem = (task: any) =>
-  task?.trayItemType === 'workflow' || (task?.type === 'workflow' && Array.isArray(task?.workflowSteps));
+  task?.trayItemType === 'workflow' || (isWorkflowTaskType(task?.type) && Array.isArray(task?.workflowSteps));
 
 const isAssignedToCurrentUser = (task: any, assignedIds: string[]) => {
   if (task?.assignedTo && assignedIds.includes(task.assignedTo)) return true;
@@ -954,7 +959,7 @@ export default function WorkflowTray() {
                 const snapshotItems = taskSnapshot.docs
                   .map(doc => {
                     const taskData = doc.data();
-                    const taskIsWorkflow = taskData.type === 'workflow' && Array.isArray(taskData.workflowSteps);
+                    const taskIsWorkflow = isWorkflowTaskType(taskData.type) && Array.isArray(taskData.workflowSteps);
                     return {
                       ...taskData,
                       id: doc.id,
@@ -1144,10 +1149,12 @@ export default function WorkflowTray() {
     const action = actionModal.type;
     const currentIndex = task.currentStepIndex || 0;
     const currentStep = task.workflowSteps[currentIndex];
+    const isVariableWorkflow = isVariableWorkflowTaskType(task.type);
     const returnTargetIndex = action === 'return'
       ? resolveWorkflowPreviousStepIndex({
           steps: task.workflowSteps || [],
           currentIndex,
+          history: task.workflowHistory || [],
         })
       : null;
     const currentStepIsQualityGate = isQualityGateStep(currentStep);
@@ -1357,12 +1364,17 @@ export default function WorkflowTray() {
         if (resolvedNextIndex !== null) {
           nextIndex = resolvedNextIndex;
           assignedNextWorkflowIndex = resolvedNextIndex;
+          const nextStepWasCompleted = steps[nextIndex]?.status === 'listo';
           steps[nextIndex] = {
             ...steps[nextIndex],
-            status: steps[nextIndex]?.status === 'listo' ? 'listo' : 'en_curso',
-            startedAt: steps[nextIndex]?.startedAt || actionTimestamp,
-            startedBy: steps[nextIndex]?.startedBy || user.uid,
-            startedByMemberId: steps[nextIndex]?.startedByMemberId || memberId,
+            status: isVariableWorkflow && nextStepWasCompleted ? 'reproceso' : nextStepWasCompleted ? 'listo' : 'en_curso',
+            completedAt: isVariableWorkflow && nextStepWasCompleted ? null : steps[nextIndex]?.completedAt,
+            completedBy: isVariableWorkflow && nextStepWasCompleted ? null : steps[nextIndex]?.completedBy,
+            completedByMemberId: isVariableWorkflow && nextStepWasCompleted ? null : steps[nextIndex]?.completedByMemberId,
+            completedByIds: isVariableWorkflow && nextStepWasCompleted ? [] : steps[nextIndex]?.completedByIds,
+            startedAt: isVariableWorkflow && nextStepWasCompleted ? actionTimestamp : steps[nextIndex]?.startedAt || actionTimestamp,
+            startedBy: isVariableWorkflow && nextStepWasCompleted ? user.uid : steps[nextIndex]?.startedBy || user.uid,
+            startedByMemberId: isVariableWorkflow && nextStepWasCompleted ? memberId : steps[nextIndex]?.startedByMemberId || memberId,
             assignedAt: actionTimestamp,
           };
           newStatus = 'in_progress';
@@ -2486,7 +2498,11 @@ export default function WorkflowTray() {
     const currentStep = workflowSteps[currentIndex] || {};
     const isStopped = currentStep?.status === 'detenido';
     const isProcessing = processingId === task.id;
-    const returnTargetIndex = resolveWorkflowPreviousStepIndex({ steps: workflowSteps, currentIndex });
+    const returnTargetIndex = resolveWorkflowPreviousStepIndex({
+      steps: workflowSteps,
+      currentIndex,
+      history: task.workflowHistory || [],
+    });
 
     const openWorkflowAction = (type: 'approve' | 'return' | 'stop' | 'resume') => {
       onCloseModal?.();
@@ -2691,7 +2707,11 @@ export default function WorkflowTray() {
     const stepStatus = currentWorkflowStep?.status;
     const isReturned = stepStatus === 'devuelto' || stepStatus === 'returned';
     const isStopped = stepStatus === 'detenido';
-    const returnTargetIndex = resolveWorkflowPreviousStepIndex({ steps: workflowSteps, currentIndex });
+    const returnTargetIndex = resolveWorkflowPreviousStepIndex({
+      steps: workflowSteps,
+      currentIndex,
+      history: task.workflowHistory || [],
+    });
     const workflowUrgencyStyles = isReturned ? getInboxUrgencyStyles('overdue') : urgencyStyles;
     const workflowHistoryCount = getInteractionHistory(task).length;
     const attentionBadge = getWorkflowAttentionBadge(stepStatus);

@@ -40,6 +40,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
 import { formatRateCardUnits, formatRateCardValue, isCurrencyRateCard, normalizeRateCardValueType } from '@/lib/rate-card-config';
+import { isWorkflowTaskType } from '@/lib/workflow-routing';
 
 type TeamTask = {
   id: string;
@@ -423,7 +424,7 @@ const buildStepPerformanceFallback = (task: TeamTask, step: any, index: number):
 
 const buildTaskPerformanceFallback = (task: TeamTask): PerformanceItem | null => {
   if (!isCompletedTask(task)) return null;
-  if (task.type === 'workflow' && Array.isArray(task.workflowSteps) && task.workflowSteps.length > 0) return null;
+  if (isWorkflowTaskType(task.type) && Array.isArray(task.workflowSteps) && task.workflowSteps.length > 0) return null;
 
   return normalizePerformanceItem(
     task,

@@ -8,6 +8,7 @@ import { es } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'motion/react';
 import Image from 'next/image';
 import { TaskDateEditorModal } from './TaskDateEditorModal';
+import { isWorkflowTaskType } from '@/lib/workflow-routing';
 
 interface ProjectTasksTableProps {
   tasks: any[];
@@ -254,10 +255,10 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
     const endDate = getTaskDate(task, 'end');
 
     const subtasks = tasks.filter(t => t.parentTaskId === task.id).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
-    const hasSubtasks = subtasks.length > 0 || (task.type === 'workflow' && task.workflowSteps && task.workflowSteps.length > 0);
+    const hasSubtasks = subtasks.length > 0 || (isWorkflowTaskType(task.type) && task.workflowSteps && task.workflowSteps.length > 0);
     const isExpanded = expandedTasks[task.id] !== false;
     const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId);
-    const isWorkflowTask = task.type === 'workflow';
+    const isWorkflowTask = isWorkflowTaskType(task.type);
     const canUseStatusSelect = Boolean(canChangeTaskStatus && (!isWorkflowTask || (task.status || 'todo') === 'todo'));
 
     return (
@@ -471,7 +472,7 @@ export const ProjectTasksTable: React.FC<ProjectTasksTableProps> = ({
         </motion.tr>
         <AnimatePresence>
           {isExpanded && subtasks.map((subtask, index) => renderTaskRow(subtask, depth + 1, index === subtasks.length - 1 && (!task.workflowSteps || task.workflowSteps.length === 0)))}
-          {isExpanded && task.type === 'workflow' && task.workflowSteps && task.workflowSteps.map((step: any, index: number) => renderWorkflowStepRow(step, task, depth + 1, index, index === task.workflowSteps.length - 1))}
+          {isExpanded && isWorkflowTaskType(task.type) && task.workflowSteps && task.workflowSteps.map((step: any, index: number) => renderWorkflowStepRow(step, task, depth + 1, index, index === task.workflowSteps.length - 1))}
         </AnimatePresence>
       </React.Fragment>
     );

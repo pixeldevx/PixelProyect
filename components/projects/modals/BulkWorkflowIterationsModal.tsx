@@ -6,6 +6,7 @@ import { db } from "@/lib/backend";
 import { toast } from "sonner";
 import { notifyTaskAssignment, TaskAssignmentNotificationPayload } from "@/lib/notifications";
 import { applyWorkflowStepSchedule, normalizeWorkflowScheduleMode } from "@/lib/workflow-schedule";
+import { isVariableWorkflowTaskType, isWorkflowTaskType } from "@/lib/workflow-routing";
 
 type BulkWorkflowIterationsModalProps = {
   isOpen: boolean;
@@ -430,7 +431,7 @@ export function BulkWorkflowIterationsModal({
       return;
     }
 
-    if (task?.type !== "workflow" || !Array.isArray(task.workflowSteps) || task.workflowSteps.length === 0) {
+    if (!isWorkflowTaskType(task?.type) || !Array.isArray(task.workflowSteps) || task.workflowSteps.length === 0) {
       toast.warning("Selecciona un workflow con pasos definidos.");
       return;
     }
@@ -516,6 +517,8 @@ export function BulkWorkflowIterationsModal({
         0
       );
       const notifications: TaskAssignmentNotificationPayload[] = [];
+      const workflowTaskType = isWorkflowTaskType(task.type) ? task.type : "workflow";
+      const isVariableWorkflow = isVariableWorkflowTaskType(workflowTaskType);
 
       for (let chunkStart = 0; chunkStart < iterationsToCreate.length; chunkStart += BULK_ITERATION_CHUNK_SIZE) {
         const chunk = iterationsToCreate.slice(chunkStart, chunkStart + BULK_ITERATION_CHUNK_SIZE);
@@ -589,7 +592,9 @@ export function BulkWorkflowIterationsModal({
             indicatorValue: null,
             status: "in_progress",
             progress: 10,
-            type: "workflow",
+            type: workflowTaskType,
+            workflowMode: isVariableWorkflow ? "variable" : "linear",
+            isVariableWorkflow,
             requiresDocument: Boolean(task.requiresDocument),
             linkedDocumentId: null,
             isRateCardTask: Boolean(task.isRateCardTask),

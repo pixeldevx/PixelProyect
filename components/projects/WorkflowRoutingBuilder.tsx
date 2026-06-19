@@ -45,6 +45,7 @@ type WorkflowRoutingBuilderProps = {
   onChange: (steps: any[]) => void;
   rateCards?: any[];
   teamMembers?: any[];
+  allowAnyTarget?: boolean;
 };
 
 const COMPLETE_NODE_ID = "workflow-complete";
@@ -76,13 +77,13 @@ const getWorkflowNodePosition = (step: any, index: number): WorkflowNodePosition
   normalizeWorkflowNodePosition(step?.visualPosition || step?.workflowPosition || step?.nodePosition) ||
   getDefaultWorkflowNodePosition(index);
 
-const getTargetOptions = (steps: any[], currentIndex: number) => {
-  const futureSteps = steps
+const getTargetOptions = (steps: any[], currentIndex: number, allowAnyTarget = false) => {
+  const targetSteps = steps
     .map((step, index) => ({ step, index }))
-    .filter(({ index }) => index > currentIndex);
+    .filter(({ index }) => (allowAnyTarget ? index !== currentIndex : index > currentIndex));
 
   return [
-    ...futureSteps.map(({ step, index }) => ({
+    ...targetSteps.map(({ step, index }) => ({
       value: String(index),
       label: `Paso ${index + 1}: ${step.label || "Sin nombre"}`,
     })),
@@ -185,6 +186,7 @@ export function WorkflowRoutingBuilder({
   onChange,
   rateCards = [],
   teamMembers = [],
+  allowAnyTarget = false,
 }: WorkflowRoutingBuilderProps) {
   const [isVisualEditorOpen, setIsVisualEditorOpen] = useState(false);
 
@@ -215,7 +217,9 @@ export function WorkflowRoutingBuilder({
                 Configura rutas, variables y condiciones en pantalla completa
               </h4>
               <p className="mt-1 max-w-2xl text-xs font-semibold leading-relaxed text-slate-500">
-                La vista del flujo ya no se edita dentro de este modal. Abre el lienzo para ver todo el workflow como mapa interactivo y configurar cada paso sin perder espacio.
+                {allowAnyTarget
+                  ? "Abre el lienzo para conectar rutas no lineales, devoluciones y salidas alternativas sin perder espacio."
+                  : "La vista del flujo ya no se edita dentro de este modal. Abre el lienzo para ver todo el workflow como mapa interactivo y configurar cada paso sin perder espacio."}
               </p>
             </div>
           </div>
@@ -254,6 +258,7 @@ export function WorkflowRoutingBuilder({
           onClose={() => setIsVisualEditorOpen(false)}
           rateCards={rateCards}
           teamMembers={teamMembers}
+          allowAnyTarget={allowAnyTarget}
         />
       )}
     </>
@@ -266,12 +271,14 @@ function WorkflowVisualEditorModal({
   onClose,
   rateCards,
   teamMembers,
+  allowAnyTarget,
 }: {
   steps: any[];
   onChange: (steps: any[]) => void;
   onClose: () => void;
   rateCards: any[];
   teamMembers: any[];
+  allowAnyTarget: boolean;
 }) {
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [formStepIndex, setFormStepIndex] = useState<number | null>(null);
@@ -490,7 +497,7 @@ function WorkflowVisualEditorModal({
   const selectedFields = getWorkflowStepFormFields(selectedStep);
   const selectedRoutes = normalizeWorkflowRoutes(selectedStep?.conditionalRoutes || []);
   const selectedDefaultTarget = selectedStep?.defaultNextStepIndex ?? selectedStep?.defaultNextStepTarget;
-  const selectedTargetOptions = getTargetOptions(steps, activeSelectedStepIndex);
+  const selectedTargetOptions = getTargetOptions(steps, activeSelectedStepIndex, allowAnyTarget);
 
   return (
     <div className="fixed inset-0 z-[70] flex flex-col bg-slate-950 text-white">
@@ -500,7 +507,9 @@ function WorkflowVisualEditorModal({
             <GitBranch size={22} />
           </div>
           <div className="min-w-0">
-            <h2 className="truncate text-xl font-black">Editor visual de workflow</h2>
+            <h2 className="truncate text-xl font-black">
+              {allowAnyTarget ? "Editor visual de workflow variable" : "Editor visual de workflow"}
+            </h2>
             <p className="text-xs font-semibold text-slate-400">
               {steps.length} pasos visibles · clic en un nodo para configurar formulario, variables y caminos.
             </p>

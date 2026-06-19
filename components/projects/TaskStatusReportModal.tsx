@@ -29,6 +29,7 @@ import {
 } from "recharts";
 import { Button } from "@/components/ui/button";
 import { isCompletedTaskStatus } from "@/lib/taskProgress";
+import { getWorkflowTaskTypeLabel, isWorkflowTaskType } from "@/lib/workflow-routing";
 
 type TaskStatusReportModalProps = {
   isOpen: boolean;
@@ -202,7 +203,7 @@ const getTaskOrder = (task: any) => {
 };
 
 const isWorkflowTask = (task: any) =>
-  task?.type === "workflow" && Array.isArray(task.workflowSteps) && task.workflowSteps.length > 0;
+  isWorkflowTaskType(task?.type) && Array.isArray(task.workflowSteps) && task.workflowSteps.length > 0;
 
 const getWorkflowStepLabel = (task: any, index: number) =>
   task.workflowSteps?.[index]?.label || `Paso ${index + 1}`;
@@ -809,7 +810,7 @@ export function TaskStatusReportModal({
         reportGroupName,
         REPORT_FILTER_LABELS[reportFilter],
         getTaskTitle(task),
-        task.type === "workflow" ? "Workflow" : "Tarea",
+        isWorkflowTaskType(task.type) ? getWorkflowTaskTypeLabel(task.type) : "Tarea",
         getAssigneeName(task, teamMembers),
         getTaskStatusLabel(task.status),
         getPriorityLabel(task.priority),
@@ -1530,7 +1531,7 @@ export function TaskStatusReportModal({
                                       <td className="max-w-[260px] py-2 pr-3">
                                         <p className="truncate font-bold text-slate-800">{getTaskTitle(task)}</p>
                                         <p className="truncate text-[10px] font-medium text-slate-400">
-                                          {task.type === "workflow" ? "Workflow" : "Tarea"} · {getPriorityLabel(task.priority)}
+                                          {isWorkflowTaskType(task.type) ? getWorkflowTaskTypeLabel(task.type) : "Tarea"} · {getPriorityLabel(task.priority)}
                                         </p>
                                       </td>
                                       <td className="px-3 py-2 font-semibold text-slate-600">

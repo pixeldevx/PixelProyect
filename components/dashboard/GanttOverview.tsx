@@ -19,6 +19,7 @@ import {
   isRateDrivenIncrementalTask,
   syncRateDrivenIncrementalTasksForRate,
 } from '@/lib/incremental-rate-tasks';
+import { isVariableWorkflowTaskType, isWorkflowTaskType } from '@/lib/workflow-routing';
 
 enum OperationType {
   CREATE = 'create',
@@ -88,7 +89,7 @@ export const GanttOverview: React.FC = () => {
   const [newTaskStart, setNewTaskStart] = useState('');
   const [newTaskEnd, setNewTaskEnd] = useState('');
   const [newTaskAssignedTo, setNewTaskAssignedTo] = useState('');
-  const [newTaskType, setNewTaskType] = useState<'quantitative' | 'state' | 'workflow'>('workflow');
+  const [newTaskType, setNewTaskType] = useState<'quantitative' | 'state' | 'workflow' | 'workflow_variable'>('workflow');
   const [workflowSteps, setWorkflowSteps] = useState<{assignedTo: string, label: string, assignsNextStep?: boolean}[]>([]);
   const [newTaskIndicator, setNewTaskIndicator] = useState('');
   const [newTaskIndicatorValue, setNewTaskIndicatorValue] = useState(0);
@@ -334,7 +335,7 @@ export const GanttOverview: React.FC = () => {
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', selectedProjectId, 'tasks', task.id);
 
-      if (task.type !== 'workflow' && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
+      if (!isWorkflowTaskType(task.type) && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
         const oldProgress = task.progress || 0;
         const deltaProgress = progress - oldProgress;
         const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
@@ -629,7 +630,7 @@ export const GanttOverview: React.FC = () => {
         createdBy: user.uid
       };
 
-      if (newTaskType === 'workflow') {
+      if (isWorkflowTaskType(newTaskType)) {
         taskData.workflowSteps = workflowSteps.map(step => ({
           ...step,
           status: 'not_started'
@@ -637,6 +638,8 @@ export const GanttOverview: React.FC = () => {
         taskData.currentStepIndex = 0;
         taskData.workflowHistory = [];
         taskData.progress = 0; // Workflows start at 0%
+        taskData.workflowMode = isVariableWorkflowTaskType(newTaskType) ? 'variable' : 'linear';
+        taskData.isVariableWorkflow = isVariableWorkflowTaskType(newTaskType);
       }
 
       await addDoc(collection(db, 'projects', selectedProjectId, 'tasks'), taskData);
@@ -859,21 +862,24 @@ export const GanttOverview: React.FC = () => {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <label className="text-sm font-bold text-slate-700">Tipo de Tarea</label>
-                      <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 uppercase tracking-tighter">Workflow</span>
+                      <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 uppercase tracking-tighter">
+                        {isVariableWorkflowTaskType(newTaskType) ? 'Workflow variable' : isWorkflowTaskType(newTaskType) ? 'Workflow' : 'Tarea'}
+                      </span>
                     </div>
                     <select 
                       value={newTaskType}
-                      onChange={(e) => setNewTaskType(e.target.value as 'quantitative' | 'state' | 'workflow')}
+                      onChange={(e) => setNewTaskType(e.target.value as 'quantitative' | 'state' | 'workflow' | 'workflow_variable')}
                       className="w-full h-11 px-4 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm"
                     >
                       <option value="workflow">Workflow (Flujo)</option>
+                      <option value="workflow_variable">Workflow variable</option>
                       <option value="quantitative">Cuantitativa</option>
                       <option value="state">Por Estado</option>
                     </select>
                   </div>
                 </div>
 
-                {newTaskType === 'workflow' && (
+                {isWorkflowTaskType(newTaskType) && (
                   <div className="space-y-4 p-4 bg-indigo-50/50 rounded-xl border border-indigo-100">
                     <div className="flex items-center justify-between">
                       <label className="text-xs font-bold text-indigo-600 uppercase tracking-wider">Pasos del Workflow</label>

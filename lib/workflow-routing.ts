@@ -20,6 +20,19 @@ export type WorkflowConditionalRoute = {
   label?: string;
 };
 
+export const WORKFLOW_TASK_TYPES = ["workflow", "workflow_variable"] as const;
+
+export type WorkflowTaskType = (typeof WORKFLOW_TASK_TYPES)[number];
+
+export const isWorkflowTaskType = (type: any): type is WorkflowTaskType =>
+  WORKFLOW_TASK_TYPES.includes(String(type || "") as WorkflowTaskType);
+
+export const isVariableWorkflowTaskType = (type: any) =>
+  String(type || "") === "workflow_variable";
+
+export const getWorkflowTaskTypeLabel = (type: any) =>
+  isVariableWorkflowTaskType(type) ? "Workflow variable" : "Workflow";
+
 export const WORKFLOW_ROUTE_OPERATORS: Array<{
   value: WorkflowRouteOperator;
   label: string;
@@ -198,12 +211,33 @@ export const resolveWorkflowNextStepIndex = ({
 export const resolveWorkflowPreviousStepIndex = ({
   steps,
   currentIndex,
+  history = [],
 }: {
   steps: any[];
   currentIndex: number;
+  history?: any[];
 }): number | null => {
   const stepCount = Array.isArray(steps) ? steps.length : 0;
   if (stepCount === 0 || currentIndex <= 0 || currentIndex >= stepCount) return null;
+
+  const routedTrail = [...(Array.isArray(history) ? history : [])]
+    .reverse()
+    .find((entry) => {
+      const action = String(entry?.action || "");
+      const nextStepIndex = Number(entry?.nextStepIndex);
+      const stepIndex = Number(entry?.stepIndex);
+      return (
+        (action === "approve" || action === "advance") &&
+        Number.isFinite(stepIndex) &&
+        Number.isFinite(nextStepIndex) &&
+        stepIndex >= 0 &&
+        stepIndex < stepCount &&
+        stepIndex !== currentIndex &&
+        nextStepIndex === currentIndex
+      );
+    });
+
+  if (routedTrail) return Number(routedTrail.stepIndex);
 
   for (let sourceIndex = currentIndex - 1; sourceIndex >= 0; sourceIndex -= 1) {
     const sourceStep = steps[sourceIndex];

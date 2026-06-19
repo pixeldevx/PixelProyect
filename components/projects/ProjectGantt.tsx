@@ -12,6 +12,7 @@ import { es } from 'date-fns/locale';
 import { TaskDateEditorModal } from './TaskDateEditorModal';
 import { getTaskDisplayTitle, getTaskTitle, sanitizeTaskTitleForSave } from '@/lib/task-title';
 import { createGoogleCalendarUrl, downloadMeetingIcs, getMeetingEndDate, getMeetingScheduleLabel, getMeetingStartDate, isMeetingTask } from '@/lib/calendar-utils';
+import { getWorkflowTaskTypeLabel, isVariableWorkflowTaskType, isWorkflowTaskType } from '@/lib/workflow-routing';
 
 type ScheduleFilter = 'overdue' | 'due_soon' | 'completed_late' | null;
 
@@ -437,7 +438,7 @@ const buildRecoveredMatrixTask = (parentId: string, children: any[]) => {
     assignedTo: firstChild.assignedTo || '',
     status: getRecoveredMatrixStatus(children),
     progress: getGroupProgress(children),
-    type: firstChild.type === 'workflow' || workflowSteps.length > 0 ? 'workflow' : (firstChild.type || 'state'),
+    type: isWorkflowTaskType(firstChild.type) ? firstChild.type : workflowSteps.length > 0 ? 'workflow' : (firstChild.type || 'state'),
     priority: firstChild.priority || 'medium',
     groupId: getTaskGroupId(firstChild) === UNGROUPED_GROUP_ID ? null : getTaskGroupId(firstChild),
     currentValue: 0,
@@ -878,7 +879,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         subTasks.forEach(subTask => {
           rows.push({ type: 'task', id: subTask.id, task: subTask });
           // Generate visual sub-tasks for workflow steps
-          if (subTask.type === 'workflow' && subTask.workflowSteps && (expandedParents[subTask.id] || hasActiveTaskSearch)) {
+          if (isWorkflowTaskType(subTask.type) && subTask.workflowSteps && (expandedParents[subTask.id] || hasActiveTaskSearch)) {
             subTask.workflowSteps.forEach((step: any, idx: number) => {
               rows.push({ type: 'task', id: `${subTask.id}-step-${idx}`, task: {
                 id: `${subTask.id}-step-${idx}`,
@@ -899,7 +900,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             });
           }
         });
-      } else if (task.type === 'workflow' && task.workflowSteps && shouldShowChildren) {
+      } else if (isWorkflowTaskType(task.type) && task.workflowSteps && shouldShowChildren) {
         // Generate visual sub-tasks for workflow steps (no cycles)
         task.workflowSteps.forEach((step: any, idx: number) => {
           rows.push({ type: 'task', id: `${task.id}-step-${idx}`, task: {
@@ -1604,13 +1605,13 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const commentCount = getTaskCommentCount(task);
                     const canEditThisTaskDates = Boolean(canModifyTaskDates && !task.isWorkflowStep && !isRecoveredMatrix);
                     const canEditThisTaskAssignee = Boolean(canChangeTaskAssignee && !task.isWorkflowStep && task.assignedTo !== 'DYNAMIC' && !isRecoveredMatrix);
-                    const isWorkflowTask = task.type === 'workflow' && !task.isWorkflowStep;
+                    const isWorkflowTask = isWorkflowTaskType(task.type) && !task.isWorkflowStep;
                     const canUseStatusSelect = Boolean(canChangeTaskStatus && !isRecoveredMatrix && (!isWorkflowTask || (task.status || 'todo') === 'todo'));
                     const canAddSubtask = Boolean(canCreateSubtasks && task.type === 'state' && !task.parentTaskId && !task.isWorkflowStep && !isRecoveredMatrix);
                     const canResetWorkflow = Boolean(
                       canModifyTaskDetails &&
                       onResetWorkflowTask &&
-                      task.type === 'workflow' &&
+                      isWorkflowTaskType(task.type) &&
                       !isRecoveredMatrix &&
                       !task.isParentTask &&
                       (task.status !== 'todo' || (task.progress || 0) > 0 || task.externalWorkflowId)
@@ -1618,7 +1619,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     const canCreateBulkWorkflowIterations = Boolean(
                       canCreateSubtasks &&
                       onCreateBulkWorkflowIterations &&
-                      task.type === 'workflow' &&
+                      isWorkflowTaskType(task.type) &&
                       !task.isWorkflowStep &&
                       !isRecoveredMatrix
                     );
@@ -1684,7 +1685,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
 
                             <div className={`flex-1 min-w-[220px] px-2 flex items-center gap-2 ${task.isWorkflowStep ? 'pl-10' : isSubTask ? 'pl-6' : ''}`}>
                               {isSubTask && <CornerDownRight size={14} className="shrink-0 text-indigo-300" />}
-                              {(isParent || task.type === 'workflow') && !task.isWorkflowStep && (
+                              {(isParent || isWorkflowTaskType(task.type)) && !task.isWorkflowStep && (
                                 <button
                                   onClick={() => toggleParent(task.id)}
                                   className="w-4 h-4 flex items-center justify-center rounded bg-slate-200 text-slate-600 hover:bg-slate-300"
@@ -1774,9 +1775,13 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                   RC
                                 </span>
                               )}
-                              {task.type === 'workflow' && !isSubTask && (
-                                <span className="px-1.5 py-0.5 bg-amber-50 text-amber-600 text-[8px] font-bold rounded uppercase tracking-tighter shrink-0 border border-amber-100 shadow-sm">
-                                  WF
+                              {isWorkflowTaskType(task.type) && !isSubTask && (
+                                <span className={`px-1.5 py-0.5 text-[8px] font-bold rounded uppercase tracking-tighter shrink-0 border shadow-sm ${
+                                  isVariableWorkflowTaskType(task.type)
+                                    ? 'border-violet-100 bg-violet-50 text-violet-600'
+                                    : 'border-amber-100 bg-amber-50 text-amber-600'
+                                }`}>
+                                  {isVariableWorkflowTaskType(task.type) ? 'WFV' : 'WF'}
                                 </span>
                               )}
                               {task.requiresDocument && !task.linkedDocumentId && (
@@ -1960,7 +1965,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                     {task.currentValue || 0}/{task.indicatorValue} {task.indicator}
                                   </span>
                                 )}
-                                {task.type === 'workflow' && task.workflowSteps && (
+                                {isWorkflowTaskType(task.type) && task.workflowSteps && (
                                   <span className="text-[8px] text-amber-600 bg-amber-50 px-1 rounded">
                                     Paso {task.currentStepIndex + 1}/{task.workflowSteps.length}
                                   </span>
@@ -2131,7 +2136,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                                         Iteraciones masivas
                                       </button>
                                     )}
-                                    {canModifyTaskDetails && isQuantitative && task.type !== 'workflow' && !isRecoveredMatrix && (
+                                    {canModifyTaskDetails && isQuantitative && !isWorkflowTaskType(task.type) && !isRecoveredMatrix && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -2405,7 +2410,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                         {getStatusLabel(selectedTimelineTask?.status || selectedTimelineSourceTask.status || 'todo')}
                       </span>
                       <span className="rounded-full bg-indigo-500/15 px-2.5 py-1 text-xs font-black text-indigo-200">
-                        {selectedTimelineSourceTask.type === 'workflow' ? 'Workflow' : selectedTimelineSourceTask.type === 'quantitative' ? 'Cuantitativa' : isMeetingTask(selectedTimelineSourceTask) ? 'Reunión' : 'Tarea'}
+                        {isWorkflowTaskType(selectedTimelineSourceTask.type) ? getWorkflowTaskTypeLabel(selectedTimelineSourceTask.type) : selectedTimelineSourceTask.type === 'quantitative' ? 'Cuantitativa' : isMeetingTask(selectedTimelineSourceTask) ? 'Reunión' : 'Tarea'}
                       </span>
                       <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs font-black text-slate-200">
                         {getTaskPriority(selectedTimelineSourceTask) === 'high' ? 'Alta' : getTaskPriority(selectedTimelineSourceTask) === 'low' ? 'Baja' : 'Media'}
@@ -2455,7 +2460,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                         style={{ width: `${Math.min(100, Number(selectedTimelineSourceTask.progress || 0))}%` }}
                       />
                     </div>
-                    {selectedTimelineSourceTask.type === 'workflow' && Array.isArray(selectedTimelineSourceTask.workflowSteps) && (
+                    {isWorkflowTaskType(selectedTimelineSourceTask.type) && Array.isArray(selectedTimelineSourceTask.workflowSteps) && (
                       <p className="mt-2 text-xs font-semibold text-amber-200">
                         Paso {(selectedTimelineSourceTask.currentStepIndex || 0) + 1} de {selectedTimelineSourceTask.workflowSteps.length}
                       </p>
