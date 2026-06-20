@@ -656,6 +656,20 @@ export default function ProjectDetailsPage() {
     if (canAssignGlobalAdmins && isGlobalAdminMember(member)) return true;
     return projectAssignedMemberIds.has(member.id);
   });
+  const projectOrgChartTeamMembers = React.useMemo(() => {
+    const assignedIds = Array.from(new Set((project?.assignedTeamMembers || []).filter(Boolean)));
+    const membersById = new Map<string, any>();
+
+    [...teamMembersForAssignment, ...teamMembersWithSystemProfiles].forEach((member) => {
+      if (member?.id && !membersById.has(member.id)) {
+        membersById.set(member.id, member);
+      }
+    });
+
+    return assignedIds
+      .map((memberId) => membersById.get(String(memberId)))
+      .filter(Boolean);
+  }, [project?.assignedTeamMembers, teamMembersForAssignment, teamMembersWithSystemProfiles]);
 
   const collectDependentTaskIds = (taskId: string) => {
     const taskIds = new Set<string>([taskId]);
@@ -3340,7 +3354,7 @@ export default function ProjectDetailsPage() {
               <p className="text-sm text-slate-500 mt-1">Visualiza y edita la estructura organizacional del equipo.</p>
             </div>
           </div>
-          <ProjectOrgChart projectId={projectId} teamMembers={teamMembers} />
+          <ProjectOrgChart projectId={projectId} teamMembers={projectOrgChartTeamMembers} />
         </div>
       )}
 
