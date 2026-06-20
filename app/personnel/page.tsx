@@ -137,6 +137,8 @@ type PersonRow = {
   photoURL?: string;
   roleName: string;
   systemRole?: string;
+  employmentType: PersonnelEmploymentType;
+  coverageExempt: boolean;
   organizationNames: string[];
   projects: PersonProjectCoverage[];
   totalAllocated: number;
@@ -153,12 +155,14 @@ type PersonRow = {
   status: 'covered' | 'gap' | 'uncovered' | 'risk';
 };
 
+type PersonnelEmploymentType = 'internal' | 'guest';
 type PersonnelContractStatus = 'not_hired' | 'active' | 'trial' | 'suspended' | 'ended';
 type PersonnelActionType = 'note' | 'contract_update' | 'reassignment' | 'suspension' | 'exit' | 'budget_review';
 
 type PersonnelProfile = {
   id: string;
   memberId: string;
+  employmentType?: PersonnelEmploymentType;
   contractStatus?: PersonnelContractStatus;
   contractType?: string;
   startDate?: string;
@@ -185,6 +189,7 @@ type PersonnelEvent = {
 };
 
 type PersonnelProfileForm = {
+  employmentType: PersonnelEmploymentType;
   contractStatus: PersonnelContractStatus;
   contractType: string;
   startDate: string;
@@ -207,6 +212,7 @@ const MONTH_LABELS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'S
 const COVERAGE_WINDOW = 12;
 
 const DEFAULT_PROFILE_FORM: PersonnelProfileForm = {
+  employmentType: 'internal',
   contractStatus: 'not_hired',
   contractType: '',
   startDate: '',
@@ -248,6 +254,19 @@ const statusStyles = {
     pill: 'bg-orange-50 text-orange-700 ring-orange-100',
     dot: 'bg-orange-500',
     row: 'hover:border-orange-200 hover:bg-orange-50/45',
+  },
+};
+
+const employmentTypeStyles: Record<PersonnelEmploymentType, { label: string; className: string; description: string }> = {
+  internal: {
+    label: 'Interno',
+    className: 'bg-indigo-50 text-indigo-700 ring-indigo-100',
+    description: 'Cuenta para cobertura presupuestal, contrato y alertas administrativas.',
+  },
+  guest: {
+    label: 'Invitado',
+    className: 'bg-cyan-50 text-cyan-700 ring-cyan-100',
+    description: 'Usuario externo invitado a actividades; no exige cobertura presupuestal ni contrato interno.',
   },
 };
 
@@ -406,6 +425,7 @@ const getEventMillis = (event: PersonnelEvent) =>
   getDateValue(event.createdAt)?.getTime() || getDateValue(event.effectiveDate)?.getTime() || 0;
 
 const getProfileFormFromProfile = (profile?: PersonnelProfile | null): PersonnelProfileForm => ({
+  employmentType: profile?.employmentType || 'internal',
   contractStatus: profile?.contractStatus || 'not_hired',
   contractType: profile?.contractType || '',
   startDate: getDateInputValue(profile?.startDate),
@@ -650,6 +670,8 @@ export default function PersonnelPage() {
 
     return visibleTeamMembers.map((member) => {
       const profile = profileByMemberId.get(member.id);
+      const employmentType = profile?.employmentType || 'internal';
+      const coverageExempt = employmentType === 'guest';
       const contractStatus = profile?.contractStatus || 'not_hired';
       const memberProjects = visibleProjects.filter((project) => {
         const assignedTeamMembers = normalizeIds(project.assignedTeamMembers);
@@ -725,10 +747,10 @@ export default function PersonnelPage() {
       const coveragePercent = Math.round((coveredMonths.length / COVERAGE_WINDOW) * 100);
 
       let status: PersonRow['status'] = 'covered';
-      if (totalAllocated <= 0) status = 'uncovered';
+      if (!coverageExempt && totalAllocated <= 0) status = 'uncovered';
       else if (overdueTasks > 0 || dueSoonTasks > 0) status = 'risk';
-      else if (firstGapMonth) status = 'gap';
-      if (contractStatus === 'suspended' || contractStatus === 'ended') status = 'risk';
+      else if (!coverageExempt && firstGapMonth) status = 'gap';
+      if (!coverageExempt && (contractStatus === 'suspended' || contractStatus === 'ended')) status = 'risk';
 
       const organizationNames = organizationNameFor(member, organizations).split(', ').filter(Boolean);
 
@@ -739,6 +761,8 @@ export default function PersonnelPage() {
         photoURL: member.photoURL,
         roleName: roleNameById.get(member.roleId || '') || member.role || member.systemRole || 'Sin rol',
         systemRole: member.systemRole,
+        employmentType,
+        coverageExempt,
         organizationNames,
         projects: projectsCoverage,
         totalAllocated,
@@ -811,12 +835,14 @@ export default function PersonnelPage() {
   };
 
   const summary = useMemo(() => {
-    const totalAllocated = personRows.reduce((sum, row) => sum + row.totalAllocated, 0);
-    const uncovered = personRows.filter((row) => row.status === 'uncovered').length;
-    const gaps = personRows.filter((row) => row.status === 'gap' || row.status === 'risk').length;
+    const coverageRows = personRows.filter((row) => !row.coverageExempt);
+    const totalAllocated = coverageRows.reduce((sum, row) => sum + row.totalAllocated, 0);
+    const uncovered = coverageRows.filter((row) => row.status === 'uncovered').length;
+    const gaps = coverageRows.filter((row) => row.status === 'gap' || row.status === 'risk').length;
     const overdue = personRows.reduce((sum, row) => sum + row.overdueTasks, 0);
     const activeTasks = personRows.reduce((sum, row) => sum + row.activeTasks, 0);
-    const inactiveContracts = personRows.filter((row) => row.contractStatus === 'ended' || row.contractStatus === 'suspended' || row.contractStatus === 'not_hired').length;
+    const inactiveContracts = coverageRows.filter((row) => row.contractStatus === 'ended' || row.contractStatus === 'suspended' || row.contractStatus === 'not_hired').length;
+    const guests = personRows.filter((row) => row.coverageExempt).length;
 
     return {
       totalAllocated,
@@ -825,6 +851,7 @@ export default function PersonnelPage() {
       overdue,
       activeTasks,
       inactiveContracts,
+      guests,
     };
   }, [personRows]);
 
@@ -833,6 +860,7 @@ export default function PersonnelPage() {
       'Nombre',
       'Correo',
       'Rol',
+      'Tipo de vinculacion',
       'Estado contractual',
       'Organizaciones',
       'Proyectos',
@@ -847,11 +875,12 @@ export default function PersonnelPage() {
       row.name,
       row.email,
       row.roleName,
+      employmentTypeStyles[row.employmentType].label,
       contractStatusStyles[row.contractStatus].label,
       row.organizationNames.join(' | '),
       row.projects.map((project) => project.projectName).join(' | '),
-      canViewBudget ? String(row.totalAllocated) : 'Protegida',
-      String(row.coveragePercent),
+      row.coverageExempt ? 'No aplica' : canViewBudget ? String(row.totalAllocated) : 'Protegida',
+      row.coverageExempt ? 'No aplica' : String(row.coveragePercent),
       String(row.activeTasks),
       String(row.overdueTasks),
       String(row.dueSoonTasks),
@@ -879,6 +908,7 @@ export default function PersonnelPage() {
       const monthlyCost = parseMoneyInput(profileForm.monthlyCost);
       const payload: Omit<PersonnelProfile, 'id'> = {
         memberId: selectedPerson.id,
+        employmentType: profileForm.employmentType,
         contractStatus: profileForm.contractStatus,
         contractType: profileForm.contractType.trim(),
         startDate: profileForm.startDate || '',
@@ -895,7 +925,7 @@ export default function PersonnelPage() {
         memberId: selectedPerson.id,
         type: 'contract_update',
         title: 'Ficha contractual actualizada',
-        description: `Estado: ${contractStatusStyles[profileForm.contractStatus].label}. ${profileForm.notes.trim() || 'Sin observaciones adicionales.'}`,
+        description: `Vinculación: ${employmentTypeStyles[profileForm.employmentType].label}. Estado: ${contractStatusStyles[profileForm.contractStatus].label}. ${profileForm.notes.trim() || 'Sin observaciones adicionales.'}`,
         effectiveDate: profileForm.startDate || new Date().toISOString().slice(0, 10),
         createdAt: serverTimestamp(),
         createdBy: user?.email || 'Sistema',
@@ -1051,7 +1081,7 @@ export default function PersonnelPage() {
           <MetricCard
             label="Sin cobertura"
             value={compactNumber(summary.uncovered)}
-            detail="personas sin pieza asignada"
+            detail={`${compactNumber(summary.guests)} invitados excluidos`}
             icon={<AlertTriangle size={22} className="text-red-700" />}
             tone="bg-red-50 text-red-700 ring-red-100"
           />
@@ -1181,12 +1211,17 @@ export default function PersonnelPage() {
                           <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-slate-600">
                             {person.roleName}
                           </span>
+                          <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${employmentTypeStyles[person.employmentType].className}`}>
+                            {employmentTypeStyles[person.employmentType].label}
+                          </span>
                           <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${style.pill}`}>
                             {style.label}
                           </span>
-                          <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${contractStatusStyles[person.contractStatus].className}`}>
-                            {contractStatusStyles[person.contractStatus].label}
-                          </span>
+                          {!person.coverageExempt && (
+                            <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${contractStatusStyles[person.contractStatus].className}`}>
+                              {contractStatusStyles[person.contractStatus].label}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1209,21 +1244,39 @@ export default function PersonnelPage() {
 
                     <div>
                       <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Cobertura</p>
-                      <p className="mt-1 text-lg font-black text-slate-950">{canViewBudget ? currencyFormatter(person.totalAllocated) : 'Protegida'}</p>
-                      <div className="mt-2">
-                        <Progress value={person.coveragePercent} className="h-2 bg-slate-100" />
-                      </div>
-                      <p className="mt-1 text-[11px] font-bold text-slate-500">{person.coveragePercent}% próximos 12 meses</p>
+                      <p className="mt-1 text-lg font-black text-slate-950">
+                        {person.coverageExempt ? 'No aplica' : canViewBudget ? currencyFormatter(person.totalAllocated) : 'Protegida'}
+                      </p>
+                      {person.coverageExempt ? (
+                        <div className="mt-2 rounded-lg bg-cyan-50 px-3 py-2 text-[11px] font-black uppercase tracking-wider text-cyan-700">
+                          Invitado externo
+                        </div>
+                      ) : (
+                        <>
+                          <div className="mt-2">
+                            <Progress value={person.coveragePercent} className="h-2 bg-slate-100" />
+                          </div>
+                          <p className="mt-1 text-[11px] font-bold text-slate-500">{person.coveragePercent}% próximos 12 meses</p>
+                        </>
+                      )}
                     </div>
 
                     <div>
                       <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Calendario</p>
-                      <div className="mt-2">
-                        <CoveragePixels monthlyAmounts={person.monthlyAmounts} startMonth={currentMonthNumber} dense />
-                      </div>
-                      <p className="mt-1 text-[11px] font-bold text-slate-500">
-                        {person.firstGapMonth ? `Hueco desde ${getTimelineMonthLabel(person.firstGapMonth)}` : 'Cobertura completa'}
-                      </p>
+                      {person.coverageExempt ? (
+                        <div className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-[11px] font-bold text-slate-500">
+                          Cobertura no requerida
+                        </div>
+                      ) : (
+                        <>
+                          <div className="mt-2">
+                            <CoveragePixels monthlyAmounts={person.monthlyAmounts} startMonth={currentMonthNumber} dense />
+                          </div>
+                          <p className="mt-1 text-[11px] font-bold text-slate-500">
+                            {person.firstGapMonth ? `Hueco desde ${getTimelineMonthLabel(person.firstGapMonth)}` : 'Cobertura completa'}
+                          </p>
+                        </>
+                      )}
                       {person.contractEndDate && (
                         <p className="mt-1 text-[11px] font-bold text-slate-500">Contrato hasta {formatHumanDate(person.contractEndDate)}</p>
                       )}
@@ -1268,6 +1321,9 @@ export default function PersonnelPage() {
                   <p className="text-[11px] font-black uppercase tracking-[0.2em] text-indigo-600">Ficha administrativa</p>
                   <h2 className="truncate text-3xl font-black tracking-tight text-slate-950">{selectedPerson.name}</h2>
                   <p className="truncate text-sm font-bold text-slate-500">{selectedPerson.roleName} · {selectedPerson.organizationNames.join(', ') || 'Sin organización'}</p>
+                  <p className={`mt-2 inline-flex rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${employmentTypeStyles[selectedPerson.employmentType].className}`}>
+                    {employmentTypeStyles[selectedPerson.employmentType].label}
+                  </p>
                 </div>
               </div>
               <button
@@ -1290,8 +1346,10 @@ export default function PersonnelPage() {
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                     <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Cobertura</p>
-                    <p className="mt-2 text-3xl font-black text-slate-950">{selectedPerson.coveragePercent}%</p>
-                    <p className="text-sm font-bold text-slate-500">{canViewBudget ? currencyFormatter(selectedPerson.totalAllocated) : 'Protegida'}</p>
+                    <p className="mt-2 text-3xl font-black text-slate-950">{selectedPerson.coverageExempt ? 'N/A' : `${selectedPerson.coveragePercent}%`}</p>
+                    <p className="text-sm font-bold text-slate-500">
+                      {selectedPerson.coverageExempt ? 'Invitado externo' : canViewBudget ? currencyFormatter(selectedPerson.totalAllocated) : 'Protegida'}
+                    </p>
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                     <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Alertas</p>
@@ -1328,6 +1386,21 @@ export default function PersonnelPage() {
 
                   {detailTab === 'profile' ? (
                     <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                      <label className="space-y-1 sm:col-span-2">
+                        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Tipo de vinculación</span>
+                        <select
+                          value={profileForm.employmentType}
+                          disabled={!canManagePersonnel}
+                          onChange={(event) => setProfileForm((current) => ({ ...current, employmentType: event.target.value as PersonnelEmploymentType }))}
+                          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                        >
+                          <option value="internal">Interno: cuenta en cobertura y contrato</option>
+                          <option value="guest">Invitado: excluido de cobertura presupuestal</option>
+                        </select>
+                        <p className="text-xs font-semibold text-slate-500">
+                          {employmentTypeStyles[profileForm.employmentType].description}
+                        </p>
+                      </label>
                       <label className="space-y-1">
                         <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Estado contractual</span>
                         <select
@@ -1406,6 +1479,9 @@ export default function PersonnelPage() {
                       </label>
                       <div className="sm:col-span-2 flex flex-col gap-3 rounded-xl bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
                         <div>
+                          <p className={`mb-2 inline-flex rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${employmentTypeStyles[profileForm.employmentType].className}`}>
+                            {employmentTypeStyles[profileForm.employmentType].label}
+                          </p>
                           <p className={`inline-flex rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${contractStatusStyles[profileForm.contractStatus].className}`}>
                             {contractStatusStyles[profileForm.contractStatus].label}
                           </p>
@@ -1474,46 +1550,56 @@ export default function PersonnelPage() {
                   <div className="flex items-center justify-between gap-4">
                     <div>
                       <h3 className="text-xl font-black text-slate-950">Cobertura mensual</h3>
-                      <p className="text-sm font-semibold text-slate-500">Cada bloque representa un mes; verde es presupuesto activo.</p>
+                      <p className="text-sm font-semibold text-slate-500">
+                        {selectedPerson.coverageExempt
+                          ? 'Los invitados no requieren cobertura presupuestal para participar en actividades.'
+                          : 'Cada bloque representa un mes; verde es presupuesto activo.'}
+                      </p>
                     </div>
                     <span className={`rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-wider ring-1 ${statusStyles[selectedPerson.status].pill}`}>
                       {statusStyles[selectedPerson.status].label}
                     </span>
                   </div>
-                  <div className="mt-5 overflow-x-auto">
-                    <div className="min-w-[760px] space-y-3">
-                      <div className="grid grid-cols-[180px_repeat(12,minmax(42px,1fr))] gap-2 text-center text-[10px] font-black uppercase tracking-wider text-slate-400">
-                        <span className="text-left">Proyecto</span>
-                        {Array.from({ length: COVERAGE_WINDOW }, (_, index) => currentMonthNumber + index).map((month) => (
-                          <span key={month}>{getTimelineMonthLabel(month)}</span>
+                  {selectedPerson.coverageExempt ? (
+                    <div className="mt-5 rounded-2xl border border-cyan-100 bg-cyan-50 p-5 text-sm font-bold leading-6 text-cyan-800">
+                      Esta persona está marcada como invitada. Puede tener tareas y participar en proyectos, pero no será evaluada en cobertura presupuestal ni aparecerá como “sin contrato” por falta de vinculación interna.
+                    </div>
+                  ) : (
+                    <div className="mt-5 overflow-x-auto">
+                      <div className="min-w-[760px] space-y-3">
+                        <div className="grid grid-cols-[180px_repeat(12,minmax(42px,1fr))] gap-2 text-center text-[10px] font-black uppercase tracking-wider text-slate-400">
+                          <span className="text-left">Proyecto</span>
+                          {Array.from({ length: COVERAGE_WINDOW }, (_, index) => currentMonthNumber + index).map((month) => (
+                            <span key={month}>{getTimelineMonthLabel(month)}</span>
+                          ))}
+                        </div>
+                        {selectedPerson.projects.map((project) => (
+                          <div key={project.projectId} className="grid grid-cols-[180px_repeat(12,minmax(42px,1fr))] items-center gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-black text-slate-900">{project.projectName}</p>
+                              <p className="truncate text-[10px] font-bold uppercase tracking-wider text-emerald-700">{project.organizationName}</p>
+                            </div>
+                            {Array.from({ length: COVERAGE_WINDOW }, (_, index) => currentMonthNumber + index).map((month) => {
+                              const amount = toNumber(project.monthlyAmounts[month]);
+                              return (
+                                <div
+                                  key={month}
+                                  title={`${getTimelineMonthLabel(month)} · ${amount ? currencyFormatter(amount) : 'Sin cobertura'}`}
+                                  className={`h-10 rounded-lg border text-[10px] font-black ${
+                                    amount > 0
+                                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                      : 'border-slate-200 bg-slate-50 text-slate-300'
+                                  } flex items-center justify-center`}
+                                >
+                                  {amount > 0 ? currencyFormatter(amount).replace('COP', '').trim() : 'Sin'}
+                                </div>
+                              );
+                            })}
+                          </div>
                         ))}
                       </div>
-                      {selectedPerson.projects.map((project) => (
-                        <div key={project.projectId} className="grid grid-cols-[180px_repeat(12,minmax(42px,1fr))] items-center gap-2">
-                          <div className="min-w-0">
-                            <p className="truncate text-xs font-black text-slate-900">{project.projectName}</p>
-                            <p className="truncate text-[10px] font-bold uppercase tracking-wider text-emerald-700">{project.organizationName}</p>
-                          </div>
-                          {Array.from({ length: COVERAGE_WINDOW }, (_, index) => currentMonthNumber + index).map((month) => {
-                            const amount = toNumber(project.monthlyAmounts[month]);
-                            return (
-                              <div
-                                key={month}
-                                title={`${getTimelineMonthLabel(month)} · ${amount ? currencyFormatter(amount) : 'Sin cobertura'}`}
-                                className={`h-10 rounded-lg border text-[10px] font-black ${
-                                  amount > 0
-                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                    : 'border-slate-200 bg-slate-50 text-slate-300'
-                                } flex items-center justify-center`}
-                              >
-                                {amount > 0 ? currencyFormatter(amount).replace('COP', '').trim() : 'Sin'}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ))}
                     </div>
-                  </div>
+                  )}
                 </div>
               </div>
 
@@ -1524,18 +1610,22 @@ export default function PersonnelPage() {
                     Señales administrativas
                   </h3>
                   <div className="mt-4 space-y-2">
-                    {selectedPerson.status === 'covered' && selectedPerson.overdueTasks === 0 ? (
+                    {selectedPerson.coverageExempt && selectedPerson.overdueTasks === 0 && selectedPerson.dueSoonTasks === 0 ? (
+                      <div className="rounded-xl bg-cyan-50 p-3 text-sm font-bold text-cyan-700">
+                        Invitado externo: no requiere cobertura presupuestal ni contrato interno.
+                      </div>
+                    ) : selectedPerson.status === 'covered' && selectedPerson.overdueTasks === 0 ? (
                       <div className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-700">
                         Cobertura estable y sin tareas vencidas visibles.
                       </div>
                     ) : (
                       <>
-                        {selectedPerson.totalAllocated <= 0 && (
+                        {!selectedPerson.coverageExempt && selectedPerson.totalAllocated <= 0 && (
                           <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">
                             Esta persona no tiene presupuesto asignado.
                           </div>
                         )}
-                        {selectedPerson.firstGapMonth && selectedPerson.totalAllocated > 0 && (
+                        {!selectedPerson.coverageExempt && selectedPerson.firstGapMonth && selectedPerson.totalAllocated > 0 && (
                           <div className="rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-700">
                             La cobertura presenta hueco desde {getTimelineMonthLabel(selectedPerson.firstGapMonth)}.
                           </div>
