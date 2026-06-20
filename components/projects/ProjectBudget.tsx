@@ -24,7 +24,11 @@ import { addDoc, collection, deleteDoc, doc, onSnapshot, query, serverTimestamp,
 import { db } from '@/lib/backend';
 import { getOrganizationIds } from '@/lib/organizations';
 import { toast } from 'sonner';
-import { isCurrencyRateCard } from '@/lib/rate-card-config';
+import {
+  getRateCardCostValue,
+  getRateCardIncomeValue,
+  normalizeDecimalInput,
+} from '@/lib/rate-card-config';
 
 type BudgetPiece = {
   id: string;
@@ -86,6 +90,8 @@ type BudgetLineData = BudgetLine & {
   pieces: BudgetPiece[];
   plannedAmount: number;
   actualAmount: number;
+  operatingCost: number;
+  operatingIncome: number;
   variance: number;
   percentUsed: number;
   pieceCount: number;
@@ -909,19 +915,19 @@ export function ProjectBudget({
   };
 
   const rateCardActuals = useMemo(() => {
-    return rateCards.filter(isCurrencyRateCard).map((card) => {
+    return rateCards.map((card) => {
       let cardTotalUnits = 0;
       const computedUserStats: Record<string, number> = { ...(card.userStats || {}) };
 
       if (card.syncExternal) {
-        cardTotalUnits = card.currentValue || 0;
+        cardTotalUnits = normalizeDecimalInput(card.currentValue, 0);
       } else {
-        cardTotalUnits = card.currentValue || 0;
+        cardTotalUnits = normalizeDecimalInput(card.currentValue, 0);
 
         tasks.forEach((task) => {
           if (!task.isRateCardTask && task.indicator && task.indicator.toLowerCase() === card.indicator?.toLowerCase()) {
-            const value = task.indicatorValue || 0;
-            const progress = task.progress || 0;
+            const value = normalizeDecimalInput(task.indicatorValue, 0);
+            const progress = normalizeDecimalInput(task.progress, 0);
             const units = value * (progress / 100);
             cardTotalUnits += units;
 
@@ -931,21 +937,24 @@ export function ProjectBudget({
           }
         });
 
-        const userStatsTotal = Object.values(computedUserStats).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
+        const userStatsTotal = Object.values(computedUserStats).reduce((sum: number, val: any) => sum + normalizeDecimalInput(val, 0), 0);
         if (userStatsTotal > cardTotalUnits) {
           cardTotalUnits = userStatsTotal;
         }
       }
 
-      const generatedValue = cardTotalUnits * Number(card.rate || 0);
-      const reworkValue = Number(card.reworkValue || 0) * Number(card.rate || 0);
-      const totalValue = generatedValue + reworkValue;
+      const reworkUnits = normalizeDecimalInput(card.reworkValue, 0);
+      const operatingIncome = getRateCardIncomeValue(cardTotalUnits, card);
+      const operatingCost = getRateCardCostValue(cardTotalUnits + reworkUnits, card);
 
       return {
         ...card,
-        generatedValue,
-        reworkValue,
-        totalValue,
+        units: cardTotalUnits,
+        reworkUnits,
+        operatingIncome,
+        operatingCost,
+        estimatedIncome: operatingIncome,
+        estimatedCost: operatingCost,
       };
     });
   }, [rateCards, tasks]);
@@ -954,16 +963,19 @@ export function ProjectBudget({
     return budgetLines.map((line) => {
       const pieces = lineDrafts[line.id] || normalizeBudgetPieces(line);
       const plannedAmount = piecesTotal(pieces);
-      const associatedActuals = rateCardActuals.filter((rateCard) => rateCard.budgetLineId === line.id);
-      const actualAmount = associatedActuals.reduce((sum, rateCard) => sum + Number(rateCard.totalValue || 0), 0);
-      const variance = plannedAmount - actualAmount;
-      const percentUsed = plannedAmount > 0 ? (actualAmount / plannedAmount) * 100 : 0;
+      const associatedRateCards = rateCardActuals.filter((rateCard) => rateCard.budgetLineId === line.id);
+      const operatingCost = associatedRateCards.reduce((sum, rateCard) => sum + normalizeDecimalInput(rateCard.operatingCost, 0), 0);
+      const operatingIncome = associatedRateCards.reduce((sum, rateCard) => sum + normalizeDecimalInput(rateCard.operatingIncome, 0), 0);
+      const variance = plannedAmount - operatingCost;
+      const percentUsed = plannedAmount > 0 ? (operatingCost / plannedAmount) * 100 : 0;
 
       return {
         ...line,
         pieces,
         plannedAmount,
-        actualAmount,
+        actualAmount: operatingCost,
+        operatingCost,
+        operatingIncome,
         variance,
         percentUsed,
         pieceCount: pieces.length,
@@ -971,12 +983,13 @@ export function ProjectBudget({
     });
   }, [budgetLines, lineDrafts, rateCardActuals]);
 
-  const unassignedActuals = rateCardActuals.filter((rateCard) => !rateCard.budgetLineId);
-  const totalUnassignedActual = unassignedActuals.reduce((sum, rateCard) => sum + Number(rateCard.totalValue || 0), 0);
+  const unassignedActuals = rateCardActuals.filter((rateCard) => !rateCard.budgetLineId && normalizeDecimalInput(rateCard.operatingCost, 0) > 0);
+  const totalUnassignedActual = unassignedActuals.reduce((sum, rateCard) => sum + normalizeDecimalInput(rateCard.operatingCost, 0), 0);
   const totalPlanned = budgetData.reduce((sum, line) => sum + line.plannedAmount, 0);
-  const totalActual = budgetData.reduce((sum, line) => sum + line.actualAmount, 0) + totalUnassignedActual;
-  const totalVariance = totalPlanned - totalActual;
-  const totalPercentUsed = totalPlanned > 0 ? (totalActual / totalPlanned) * 100 : 0;
+  const totalOperatingCost = budgetData.reduce((sum, line) => sum + line.operatingCost, 0) + totalUnassignedActual;
+  const totalOperatingIncome = rateCardActuals.reduce((sum, rateCard) => sum + normalizeDecimalInput(rateCard.operatingIncome, 0), 0);
+  const totalVariance = totalPlanned - totalOperatingCost;
+  const totalPercentUsed = totalPlanned > 0 ? (totalOperatingCost / totalPlanned) * 100 : 0;
   const totalPieces = budgetData.reduce((sum, line) => sum + line.pieceCount, 0);
   const activeCurrency = budgetData[0]?.currency || currency;
 
@@ -1333,7 +1346,7 @@ export function ProjectBudget({
         </div>
       </section>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -1349,12 +1362,24 @@ export function ProjectBudget({
         <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">Costo real</p>
-              <p className="mt-2 text-3xl font-black tracking-tight text-indigo-700">{currencyFormatter(totalActual, activeCurrency)}</p>
-              <p className="mt-1 text-sm font-medium text-slate-500">Incluye rate cards vinculados</p>
+              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">Costo operativo</p>
+              <p className="mt-2 text-3xl font-black tracking-tight text-indigo-700">{currencyFormatter(totalOperatingCost, activeCurrency)}</p>
+              <p className="mt-1 text-sm font-medium text-slate-500">Solo rates con costo mayor a 0</p>
             </div>
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100">
               <TrendingUp size={20} />
+            </div>
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">Ingreso operativo</p>
+              <p className="mt-2 text-3xl font-black tracking-tight text-emerald-700">{currencyFormatter(totalOperatingIncome, activeCurrency)}</p>
+              <p className="mt-1 text-sm font-medium text-slate-500">Estimado por Rate Cards</p>
+            </div>
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+              <DollarSign size={20} />
             </div>
           </div>
         </div>
@@ -1378,7 +1403,7 @@ export function ProjectBudget({
             <div>
               <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-400">Sin asignar</p>
               <p className="mt-2 text-3xl font-black tracking-tight text-orange-700">{currencyFormatter(totalUnassignedActual, activeCurrency)}</p>
-              <p className="mt-1 text-sm font-medium text-slate-500">{compactNumber(unassignedActuals.length)} rate cards sin línea</p>
+              <p className="mt-1 text-sm font-medium text-slate-500">{compactNumber(unassignedActuals.length)} rates con costo sin línea</p>
             </div>
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-50 text-orange-700 ring-1 ring-orange-100">
               <AlertCircle size={20} />
@@ -1492,14 +1517,18 @@ export function ProjectBudget({
                       <h3 className="text-xl font-black tracking-tight text-slate-950">{line.name}</h3>
                       <p className="mt-1 text-sm font-medium text-slate-500">{line.description || 'Sin descripción'}</p>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:min-w-[640px]">
+                    <div className="grid grid-cols-2 gap-2 md:grid-cols-5 xl:min-w-[780px]">
                       <div className="rounded-md bg-slate-50 p-3 ring-1 ring-slate-100">
                         <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Plan</p>
                         <p className="mt-1 text-sm font-black text-slate-950">{currencyFormatter(line.plannedAmount, line.currency)}</p>
                       </div>
                       <div className="rounded-md bg-indigo-50 p-3 ring-1 ring-indigo-100">
-                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-600">Real</p>
-                        <p className="mt-1 text-sm font-black text-indigo-700">{currencyFormatter(line.actualAmount, line.currency)}</p>
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-600">Costo op.</p>
+                        <p className="mt-1 text-sm font-black text-indigo-700">{currencyFormatter(line.operatingCost, line.currency)}</p>
+                      </div>
+                      <div className="rounded-md bg-emerald-50 p-3 ring-1 ring-emerald-100">
+                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-emerald-600">Ingreso op.</p>
+                        <p className="mt-1 text-sm font-black text-emerald-700">{currencyFormatter(line.operatingIncome, line.currency)}</p>
                       </div>
                       <div className={`rounded-md p-3 ring-1 ${line.variance >= 0 ? 'bg-emerald-50 ring-emerald-100' : 'bg-red-50 ring-red-100'}`}>
                         <p className={`text-[10px] font-black uppercase tracking-[0.14em] ${line.variance >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>Disponible</p>
@@ -1575,9 +1604,9 @@ export function ProjectBudget({
           <div className="flex items-start gap-3">
             <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-orange-600" />
             <div>
-              <h3 className="font-black text-orange-900">Costos reales sin línea de presupuesto</h3>
+              <h3 className="font-black text-orange-900">Costos operativos sin línea de presupuesto</h3>
               <p className="mt-1 text-sm font-medium text-orange-800">
-                Hay {compactNumber(unassignedActuals.length)} rate cards generando {currencyFormatter(totalUnassignedActual, activeCurrency)} sin estar vinculados a una línea.
+                Hay {compactNumber(unassignedActuals.length)} rate cards con costo operativo por {currencyFormatter(totalUnassignedActual, activeCurrency)} sin estar vinculados a una línea.
               </p>
             </div>
           </div>
