@@ -56,10 +56,13 @@ type ProjectRow = {
   ownerId?: string;
   organizationId?: string;
   organizationIds?: string[];
+  organizationName?: string;
+  organizationNames?: string[];
   assignedUsers?: string[];
   assignedEmails?: string[];
   assignedTeamMembers?: string[];
   status?: string;
+  [key: string]: any;
 };
 
 type Invoice = {
@@ -181,6 +184,149 @@ const numberFormatter = new Intl.NumberFormat('es-CO');
 const formatMoney = (value: any) => moneyFormatter.format(normalizeDecimalInput(value, 0));
 const formatCompactMoney = (value: any) => `$${compactMoneyFormatter.format(normalizeDecimalInput(value, 0))}`;
 const normalizeEmail = (value: any) => String(value || '').trim().toLowerCase();
+const normalizeOrgToken = (value: any) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '');
+
+const pushOrganizationToken = (tokens: Set<string>, value: any) => {
+  const token = normalizeOrgToken(value);
+  if (token) tokens.add(token);
+};
+
+const addOrganizationSourceTokens = (tokens: Set<string>, source: any) => {
+  if (!source) return;
+
+  if (typeof source === 'string') {
+    pushOrganizationToken(tokens, source);
+    return;
+  }
+
+  if (Array.isArray(source)) {
+    source.forEach((item) => addOrganizationSourceTokens(tokens, item));
+    return;
+  }
+
+  if (typeof source === 'object') {
+    [
+      source.id,
+      source.name,
+      source.displayName,
+      source.label,
+      source.slug,
+      source.code,
+      source.organizationId,
+      source.organizationName,
+    ].forEach((value) => pushOrganizationToken(tokens, value));
+  }
+};
+
+const collectProjectOrganizationTokens = (project: any) => {
+  const tokens = new Set<string>();
+  [
+    project?.organizationId,
+    project?.organizationIds,
+    project?.organizationName,
+    project?.organizationNames,
+    project?.organization,
+    project?.organizations,
+    project?.client,
+    project?.clientName,
+    project?.company,
+    project?.companyName,
+    project?.tenantId,
+    project?.tenantName,
+  ].forEach((source) => addOrganizationSourceTokens(tokens, source));
+  return tokens;
+};
+
+const organizationTokensFor = (organizationId: string, organizations: any[]) => {
+  const tokens = new Set<string>();
+  pushOrganizationToken(tokens, organizationId);
+  const organization = organizations.find((item) => item.id === organizationId);
+  addOrganizationSourceTokens(tokens, organization);
+  return tokens;
+};
+
+const projectMatchesOrganization = (project: any, organizationId: string, organizations: any[]) => {
+  if (organizationId === 'all') return true;
+  const projectTokens = collectProjectOrganizationTokens(project);
+  const expectedTokens = organizationTokensFor(organizationId, organizations);
+  return Array.from(expectedTokens).some((token) => projectTokens.has(token));
+};
+
+const projectBelongsToManagedOrganizations = (project: any, managedOrganizationIds: string[], organizations: any[]) => {
+  if (managedOrganizationIds.length === 0) return true;
+  return managedOrganizationIds.some((organizationId) => projectMatchesOrganization(project, organizationId, organizations));
+};
+
+const getLegacyOrganizationLabel = (project: any): string | null => {
+  const candidates = [
+    project?.organizationName,
+    project?.organization,
+    project?.clientName,
+    project?.client,
+    project?.companyName,
+    project?.company,
+    project?.tenantName,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    if (candidate && typeof candidate === 'object') {
+      const label = candidate.name || candidate.displayName || candidate.label || candidate.id;
+      if (typeof label === 'string' && label.trim()) return label.trim();
+    }
+  }
+
+  if (Array.isArray(project?.organizationNames)) {
+    const names = project.organizationNames.filter((name: unknown) => typeof name === 'string' && name.trim());
+    if (names.length > 0) return names.join(', ');
+  }
+
+  return null;
+};
+
+const billingOrganizationNameFor = (project: any, organizations: any[]) => {
+  const resolved = organizationNameFor(project, organizations);
+  return resolved !== 'Sin organización' ? resolved : getLegacyOrganizationLabel(project) || resolved;
+};
+
+const getEmbeddedCollectionItems = (project: ProjectRow, keys: string[]) => {
+  return keys.flatMap((key) => {
+    const value = project[key];
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object') {
+      return Object.entries(value).map(([id, item]) => ({
+        id,
+        ...(typeof item === 'object' && item ? item : { value: item }),
+      }));
+    }
+    return [];
+  });
+};
+
+const normalizeEmbeddedCollection = <T extends { id: string; projectId: string }>(
+  project: ProjectRow,
+  keys: string[]
+) =>
+  getEmbeddedCollectionItems(project, keys).map((item: any, index) => ({
+    id: item?.id || `${project.id}-${keys[0]}-${index}`,
+    projectId: item?.projectId || project.id,
+    ...item,
+  })) as T[];
+
+const mergeProjectRows = <T extends { id: string; projectId: string }>(primaryRows: T[], fallbackRows: T[]) => {
+  const rowsByKey = new Map<string, T>();
+  [...fallbackRows, ...primaryRows].forEach((row) => {
+    if (!row?.id || !row?.projectId) return;
+    rowsByKey.set(`${row.projectId}/${row.id}`, row);
+  });
+  return Array.from(rowsByKey.values());
+};
 
 const toDate = (value: any): Date | null => {
   if (!value) return null;
@@ -460,7 +606,10 @@ export default function BillingPage() {
     return projects.filter((project) => {
       if (canSeeAllOrganizations) return true;
 
-      const projectInManagedOrg = managedOrganizationIds.length > 0 && belongsToAnyOrganization(project, managedOrganizationIds);
+      const projectInManagedOrg =
+        managedOrganizationIds.length > 0 &&
+        (belongsToAnyOrganization(project, managedOrganizationIds) ||
+          projectBelongsToManagedOrganizations(project, managedOrganizationIds, organizations));
       if (userRole === 'org_admin') return projectInManagedOrg;
 
       const assignedUsers = Array.isArray(project.assignedUsers) ? project.assignedUsers : [];
@@ -475,35 +624,61 @@ export default function BillingPage() {
 
       return directlyAssigned || projectInManagedOrg;
     });
-  }, [canSeeAllOrganizations, currentUserIds, managedOrganizationIds, projects, user?.email, user?.uid, userRole]);
+  }, [canSeeAllOrganizations, currentUserIds, managedOrganizationIds, organizations, projects, user?.email, user?.uid, userRole]);
 
   const scopedProjectIds = useMemo(() => new Set(scopedProjects.map((project) => project.id)), [scopedProjects]);
   const projectById = useMemo(() => new Map(scopedProjects.map((project) => [project.id, project])), [scopedProjects]);
 
   const visibleProjects = useMemo(() => {
-    return scopedProjects.filter((project) => selectedOrganizationId === 'all' || belongsToAnyOrganization(project, [selectedOrganizationId]));
-  }, [scopedProjects, selectedOrganizationId]);
+    return scopedProjects.filter(
+      (project) =>
+        selectedOrganizationId === 'all' ||
+        belongsToAnyOrganization(project, [selectedOrganizationId]) ||
+        projectMatchesOrganization(project, selectedOrganizationId, organizations)
+    );
+  }, [organizations, scopedProjects, selectedOrganizationId]);
   const visibleProjectIds = useMemo(() => new Set(visibleProjects.map((project) => project.id)), [visibleProjects]);
 
+  const embeddedInvoices = useMemo(
+    () => scopedProjects.flatMap((project) => normalizeEmbeddedCollection<Invoice>(project, ['invoices', 'billingInvoices', 'facturas'])),
+    [scopedProjects]
+  );
+  const embeddedPayments = useMemo(
+    () => scopedProjects.flatMap((project) => normalizeEmbeddedCollection<BillingPayment>(project, ['billingPayments', 'payments', 'pagos'])),
+    [scopedProjects]
+  );
+  const embeddedBudgetLines = useMemo(
+    () => scopedProjects.flatMap((project) => normalizeEmbeddedCollection<any>(project, ['budgetLines', 'budgetLineItems'])),
+    [scopedProjects]
+  );
+  const embeddedRateCards = useMemo(
+    () => scopedProjects.flatMap((project) => normalizeEmbeddedCollection<any>(project, ['rateCards'])),
+    [scopedProjects]
+  );
+  const embeddedRateEntries = useMemo(
+    () => scopedProjects.flatMap((project) => normalizeEmbeddedCollection<any>(project, ['rateCardEntries', 'rateEntries'])),
+    [scopedProjects]
+  );
+
   const scopedInvoices = useMemo(
-    () => invoices.filter((invoice) => scopedProjectIds.has(invoice.projectId)),
-    [invoices, scopedProjectIds]
+    () => mergeProjectRows(invoices.filter((invoice) => scopedProjectIds.has(invoice.projectId)), embeddedInvoices),
+    [embeddedInvoices, invoices, scopedProjectIds]
   );
   const scopedPayments = useMemo(
-    () => payments.filter((payment) => scopedProjectIds.has(payment.projectId)),
-    [payments, scopedProjectIds]
+    () => mergeProjectRows(payments.filter((payment) => scopedProjectIds.has(payment.projectId)), embeddedPayments),
+    [embeddedPayments, payments, scopedProjectIds]
   );
   const scopedBudgetLines = useMemo(
-    () => budgetLines.filter((line) => scopedProjectIds.has(line.projectId)),
-    [budgetLines, scopedProjectIds]
+    () => mergeProjectRows(budgetLines.filter((line) => scopedProjectIds.has(line.projectId)), embeddedBudgetLines),
+    [budgetLines, embeddedBudgetLines, scopedProjectIds]
   );
   const scopedRateCards = useMemo(
-    () => rateCards.filter((card) => scopedProjectIds.has(card.projectId)),
-    [rateCards, scopedProjectIds]
+    () => mergeProjectRows(rateCards.filter((card) => scopedProjectIds.has(card.projectId)), embeddedRateCards),
+    [embeddedRateCards, rateCards, scopedProjectIds]
   );
   const scopedRateEntries = useMemo(
-    () => rateCardEntries.filter((entry) => scopedProjectIds.has(entry.projectId)),
-    [rateCardEntries, scopedProjectIds]
+    () => mergeProjectRows(rateCardEntries.filter((entry) => scopedProjectIds.has(entry.projectId)), embeddedRateEntries),
+    [embeddedRateEntries, rateCardEntries, scopedProjectIds]
   );
 
   const rateCardActuals = useMemo(() => {
@@ -551,7 +726,7 @@ export default function BillingPage() {
         id: line.id,
         projectId: line.projectId,
         projectName: project?.name || line.projectId,
-        organizationName: organizationNameFor(project || {}, organizations),
+        organizationName: billingOrganizationNameFor(project || {}, organizations),
         name: line.name || line.description || 'Línea sin nombre',
         color: line.color || '#4f46e5',
         currency: line.currency || 'COP',
@@ -583,7 +758,7 @@ export default function BillingPage() {
           invoice.description,
           invoice.notes,
           project?.name,
-          organizationNameFor(project || {}, organizations),
+          billingOrganizationNameFor(project || {}, organizations),
           invoice.status,
         ].filter(Boolean).some((value) => String(value).toLowerCase().includes(search));
       })
@@ -605,7 +780,7 @@ export default function BillingPage() {
           payment.vendor,
           payment.notes,
           project?.name,
-          organizationNameFor(project || {}, organizations),
+          billingOrganizationNameFor(project || {}, organizations),
           payment.status,
         ].filter(Boolean).some((value) => String(value).toLowerCase().includes(search));
       })
@@ -825,7 +1000,7 @@ export default function BillingPage() {
       return [
         'Factura',
         project?.name || invoice.projectId,
-        organizationNameFor(project || {}, organizations),
+        billingOrganizationNameFor(project || {}, organizations),
         invoice.invoiceNumber || '',
         invoice.description || '',
         formatDate(invoice.date),
@@ -840,7 +1015,7 @@ export default function BillingPage() {
       return [
         'Pago',
         project?.name || payment.projectId,
-        organizationNameFor(project || {}, organizations),
+        billingOrganizationNameFor(project || {}, organizations),
         '',
         payment.description || '',
         formatDate(payment.date),
@@ -1312,7 +1487,7 @@ function InvoiceTable({
                 </td>
                 <td className="px-5 py-4">
                   <p className="font-black text-slate-700">{project?.name || invoice.projectId}</p>
-                  <p className="text-xs font-bold text-emerald-700">{organizationNameFor(project || {}, organizations)}</p>
+                  <p className="text-xs font-bold text-emerald-700">{billingOrganizationNameFor(project || {}, organizations)}</p>
                 </td>
                 <td className="px-5 py-4 text-sm font-bold text-slate-600">{formatDate(invoice.date)}</td>
                 <td className="px-5 py-4">
@@ -1375,7 +1550,7 @@ function PaymentTable({
                 </td>
                 <td className="px-5 py-4">
                   <p className="font-black text-slate-700">{project?.name || payment.projectId}</p>
-                  <p className="text-xs font-bold text-emerald-700">{organizationNameFor(project || {}, organizations)}</p>
+                  <p className="text-xs font-bold text-emerald-700">{billingOrganizationNameFor(project || {}, organizations)}</p>
                 </td>
                 <td className="px-5 py-4 text-sm font-bold text-slate-600">{formatDate(payment.date)}</td>
                 <td className="px-5 py-4">
