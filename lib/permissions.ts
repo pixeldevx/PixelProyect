@@ -9,6 +9,8 @@ export type PermissionKey =
   | 'activityCreate'
   | 'activityEditStatus'
   | 'activityDelete'
+  | 'billingOverview'
+  | 'billingManage'
   | 'inventoryProjectView'
   | 'inventoryProjectManage'
   | 'inventoryOverview';
@@ -50,6 +52,13 @@ export const PERMISSION_GROUPS: Array<{
     ],
   },
   {
+    title: 'Facturación',
+    permissions: [
+      { key: 'billingOverview', label: 'Ver facturación global' },
+      { key: 'billingManage', label: 'Gestionar facturas y pagos globales' },
+    ],
+  },
+  {
     title: 'Inventario',
     permissions: [
       { key: 'inventoryProjectView', label: 'Ver inventario del proyecto' },
@@ -70,6 +79,8 @@ const allPermissions = (value: boolean): RolePermissionSet => ({
   activityCreate: value,
   activityEditStatus: value,
   activityDelete: value,
+  billingOverview: value,
+  billingManage: value,
   inventoryProjectView: value,
   inventoryProjectManage: value,
   inventoryOverview: value,
@@ -82,6 +93,8 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
   coordinador: {
     ...allPermissions(true),
     taskEditStructure: false,
+    billingOverview: false,
+    billingManage: false,
     inventoryOverview: false,
   },
   administrativo: {
@@ -89,6 +102,8 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
     taskEditStatus: true,
     activityCreate: true,
     activityEditStatus: true,
+    billingOverview: true,
+    billingManage: true,
   },
   user: {
     ...allPermissions(false),

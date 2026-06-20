@@ -14,17 +14,31 @@ import {
   Layers3,
   MapPin,
   PackageSearch,
+  Pencil,
+  Plus,
   Search,
   ShieldCheck,
   Sparkles,
+  Trash2,
   User,
   Wrench,
   X,
 } from 'lucide-react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
-import { collection, collectionGroup, onSnapshot, query } from '@/lib/supabase/document-store';
-import { db } from '@/lib/backend';
+import {
+  addDoc,
+  arrayUnion,
+  collection,
+  collectionGroup,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  updateDoc,
+} from '@/lib/supabase/document-store';
+import { auth, db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { useRolePermissions } from '@/hooks/useRolePermissions';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
@@ -34,6 +48,8 @@ import {
   hasMapCoordinates,
   parseMapCoordinate,
 } from '@/components/inventory/InventoryLocationMap';
+import { toast } from 'sonner';
+import { normalizeDecimalInput } from '@/lib/rate-card-config';
 
 type ProjectRow = {
   id: string;
@@ -57,10 +73,12 @@ type MaintenanceEntry = {
   id?: string;
   type?: string;
   date?: any;
+  title?: string;
   description?: string;
   technician?: string;
   cost?: number;
   result?: string;
+  actorEmail?: string;
   createdAt?: any;
 };
 
@@ -89,6 +107,26 @@ type InventoryItem = {
   lifecycleHistory?: MaintenanceEntry[];
   createdAt?: any;
   updatedAt?: any;
+};
+
+type InventoryForm = {
+  projectId: string;
+  name: string;
+  category: string;
+  assetCode: string;
+  serialNumber: string;
+  quantity: string;
+  location: string;
+  mapUrl: string;
+  latitude: string;
+  longitude: string;
+  responsibleId: string;
+  condition: string;
+  status: string;
+  acquisitionDate: string;
+  estimatedValue: string;
+  observations: string;
+  needsRepair: boolean;
 };
 
 const ACCESS_ROLES = new Set(['admin', 'org_admin', 'manager']);
@@ -133,9 +171,52 @@ const formatDate = (value: any) => {
   return new Intl.DateTimeFormat('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }).format(date);
 };
 
+const toDateInput = (value: any) => {
+  const date = getDate(value);
+  return date ? date.toISOString().split('T')[0] : '';
+};
+
 const csvEscape = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
 const normalizeEmail = (value: any) => String(value || '').trim().toLowerCase();
+
+const emptyInventoryForm = (projectId = ''): InventoryForm => ({
+  projectId,
+  name: '',
+  category: '',
+  assetCode: '',
+  serialNumber: '',
+  quantity: '1',
+  location: '',
+  mapUrl: '',
+  latitude: '',
+  longitude: '',
+  responsibleId: '',
+  condition: 'good',
+  status: 'available',
+  acquisitionDate: '',
+  estimatedValue: '',
+  observations: '',
+  needsRepair: false,
+});
+
+const createLifecycleEntry = (
+  type: string,
+  title: string,
+  description: string,
+  user: any,
+  metadata: Record<string, any> = {}
+) => ({
+  id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+  type,
+  date: new Date().toISOString(),
+  title,
+  description,
+  actorId: user?.uid || null,
+  actorEmail: user?.email || null,
+  metadata,
+  createdAt: new Date().toISOString(),
+});
 
 const getProjectIdFromSnapshot = (snapshotDoc: any, data: any) => {
   if (data?.projectId) return data.projectId;
@@ -153,6 +234,11 @@ const getConditionMeta = (value?: string) =>
 
 const isRepairAsset = (item: InventoryItem) =>
   Boolean(item.needsRepair || item.status === 'repair' || item.condition === 'damaged');
+
+const getInventoryHistory = (item: InventoryItem) =>
+  [...(item.lifecycleHistory || []), ...(item.maintenanceHistory || [])].sort(
+    (left, right) => getTime(right.date || right.createdAt) - getTime(left.date || left.createdAt)
+  );
 
 const getResponsibleLabel = (item: InventoryItem, membersById: Map<string, any>) => {
   const member = item.responsibleId ? membersById.get(item.responsibleId) : null;
@@ -217,6 +303,10 @@ export default function InventoryOverviewPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedItemKey, setSelectedItemKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [inventoryModalMode, setInventoryModalMode] = useState<'create' | 'edit' | null>(null);
+  const [editingInventoryItem, setEditingInventoryItem] = useState<InventoryItem | null>(null);
+  const [inventoryForm, setInventoryForm] = useState<InventoryForm>(emptyInventoryForm());
+  const [savingInventory, setSavingInventory] = useState(false);
 
   const managedOrganizationIds = useMemo(
     () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
@@ -224,6 +314,7 @@ export default function InventoryOverviewPage() {
   );
 
   const canAccessInventory = ACCESS_ROLES.has(userRole || '') && rolePermissions.inventoryOverview;
+  const canManageInventory = canAccessInventory && rolePermissions.inventoryProjectManage;
   const canSeeAllOrganizations = userRole === 'admin' && managedOrganizationIds.length === 0;
 
   useEffect(() => {
@@ -310,6 +401,22 @@ export default function InventoryOverviewPage() {
     const values = new Set(inventoryItems.filter((item) => scopedProjectIds.has(item.projectId)).map((item) => item.category).filter(Boolean) as string[]);
     return Array.from(values).sort((left, right) => left.localeCompare(right));
   }, [inventoryItems, scopedProjectIds]);
+
+  const inventoryFormCategories = useMemo(() => {
+    const values = new Set(categories);
+    inventoryItems.forEach((item) => {
+      if (scopedProjectIds.has(item.projectId) && item.category) values.add(item.category);
+    });
+    return Array.from(values).sort((left, right) => left.localeCompare(right));
+  }, [categories, inventoryItems, scopedProjectIds]);
+
+  const responsibleOptions = useMemo(
+    () =>
+      [...teamMembers].sort((left, right) =>
+        String(left.name || left.displayName || left.email || '').localeCompare(String(right.name || right.displayName || right.email || ''))
+      ),
+    [teamMembers]
+  );
 
   const visibleItems = useMemo(() => {
     const search = searchTerm.trim().toLowerCase();
@@ -441,6 +548,159 @@ export default function InventoryOverviewPage() {
     URL.revokeObjectURL(url);
   };
 
+  const openCreateInventoryModal = () => {
+    if (!canManageInventory) return;
+    const defaultProjectId = selectedProjectId !== 'all' ? selectedProjectId : visibleItems[0]?.projectId || scopedProjects[0]?.id || '';
+    if (!defaultProjectId) {
+      toast.error('No tienes proyectos disponibles para crear activos');
+      return;
+    }
+
+    setEditingInventoryItem(null);
+    setInventoryForm(emptyInventoryForm(defaultProjectId));
+    setInventoryModalMode('create');
+  };
+
+  const openEditInventoryModal = (item: InventoryItem) => {
+    if (!canManageInventory) return;
+    setEditingInventoryItem(item);
+    setInventoryForm({
+      projectId: item.projectId,
+      name: item.name || '',
+      category: item.category || '',
+      assetCode: item.assetCode || '',
+      serialNumber: item.serialNumber || '',
+      quantity: String(item.quantity || 1),
+      location: item.location || '',
+      mapUrl: item.mapUrl || '',
+      latitude: item.latitude !== null && item.latitude !== undefined ? String(item.latitude) : '',
+      longitude: item.longitude !== null && item.longitude !== undefined ? String(item.longitude) : '',
+      responsibleId: item.responsibleId || '',
+      condition: item.condition || 'good',
+      status: item.status || 'available',
+      acquisitionDate: toDateInput(item.acquisitionDate),
+      estimatedValue: item.estimatedValue !== undefined ? String(item.estimatedValue) : '',
+      observations: item.observations || '',
+      needsRepair: Boolean(item.needsRepair),
+    });
+    setInventoryModalMode('edit');
+  };
+
+  const closeInventoryModal = () => {
+    setInventoryModalMode(null);
+    setEditingInventoryItem(null);
+    setSavingInventory(false);
+  };
+
+  const handleInventorySubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!auth.currentUser || !canManageInventory || !inventoryForm.projectId) return;
+
+    const project = projectById.get(inventoryForm.projectId);
+    const previousProject = editingInventoryItem ? projectById.get(editingInventoryItem.projectId) : null;
+    const responsible = responsibleOptions.find((member) => member.id === inventoryForm.responsibleId);
+    const quantity = Math.max(normalizeDecimalInput(inventoryForm.quantity, 1), 1);
+    const latitude = parseMapCoordinate(inventoryForm.latitude);
+    const longitude = parseMapCoordinate(inventoryForm.longitude);
+    const payload = {
+      projectId: inventoryForm.projectId,
+      name: inventoryForm.name.trim(),
+      category: inventoryForm.category.trim(),
+      assetCode: inventoryForm.assetCode.trim(),
+      serialNumber: inventoryForm.serialNumber.trim(),
+      quantity,
+      location: inventoryForm.location.trim(),
+      mapUrl: inventoryForm.mapUrl.trim(),
+      latitude,
+      longitude,
+      responsibleId: inventoryForm.responsibleId || '',
+      responsibleName: responsible?.name || responsible?.displayName || responsible?.email || '',
+      condition: inventoryForm.condition,
+      status: inventoryForm.status,
+      acquisitionDate: inventoryForm.acquisitionDate ? new Date(inventoryForm.acquisitionDate) : null,
+      estimatedValue: normalizeDecimalInput(inventoryForm.estimatedValue, 0),
+      observations: inventoryForm.observations.trim(),
+      needsRepair: Boolean(inventoryForm.needsRepair || inventoryForm.status === 'repair' || inventoryForm.condition === 'damaged'),
+      updatedAt: serverTimestamp(),
+    };
+
+    setSavingInventory(true);
+    try {
+      if (editingInventoryItem) {
+        const transferred = editingInventoryItem.projectId !== inventoryForm.projectId;
+        if (transferred) {
+          await addDoc(collection(db, `projects/${inventoryForm.projectId}/inventoryItems`), {
+            ...editingInventoryItem,
+            ...payload,
+            photos: editingInventoryItem.photos || [],
+            maintenanceHistory: editingInventoryItem.maintenanceHistory || [],
+            lifecycleHistory: [
+              ...(editingInventoryItem.lifecycleHistory || []),
+              createLifecycleEntry(
+                'transferred',
+                'Activo trasladado entre proyectos',
+                `Trasladado desde ${previousProject?.name || editingInventoryItem.projectId} hacia ${project?.name || inventoryForm.projectId}.`,
+                auth.currentUser,
+                { fromProjectId: editingInventoryItem.projectId, toProjectId: inventoryForm.projectId }
+              ),
+            ],
+            createdAt: editingInventoryItem.createdAt || serverTimestamp(),
+          });
+          await deleteDoc(doc(db, `projects/${editingInventoryItem.projectId}/inventoryItems`, editingInventoryItem.id));
+          toast.success('Activo trasladado y actualizado');
+        } else {
+          await updateDoc(doc(db, `projects/${editingInventoryItem.projectId}/inventoryItems`, editingInventoryItem.id), {
+            ...payload,
+            lifecycleHistory: arrayUnion(
+              createLifecycleEntry(
+                'updated',
+                'Activo actualizado desde inventario global',
+                `Actualizado en ${project?.name || inventoryForm.projectId}.`,
+                auth.currentUser
+              )
+            ),
+          });
+          toast.success('Activo actualizado');
+        }
+      } else {
+        await addDoc(collection(db, `projects/${inventoryForm.projectId}/inventoryItems`), {
+          ...payload,
+          photos: [],
+          maintenanceHistory: [],
+          lifecycleHistory: [
+            createLifecycleEntry(
+              'created',
+              'Activo creado desde inventario global',
+              `Registrado en ${project?.name || inventoryForm.projectId}.`,
+              auth.currentUser
+            ),
+          ],
+          createdAt: serverTimestamp(),
+          createdBy: auth.currentUser.uid,
+        });
+        toast.success('Activo creado');
+      }
+      closeInventoryModal();
+    } catch (error) {
+      console.error('Error saving global inventory item:', error);
+      toast.error('No se pudo guardar el activo');
+      setSavingInventory(false);
+    }
+  };
+
+  const handleDeleteInventoryItem = async (item: InventoryItem) => {
+    if (!canManageInventory || !confirm(`¿Eliminar "${item.name || 'este activo'}" del inventario?`)) return;
+
+    try {
+      await deleteDoc(doc(db, `projects/${item.projectId}/inventoryItems`, item.id));
+      toast.success('Activo eliminado');
+      if (selectedItemKey === `${item.projectId}::${item.id}`) setSelectedItemKey(null);
+    } catch (error) {
+      console.error('Error deleting global inventory item:', error);
+      toast.error('No se pudo eliminar el activo');
+    }
+  };
+
   if (!canAccessInventory) {
     return (
       <DashboardLayout>
@@ -472,10 +732,18 @@ export default function InventoryOverviewPage() {
                   Visualiza los activos de tus proyectos, dónde están, quién responde por ellos y cuáles requieren atención operativa.
                 </p>
               </div>
-              <Button type="button" onClick={downloadCsvReport} disabled={visibleItems.length === 0} className="h-11 bg-cyan-400 font-black text-slate-950 hover:bg-cyan-300">
-                <Download size={16} className="mr-2" />
-                Exportar inventario
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" onClick={downloadCsvReport} disabled={visibleItems.length === 0} className="h-11 bg-cyan-400 font-black text-slate-950 hover:bg-cyan-300">
+                  <Download size={16} className="mr-2" />
+                  Exportar inventario
+                </Button>
+                {canManageInventory && (
+                  <Button type="button" onClick={openCreateInventoryModal} className="h-11 bg-white font-black text-slate-950 hover:bg-slate-100">
+                    <Plus size={16} className="mr-2" />
+                    Nuevo activo
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
         </section>
@@ -651,6 +919,16 @@ export default function InventoryOverviewPage() {
                           <Eye size={14} />
                           Detalle
                         </Button>
+                        {canManageInventory && (
+                          <>
+                            <Button type="button" variant="ghost" size="sm" onClick={() => openEditInventoryModal(item)} className="h-9 px-2 text-slate-500 hover:text-indigo-700" title="Editar activo">
+                              <Pencil size={15} />
+                            </Button>
+                            <Button type="button" variant="ghost" size="sm" onClick={() => handleDeleteInventoryItem(item)} className="h-9 px-2 text-slate-400 hover:bg-red-50 hover:text-red-600" title="Eliminar activo">
+                              <Trash2 size={15} />
+                            </Button>
+                          </>
+                        )}
                         <Link href={`/projects/${item.projectId}?tab=inventory`}>
                           <Button type="button" size="sm" className="h-9 bg-indigo-600 font-black text-white hover:bg-indigo-700">
                             Abrir
@@ -703,6 +981,240 @@ export default function InventoryOverviewPage() {
             </section>
           </aside>
         </div>
+
+        {inventoryModalMode && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+            <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+              <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.16em] text-indigo-600">Gestión global de inventario</p>
+                  <h3 className="text-2xl font-black tracking-tight text-slate-950">
+                    {inventoryModalMode === 'edit' ? 'Editar activo' : 'Nuevo activo'}
+                  </h3>
+                  <p className="mt-1 text-sm font-bold text-slate-500">
+                    Registra, reasigna o traslada activos dentro de los proyectos a los que tienes acceso.
+                  </p>
+                </div>
+                <button type="button" onClick={closeInventoryModal} className="rounded-md p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700">
+                  <X size={22} />
+                </button>
+              </div>
+
+              <form onSubmit={handleInventorySubmit} className="min-h-0 flex-1 overflow-y-auto p-5">
+                <div className="grid gap-5 xl:grid-cols-[1fr_420px]">
+                  <div className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <InventoryField label="Proyecto">
+                        <select
+                          required
+                          value={inventoryForm.projectId}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, projectId: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                        >
+                          <option value="">Selecciona proyecto</option>
+                          {scopedProjects.map((project) => (
+                            <option key={project.id} value={project.id}>{project.name || project.id}</option>
+                          ))}
+                        </select>
+                      </InventoryField>
+                      <InventoryField label="Responsable">
+                        <select
+                          value={inventoryForm.responsibleId}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, responsibleId: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                        >
+                          <option value="">Sin responsable</option>
+                          {responsibleOptions.map((member) => (
+                            <option key={member.id} value={member.id}>
+                              {member.name || member.displayName || member.email || member.id}
+                            </option>
+                          ))}
+                        </select>
+                      </InventoryField>
+                      <InventoryField label="Nombre del activo">
+                        <input
+                          required
+                          value={inventoryForm.name}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, name: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                          placeholder="Ej: Portátil Lenovo, silla ergonómica, GPS..."
+                        />
+                      </InventoryField>
+                      <InventoryField label="Categoría">
+                        <input
+                          list="global-inventory-categories"
+                          value={inventoryForm.category}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, category: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                          placeholder="Computadores, mobiliario, topografía..."
+                        />
+                        <datalist id="global-inventory-categories">
+                          {inventoryFormCategories.map((category) => (
+                            <option key={category} value={category} />
+                          ))}
+                        </datalist>
+                      </InventoryField>
+                      <InventoryField label="Código interno">
+                        <input
+                          value={inventoryForm.assetCode}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, assetCode: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                          placeholder="ACT-001"
+                        />
+                      </InventoryField>
+                      <InventoryField label="Serial">
+                        <input
+                          value={inventoryForm.serialNumber}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, serialNumber: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                          placeholder="Serial de fábrica"
+                        />
+                      </InventoryField>
+                      <InventoryField label="Cantidad">
+                        <input
+                          required
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={inventoryForm.quantity}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, quantity: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                        />
+                      </InventoryField>
+                      <InventoryField label="Valor unitario estimado">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={inventoryForm.estimatedValue}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, estimatedValue: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                          placeholder="0"
+                        />
+                      </InventoryField>
+                      <InventoryField label="Estado">
+                        <select
+                          value={inventoryForm.status}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, status: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                        >
+                          {STATUS_OPTIONS.map((status) => (
+                            <option key={status.value} value={status.value}>{status.label}</option>
+                          ))}
+                        </select>
+                      </InventoryField>
+                      <InventoryField label="Condición">
+                        <select
+                          value={inventoryForm.condition}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, condition: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                        >
+                          {CONDITION_OPTIONS.map((condition) => (
+                            <option key={condition.value} value={condition.value}>{condition.label}</option>
+                          ))}
+                        </select>
+                      </InventoryField>
+                      <InventoryField label="Fecha de adquisición">
+                        <input
+                          type="date"
+                          value={inventoryForm.acquisitionDate}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, acquisitionDate: event.target.value })}
+                          className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                        />
+                      </InventoryField>
+                      <label className="flex items-center gap-3 rounded-lg border border-orange-100 bg-orange-50 px-3 py-3 text-sm font-black text-orange-700">
+                        <input
+                          type="checkbox"
+                          checked={inventoryForm.needsRepair}
+                          onChange={(event) => setInventoryForm({ ...inventoryForm, needsRepair: event.target.checked })}
+                          className="h-4 w-4 rounded border-orange-200"
+                        />
+                        Requiere reparación o revisión
+                      </label>
+                    </div>
+
+                    <InventoryField label="Observaciones">
+                      <textarea
+                        value={inventoryForm.observations}
+                        onChange={(event) => setInventoryForm({ ...inventoryForm, observations: event.target.value })}
+                        className="min-h-28 w-full rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm font-semibold leading-6 text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                        placeholder="Estado del activo, garantía, restricciones, novedades o contexto operativo."
+                      />
+                    </InventoryField>
+                  </div>
+
+                  <aside className="space-y-4">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <h4 className="text-sm font-black text-slate-950">Ubicación operativa</h4>
+                      <p className="mt-1 text-xs font-bold text-slate-500">Haz clic en el mapa o escribe coordenadas para alimentar el inventario global.</p>
+                      <div className="mt-3">
+                        <InventoryLocationMap
+                          value={{
+                            latitude: parseMapCoordinate(inventoryForm.latitude) ?? undefined,
+                            longitude: parseMapCoordinate(inventoryForm.longitude) ?? undefined,
+                          }}
+                          onChange={(coordinate) =>
+                            setInventoryForm({
+                              ...inventoryForm,
+                              latitude: coordinate.latitude.toFixed(6),
+                              longitude: coordinate.longitude.toFixed(6),
+                            })
+                          }
+                          heightClassName="h-64"
+                          emptyLabel="Haz clic para ubicar el activo."
+                        />
+                      </div>
+                      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                        <InventoryField label="Latitud">
+                          <input
+                            value={inventoryForm.latitude}
+                            onChange={(event) => setInventoryForm({ ...inventoryForm, latitude: event.target.value })}
+                            className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                            placeholder="4.7110"
+                          />
+                        </InventoryField>
+                        <InventoryField label="Longitud">
+                          <input
+                            value={inventoryForm.longitude}
+                            onChange={(event) => setInventoryForm({ ...inventoryForm, longitude: event.target.value })}
+                            className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                            placeholder="-74.0721"
+                          />
+                        </InventoryField>
+                      </div>
+                    </div>
+
+                    <InventoryField label="Lugar / sede">
+                      <input
+                        value={inventoryForm.location}
+                        onChange={(event) => setInventoryForm({ ...inventoryForm, location: event.target.value })}
+                        className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                        placeholder="Bodega, oficina, municipio, frente de trabajo..."
+                      />
+                    </InventoryField>
+                    <InventoryField label="Link externo de ubicación">
+                      <input
+                        value={inventoryForm.mapUrl}
+                        onChange={(event) => setInventoryForm({ ...inventoryForm, mapUrl: event.target.value })}
+                        className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                        placeholder="Google Maps, Street View o enlace de soporte"
+                      />
+                    </InventoryField>
+                  </aside>
+                </div>
+
+                <div className="sticky bottom-0 mt-5 flex justify-end gap-2 border-t border-slate-100 bg-white py-4">
+                  <Button type="button" variant="outline" onClick={closeInventoryModal} className="border-slate-200 font-black">
+                    Cancelar
+                  </Button>
+                  <Button type="submit" disabled={savingInventory} className="bg-indigo-600 font-black text-white hover:bg-indigo-700">
+                    {savingInventory ? 'Guardando...' : inventoryModalMode === 'edit' ? 'Guardar activo' : 'Crear activo'}
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
 
         {selectedItem && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
@@ -799,28 +1311,39 @@ export default function InventoryOverviewPage() {
                       <p className="mt-1 text-sm font-medium text-slate-500">Historial de reparaciones, inspecciones, traslados y novedades.</p>
                     </div>
                     <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto">
-                      {(selectedItem.maintenanceHistory || []).length === 0 ? (
+                      {getInventoryHistory(selectedItem).length === 0 ? (
                         <div className="p-6 text-center text-sm font-medium text-slate-500">Sin eventos registrados.</div>
                       ) : (
-                        [...(selectedItem.maintenanceHistory || [])]
-                          .sort((left, right) => getTime(right.date || right.createdAt) - getTime(left.date || left.createdAt))
+                        getInventoryHistory(selectedItem)
                           .map((entry, index) => (
                             <div key={entry.id || index} className="p-4">
                               <span className="rounded bg-indigo-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-indigo-700 ring-1 ring-indigo-100">
                                 {entry.type || 'Novedad'}
                               </span>
-                              <p className="mt-2 text-sm font-black text-slate-950">{entry.description || 'Sin descripción'}</p>
+                              <p className="mt-2 text-sm font-black text-slate-950">{entry.title || entry.description || 'Sin descripción'}</p>
                               <p className="mt-1 text-xs font-bold text-slate-500">
-                                {formatDate(entry.date || entry.createdAt)} · {entry.technician || 'Sin responsable'} {entry.cost ? `· ${formatCurrency(Number(entry.cost))}` : ''}
+                                {formatDate(entry.date || entry.createdAt)} · {entry.technician || entry.actorEmail || 'Sin responsable'} {entry.cost ? `· ${formatCurrency(Number(entry.cost))}` : ''}
                               </p>
-                              {entry.result && <p className="mt-2 text-xs font-semibold text-slate-500">{entry.result}</p>}
+                              {(entry.result || entry.description) && entry.title && <p className="mt-2 text-xs font-semibold text-slate-500">{entry.result || entry.description}</p>}
                             </div>
                           ))
                       )}
                     </div>
                   </section>
 
-                  <div className="mt-5 flex justify-end">
+                  <div className="mt-5 flex flex-wrap justify-end gap-2">
+                    {canManageInventory && (
+                      <>
+                        <Button type="button" variant="outline" onClick={() => openEditInventoryModal(selectedItem)} className="border-slate-200 font-black">
+                          <Pencil size={16} className="mr-2" />
+                          Editar activo
+                        </Button>
+                        <Button type="button" variant="outline" onClick={() => handleDeleteInventoryItem(selectedItem)} className="border-red-100 font-black text-red-600 hover:bg-red-50">
+                          <Trash2 size={16} className="mr-2" />
+                          Eliminar
+                        </Button>
+                      </>
+                    )}
                     <Link href={`/projects/${selectedItem.projectId}?tab=inventory`}>
                       <Button className="bg-indigo-600 font-black text-white hover:bg-indigo-700">
                         Abrir inventario del proyecto
@@ -845,5 +1368,14 @@ function InfoTile({ label, value, icon }: { label: string; value: string; icon: 
       <p className="mt-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">{label}</p>
       <p className="mt-1 break-words text-sm font-black text-slate-950">{value}</p>
     </div>
+  );
+}
+
+function InventoryField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-[11px] font-black uppercase tracking-[0.14em] text-slate-400">{label}</span>
+      {children}
+    </label>
   );
 }
