@@ -13,7 +13,13 @@ export type PermissionKey =
   | 'billingManage'
   | 'inventoryProjectView'
   | 'inventoryProjectManage'
-  | 'inventoryOverview';
+  | 'inventoryOverview'
+  | 'orgChartView'
+  | 'orgChartManage'
+  | 'personnelOverview'
+  | 'personnelManage'
+  | 'personnelBudgetView'
+  | 'personnelBudgetManage';
 
 export type RolePermissionSet = Record<PermissionKey, boolean>;
 export type RolePermissionSettings = Record<string, RolePermissionSet>;
@@ -66,6 +72,17 @@ export const PERMISSION_GROUPS: Array<{
       { key: 'inventoryOverview', label: 'Ver inventario global' },
     ],
   },
+  {
+    title: 'Talento humano',
+    permissions: [
+      { key: 'orgChartView', label: 'Ver organigrama del proyecto' },
+      { key: 'orgChartManage', label: 'Editar organigrama del proyecto' },
+      { key: 'personnelOverview', label: 'Ver panel global de personal' },
+      { key: 'personnelManage', label: 'Gestionar personal global' },
+      { key: 'personnelBudgetView', label: 'Ver cobertura presupuestal de personal' },
+      { key: 'personnelBudgetManage', label: 'Gestionar cobertura presupuestal de personal' },
+    ],
+  },
 ];
 
 const allPermissions = (value: boolean): RolePermissionSet => ({
@@ -84,6 +101,12 @@ const allPermissions = (value: boolean): RolePermissionSet => ({
   inventoryProjectView: value,
   inventoryProjectManage: value,
   inventoryOverview: value,
+  orgChartView: value,
+  orgChartManage: value,
+  personnelOverview: value,
+  personnelManage: value,
+  personnelBudgetView: value,
+  personnelBudgetManage: value,
 });
 
 export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
@@ -96,6 +119,9 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
     billingOverview: false,
     billingManage: false,
     inventoryOverview: false,
+    orgChartManage: false,
+    personnelManage: false,
+    personnelBudgetManage: false,
   },
   administrativo: {
     ...allPermissions(false),

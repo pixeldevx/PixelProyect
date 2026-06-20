@@ -19,7 +19,8 @@ import {
   ShieldCheck,
   WalletCards,
   PackageSearch,
-  UserCircle
+  UserCircle,
+  BriefcaseBusiness
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
@@ -54,6 +55,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const canAccessBudgetOverview = ['admin', 'org_admin', 'manager', 'coordinador'].includes(userRole || '');
   const canAccessInventoryOverview = INVENTORY_OVERVIEW_ROLES.has(userRole || '') && rolePermissions.inventoryOverview;
   const canAccessBillingOverview = Boolean(rolePermissions.billingOverview);
+  const canAccessPersonnelOverview = Boolean(rolePermissions.personnelOverview);
   const roleLabel = ROLE_LABELS[userRole || ''] || 'Perfil de usuario';
   const displayName = user?.displayName || user?.email?.split('@')[0] || 'Usuario';
   const userInitial = displayName.charAt(0).toUpperCase();
@@ -209,6 +211,9 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           <NavItem href="/workflows" icon={<Inbox size={18} />} label="Bandeja de entrada" active={pathname?.startsWith('/workflows')} collapsed={isCollapsed} badge={inboxPendingCount} />
           <NavItem href="/projects" icon={<FolderKanban size={18} />} label="Projects" active={pathname?.startsWith('/projects')} collapsed={isCollapsed} />
           <NavItem href="/team" icon={<Users size={18} />} label="Team Performance" active={pathname?.startsWith('/team')} collapsed={isCollapsed} />
+          {canAccessPersonnelOverview && (
+            <NavItem href="/personnel" icon={<BriefcaseBusiness size={18} />} label="Talento humano" active={pathname?.startsWith('/personnel')} collapsed={isCollapsed} />
+          )}
           <NavItem href="/quality" icon={<ShieldCheck size={18} />} label="Calidad global" active={pathname?.startsWith('/quality')} collapsed={isCollapsed} />
           {canAccessInventoryOverview && (
             <NavItem href="/inventory" icon={<PackageSearch size={18} />} label="Inventario global" active={pathname?.startsWith('/inventory')} collapsed={isCollapsed} />
