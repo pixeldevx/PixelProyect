@@ -10,11 +10,19 @@ import {
   CalendarClock,
   CheckCircle2,
   CircleDollarSign,
+  ClipboardCheck,
+  Download,
   Eye,
+  FileClock,
   Gauge,
+  History,
+  PauseCircle,
+  Save,
   Search,
   ShieldCheck,
+  Shuffle,
   Users,
+  UserX,
   WalletCards,
   X,
 } from 'lucide-react';
@@ -24,8 +32,21 @@ import { Progress } from '@/components/ui/progress';
 import { useAuth } from '@/hooks/useAuth';
 import { useRolePermissions } from '@/hooks/useRolePermissions';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
-import { collection, getDocs, onSnapshot, query } from '@/lib/supabase/document-store';
+import {
+  addDoc,
+  arrayRemove,
+  arrayUnion,
+  collection,
+  doc,
+  getDocs,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+} from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
+import { toast } from 'sonner';
 
 type ProjectRow = {
   id: string;
@@ -126,12 +147,82 @@ type PersonRow = {
   completedTasks: number;
   firstGapMonth: number | null;
   coveragePercent: number;
+  contractStatus: PersonnelContractStatus;
+  contractEndDate?: string;
+  adminEventCount: number;
   status: 'covered' | 'gap' | 'uncovered' | 'risk';
+};
+
+type PersonnelContractStatus = 'not_hired' | 'active' | 'trial' | 'suspended' | 'ended';
+type PersonnelActionType = 'note' | 'contract_update' | 'reassignment' | 'suspension' | 'exit' | 'budget_review';
+
+type PersonnelProfile = {
+  id: string;
+  memberId: string;
+  contractStatus?: PersonnelContractStatus;
+  contractType?: string;
+  startDate?: string;
+  endDate?: string;
+  monthlyCost?: number;
+  manager?: string;
+  notes?: string;
+  updatedAt?: any;
+  updatedBy?: string;
+};
+
+type PersonnelEvent = {
+  id: string;
+  memberId: string;
+  type?: PersonnelActionType;
+  title?: string;
+  description?: string;
+  projectId?: string;
+  targetProjectId?: string;
+  effectiveDate?: string;
+  createdAt?: any;
+  createdBy?: string;
+  createdByRole?: string;
+};
+
+type PersonnelProfileForm = {
+  contractStatus: PersonnelContractStatus;
+  contractType: string;
+  startDate: string;
+  endDate: string;
+  monthlyCost: string;
+  manager: string;
+  notes: string;
+};
+
+type PersonnelActionForm = {
+  type: PersonnelActionType;
+  projectId: string;
+  targetProjectId: string;
+  effectiveDate: string;
+  note: string;
 };
 
 const ACCESS_ROLES = new Set(['admin', 'org_admin', 'manager', 'coordinador']);
 const MONTH_LABELS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 const COVERAGE_WINDOW = 12;
+
+const DEFAULT_PROFILE_FORM: PersonnelProfileForm = {
+  contractStatus: 'not_hired',
+  contractType: '',
+  startDate: '',
+  endDate: '',
+  monthlyCost: '',
+  manager: '',
+  notes: '',
+};
+
+const DEFAULT_ACTION_FORM: PersonnelActionForm = {
+  type: 'note',
+  projectId: '',
+  targetProjectId: '',
+  effectiveDate: '',
+  note: '',
+};
 
 const statusStyles = {
   covered: {
@@ -158,6 +249,43 @@ const statusStyles = {
     dot: 'bg-orange-500',
     row: 'hover:border-orange-200 hover:bg-orange-50/45',
   },
+};
+
+const contractStatusStyles: Record<PersonnelContractStatus, { label: string; className: string; description: string }> = {
+  active: {
+    label: 'Contratado',
+    className: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
+    description: 'Vinculación activa',
+  },
+  trial: {
+    label: 'En prueba',
+    className: 'bg-cyan-50 text-cyan-700 ring-cyan-100',
+    description: 'Seguimiento inicial',
+  },
+  suspended: {
+    label: 'Suspendido',
+    className: 'bg-amber-50 text-amber-700 ring-amber-100',
+    description: 'Pausado administrativamente',
+  },
+  ended: {
+    label: 'Retirado',
+    className: 'bg-red-50 text-red-700 ring-red-100',
+    description: 'No disponible para operación',
+  },
+  not_hired: {
+    label: 'Sin contrato',
+    className: 'bg-slate-100 text-slate-600 ring-slate-200',
+    description: 'Pendiente de formalización',
+  },
+};
+
+const actionLabels: Record<PersonnelActionType, { label: string; icon: React.ReactNode }> = {
+  note: { label: 'Nota administrativa', icon: <History size={15} /> },
+  contract_update: { label: 'Actualización contractual', icon: <ClipboardCheck size={15} /> },
+  reassignment: { label: 'Reasignación de proyecto', icon: <Shuffle size={15} /> },
+  suspension: { label: 'Suspensión', icon: <PauseCircle size={15} /> },
+  exit: { label: 'Salida / baja', icon: <UserX size={15} /> },
+  budget_review: { label: 'Revisión presupuestal', icon: <WalletCards size={15} /> },
 };
 
 const currencyFormatter = (value: number, currency = 'COP') =>
@@ -258,6 +386,41 @@ const isTaskAssignedToMember = (task: TaskRow, member: TeamMemberRow) => {
 const getTaskDueDate = (task: TaskRow) =>
   getDateValue(task.dueDate) || getDateValue(task.endDate) || null;
 
+const formatHumanDate = (value: any) => {
+  const date = getDateValue(value);
+  if (!date) return 'Sin fecha';
+  return new Intl.DateTimeFormat('es-CO', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  }).format(date);
+};
+
+const getDateInputValue = (value: any) => {
+  const date = getDateValue(value);
+  if (!date) return '';
+  return date.toISOString().slice(0, 10);
+};
+
+const getEventMillis = (event: PersonnelEvent) =>
+  getDateValue(event.createdAt)?.getTime() || getDateValue(event.effectiveDate)?.getTime() || 0;
+
+const getProfileFormFromProfile = (profile?: PersonnelProfile | null): PersonnelProfileForm => ({
+  contractStatus: profile?.contractStatus || 'not_hired',
+  contractType: profile?.contractType || '',
+  startDate: getDateInputValue(profile?.startDate),
+  endDate: getDateInputValue(profile?.endDate),
+  monthlyCost: profile?.monthlyCost ? String(profile.monthlyCost) : '',
+  manager: profile?.manager || '',
+  notes: profile?.notes || '',
+});
+
+const parseMoneyInput = (value: string) => {
+  const normalized = value.replace(/[^\d.,-]/g, '').replace(/\./g, '').replace(',', '.');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
 function MetricCard({
   label,
   value,
@@ -323,19 +486,26 @@ function CoveragePixels({ monthlyAmounts, startMonth, dense = false }: { monthly
 }
 
 export default function PersonnelPage() {
-  const { userRole, userOrganizationId, userOrganizationIds } = useAuth();
+  const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   const { permissions } = useRolePermissions(userRole);
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [teamMembers, setTeamMembers] = useState<TeamMemberRow[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
   const [projectData, setProjectData] = useState<Record<string, ProjectData>>({});
+  const [personnelProfiles, setPersonnelProfiles] = useState<PersonnelProfile[]>([]);
+  const [personnelEvents, setPersonnelEvents] = useState<PersonnelEvent[]>([]);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState('all');
   const [selectedProjectId, setSelectedProjectId] = useState('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'alerts' | 'uncovered' | 'gap' | 'covered'>('alerts');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(true);
+  const [profileForm, setProfileForm] = useState<PersonnelProfileForm>(DEFAULT_PROFILE_FORM);
+  const [actionForm, setActionForm] = useState<PersonnelActionForm>(DEFAULT_ACTION_FORM);
+  const [detailTab, setDetailTab] = useState<'profile' | 'history'>('profile');
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [savingAction, setSavingAction] = useState(false);
 
   const managedOrganizationIds = useMemo(
     () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
@@ -345,6 +515,7 @@ export default function PersonnelPage() {
   const hasAccess = Boolean(permissions.personnelOverview) && ACCESS_ROLES.has(userRole || '');
   const canManagePersonnel = Boolean(permissions.personnelManage);
   const canViewBudget = Boolean(permissions.personnelBudgetView);
+  const canManageBudget = Boolean(permissions.personnelBudgetManage);
   const currentMonthNumber = new Date().getMonth() + 1;
 
   useEffect(() => {
@@ -361,10 +532,38 @@ export default function PersonnelPage() {
       onSnapshot(query(collection(db, 'roles')), (snapshot) => {
         setRoles(snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as RoleRow)));
       }),
+      onSnapshot(query(collection(db, 'personnel_profiles')), (snapshot) => {
+        setPersonnelProfiles(snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as PersonnelProfile)));
+      }),
+      onSnapshot(query(collection(db, 'personnel_events')), (snapshot) => {
+        setPersonnelEvents(snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as PersonnelEvent)));
+      }),
     ];
 
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
   }, []);
+
+  const profileByMemberId = useMemo(() => {
+    const map = new Map<string, PersonnelProfile>();
+    personnelProfiles.forEach((profile) => {
+      if (profile.memberId) map.set(profile.memberId, profile);
+    });
+    return map;
+  }, [personnelProfiles]);
+
+  const eventsByMemberId = useMemo(() => {
+    const map = new Map<string, PersonnelEvent[]>();
+    personnelEvents.forEach((event) => {
+      if (!event.memberId) return;
+      const events = map.get(event.memberId) || [];
+      events.push(event);
+      map.set(event.memberId, events);
+    });
+    map.forEach((events, memberId) => {
+      map.set(memberId, [...events].sort((a, b) => getEventMillis(b) - getEventMillis(a)));
+    });
+    return map;
+  }, [personnelEvents]);
 
   const visibleOrganizations = useMemo(() => {
     if (userRole === 'admin' && managedOrganizationIds.length === 0) return organizations;
@@ -450,6 +649,8 @@ export default function PersonnelPage() {
     dueSoonLimit.setDate(dueSoonLimit.getDate() + 7);
 
     return visibleTeamMembers.map((member) => {
+      const profile = profileByMemberId.get(member.id);
+      const contractStatus = profile?.contractStatus || 'not_hired';
       const memberProjects = visibleProjects.filter((project) => {
         const assignedTeamMembers = normalizeIds(project.assignedTeamMembers);
         const hasAssignedProject = assignedTeamMembers.includes(member.id);
@@ -527,6 +728,7 @@ export default function PersonnelPage() {
       if (totalAllocated <= 0) status = 'uncovered';
       else if (overdueTasks > 0 || dueSoonTasks > 0) status = 'risk';
       else if (firstGapMonth) status = 'gap';
+      if (contractStatus === 'suspended' || contractStatus === 'ended') status = 'risk';
 
       const organizationNames = organizationNameFor(member, organizations).split(', ').filter(Boolean);
 
@@ -547,12 +749,17 @@ export default function PersonnelPage() {
         completedTasks,
         firstGapMonth,
         coveragePercent,
+        contractStatus,
+        contractEndDate: profile?.endDate,
+        adminEventCount: eventsByMemberId.get(member.id)?.length || 0,
         status,
       };
     }).filter((row) => row.projects.length > 0 || selectedProjectId === 'all');
   }, [
     currentMonthNumber,
+    eventsByMemberId,
     organizations,
+    profileByMemberId,
     projectData,
     roleNameById,
     selectedProjectId,
@@ -592,12 +799,24 @@ export default function PersonnelPage() {
     [personRows, selectedPersonId]
   );
 
+  const selectedProfile = selectedPerson ? profileByMemberId.get(selectedPerson.id) || null : null;
+  const selectedEvents = selectedPerson ? eventsByMemberId.get(selectedPerson.id) || [] : [];
+
+  const openPersonDetail = (person: PersonRow) => {
+    const profile = profileByMemberId.get(person.id);
+    setSelectedPersonId(person.id);
+    setProfileForm(getProfileFormFromProfile(profile));
+    setActionForm(DEFAULT_ACTION_FORM);
+    setDetailTab('profile');
+  };
+
   const summary = useMemo(() => {
     const totalAllocated = personRows.reduce((sum, row) => sum + row.totalAllocated, 0);
     const uncovered = personRows.filter((row) => row.status === 'uncovered').length;
     const gaps = personRows.filter((row) => row.status === 'gap' || row.status === 'risk').length;
     const overdue = personRows.reduce((sum, row) => sum + row.overdueTasks, 0);
     const activeTasks = personRows.reduce((sum, row) => sum + row.activeTasks, 0);
+    const inactiveContracts = personRows.filter((row) => row.contractStatus === 'ended' || row.contractStatus === 'suspended' || row.contractStatus === 'not_hired').length;
 
     return {
       totalAllocated,
@@ -605,8 +824,166 @@ export default function PersonnelPage() {
       gaps,
       overdue,
       activeTasks,
+      inactiveContracts,
     };
   }, [personRows]);
+
+  const exportPersonnelCsv = () => {
+    const headers = [
+      'Nombre',
+      'Correo',
+      'Rol',
+      'Estado contractual',
+      'Organizaciones',
+      'Proyectos',
+      'Cobertura asignada',
+      'Cobertura 12 meses (%)',
+      'Tareas abiertas',
+      'Tareas vencidas',
+      'Tareas proximas',
+      'Eventos administrativos',
+    ];
+    const rows = filteredRows.map((row) => [
+      row.name,
+      row.email,
+      row.roleName,
+      contractStatusStyles[row.contractStatus].label,
+      row.organizationNames.join(' | '),
+      row.projects.map((project) => project.projectName).join(' | '),
+      canViewBudget ? String(row.totalAllocated) : 'Protegida',
+      String(row.coveragePercent),
+      String(row.activeTasks),
+      String(row.overdueTasks),
+      String(row.dueSoonTasks),
+      String(row.adminEventCount),
+    ]);
+    const csv = [headers, ...rows]
+      .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `talento-humano-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleSaveProfile = async () => {
+    if (!selectedPerson || !canManagePersonnel) return;
+    setSavingProfile(true);
+    try {
+      const profileRef = doc(db, 'personnel_profiles', selectedPerson.id);
+      const monthlyCost = parseMoneyInput(profileForm.monthlyCost);
+      const payload: Omit<PersonnelProfile, 'id'> = {
+        memberId: selectedPerson.id,
+        contractStatus: profileForm.contractStatus,
+        contractType: profileForm.contractType.trim(),
+        startDate: profileForm.startDate || '',
+        endDate: profileForm.endDate || '',
+        monthlyCost,
+        manager: profileForm.manager.trim(),
+        notes: profileForm.notes.trim(),
+        updatedAt: serverTimestamp(),
+        updatedBy: user?.email || 'Sistema',
+      };
+
+      await setDoc(profileRef, payload, { merge: true });
+      await addDoc(collection(db, 'personnel_events'), {
+        memberId: selectedPerson.id,
+        type: 'contract_update',
+        title: 'Ficha contractual actualizada',
+        description: `Estado: ${contractStatusStyles[profileForm.contractStatus].label}. ${profileForm.notes.trim() || 'Sin observaciones adicionales.'}`,
+        effectiveDate: profileForm.startDate || new Date().toISOString().slice(0, 10),
+        createdAt: serverTimestamp(),
+        createdBy: user?.email || 'Sistema',
+        createdByRole: userRole || '',
+      });
+      toast.success('Ficha administrativa actualizada.');
+    } catch (error: any) {
+      console.error('Error saving personnel profile:', error);
+      toast.error(error?.message || 'No se pudo guardar la ficha.');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const handleSaveAction = async () => {
+    if (!selectedPerson || !canManagePersonnel) return;
+    if (!actionForm.note.trim()) {
+      toast.warning('Describe el motivo o contexto de la acción.');
+      return;
+    }
+
+    if (actionForm.type === 'reassignment' && (!actionForm.projectId || !actionForm.targetProjectId)) {
+      toast.warning('Selecciona proyecto origen y destino para la reasignación.');
+      return;
+    }
+
+    if (actionForm.type === 'reassignment' && actionForm.projectId === actionForm.targetProjectId) {
+      toast.warning('El proyecto origen y destino deben ser diferentes.');
+      return;
+    }
+
+    setSavingAction(true);
+    try {
+      const profileRef = doc(db, 'personnel_profiles', selectedPerson.id);
+      const actionMeta = actionLabels[actionForm.type];
+
+      if (actionForm.type === 'reassignment') {
+        await Promise.all([
+          updateDoc(doc(db, 'projects', actionForm.projectId), {
+            assignedTeamMembers: arrayRemove(selectedPerson.id),
+          }),
+          updateDoc(doc(db, 'projects', actionForm.targetProjectId), {
+            assignedTeamMembers: arrayUnion(selectedPerson.id),
+          }),
+        ]);
+      }
+
+      if (actionForm.type === 'suspension') {
+        await setDoc(profileRef, {
+          memberId: selectedPerson.id,
+          contractStatus: 'suspended',
+          updatedAt: serverTimestamp(),
+          updatedBy: user?.email || 'Sistema',
+        }, { merge: true });
+      }
+
+      if (actionForm.type === 'exit') {
+        await setDoc(profileRef, {
+          memberId: selectedPerson.id,
+          contractStatus: 'ended',
+          endDate: actionForm.effectiveDate || new Date().toISOString().slice(0, 10),
+          updatedAt: serverTimestamp(),
+          updatedBy: user?.email || 'Sistema',
+        }, { merge: true });
+      }
+
+      await addDoc(collection(db, 'personnel_events'), {
+        memberId: selectedPerson.id,
+        type: actionForm.type,
+        title: actionMeta.label,
+        description: actionForm.note.trim(),
+        projectId: actionForm.projectId || '',
+        targetProjectId: actionForm.targetProjectId || '',
+        effectiveDate: actionForm.effectiveDate || new Date().toISOString().slice(0, 10),
+        createdAt: serverTimestamp(),
+        createdBy: user?.email || 'Sistema',
+        createdByRole: userRole || '',
+      });
+
+      setActionForm(DEFAULT_ACTION_FORM);
+      toast.success('Acción registrada en la hoja de vida.');
+    } catch (error: any) {
+      console.error('Error saving personnel action:', error);
+      toast.error(error?.message || 'No se pudo registrar la acción.');
+    } finally {
+      setSavingAction(false);
+    }
+  };
 
   if (!hasAccess) {
     return (
@@ -681,7 +1058,7 @@ export default function PersonnelPage() {
           <MetricCard
             label="Con alerta"
             value={compactNumber(summary.gaps)}
-            detail="huecos, vencimientos o riesgo"
+            detail={`${compactNumber(summary.inactiveContracts)} con estado contractual sensible`}
             icon={<Gauge size={22} className="text-orange-700" />}
             tone="bg-orange-50 text-orange-700 ring-orange-100"
           />
@@ -748,6 +1125,17 @@ export default function PersonnelPage() {
               </select>
             </div>
           </div>
+          <div className="mt-3 flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={exportPersonnelCsv}
+              className="h-10 border-slate-200 text-slate-700 hover:bg-slate-50"
+            >
+              <Download size={16} className="mr-2" />
+              Descargar reporte
+            </Button>
+          </div>
         </section>
 
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -796,6 +1184,9 @@ export default function PersonnelPage() {
                           <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${style.pill}`}>
                             {style.label}
                           </span>
+                          <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${contractStatusStyles[person.contractStatus].className}`}>
+                            {contractStatusStyles[person.contractStatus].label}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -833,6 +1224,9 @@ export default function PersonnelPage() {
                       <p className="mt-1 text-[11px] font-bold text-slate-500">
                         {person.firstGapMonth ? `Hueco desde ${getTimelineMonthLabel(person.firstGapMonth)}` : 'Cobertura completa'}
                       </p>
+                      {person.contractEndDate && (
+                        <p className="mt-1 text-[11px] font-bold text-slate-500">Contrato hasta {formatHumanDate(person.contractEndDate)}</p>
+                      )}
                     </div>
 
                     <div className="flex items-center justify-between gap-3 md:justify-end">
@@ -842,11 +1236,14 @@ export default function PersonnelPage() {
                         {person.overdueTasks > 0 && (
                           <p className="text-[11px] font-black text-red-600">{person.overdueTasks} vencidas</p>
                         )}
+                        {person.adminEventCount > 0 && (
+                          <p className="text-[11px] font-black text-indigo-600">{person.adminEventCount} eventos</p>
+                        )}
                       </div>
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setSelectedPersonId(person.id)}
+                        onClick={() => openPersonDetail(person)}
                         className="h-9 border-slate-200 text-slate-700 hover:bg-slate-50"
                       >
                         <Eye size={15} className="mr-2" />
@@ -901,6 +1298,176 @@ export default function PersonnelPage() {
                     <p className="mt-2 text-3xl font-black text-slate-950">{selectedPerson.overdueTasks + selectedPerson.dueSoonTasks}</p>
                     <p className="text-sm font-bold text-slate-500">vencidas o próximas</p>
                   </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-5">
+                  <div className="flex flex-col gap-3 border-b border-slate-100 pb-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-xl font-black text-slate-950">Hoja de vida administrativa</h3>
+                      <p className="text-sm font-semibold text-slate-500">
+                        Estado contractual, decisiones y trazabilidad de gestión por persona.
+                      </p>
+                    </div>
+                    <div className="inline-flex rounded-xl bg-slate-100 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setDetailTab('profile')}
+                        className={`rounded-lg px-3 py-2 text-xs font-black uppercase tracking-wider transition ${detailTab === 'profile' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        Ficha
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDetailTab('history')}
+                        className={`rounded-lg px-3 py-2 text-xs font-black uppercase tracking-wider transition ${detailTab === 'history' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        Historial {selectedEvents.length}
+                      </button>
+                    </div>
+                  </div>
+
+                  {detailTab === 'profile' ? (
+                    <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                      <label className="space-y-1">
+                        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Estado contractual</span>
+                        <select
+                          value={profileForm.contractStatus}
+                          disabled={!canManagePersonnel}
+                          onChange={(event) => setProfileForm((current) => ({ ...current, contractStatus: event.target.value as PersonnelContractStatus }))}
+                          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                        >
+                          <option value="not_hired">Sin contrato</option>
+                          <option value="active">Contratado</option>
+                          <option value="trial">En prueba</option>
+                          <option value="suspended">Suspendido</option>
+                          <option value="ended">Retirado</option>
+                        </select>
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Tipo de contrato</span>
+                        <input
+                          value={profileForm.contractType}
+                          disabled={!canManagePersonnel}
+                          onChange={(event) => setProfileForm((current) => ({ ...current, contractType: event.target.value }))}
+                          placeholder="Prestación de servicios, término fijo..."
+                          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Fecha de ingreso</span>
+                        <input
+                          type="date"
+                          value={profileForm.startDate}
+                          disabled={!canManagePersonnel}
+                          onChange={(event) => setProfileForm((current) => ({ ...current, startDate: event.target.value }))}
+                          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Fecha fin / revisión</span>
+                        <input
+                          type="date"
+                          value={profileForm.endDate}
+                          disabled={!canManagePersonnel}
+                          onChange={(event) => setProfileForm((current) => ({ ...current, endDate: event.target.value }))}
+                          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Costo mensual de referencia</span>
+                        <input
+                          value={profileForm.monthlyCost}
+                          disabled={!canManagePersonnel}
+                          onChange={(event) => setProfileForm((current) => ({ ...current, monthlyCost: event.target.value }))}
+                          placeholder="Ej: 3.500.000"
+                          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Responsable administrativo</span>
+                        <input
+                          value={profileForm.manager}
+                          disabled={!canManagePersonnel}
+                          onChange={(event) => setProfileForm((current) => ({ ...current, manager: event.target.value }))}
+                          placeholder="Gerente, coordinador o líder"
+                          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                      </label>
+                      <label className="space-y-1 sm:col-span-2">
+                        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Observaciones</span>
+                        <textarea
+                          value={profileForm.notes}
+                          disabled={!canManagePersonnel}
+                          onChange={(event) => setProfileForm((current) => ({ ...current, notes: event.target.value }))}
+                          rows={3}
+                          placeholder="Condiciones, acuerdos, riesgos o notas de seguimiento."
+                          className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                        />
+                      </label>
+                      <div className="sm:col-span-2 flex flex-col gap-3 rounded-xl bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className={`inline-flex rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${contractStatusStyles[profileForm.contractStatus].className}`}>
+                            {contractStatusStyles[profileForm.contractStatus].label}
+                          </p>
+                          <p className="mt-2 text-xs font-bold text-slate-500">
+                            {selectedProfile?.updatedAt ? `Actualizado ${formatHumanDate(selectedProfile.updatedAt)} por ${selectedProfile.updatedBy || 'Sistema'}` : 'Sin ficha administrativa guardada.'}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          disabled={!canManagePersonnel || savingProfile}
+                          onClick={handleSaveProfile}
+                          className="h-11 bg-indigo-600 font-black text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+                        >
+                          <Save size={16} className="mr-2" />
+                          {savingProfile ? 'Guardando...' : 'Guardar ficha'}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-5 space-y-3">
+                      {selectedEvents.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
+                          <FileClock className="mx-auto h-8 w-8 text-slate-300" />
+                          <p className="mt-3 text-sm font-black text-slate-700">Sin eventos administrativos registrados</p>
+                          <p className="mt-1 text-xs font-semibold text-slate-500">Cada acción quedará en la hoja de vida de la persona.</p>
+                        </div>
+                      ) : selectedEvents.map((event) => {
+                        const eventType = event.type && actionLabels[event.type] ? event.type : 'note';
+                        const meta = actionLabels[eventType];
+                        const sourceProject = visibleProjects.find((project) => project.id === event.projectId);
+                        const targetProject = visibleProjects.find((project) => project.id === event.targetProjectId);
+                        return (
+                          <article key={event.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                            <div className="flex items-start gap-3">
+                              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100">
+                                {meta.icon}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                                  <div>
+                                    <p className="text-sm font-black text-slate-950">{event.title || meta.label}</p>
+                                    <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                                      {formatHumanDate(event.createdAt)} · {event.createdBy || 'Sistema'}
+                                    </p>
+                                  </div>
+                                  <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                                    {formatHumanDate(event.effectiveDate)}
+                                  </span>
+                                </div>
+                                <p className="mt-3 whitespace-pre-wrap text-sm font-semibold leading-6 text-slate-600">{event.description}</p>
+                                {(sourceProject || targetProject) && (
+                                  <p className="mt-2 text-xs font-bold text-indigo-700">
+                                    {sourceProject?.name || 'Proyecto origen'} {targetProject ? `→ ${targetProject.name}` : ''}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 bg-white p-5">
@@ -991,25 +1558,83 @@ export default function PersonnelPage() {
                 <div className="rounded-2xl border border-slate-200 bg-white p-5">
                   <h3 className="flex items-center gap-2 text-lg font-black text-slate-950">
                     <CircleDollarSign size={18} className="text-emerald-600" />
-                    Acciones rápidas
+                    Acciones administrativas
                   </h3>
-                  <div className="mt-4 grid gap-2">
-                    <Link href="/budgets" className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-black text-slate-700 transition hover:bg-slate-50">
-                      Revisar presupuestos
-                      <ArrowRight size={16} />
-                    </Link>
-                    <Link href="/team" className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-black text-slate-700 transition hover:bg-slate-50">
-                      Ver rendimiento
-                      <ArrowRight size={16} />
-                    </Link>
+                  <div className="mt-4 space-y-3">
+                    <select
+                      value={actionForm.type}
+                      disabled={!canManagePersonnel}
+                      onChange={(event) => setActionForm((current) => ({ ...current, type: event.target.value as PersonnelActionType }))}
+                      className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                    >
+                      <option value="note">Nota administrativa</option>
+                      <option value="contract_update">Actualización contractual</option>
+                      <option value="reassignment">Reasignación de proyecto</option>
+                      <option value="suspension">Suspensión</option>
+                      <option value="exit">Salida / baja</option>
+                      <option value="budget_review">Revisión presupuestal</option>
+                    </select>
+                    <input
+                      type="date"
+                      value={actionForm.effectiveDate}
+                      disabled={!canManagePersonnel}
+                      onChange={(event) => setActionForm((current) => ({ ...current, effectiveDate: event.target.value }))}
+                      className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                    />
+                    <select
+                      value={actionForm.projectId}
+                      disabled={!canManagePersonnel}
+                      onChange={(event) => setActionForm((current) => ({ ...current, projectId: event.target.value }))}
+                      className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                    >
+                      <option value="">Proyecto relacionado</option>
+                      {selectedPerson.projects.map((project) => (
+                        <option key={project.projectId} value={project.projectId}>{project.projectName}</option>
+                      ))}
+                    </select>
+                    {actionForm.type === 'reassignment' && (
+                      <select
+                        value={actionForm.targetProjectId}
+                        disabled={!canManagePersonnel}
+                        onChange={(event) => setActionForm((current) => ({ ...current, targetProjectId: event.target.value }))}
+                        className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                      >
+                        <option value="">Proyecto destino</option>
+                        {visibleProjects.map((project) => (
+                          <option key={project.id} value={project.id}>{project.name || project.id}</option>
+                        ))}
+                      </select>
+                    )}
+                    <textarea
+                      value={actionForm.note}
+                      disabled={!canManagePersonnel}
+                      onChange={(event) => setActionForm((current) => ({ ...current, note: event.target.value }))}
+                      rows={4}
+                      placeholder="Motivo, decisión, responsable o condición de seguimiento..."
+                      className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+                    />
                     <Button
                       type="button"
-                      disabled={!canManagePersonnel}
-                      className="h-11 bg-indigo-600 font-black text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
-                      onClick={() => window.alert('La gestión contractual editable queda protegida para la siguiente iteración del módulo.')}
+                      disabled={!canManagePersonnel || savingAction}
+                      onClick={handleSaveAction}
+                      className="h-11 w-full bg-slate-950 font-black text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
                     >
-                      Gestionar contrato
+                      <FileClock size={16} className="mr-2" />
+                      {savingAction ? 'Registrando...' : 'Registrar acción'}
                     </Button>
+                    <div className="grid gap-2 pt-2">
+                      <Link href="/team" className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 transition hover:bg-slate-50">
+                        Ver rendimiento
+                        <ArrowRight size={15} />
+                      </Link>
+                      <Link
+                        href="/budgets"
+                        className={`inline-flex h-10 items-center justify-center gap-2 rounded-xl border px-4 text-xs font-black transition ${canManageBudget ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' : 'border-slate-200 bg-slate-50 text-slate-400'}`}
+                      >
+                        Gestionar presupuesto
+                        <ArrowRight size={15} />
+                      </Link>
+                    </div>
                   </div>
                 </div>
 
