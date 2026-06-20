@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import Image from 'next/image';
 import {
   ReactFlow,
@@ -232,6 +232,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
+  const loadedOrgChartProjectRef = useRef<string | null>(null);
 
   const nodeTypes = useMemo(() => ({ orgChartNode: OrgChartNode }), []);
   const canView = Boolean(permissions.orgChartView);
@@ -279,7 +280,13 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
   }, [canViewBudget, coverageByMember, handleNodeLabelChange, teamMembers]);
 
   useEffect(() => {
+    if (!canView) return;
+    if (loadedOrgChartProjectRef.current === projectId) return;
+
+    loadedOrgChartProjectRef.current = projectId;
+
     const fetchOrgChart = async () => {
+      setIsLoading(true);
       try {
         const [docSnap, budgetSnapshot] = await Promise.all([
           getDoc(doc(db, 'projects', projectId, 'orgChart', 'data')),
@@ -314,6 +321,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
           }, loadedCoverageByMember)]);
         }
       } catch (error) {
+        loadedOrgChartProjectRef.current = null;
         console.error("Error fetching org chart:", error);
         handleDataError(error, OperationType.GET, `projects/${projectId}/orgChart/data`);
       } finally {
@@ -321,7 +329,6 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
       }
     };
 
-    if (!canView) return;
     void fetchOrgChart();
   }, [canView, currentMonthNumber, enrichNodeData, projectId, setEdges, setNodes, teamMembers]);
 
