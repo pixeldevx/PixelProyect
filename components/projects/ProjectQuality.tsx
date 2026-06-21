@@ -1,7 +1,7 @@
 "use client"
 
-import React, { useEffect, useState } from "react";
-import { Award, CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, History, MessageSquare, Plus, ShieldCheck, Trash2, XCircle } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Award, BarChart3, CheckCircle2, ChevronDown, ChevronRight, ClipboardCheck, Download, History, MessageSquare, Plus, ShieldCheck, Trash2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -100,6 +100,44 @@ const getQualityGrade = (score: number) => {
   return { label: "Crítico", className: "bg-red-50 text-red-700" };
 };
 
+const getDateInputBoundary = (value: string, endOfDay = false) => {
+  if (!value) return null;
+  const date = new Date(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}`);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const getDateKey = (value: any) => {
+  const date = getDateValue(value);
+  if (!date) return "Sin fecha";
+  return date.toISOString().slice(0, 10);
+};
+
+const formatCompactDate = (dateKey: string) => {
+  if (dateKey === "Sin fecha") return dateKey;
+  return new Date(`${dateKey}T00:00:00`).toLocaleDateString("es-CO", {
+    day: "2-digit",
+    month: "short",
+  });
+};
+
+const csvEscape = (value: any) => {
+  const stringValue = String(value ?? "");
+  return `"${stringValue.replace(/"/g, '""')}"`;
+};
+
+const downloadCsv = (filename: string, headers: string[], rows: any[][]) => {
+  const csv = [headers, ...rows]
+    .map((row) => row.map(csvEscape).join(","))
+    .join("\n");
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
 export function ProjectQuality({ projectId, teamMembers, currentUser, canManage = true }: ProjectQualityProps) {
   const [causes, setCauses] = useState<any[]>([]);
   const [events, setEvents] = useState<any[]>([]);
@@ -110,6 +148,10 @@ export function ProjectQuality({ projectId, teamMembers, currentUser, canManage 
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [commentsByTaskId, setCommentsByTaskId] = useState<Record<string, any[]>>({});
   const [loadingCommentsTaskId, setLoadingCommentsTaskId] = useState<string | null>(null);
+  const [reportStartDate, setReportStartDate] = useState("");
+  const [reportEndDate, setReportEndDate] = useState("");
+  const [reportResult, setReportResult] = useState<"all" | "accepted" | "rejected">("all");
+  const [reportMemberId, setReportMemberId] = useState("all");
 
   useEffect(() => {
     setTasksLoaded(false);
@@ -289,6 +331,128 @@ export function ProjectQuality({ projectId, teamMembers, currentUser, canManage 
     return acc;
   }, {})).sort((left: any, right: any) => right.count - left.count);
 
+  const getTaskTitle = (event: any) => {
+    const task = event.taskId ? tasksById[event.taskId] : null;
+    return event.taskTitle || task?.title || task?.name || "Sin tarea";
+  };
+
+  const filteredReportEvents = useMemo(() => {
+    const startDate = getDateInputBoundary(reportStartDate);
+    const endDate = getDateInputBoundary(reportEndDate, true);
+
+    return activeEvents.filter((event) => {
+      const eventDate = getDateValue(event.createdAt);
+      if (startDate && (!eventDate || eventDate < startDate)) return false;
+      if (endDate && (!eventDate || eventDate > endDate)) return false;
+      if (reportResult !== "all" && event.result !== reportResult) return false;
+      if (
+        reportMemberId !== "all" &&
+        event.professionalId !== reportMemberId &&
+        event.reviewerId !== reportMemberId &&
+        event.createdBy !== reportMemberId
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [activeEvents, reportEndDate, reportMemberId, reportResult, reportStartDate]);
+
+  const reportAcceptedEvents = filteredReportEvents.filter((event) => event.result === "accepted");
+  const reportRejectedEvents = filteredReportEvents.filter((event) => event.result === "rejected");
+  const reportQualityScore =
+    filteredReportEvents.length > 0 ? Math.round((reportAcceptedEvents.length / filteredReportEvents.length) * 100) : 0;
+  const reportGrade = getQualityGrade(reportQualityScore);
+
+  const reportDailyRows = useMemo(() => {
+    const rows = Object.values(filteredReportEvents.reduce((acc: Record<string, any>, event) => {
+      const key = getDateKey(event.createdAt);
+      if (!acc[key]) acc[key] = { id: key, label: formatCompactDate(key), accepted: 0, rejected: 0, total: 0 };
+      acc[key].total += 1;
+      if (event.result === "accepted") acc[key].accepted += 1;
+      if (event.result === "rejected") acc[key].rejected += 1;
+      return acc;
+    }, {}));
+    return rows.sort((left: any, right: any) => String(left.id).localeCompare(String(right.id)));
+  }, [filteredReportEvents]);
+
+  const reportProfessionalRows = useMemo(() => {
+    return Object.values(filteredReportEvents.reduce((acc: Record<string, any>, event) => {
+      const professionalId = event.professionalId || "unknown";
+      if (!acc[professionalId]) {
+        acc[professionalId] = {
+          id: professionalId,
+          name: getMemberName(teamMembers, professionalId),
+          accepted: 0,
+          rejected: 0,
+          reviewed: 0,
+        };
+      }
+      acc[professionalId].reviewed += 1;
+      if (event.result === "accepted") acc[professionalId].accepted += 1;
+      if (event.result === "rejected") acc[professionalId].rejected += 1;
+      return acc;
+    }, {})).map((row: any) => ({
+      ...row,
+      score: row.reviewed > 0 ? Math.round((row.accepted / row.reviewed) * 100) : 0,
+    })).sort((left: any, right: any) => right.reviewed - left.reviewed || right.score - left.score);
+  }, [filteredReportEvents, teamMembers]);
+
+  const reportReviewerRows = useMemo(() => {
+    return Object.values(filteredReportEvents.reduce((acc: Record<string, any>, event) => {
+      const reviewerId = event.reviewerId || event.createdBy || "unknown";
+      if (!acc[reviewerId]) {
+        acc[reviewerId] = {
+          id: reviewerId,
+          name: getMemberName(teamMembers, reviewerId),
+          accepted: 0,
+          rejected: 0,
+          reviewed: 0,
+        };
+      }
+      acc[reviewerId].reviewed += 1;
+      if (event.result === "accepted") acc[reviewerId].accepted += 1;
+      if (event.result === "rejected") acc[reviewerId].rejected += 1;
+      return acc;
+    }, {})).sort((left: any, right: any) => right.reviewed - left.reviewed);
+  }, [filteredReportEvents, teamMembers]);
+
+  const reportCauseRows = useMemo(() => {
+    return Object.values(reportRejectedEvents.reduce((acc: Record<string, any>, event) => {
+      const causeId = event.causeId || "unknown";
+      if (!acc[causeId]) {
+        acc[causeId] = {
+          id: causeId,
+          name: event.causeLabel || "Sin causal",
+          count: 0,
+        };
+      }
+      acc[causeId].count += 1;
+      return acc;
+    }, {})).sort((left: any, right: any) => right.count - left.count);
+  }, [reportRejectedEvents]);
+
+  const maxDailyTotal = Math.max(1, ...reportDailyRows.map((row: any) => row.total));
+  const maxProfessionalReviewed = Math.max(1, ...reportProfessionalRows.map((row: any) => row.reviewed));
+  const maxReviewerReviewed = Math.max(1, ...reportReviewerRows.map((row: any) => row.reviewed));
+  const maxCauseCount = Math.max(1, ...reportCauseRows.map((row: any) => row.count));
+
+  const handleDownloadQualityReport = () => {
+    downloadCsv(
+      `reporte-calidad-${projectId}.csv`,
+      ["Fecha", "Tarea", "Paso", "Profesional", "Revisor", "Resultado", "Causal", "Comentario"],
+      filteredReportEvents.map((event) => [
+        formatDateTime(event.createdAt),
+        getTaskTitle(event),
+        event.stepLabel || "",
+        getMemberName(teamMembers, event.professionalId),
+        getMemberName(teamMembers, event.reviewerId || event.createdBy),
+        event.result === "accepted" ? "Aceptada" : "Devuelta",
+        event.causeLabel || "",
+        event.comment || "",
+      ])
+    );
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -329,6 +493,262 @@ export function ProjectQuality({ projectId, teamMembers, currentUser, canManage 
           </CardContent>
         </Card>
       </div>
+
+      <Card className="overflow-hidden border-slate-200 shadow-sm">
+        <CardHeader className="border-b border-slate-100 bg-slate-50/60 pb-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <BarChart3 size={19} className="text-indigo-600" />
+                Estadísticas y reportes de calidad
+              </CardTitle>
+              <CardDescription>
+                Filtra revisiones, analiza tendencias y descarga el reporte operativo de calidad.
+              </CardDescription>
+            </div>
+            <Button
+              type="button"
+              onClick={handleDownloadQualityReport}
+              disabled={filteredReportEvents.length === 0}
+              className="bg-slate-950 text-white hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-500"
+            >
+              <Download size={16} className="mr-2" />
+              Descargar reporte
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-5 p-4 lg:p-5">
+          <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1fr_1.4fr]">
+            <label className="space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Desde</span>
+              <input
+                type="date"
+                value={reportStartDate}
+                onChange={(event) => setReportStartDate(event.target.value)}
+                className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Hasta</span>
+              <input
+                type="date"
+                value={reportEndDate}
+                onChange={(event) => setReportEndDate(event.target.value)}
+                className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Resultado</span>
+              <select
+                value={reportResult}
+                onChange={(event) => setReportResult(event.target.value as "all" | "accepted" | "rejected")}
+                className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100"
+              >
+                <option value="all">Todos los resultados</option>
+                <option value="accepted">Solo aceptadas</option>
+                <option value="rejected">Solo devueltas</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Persona</span>
+              <select
+                value={reportMemberId}
+                onChange={(event) => setReportMemberId(event.target.value)}
+                className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100"
+              >
+                <option value="all">Profesionales y revisores</option>
+                {teamMembers.map((member) => (
+                  <option key={member.id} value={member.id}>{getMemberName(teamMembers, member.id)}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-4">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Muestra</p>
+              <p className="mt-2 text-3xl font-black text-slate-950">{filteredReportEvents.length}</p>
+              <p className="text-xs font-bold text-slate-500">eventos filtrados</p>
+            </div>
+            <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700">Aceptadas</p>
+              <p className="mt-2 text-3xl font-black text-emerald-700">{reportAcceptedEvents.length}</p>
+              <p className="text-xs font-bold text-emerald-700">sin devolución</p>
+            </div>
+            <div className="rounded-2xl border border-red-100 bg-red-50 p-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-red-700">Devueltas</p>
+              <p className="mt-2 text-3xl font-black text-red-700">{reportRejectedEvents.length}</p>
+              <p className="text-xs font-bold text-red-700">requieren corrección</p>
+            </div>
+            <div className="rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-indigo-700">Score filtrado</p>
+              <p className="mt-2 text-3xl font-black text-indigo-700">{reportQualityScore}%</p>
+              <span className={`mt-2 inline-flex rounded-full px-2 py-1 text-xs font-black ${reportGrade.className}`}>
+                {reportGrade.label}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid gap-5 xl:grid-cols-[1.35fr_1fr]">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-black text-slate-950">Tendencia diaria</h3>
+                  <p className="text-xs font-semibold text-slate-500">Aceptaciones y devoluciones por fecha.</p>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{reportDailyRows.length} días</span>
+              </div>
+              <div className="mt-4 space-y-3">
+                {reportDailyRows.slice(-14).map((row: any) => {
+                  const acceptedWidth = Math.round((row.accepted / maxDailyTotal) * 100);
+                  const rejectedWidth = Math.round((row.rejected / maxDailyTotal) * 100);
+                  return (
+                    <div key={row.id} className="grid grid-cols-[78px_1fr_42px] items-center gap-3">
+                      <span className="truncate text-xs font-black text-slate-500">{row.label}</span>
+                      <div className="h-7 overflow-hidden rounded-full bg-slate-100">
+                        <div className="flex h-full min-w-1">
+                          <div className="bg-emerald-500" style={{ width: `${acceptedWidth}%` }} />
+                          <div className="bg-red-500" style={{ width: `${rejectedWidth}%` }} />
+                        </div>
+                      </div>
+                      <span className="text-right text-xs font-black text-slate-700">{row.total}</span>
+                    </div>
+                  );
+                })}
+                {reportDailyRows.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm font-bold text-slate-500">
+                    No hay eventos para graficar en este filtro.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <h3 className="text-base font-black text-slate-950">Causales críticas</h3>
+              <p className="text-xs font-semibold text-slate-500">Distribución de devoluciones por causal.</p>
+              <div className="mt-4 space-y-3">
+                {reportCauseRows.slice(0, 7).map((cause: any) => (
+                  <div key={cause.id} className="space-y-1">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="truncate text-sm font-bold text-slate-700">{cause.name}</span>
+                      <span className="text-xs font-black text-red-700">{cause.count}</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-red-50">
+                      <div className="h-full rounded-full bg-red-500" style={{ width: `${Math.max(6, Math.round((cause.count / maxCauseCount) * 100))}%` }} />
+                    </div>
+                  </div>
+                ))}
+                {reportCauseRows.length === 0 && (
+                  <p className="rounded-xl bg-emerald-50 p-4 text-sm font-bold text-emerald-700">
+                    Sin devoluciones clasificadas en el filtro actual.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-5 xl:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <h3 className="text-base font-black text-slate-950">Profesionales evaluados</h3>
+              <div className="mt-4 space-y-3">
+                {reportProfessionalRows.slice(0, 8).map((row: any) => (
+                  <div key={row.id} className="grid grid-cols-[minmax(0,1fr)_64px] items-center gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-sm font-bold text-slate-800">{row.name}</span>
+                        <span className="text-xs font-black text-indigo-700">{row.score}%</span>
+                      </div>
+                      <div className="mt-1 h-2 rounded-full bg-slate-100">
+                        <div className="h-full rounded-full bg-indigo-500" style={{ width: `${Math.max(6, Math.round((row.reviewed / maxProfessionalReviewed) * 100))}%` }} />
+                      </div>
+                    </div>
+                    <span className="text-right text-xs font-black text-slate-500">{row.reviewed} rev.</span>
+                  </div>
+                ))}
+                {reportProfessionalRows.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-5 text-center text-sm font-bold text-slate-500">
+                    Sin profesionales en el rango seleccionado.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <h3 className="text-base font-black text-slate-950">Carga de revisores</h3>
+              <div className="mt-4 space-y-3">
+                {reportReviewerRows.slice(0, 8).map((row: any) => (
+                  <div key={row.id} className="grid grid-cols-[minmax(0,1fr)_64px] items-center gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-sm font-bold text-slate-800">{row.name}</span>
+                        <span className="text-xs font-black text-slate-600">{row.accepted}/{row.rejected}</span>
+                      </div>
+                      <div className="mt-1 h-2 rounded-full bg-slate-100">
+                        <div className="h-full rounded-full bg-cyan-500" style={{ width: `${Math.max(6, Math.round((row.reviewed / maxReviewerReviewed) * 100))}%` }} />
+                      </div>
+                    </div>
+                    <span className="text-right text-xs font-black text-slate-500">{row.reviewed} rev.</span>
+                  </div>
+                ))}
+                {reportReviewerRows.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-5 text-center text-sm font-bold text-slate-500">
+                    Sin revisores en el rango seleccionado.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            <div className="flex flex-col gap-1 border-b border-slate-100 bg-slate-50/70 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-base font-black text-slate-950">Reporte detallado</h3>
+                <p className="text-xs font-semibold text-slate-500">Últimos 80 eventos del filtro actual.</p>
+              </div>
+              <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-slate-600 ring-1 ring-slate-200">
+                {filteredReportEvents.length} registros
+              </span>
+            </div>
+            <div className="max-h-96 overflow-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-white hover:bg-white">
+                    <TableHead>Fecha</TableHead>
+                    <TableHead>Tarea</TableHead>
+                    <TableHead>Profesional</TableHead>
+                    <TableHead>Revisor</TableHead>
+                    <TableHead>Resultado</TableHead>
+                    <TableHead>Causal</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredReportEvents.slice(0, 80).map((event) => (
+                    <TableRow key={event.id}>
+                      <TableCell className="whitespace-nowrap text-slate-600">{formatDate(event.createdAt)}</TableCell>
+                      <TableCell className="max-w-[320px] truncate font-semibold text-slate-900">{getTaskTitle(event)}</TableCell>
+                      <TableCell>{getMemberName(teamMembers, event.professionalId)}</TableCell>
+                      <TableCell>{getMemberName(teamMembers, event.reviewerId || event.createdBy)}</TableCell>
+                      <TableCell>
+                        <span className={`rounded-full px-2 py-1 text-xs font-black ${event.result === "accepted" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+                          {event.result === "accepted" ? "Aceptada" : "Devuelta"}
+                        </span>
+                      </TableCell>
+                      <TableCell className="max-w-[220px] truncate text-slate-600">{event.causeLabel || "-"}</TableCell>
+                    </TableRow>
+                  ))}
+                  {filteredReportEvents.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={6} className="py-8 text-center text-sm font-bold text-slate-500">
+                        No hay registros con estos filtros.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="pb-3">
