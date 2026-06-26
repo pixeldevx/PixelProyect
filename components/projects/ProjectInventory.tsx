@@ -256,7 +256,7 @@ const emptyLifecycleForm = (action: AssetActionType = 'reassign'): AssetLifecycl
 
 const BULK_IMPORT_SAMPLE = [
   'nombre,categoria,codigo,serial,cantidad,ubicacion,latitud,longitud,responsable,estado,condicion,valor,observaciones',
-  'Portatil Dell,Computador,INV-001,SN-7788,1,Oficina Bogota,4.7110,-74.0721,sebastian@empresa.com,asignado,bueno,3500000,Equipo de campo',
+  'Portatil Dell,Computador,INV-001,SN-7788,1,Oficina principal,4.7110,-74.0721,persona@example.com,asignado,bueno,3500000,Equipo de campo',
   'Silla ergonomica,Silla,INV-002,,3,Sala operativa,,,,disponible,excelente,420000,',
 ].join('\n');
 

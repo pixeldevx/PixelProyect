@@ -1,6 +1,6 @@
 # Avisos de software de terceros
 
-Pixel Project incluye software libre y de codigo abierto como dependencias de ejecucion, desarrollo y compilacion. Cada componente conserva su propia licencia, titulares y condiciones. Este archivo es un reconocimiento de creditos y no modifica la licencia propietaria de Pixel Project.
+Pixel Project incluye software libre y de codigo abierto como dependencias de ejecucion, desarrollo y compilacion. Cada componente conserva su propia licencia, titulares y condiciones. Este archivo reconoce esos creditos y complementa la licencia MIT del proyecto.
 
 Este inventario se genera desde `package-lock.json` y los `package.json` instalados en `node_modules`. Para actualizarlo despues de agregar o cambiar dependencias ejecuta:
 
@@ -19,10 +19,10 @@ npm run notices
 - CC0-1.0: 1
 - ISC: 35
 - LGPL-3.0-or-later: 1
-- MIT: 389
+- MIT: 385
 - MIT AND ISC: 1
 - MPL-2.0: 4
-- NOASSERTION: 67
+- NOASSERTION: 77
 - Python-2.0: 1
 
 ## Dependencias directas
@@ -122,9 +122,12 @@ npm run notices
 | @babel/traverse | 7.29.0 | Transitiva | MIT | [sitio](https://github.com/babel/babel) |
 | @babel/types | 7.29.0 | Transitiva | MIT | [sitio](https://github.com/babel/babel) |
 | @base-ui/utils | 0.2.6 | Transitiva | MIT | [sitio](https://github.com/mui/base-ui) |
-| @emnapi/core | 1.9.1 | Transitiva | MIT | [sitio](https://github.com/toyobayashi/emnapi) |
+| @emnapi/core | 1.9.1 | Transitiva | NOASSERTION | No declarado |
+| @emnapi/core | 1.4.3 | Transitiva | NOASSERTION | No declarado |
 | @emnapi/runtime | 1.9.1 | Transitiva | MIT | [sitio](https://github.com/toyobayashi/emnapi) |
-| @emnapi/wasi-threads | 1.2.0 | Transitiva | MIT | [sitio](https://github.com/toyobayashi/emnapi) |
+| @emnapi/runtime | 1.4.3 | Transitiva | NOASSERTION | No declarado |
+| @emnapi/wasi-threads | 1.2.0 | Transitiva | NOASSERTION | No declarado |
+| @emnapi/wasi-threads | 1.0.2 | Transitiva | NOASSERTION | No declarado |
 | @eslint-community/eslint-utils | 4.9.1 | Transitiva | MIT | [sitio](https://github.com/eslint-community/eslint-utils) |
 | @eslint-community/regexpp | 4.12.2 | Transitiva | MIT | [sitio](https://github.com/eslint-community/regexpp) |
 | @eslint/config-array | 0.21.2 | Transitiva | Apache-2.0 | [sitio](https://github.com/eslint/rewrite) |
@@ -173,7 +176,8 @@ npm run notices
 | @jridgewell/resolve-uri | 3.1.2 | Transitiva | MIT | [sitio](https://github.com/jridgewell/resolve-uri) |
 | @jridgewell/sourcemap-codec | 1.5.5 | Transitiva | MIT | [sitio](https://github.com/jridgewell/sourcemaps) |
 | @jridgewell/trace-mapping | 0.3.31 | Transitiva | MIT | [sitio](https://github.com/jridgewell/sourcemaps) |
-| @napi-rs/wasm-runtime | 0.2.12 | Transitiva | MIT | [sitio](https://github.com/napi-rs/napi-rs) |
+| @napi-rs/wasm-runtime | 0.2.12 | Transitiva | NOASSERTION | No declarado |
+| @napi-rs/wasm-runtime | 0.2.11 | Transitiva | NOASSERTION | No declarado |
 | @next/env | 15.5.14 | Transitiva | MIT | [sitio](https://github.com/vercel/next.js) |
 | @next/eslint-plugin-next | 16.0.8 | Transitiva | MIT | [sitio](https://github.com/vercel/next.js) |
 | @next/swc-darwin-arm64 | 15.5.14 | Transitiva | MIT | [sitio](https://github.com/vercel/next.js) |
@@ -217,7 +221,8 @@ npm run notices
 | @tailwindcss/oxide-win32-arm64-msvc | 4.1.11 | Transitiva | NOASSERTION | No declarado |
 | @tailwindcss/oxide-win32-x64-msvc | 4.1.11 | Transitiva | NOASSERTION | No declarado |
 | @tanstack/table-core | 8.21.3 | Transitiva | MIT | [sitio](https://github.com/TanStack/table) |
-| @tybys/wasm-util | 0.10.1 | Transitiva | MIT | [sitio](https://github.com/toyobayashi/wasm-util) |
+| @tybys/wasm-util | 0.9.0 | Transitiva | NOASSERTION | No declarado |
+| @tybys/wasm-util | 0.10.1 | Transitiva | NOASSERTION | No declarado |
 | @types/d3-array | 3.2.2 | Transitiva | MIT | [sitio](https://github.com/DefinitelyTyped/DefinitelyTyped) |
 | @types/d3-color | 3.1.3 | Transitiva | MIT | [sitio](https://github.com/DefinitelyTyped/DefinitelyTyped) |
 | @types/d3-drag | 3.0.7 | Transitiva | MIT | [sitio](https://github.com/DefinitelyTyped/DefinitelyTyped) |
@@ -583,6 +588,7 @@ npm run notices
 | to-regex-range | 5.0.1 | Transitiva | MIT | [sitio](https://github.com/micromatch/to-regex-range) |
 | ts-api-utils | 2.5.0 | Transitiva | MIT | [sitio](https://github.com/JoshuaKGoldberg/ts-api-utils) |
 | tsconfig-paths | 3.15.0 | Transitiva | MIT | [sitio](https://github.com/dividab/tsconfig-paths) |
+| tslib | 2.8.0 | Transitiva | NOASSERTION | No declarado |
 | tslib | 2.8.1 | Transitiva | 0BSD | [sitio](https://github.com/Microsoft/tslib) |
 | type-check | 0.4.0 | Transitiva | MIT | [sitio](https://github.com/gkz/type-check) |
 | typed-array-buffer | 1.0.3 | Transitiva | MIT | [sitio](https://github.com/inspect-js/typed-array-buffer) |
@@ -614,5 +620,5 @@ npm run notices
 ## Notas
 
 - Los paquetes marcados como `NOASSERTION` no declaran licencia en su `package.json` instalado. Antes de redistribuir el codigo fuente completo se recomienda revisar manualmente el paquete y su repositorio.
-- Las licencias de terceros no conceden derechos sobre el codigo propietario, diseno, marca, flujos, documentacion, configuraciones privadas ni bases de datos de Pixel Project.
+- La licencia MIT de Pixel Project no modifica las obligaciones que puedan exigir las licencias de terceros incluidas en esta lista.
 - Si un componente requiere conservar avisos de copyright adicionales, dichos avisos deben mantenerse junto con esta lista y con el paquete correspondiente.

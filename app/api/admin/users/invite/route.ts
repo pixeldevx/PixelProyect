@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { getBootstrapAdminEmailSet } from '@/lib/bootstrap-admins';
 import { getPrimaryOrganizationId } from '@/lib/organizations';
 import { sendEmailWithResend } from '@/lib/email/resend';
 import {
@@ -16,10 +17,7 @@ export const runtime = 'nodejs';
 const DOCUMENTS_TABLE = 'app_documents';
 const AUTH_OPERATION_TIMEOUT_MS = 25000;
 const DB_OPERATION_TIMEOUT_MS = 15000;
-const ADMIN_EMAILS = new Set([
-  'gerencia.operaciones@realtix.com.co',
-  'ing.zambranog@gmail.com',
-]);
+const ADMIN_EMAILS = getBootstrapAdminEmailSet();
 const SYSTEM_ROLES = new Set([
   'admin',
   'org_admin',

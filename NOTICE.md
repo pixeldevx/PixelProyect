@@ -1,16 +1,19 @@
-# Aviso de titularidad y creditos
+# Notice
 
-Pixel Project es un producto propietario. Su uso, despliegue, reproduccion, distribucion, modificacion o explotacion comercial requiere autorizacion previa y por escrito del titular de los derechos.
+Pixel Project is released under the MIT License. See `LICENSE.md` for the full
+license text.
 
-Consulta `LICENSE.md` para los terminos de uso propietario del producto.
+This repository includes third-party open-source software. Dependency names,
+versions, detected licenses and source links are listed in
+`THIRD_PARTY_NOTICES.md`.
 
-Pixel Project utiliza software libre y de codigo abierto como dependencias tecnicas. Los creditos, nombres de paquetes, versiones y licencias detectadas se documentan en `THIRD_PARTY_NOTICES.md`.
+The sample configuration, migrations and documentation are intentionally
+anonymized. Replace placeholder emails, domains, Supabase project references,
+Resend senders and VAPID keys with values that belong to your own deployment.
 
-Los avisos de terceros no conceden derechos sobre Pixel Project como producto propietario. Cada dependencia conserva su licencia original y debe ser usada conforme a sus propios terminos.
-
-Si se redistribuye una copia autorizada del codigo, deben conservarse como minimo:
+If you redistribute this project, keep:
 
 - `LICENSE.md`
 - `NOTICE.md`
 - `THIRD_PARTY_NOTICES.md`
-- Los avisos de copyright y licencia incluidos por las dependencias de terceros.
+- Third-party copyright and license notices required by dependencies.

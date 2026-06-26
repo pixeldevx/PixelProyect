@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 
 export const SUPABASE_DOCUMENTS_TABLE = 'app_documents';
 export const SUPABASE_STORAGE_BUCKET =
-  process.env.NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET || 'realproyect-files';
+  process.env.NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET || 'pixel-project-files';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'http://127.0.0.1:54321';
 const supabaseAnonKey =

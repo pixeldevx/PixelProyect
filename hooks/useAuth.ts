@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, clearLocalAuthState, signOut, signInWithEmailAndPassword, resetPasswordForEmail } from '@/lib/supabase/auth-shim';
 import { doc, setDoc, serverTimestamp } from '@/lib/supabase/document-store';
 import { auth, db } from '@/lib/backend';
+import { isBootstrapAdminEmail } from '@/lib/bootstrap-admins';
 import { getOrganizationIds, getPrimaryOrganizationId } from '@/lib/organizations';
 
 const PROFILE_VERIFICATION_TIMEOUT_MS = 15000;
@@ -55,11 +56,7 @@ function useAuthState(): AuthContextValue {
   useEffect(() => {
     const verifyUserProfile = async (currentUser: User) => {
       const userEmail = currentUser.email?.toLowerCase();
-      const bootstrapAdmins = new Set([
-        'ing.zambranog@gmail.com',
-        'gerencia.operaciones@realtix.com.co',
-      ]);
-      const isBootstrapAdmin = Boolean(userEmail && bootstrapAdmins.has(userEmail));
+      const isBootstrapAdmin = isBootstrapAdminEmail(userEmail);
       
       let verifiedRole = isBootstrapAdmin ? 'admin' : 'user';
       let orgIds: string[] = [];

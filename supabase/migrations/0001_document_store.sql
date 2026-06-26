@@ -31,7 +31,7 @@ execute function public.set_app_documents_updated_at();
 
 alter table public.app_documents enable row level security;
 
-create or replace function public.is_realproyect_member()
+create or replace function public.is_pixel_project_member()
 returns boolean
 language sql
 stable
@@ -39,11 +39,16 @@ security definer
 set search_path = public
 as $$
   select coalesce(
-    lower(auth.jwt() ->> 'email') = 'ing.zambranog@gmail.com'
-    or exists (
+    exists (
       select 1
       from public.app_documents
       where collection_path = 'team_members'
+        and lower(data ->> 'email') = lower(auth.jwt() ->> 'email')
+    )
+    or exists (
+      select 1
+      from public.app_documents
+      where collection_path = 'users'
         and lower(data ->> 'email') = lower(auth.jwt() ->> 'email')
     ),
     false
@@ -55,29 +60,29 @@ create policy "authenticated users can read app documents"
 on public.app_documents
 for select
 to authenticated
-using (public.is_realproyect_member());
+using (public.is_pixel_project_member());
 
 drop policy if exists "authenticated users can create app documents" on public.app_documents;
 create policy "authenticated users can create app documents"
 on public.app_documents
 for insert
 to authenticated
-with check (public.is_realproyect_member());
+with check (public.is_pixel_project_member());
 
 drop policy if exists "authenticated users can update app documents" on public.app_documents;
 create policy "authenticated users can update app documents"
 on public.app_documents
 for update
 to authenticated
-using (public.is_realproyect_member())
-with check (public.is_realproyect_member());
+using (public.is_pixel_project_member())
+with check (public.is_pixel_project_member());
 
 drop policy if exists "authenticated users can delete app documents" on public.app_documents;
 create policy "authenticated users can delete app documents"
 on public.app_documents
 for delete
 to authenticated
-using (public.is_realproyect_member());
+using (public.is_pixel_project_member());
 
 do $$
 begin
@@ -94,34 +99,34 @@ end;
 $$;
 
 insert into storage.buckets (id, name, public)
-values ('realproyect-files', 'realproyect-files', true)
+values ('pixel-project-files', 'pixel-project-files', true)
 on conflict (id) do update set public = excluded.public;
 
-drop policy if exists "authenticated users can read realproyect files" on storage.objects;
-create policy "authenticated users can read realproyect files"
+drop policy if exists "authenticated users can read pixel project files" on storage.objects;
+create policy "authenticated users can read pixel project files"
 on storage.objects
 for select
 to authenticated
-using (bucket_id = 'realproyect-files' and public.is_realproyect_member());
+using (bucket_id = 'pixel-project-files' and public.is_pixel_project_member());
 
-drop policy if exists "authenticated users can upload realproyect files" on storage.objects;
-create policy "authenticated users can upload realproyect files"
+drop policy if exists "authenticated users can upload pixel project files" on storage.objects;
+create policy "authenticated users can upload pixel project files"
 on storage.objects
 for insert
 to authenticated
-with check (bucket_id = 'realproyect-files' and public.is_realproyect_member());
+with check (bucket_id = 'pixel-project-files' and public.is_pixel_project_member());
 
-drop policy if exists "authenticated users can update realproyect files" on storage.objects;
-create policy "authenticated users can update realproyect files"
+drop policy if exists "authenticated users can update pixel project files" on storage.objects;
+create policy "authenticated users can update pixel project files"
 on storage.objects
 for update
 to authenticated
-using (bucket_id = 'realproyect-files' and public.is_realproyect_member())
-with check (bucket_id = 'realproyect-files' and public.is_realproyect_member());
+using (bucket_id = 'pixel-project-files' and public.is_pixel_project_member())
+with check (bucket_id = 'pixel-project-files' and public.is_pixel_project_member());
 
-drop policy if exists "authenticated users can delete realproyect files" on storage.objects;
-create policy "authenticated users can delete realproyect files"
+drop policy if exists "authenticated users can delete pixel project files" on storage.objects;
+create policy "authenticated users can delete pixel project files"
 on storage.objects
 for delete
 to authenticated
-using (bucket_id = 'realproyect-files' and public.is_realproyect_member());
+using (bucket_id = 'pixel-project-files' and public.is_pixel_project_member());

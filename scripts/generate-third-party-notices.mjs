@@ -109,7 +109,7 @@ const renderTable = (rows) => [
 
 const content = `# Avisos de software de terceros
 
-Pixel Project incluye software libre y de codigo abierto como dependencias de ejecucion, desarrollo y compilacion. Cada componente conserva su propia licencia, titulares y condiciones. Este archivo es un reconocimiento de creditos y no modifica la licencia propietaria de Pixel Project.
+Pixel Project incluye software libre y de codigo abierto como dependencias de ejecucion, desarrollo y compilacion. Cada componente conserva su propia licencia, titulares y condiciones. Este archivo reconoce esos creditos y complementa la licencia MIT del proyecto.
 
 Este inventario se genera desde \`package-lock.json\` y los \`package.json\` instalados en \`node_modules\`. Para actualizarlo despues de agregar o cambiar dependencias ejecuta:
 
@@ -135,7 +135,7 @@ ${renderTable(packages)}
 ## Notas
 
 - Los paquetes marcados como \`NOASSERTION\` no declaran licencia en su \`package.json\` instalado. Antes de redistribuir el codigo fuente completo se recomienda revisar manualmente el paquete y su repositorio.
-- Las licencias de terceros no conceden derechos sobre el codigo propietario, diseno, marca, flujos, documentacion, configuraciones privadas ni bases de datos de Pixel Project.
+- La licencia MIT de Pixel Project no modifica las obligaciones que puedan exigir las licencias de terceros incluidas en esta lista.
 - Si un componente requiere conservar avisos de copyright adicionales, dichos avisos deben mantenerse junto con esta lista y con el paquete correspondiente.
 `;
 

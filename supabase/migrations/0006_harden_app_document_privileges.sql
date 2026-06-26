@@ -1,10 +1,10 @@
 alter function public.set_app_documents_updated_at()
 set search_path = public;
 
-revoke all privileges on function public.is_realproyect_member() from anon;
-revoke all privileges on function public.is_realproyect_member() from public;
-grant execute on function public.is_realproyect_member() to authenticated;
-grant execute on function public.is_realproyect_member() to service_role;
+revoke all privileges on function public.is_pixel_project_member() from anon;
+revoke all privileges on function public.is_pixel_project_member() from public;
+grant execute on function public.is_pixel_project_member() to authenticated;
+grant execute on function public.is_pixel_project_member() to service_role;
 
 revoke all privileges on function public.set_app_documents_updated_at() from anon;
 revoke all privileges on function public.set_app_documents_updated_at() from public;

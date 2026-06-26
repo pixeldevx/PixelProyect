@@ -71,58 +71,58 @@ create policy "members can read project spatial layers"
 on public.project_spatial_layers
 for select
 to authenticated
-using (public.is_realproyect_member());
+using (public.is_pixel_project_member());
 
 drop policy if exists "members can create project spatial layers" on public.project_spatial_layers;
 create policy "members can create project spatial layers"
 on public.project_spatial_layers
 for insert
 to authenticated
-with check (public.is_realproyect_member());
+with check (public.is_pixel_project_member());
 
 drop policy if exists "members can update project spatial layers" on public.project_spatial_layers;
 create policy "members can update project spatial layers"
 on public.project_spatial_layers
 for update
 to authenticated
-using (public.is_realproyect_member())
-with check (public.is_realproyect_member());
+using (public.is_pixel_project_member())
+with check (public.is_pixel_project_member());
 
 drop policy if exists "members can delete project spatial layers" on public.project_spatial_layers;
 create policy "members can delete project spatial layers"
 on public.project_spatial_layers
 for delete
 to authenticated
-using (public.is_realproyect_member());
+using (public.is_pixel_project_member());
 
 drop policy if exists "members can read project spatial features" on public.project_spatial_features;
 create policy "members can read project spatial features"
 on public.project_spatial_features
 for select
 to authenticated
-using (public.is_realproyect_member());
+using (public.is_pixel_project_member());
 
 drop policy if exists "members can create project spatial features" on public.project_spatial_features;
 create policy "members can create project spatial features"
 on public.project_spatial_features
 for insert
 to authenticated
-with check (public.is_realproyect_member());
+with check (public.is_pixel_project_member());
 
 drop policy if exists "members can update project spatial features" on public.project_spatial_features;
 create policy "members can update project spatial features"
 on public.project_spatial_features
 for update
 to authenticated
-using (public.is_realproyect_member())
-with check (public.is_realproyect_member());
+using (public.is_pixel_project_member())
+with check (public.is_pixel_project_member());
 
 drop policy if exists "members can delete project spatial features" on public.project_spatial_features;
 create policy "members can delete project spatial features"
 on public.project_spatial_features
 for delete
 to authenticated
-using (public.is_realproyect_member());
+using (public.is_pixel_project_member());
 
 grant usage on schema public to authenticated;
 grant usage on schema extensions to authenticated;

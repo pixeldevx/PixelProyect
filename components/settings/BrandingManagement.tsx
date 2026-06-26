@@ -170,7 +170,7 @@ export function BrandingManagement() {
                 <input
                   value={companyName}
                   onChange={(event) => setCompanyName(event.target.value)}
-                  placeholder="Ej: DICITEC"
+                  placeholder="Ej: Acme Projects"
                   className="h-11 w-full rounded-xl border border-slate-200 px-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
                 />
               </div>
@@ -241,7 +241,7 @@ export function BrandingManagement() {
             </div>
           </div>
           <p className="mt-4 text-xs leading-5 text-slate-500">
-            Esta configuración es por instancia. DICITEC puede tener su propia marca sin afectar las demás instalaciones conectadas al mismo código.
+            Esta configuración es por instancia. Cada organización puede tener su propia marca sin afectar las demás instalaciones conectadas al mismo código.
           </p>
         </CardContent>
       </Card>

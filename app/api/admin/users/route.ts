@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { getBootstrapAdminEmailSet } from '@/lib/bootstrap-admins';
 import { getOrganizationIds, getPrimaryOrganizationId } from '@/lib/organizations';
 
 export const runtime = 'nodejs';
 
 const DOCUMENTS_TABLE = 'app_documents';
-const ADMIN_EMAILS = new Set([
-  'gerencia.operaciones@realtix.com.co',
-  'ing.zambranog@gmail.com',
-]);
+const ADMIN_EMAILS = getBootstrapAdminEmailSet();
 
 type AdminClient = any;
 

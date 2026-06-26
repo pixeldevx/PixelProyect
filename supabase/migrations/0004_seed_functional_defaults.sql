@@ -80,7 +80,7 @@ values (
       'alerts',
       'workflow_templates'
     ),
-    'storageBucket', 'realproyect-files',
+    'storageBucket', 'pixel-project-files',
     'updatedAt', now()
   )
 )

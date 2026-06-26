@@ -1,7 +1,10 @@
 do $$
 declare
-  admin_email text := 'gerencia.operaciones@realtix.com.co';
-  admin_name text := 'Administrador Global';
+  -- Optional before running this migration:
+  -- set app.bootstrap_admin_email = 'admin@example.com';
+  -- set app.bootstrap_admin_name = 'Administrador Global';
+  admin_email text := lower(coalesce(nullif(current_setting('app.bootstrap_admin_email', true), ''), 'admin@example.com'));
+  admin_name text := coalesce(nullif(current_setting('app.bootstrap_admin_name', true), ''), 'Administrador Global');
 begin
   insert into public.app_documents (collection_path, doc_id, data)
   values (

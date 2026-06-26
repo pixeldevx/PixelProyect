@@ -41,29 +41,29 @@ create policy "members can read project spatial annotations"
 on public.project_spatial_annotations
 for select
 to authenticated
-using (public.is_realproyect_member());
+using (public.is_pixel_project_member());
 
 drop policy if exists "members can create project spatial annotations" on public.project_spatial_annotations;
 create policy "members can create project spatial annotations"
 on public.project_spatial_annotations
 for insert
 to authenticated
-with check (public.is_realproyect_member());
+with check (public.is_pixel_project_member());
 
 drop policy if exists "members can update project spatial annotations" on public.project_spatial_annotations;
 create policy "members can update project spatial annotations"
 on public.project_spatial_annotations
 for update
 to authenticated
-using (public.is_realproyect_member())
-with check (public.is_realproyect_member());
+using (public.is_pixel_project_member())
+with check (public.is_pixel_project_member());
 
 drop policy if exists "members can delete project spatial annotations" on public.project_spatial_annotations;
 create policy "members can delete project spatial annotations"
 on public.project_spatial_annotations
 for delete
 to authenticated
-using (public.is_realproyect_member());
+using (public.is_pixel_project_member());
 
 grant select, insert, update, delete on public.project_spatial_annotations to authenticated;
 grant execute on function public.set_project_spatial_annotations_updated_at() to authenticated;

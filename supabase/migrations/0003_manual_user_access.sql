@@ -1,4 +1,4 @@
-create or replace function public.is_realproyect_member()
+create or replace function public.is_pixel_project_member()
 returns boolean
 language sql
 stable
@@ -6,11 +6,7 @@ security definer
 set search_path = public
 as $$
   select coalesce(
-    lower(auth.jwt() ->> 'email') in (
-      'ing.zambranog@gmail.com',
-      'gerencia.operaciones@realtix.com.co'
-    )
-    or exists (
+    exists (
       select 1
       from public.app_documents
       where collection_path = 'team_members'

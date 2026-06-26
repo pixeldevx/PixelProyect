@@ -10,6 +10,7 @@ import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle
 import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, setDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment, Timestamp } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
+import { isBootstrapAdminEmail } from '@/lib/bootstrap-admins';
 import { useAuth } from '@/hooks/useAuth';
 import { useRolePermissions } from '@/hooks/useRolePermissions';
 import Link from 'next/link';
@@ -199,10 +200,6 @@ const normalizeEmailAddress = (value: unknown) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
 
 const GLOBAL_ADMIN_ASSIGNMENT_ROLES = new Set(['admin', 'org_admin', 'manager', 'coordinador']);
-const BOOTSTRAP_ADMIN_EMAILS = new Set([
-  'ing.zambranog@gmail.com',
-  'gerencia.operaciones@realtix.com.co',
-]);
 
 const isGlobalAdminMember = (member: any) => {
   const normalizedEmail = normalizeEmailAddress(member?.email);
@@ -210,7 +207,7 @@ const isGlobalAdminMember = (member: any) => {
     member?.systemRole === 'admin' ||
     member?.role === 'admin' ||
     member?.profileRole === 'admin' ||
-    BOOTSTRAP_ADMIN_EMAILS.has(normalizedEmail) ||
+    isBootstrapAdminEmail(normalizedEmail) ||
     String(member?.roleName || '').toLowerCase() === 'administrador global'
   );
 };

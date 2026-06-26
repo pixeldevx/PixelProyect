@@ -1,76 +1,172 @@
-# RealProyect
+# Pixel Project
 
-Aplicativo de gestión de proyectos, tareas, documentos, presupuesto, facturación y equipo.
+Pixel Project es una plataforma web para planificar, ejecutar y auditar proyectos con una mirada integral: tareas, workflows, presupuesto, facturación, inventario, calidad, bitácora, mapas operativos, desempeño del equipo y reportes.
 
-## Licenciamiento
+La idea central es simple: cada actividad, costo, activo, interacción y geometría del proyecto es un pixel de información. Cuando esos pixeles se conectan, el proyecto deja de ser una lista de pendientes y se convierte en un sistema vivo de seguimiento.
 
-Pixel Project es software propietario. Su uso, despliegue, copia, reproducción, distribución, modificación o explotación comercial solo está permitido con autorización previa y por escrito del titular de los derechos.
+> Guiño para quien siga construyendo: si algo parece grande, pártelo en pixeles. El producto entero nació así.
 
-- Términos propietarios: `LICENSE.md`
-- Aviso de titularidad: `NOTICE.md`
-- Créditos de software libre y dependencias: `THIRD_PARTY_NOTICES.md`
+## Licencia
 
-Para regenerar los créditos de dependencias después de agregar o actualizar paquetes:
+Este proyecto se publica bajo licencia MIT. Consulta:
+
+- `LICENSE.md`: texto completo de la licencia MIT.
+- `NOTICE.md`: aviso general y notas de redistribución.
+- `THIRD_PARTY_NOTICES.md`: créditos de software libre y dependencias.
+
+Para regenerar los avisos de terceros después de cambiar dependencias:
 
 ```bash
 npm run notices
 ```
 
-## Despliegue En Vercel
+## Componentes principales
 
-**Requisitos:** un proyecto en Vercel conectado al repositorio y un proyecto de Supabase.
+- Dashboard personal: resumen de proyectos, tareas asignadas, riesgos, vencimientos y métricas según el rol del usuario.
+- Bandeja de entrada: tareas, subtareas, workflows y reuniones asignadas, con calendario personal y gestión de estados.
+- Proyectos: centro operativo por proyecto con tabs especializados.
+- Tareas y Gantt: tareas por estado, cuantitativas, reuniones, workflows lineales y workflows variables con rutas condicionales.
+- Workflow visual: editor fullscreen para construir rutas, pasos, formularios, responsables, condiciones y decisiones.
+- Bitácora: historia del proyecto con entradas enriquecidas, reuniones y detección de posibles acciones.
+- Calidad: causales, revisiones, devoluciones, aceptación, estadísticas y reportes.
+- Rate cards: indicadores de producción, costos e ingresos operativos con reportes y saneamiento manual.
+- Presupuesto: líneas macro, piezas presupuestales, calendario mensual, cobertura de personal y conexión con costos operativos.
+- Facturación y cobros: ingresos reales, pagos reales y comparación contra presupuesto y operación estimada.
+- Inventario: activos por proyecto, hoja de vida, mantenimiento, traslados, bajas, fotos y ubicación.
+- Mapa operativo: capas espaciales, PostGIS, simbología, etiquetas, anotaciones, uniones con tareas y simulación temporal.
+- Talento humano: organigramas, cobertura presupuestal, roles, invitados, desempeño y alertas administrativas.
+- Alertas: correo, PWA push, preferencias por organización/proyecto y plantillas transaccionales.
+- Branding: logo y nombre de la organización para personalizar cada instancia.
 
-1. En Supabase, ejecuta las migraciones en orden:
-   `supabase/migrations/0001_document_store.sql`,
-   `supabase/migrations/0002_seed_global_admin.sql` y
-   `supabase/migrations/0003_manual_user_access.sql`,
-   `supabase/migrations/0004_seed_functional_defaults.sql`,
-   `supabase/migrations/0005_document_collection_views.sql`,
-   `supabase/migrations/0006_harden_app_document_privileges.sql`
-2. En Vercel, abre el proyecto y configura estas variables en `Settings > Environment Variables`:
-   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET`, `SUPABASE_SERVICE_ROLE_KEY` y `NEXT_PUBLIC_SITE_URL`.
-3. Habilita autenticación por correo y contraseña en Supabase Auth.
-4. Haz redeploy en Vercel para que el build tome las nuevas variables.
+## Arquitectura corta
 
-La app usa Supabase Auth, Supabase Storage y la tabla `app_documents` como almacén documental compatible con la estructura anterior del aplicativo.
-En el Table Editor verás `app_documents` como tabla principal y vistas `app_*` para inspeccionar proyectos, organizaciones, usuarios, tareas, documentos, presupuesto y facturación sin cambiar el modelo de escritura de la app.
-Las políticas RLS permiten acceso al administrador inicial y a correos registrados en `users` o `team_members`.
+Pixel Project está construido con Next.js App Router, React, TypeScript y Supabase.
 
-## Puesta En Marcha Manual
+```mermaid
+flowchart LR
+  Browser["Navegador / PWA"] --> Next["Next.js App Router"]
+  Next --> Auth["Supabase Auth"]
+  Next --> Store["Supabase Postgres + app_documents"]
+  Next --> Storage["Supabase Storage"]
+  Next --> Email["Resend Email"]
+  Next --> Push["Web Push / VAPID"]
+  Store --> Views["Vistas app_* y PostGIS"]
+  Browser --> SW["Service Worker"]
+  SW --> Push
+```
 
-La app no permite autoregistro público desde el login. Los usuarios se habilitan manualmente:
+Más detalle en `docs/ARCHITECTURE.md`.
 
-1. Entra con el administrador global.
-2. En `Configuración > Organizaciones`, crea la organización inicial.
-3. En `Configuración > Cargos`, crea los cargos del equipo si los necesitas.
-4. En `Configuración > Usuarios del Sistema`, invita el usuario con su correo, rol de sistema, cargo y organización.
-5. El usuario abre el correo de invitación y define su contraseña.
-6. Si el usuario ya existía en Supabase Auth, la app enviará un enlace para configurar/restablecer contraseña.
-7. Crea los proyectos desde `Proyectos` y asigna el equipo manualmente.
+## Requisitos
 
-Para este modo de operación, mantén deshabilitado el registro público de usuarios en Supabase.
-La `SUPABASE_SERVICE_ROLE_KEY` solo debe existir en Vercel o en un entorno servidor seguro; nunca debe exponerse como variable `NEXT_PUBLIC_*`.
-La tabla de usuarios se alimenta desde Supabase Auth, muestra el estado de invitación/confirmación y permite eliminar usuarios desde el administrador global.
-Los cargos base y el registro de módulos funcionales se crean en Supabase con `0004_seed_functional_defaults.sql`.
-Las vistas de lectura para revisar cada módulo desde Supabase se crean con `0005_document_collection_views.sql`.
-Los privilegios de `app_documents` y de las vistas `app_*` se restringen a usuarios autenticados con `0006_harden_app_document_privileges.sql`.
+- Node.js 20 o superior.
+- Un proyecto de Supabase.
+- Un proyecto en Vercel o un entorno compatible con Next.js.
+- Resend si se desean correos transaccionales.
+- Llaves VAPID si se desean notificaciones push PWA.
 
-## Administrador Inicial
+## Variables de entorno
 
-Para habilitar el acceso inicial de administración global:
+Copia `.env.example` y reemplaza los placeholders con valores propios:
 
-1. En Supabase Auth, crea o restablece contraseña para `gerencia.operaciones@realtix.com.co`.
-2. Ejecuta en SQL Editor:
-   `supabase/migrations/0002_seed_global_admin.sql`
-3. Inicia sesión en la app con ese correo y la contraseña configurada en Supabase Auth.
+```bash
+cp .env.example .env.local
+```
 
-## Recuperación De Contraseña
+Variables principales:
 
-La app incluye flujo de recuperación con Supabase Auth:
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `NEXT_PUBLIC_SITE_URL`
+- `BOOTSTRAP_ADMIN_EMAILS`
+- `NEXT_PUBLIC_BOOTSTRAP_ADMIN_EMAILS`
+- `RESEND_API_KEY`
+- `RESEND_FROM_EMAIL`
+- `NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY`
+- `WEB_PUSH_PRIVATE_KEY`
+- `WEB_PUSH_SUBJECT`
 
-1. En Supabase, ve a `Authentication > URL Configuration`.
-2. Configura `Site URL` con el dominio de producción de Vercel.
-3. Agrega en `Redirect URLs`:
-   `https://TU_DOMINIO/reset-password`
-4. En `Authentication > Emails/SMTP`, configura un proveedor SMTP propio para que Supabase pueda enviar correos a usuarios reales.
-5. En la pantalla de login, usa `¿Olvidaste tu contraseña?`.
+Nunca publiques `.env.local` ni claves reales. El repositorio ignora `.env*` salvo `.env.example`.
+
+## Base de datos
+
+Ejecuta las migraciones de `supabase/migrations` en orden. Para una instalación nueva:
+
+1. Configura el correo bootstrap de administración antes de correr `0002_seed_global_admin.sql`, o edita ese archivo con un correo propio.
+
+```sql
+set app.bootstrap_admin_email = 'admin@example.com';
+set app.bootstrap_admin_name = 'Administrador Global';
+```
+
+2. Ejecuta las migraciones:
+
+```text
+0001_document_store.sql
+0002_seed_global_admin.sql
+0003_manual_user_access.sql
+0004_seed_functional_defaults.sql
+0005_document_collection_views.sql
+0006_harden_app_document_privileges.sql
+0007_enable_postgis_spatial_layers.sql
+0008_spatial_layer_styles.sql
+0009_spatial_layer_status_styles.sql
+0010_project_spatial_annotations.sql
+```
+
+3. Crea el usuario con el mismo correo en Supabase Auth y define su contraseña.
+4. Inicia sesión y crea organizaciones, usuarios, proyectos y permisos desde la app.
+
+La capa principal de datos es `app_documents`, un almacén documental sobre Postgres. Las vistas `app_*` facilitan inspección, reportes y lectura desde Supabase sin cambiar el modelo de escritura.
+
+## Desarrollo local
+
+```bash
+npm install
+npm run dev
+```
+
+La app queda disponible normalmente en `http://localhost:3000`.
+
+## Build
+
+```bash
+npm run build
+```
+
+## Despliegue en Vercel
+
+1. Conecta el repositorio al proyecto Vercel.
+2. Carga las variables de entorno de `.env.example`.
+3. Verifica que Supabase Auth tenga habilitado email/password.
+4. Configura en Supabase Auth las URL de redirección:
+   - `https://TU_DOMINIO/reset-password`
+   - `https://TU_DOMINIO/login`
+5. Haz redeploy.
+
+## Seguridad antes de publicar una instancia
+
+- Cambia todos los placeholders de `.env.example`.
+- No uses correos reales dentro de migraciones públicas; usa `app.bootstrap_admin_email`.
+- Rota cualquier clave que haya estado expuesta en capturas, tickets o documentación externa.
+- Mantén `SUPABASE_SERVICE_ROLE_KEY`, `WEB_PUSH_PRIVATE_KEY` y `RESEND_API_KEY` solo en servidor.
+- Revisa reglas RLS y permisos antes de abrir datos reales.
+
+## Estructura del repositorio
+
+```text
+app/                    Rutas Next.js, páginas y API routes.
+components/             Componentes de UI, módulos de proyecto y pantallas.
+hooks/                  Hooks de autenticación, permisos y datos.
+lib/                    Integraciones, utilidades, Supabase, emails, push y lógica de negocio.
+public/                 Íconos PWA, service worker y assets públicos.
+scripts/                Automatización de avisos y tareas de mantenimiento.
+supabase/migrations/    Esquema, RLS, vistas, datos base y PostGIS.
+docs/                   Documentación técnica y arquitectura.
+```
+
+## Contribuir
+
+Las contribuciones son bienvenidas. Mantén los cambios pequeños, documenta decisiones importantes y evita subir datos reales de clientes, correos personales, claves, capturas privadas o dumps de base de datos.

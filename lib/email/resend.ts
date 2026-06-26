@@ -8,7 +8,7 @@ type SendEmailParams = {
 export const getEmailFromAddress = () =>
   process.env.RESEND_FROM_EMAIL ||
   process.env.EMAIL_FROM ||
-  'Pixel Project <notificaciones@valuai.com.co>';
+  'Pixel Project <notifications@example.com>';
 
 export const sendEmailWithResend = async ({ to, subject, html, text }: SendEmailParams) => {
   const apiKey = process.env.RESEND_API_KEY;
