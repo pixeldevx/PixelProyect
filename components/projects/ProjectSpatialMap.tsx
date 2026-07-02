@@ -36,6 +36,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ref, uploadBytes, getDownloadURL, deleteObject } from "@/lib/supabase/storage-shim";
 import { storage, supabase } from "@/lib/backend";
+import { collection, deleteDoc, doc, getDocs, serverTimestamp, setDoc } from "@/lib/supabase/document-store";
 import { getTaskDateValue, isCompletedTaskStatus } from "@/lib/taskProgress";
 import { toast } from "sonner";
 
@@ -66,6 +67,7 @@ type LayerThemeMode = "task_status" | "attribute" | "unique";
 
 type SpatialStyleKey = "unlinked" | "pending" | "not_started" | "in_progress" | "completed" | "completed_late" | "stuck";
 type SpatialViewMode = "current" | "simulation" | "audit";
+type SpatialTaskViewScope = "all" | "task" | "group";
 type TemporalStateKey = "unlinked" | "not_started" | "active" | "completed" | "overdue" | "stuck";
 type PlanAuditRiskLevel = "ok" | "watch" | "risk" | "critical";
 
@@ -151,6 +153,18 @@ type SpatialAnnotation = {
   updatedAt?: any;
 };
 
+type SpatialTaskView = {
+  id: string;
+  projectId?: string;
+  name: string;
+  scope: SpatialTaskViewScope;
+  taskIds?: string[];
+  groupIds?: string[];
+  includeSubtasks?: boolean;
+  createdAt?: any;
+  updatedAt?: any;
+};
+
 type TaskAttributeOption = {
   value: string;
   label: string;
@@ -162,6 +176,7 @@ type ProjectSpatialMapProps = {
   project: any;
   tasks: any[];
   teamMembers: any[];
+  taskGroups?: any[];
   currentUser: any;
   canManage: boolean;
 };
@@ -243,7 +258,7 @@ type ScreenRect = {
   height: number;
 };
 
-type SpatialPanelTab = "summary" | "simulation" | "analysis" | "style" | "search";
+type SpatialPanelTab = "summary" | "views" | "simulation" | "analysis" | "style" | "search";
 
 type SpatialLayerRow = {
   id: string;
@@ -284,6 +299,10 @@ const OSM_TILE_URL = "https://tile.openstreetmap.org";
 const SHP_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/shpjs@6.1.0/dist/shp.min.js";
 const SPATIAL_LAYERS_TABLE = "project_spatial_layers";
 const SPATIAL_ANNOTATIONS_TABLE = "project_spatial_annotations";
+const SPATIAL_VIEWS_COLLECTION = "spatialViews";
+const DEFAULT_SPATIAL_VIEW_ID = "__all__";
+const DEFAULT_TASK_GROUP_ID = "__ungrouped__";
+const DEFAULT_TASK_GROUP_NAME = "Sin grupo";
 const TILE_SIZE = 256;
 const MIN_ZOOM = 3;
 const MAX_ZOOM = 22;
@@ -430,6 +449,28 @@ const clampNumber = (value: any, min: number, max: number, fallback: number) => 
 const getAttributeCategory = (value: any) => {
   const text = String(value ?? "").trim();
   return text || "Sin valor";
+};
+
+const getTaskGroupId = (task: any) => task?.groupId || DEFAULT_TASK_GROUP_ID;
+
+const getTaskParentId = (task: any) =>
+  task?.parentTaskId || task?.parentId || task?.workflowParentId || task?.matrixTaskId || task?.rootTaskId || "";
+
+const normalizeSpatialTaskView = (id: string, data: any): SpatialTaskView => ({
+  id,
+  projectId: data?.projectId,
+  name: String(data?.name || "Vista sin nombre").trim() || "Vista sin nombre",
+  scope: data?.scope === "task" || data?.scope === "group" ? data.scope : "all",
+  taskIds: Array.isArray(data?.taskIds) ? data.taskIds.filter(Boolean) : [],
+  groupIds: Array.isArray(data?.groupIds) ? data.groupIds.filter(Boolean) : [],
+  includeSubtasks: data?.includeSubtasks !== false,
+  createdAt: data?.createdAt,
+  updatedAt: data?.updatedAt,
+});
+
+const createSpatialViewId = () => {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `view_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 };
 
 const hashString = (value: string) => {
@@ -1390,11 +1431,20 @@ export function ProjectSpatialMap({
   project,
   tasks,
   teamMembers,
+  taskGroups = [],
   currentUser,
   canManage,
 }: ProjectSpatialMapProps) {
   const [layers, setLayers] = useState<SpatialLayer[]>([]);
   const [annotations, setAnnotations] = useState<SpatialAnnotation[]>([]);
+  const [spatialTaskViews, setSpatialTaskViews] = useState<SpatialTaskView[]>([]);
+  const [activeSpatialTaskViewId, setActiveSpatialTaskViewId] = useState(DEFAULT_SPATIAL_VIEW_ID);
+  const [savingSpatialTaskView, setSavingSpatialTaskView] = useState(false);
+  const [viewDraftName, setViewDraftName] = useState("");
+  const [viewDraftScope, setViewDraftScope] = useState<Exclude<SpatialTaskViewScope, "all">>("task");
+  const [viewDraftTaskId, setViewDraftTaskId] = useState("");
+  const [viewDraftGroupId, setViewDraftGroupId] = useState(DEFAULT_TASK_GROUP_ID);
+  const [viewDraftIncludeSubtasks, setViewDraftIncludeSubtasks] = useState(true);
   const [loading, setLoading] = useState(true);
   const [spatialStoreError, setSpatialStoreError] = useState("");
   const [annotationStoreError, setAnnotationStoreError] = useState("");
@@ -1447,6 +1497,11 @@ export function ProjectSpatialMap({
   const dragRef = useRef<{ x: number; y: number; center: { lon: number; lat: number } } | null>(null);
   const pendingPanCenterRef = useRef<{ lon: number; lat: number } | null>(null);
   const panFrameRef = useRef<number | null>(null);
+
+  const spatialViewsCollectionRef = useMemo(
+    () => collection(null, "projects", projectId, SPATIAL_VIEWS_COLLECTION),
+    [projectId]
+  );
 
   useEffect(() => {
     if (!projectId) return;
@@ -1509,6 +1564,25 @@ export function ProjectSpatialMap({
       void supabase.removeChannel(channel);
     };
   }, [projectId]);
+
+  const loadSpatialTaskViews = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const snapshot = await getDocs(spatialViewsCollectionRef);
+      const nextViews = snapshot.docs
+        .map((viewDoc) => normalizeSpatialTaskView(viewDoc.id, viewDoc.data()))
+        .filter((view) => view.projectId === projectId || !view.projectId)
+        .sort((left, right) => left.name.localeCompare(right.name));
+      setSpatialTaskViews(nextViews);
+    } catch (error) {
+      console.error("Error loading spatial task views:", error);
+      toast.error("No se pudieron cargar las vistas del mapa.");
+    }
+  }, [projectId, spatialViewsCollectionRef]);
+
+  useEffect(() => {
+    void loadSpatialTaskViews();
+  }, [loadSpatialTaskViews]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -1702,6 +1776,126 @@ export function ProjectSpatialMap({
     return map;
   }, [teamMembers]);
 
+  const normalizedTaskGroups = useMemo(() => {
+    const groups = new Map<string, { id: string; name: string; color?: string; order?: number; taskCount: number }>();
+    groups.set(DEFAULT_TASK_GROUP_ID, {
+      id: DEFAULT_TASK_GROUP_ID,
+      name: taskGroups.find((group) => group?.id === DEFAULT_TASK_GROUP_ID)?.name || DEFAULT_TASK_GROUP_NAME,
+      color: taskGroups.find((group) => group?.id === DEFAULT_TASK_GROUP_ID)?.color || "#94a3b8",
+      order: -1,
+      taskCount: 0,
+    });
+
+    taskGroups.forEach((group) => {
+      if (!group?.id) return;
+      groups.set(group.id, {
+        id: group.id,
+        name: group.name || DEFAULT_TASK_GROUP_NAME,
+        color: group.color,
+        order: group.order ?? 0,
+        taskCount: 0,
+      });
+    });
+
+    tasks.forEach((task) => {
+      const groupId = getTaskGroupId(task);
+      const existing = groups.get(groupId);
+      if (existing) {
+        existing.taskCount += 1;
+        return;
+      }
+      groups.set(groupId, {
+        id: groupId,
+        name: String(task.groupName || groupId || DEFAULT_TASK_GROUP_NAME),
+        color: "#94a3b8",
+        order: 0,
+        taskCount: 1,
+      });
+    });
+
+    return Array.from(groups.values())
+      .filter((group) => group.taskCount > 0 || group.id !== DEFAULT_TASK_GROUP_ID)
+      .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.name.localeCompare(right.name));
+  }, [taskGroups, tasks]);
+
+  const rootTaskOptions = useMemo(
+    () =>
+      tasks
+        .filter((task) => !getTaskParentId(task))
+        .sort((left, right) => String(getTaskTitle(left)).localeCompare(String(getTaskTitle(right)))),
+    [tasks]
+  );
+
+  const defaultSpatialTaskView = useMemo<SpatialTaskView>(
+    () => ({
+      id: DEFAULT_SPATIAL_VIEW_ID,
+      projectId,
+      name: "Todo el proyecto",
+      scope: "all",
+      taskIds: [],
+      groupIds: [],
+      includeSubtasks: true,
+    }),
+    [projectId]
+  );
+
+  const activeSpatialTaskView = useMemo(
+    () => spatialTaskViews.find((view) => view.id === activeSpatialTaskViewId) || defaultSpatialTaskView,
+    [activeSpatialTaskViewId, defaultSpatialTaskView, spatialTaskViews]
+  );
+
+  const spatialScopeTasks = useMemo(() => {
+    if (activeSpatialTaskView.scope === "all") return tasks;
+
+    if (activeSpatialTaskView.scope === "group") {
+      const groupIds = new Set(activeSpatialTaskView.groupIds?.length ? activeSpatialTaskView.groupIds : [DEFAULT_TASK_GROUP_ID]);
+      return tasks.filter((task) => groupIds.has(getTaskGroupId(task)));
+    }
+
+    const selectedTaskIds = new Set(activeSpatialTaskView.taskIds || []);
+    if (selectedTaskIds.size === 0) return tasks;
+    if (activeSpatialTaskView.includeSubtasks === false) {
+      return tasks.filter((task) => selectedTaskIds.has(task.id));
+    }
+
+    const childrenByParent = new Map<string, any[]>();
+    tasks.forEach((task) => {
+      const parentId = getTaskParentId(task);
+      if (!parentId) return;
+      const children = childrenByParent.get(parentId) || [];
+      children.push(task);
+      childrenByParent.set(parentId, children);
+    });
+
+    const scopedIds = new Set<string>(selectedTaskIds);
+    const queue = Array.from(selectedTaskIds);
+    while (queue.length > 0) {
+      const parentId = queue.shift()!;
+      (childrenByParent.get(parentId) || []).forEach((child) => {
+        if (!child?.id || scopedIds.has(child.id)) return;
+        scopedIds.add(child.id);
+        queue.push(child.id);
+      });
+    }
+
+    return tasks.filter((task) => scopedIds.has(task.id));
+  }, [activeSpatialTaskView, tasks]);
+
+  const activeSpatialTaskViewSummary = useMemo(() => {
+    if (activeSpatialTaskView.scope === "all") return "Todas las tareas del proyecto participan en la unión.";
+    if (activeSpatialTaskView.scope === "group") {
+      const selectedNames = (activeSpatialTaskView.groupIds || [])
+        .map((groupId) => normalizedTaskGroups.find((group) => group.id === groupId)?.name || groupId)
+        .join(", ");
+      return `Grupo visual: ${selectedNames || DEFAULT_TASK_GROUP_NAME}.`;
+    }
+    const selectedNames = (activeSpatialTaskView.taskIds || [])
+      .map((taskId) => getTaskTitle(tasks.find((task) => task.id === taskId)))
+      .filter(Boolean)
+      .join(", ");
+    return `Tarea base: ${selectedNames || "sin selección"}${activeSpatialTaskView.includeSubtasks !== false ? " con subtareas." : "."}`;
+  }, [activeSpatialTaskView, normalizedTaskGroups, tasks]);
+
   const effectiveTaskAttribute = taskAttribute === "__custom__" ? customTaskAttribute.trim() : taskAttribute;
 
   const taskAttributesForJoins = useMemo(() => {
@@ -1715,7 +1909,7 @@ export function ProjectSpatialMap({
     const maps = new Map<string, Map<string, any[]>>();
     taskAttributesForJoins.forEach((attribute) => {
       const map = new Map<string, any[]>();
-      tasks.forEach((task) => {
+      spatialScopeTasks.forEach((task) => {
         const rawValue = getTaskAttributeValue(task, attribute);
         const key = normalizeKey(rawValue);
         if (!key) return;
@@ -1726,7 +1920,7 @@ export function ProjectSpatialMap({
       maps.set(attribute, map);
     });
     return maps;
-  }, [taskAttributesForJoins, tasks]);
+  }, [spatialScopeTasks, taskAttributesForJoins]);
 
   const boundedFeaturesByLayerId = useMemo(() => {
     const map = new Map<string, FeatureWithBounds[]>();
@@ -3312,6 +3506,66 @@ export function ProjectSpatialMap({
     setMapView(getFittedView(bounds, mapSize.width, mapSize.height));
   };
 
+  const handleSaveSpatialTaskView = async () => {
+    if (!canManage) return;
+    const name = viewDraftName.trim();
+    if (!name) {
+      toast.error("Ponle un nombre a la vista.");
+      return;
+    }
+    if (viewDraftScope === "task" && !viewDraftTaskId) {
+      toast.error("Selecciona la tarea base de la vista.");
+      return;
+    }
+    if (viewDraftScope === "group" && !viewDraftGroupId) {
+      toast.error("Selecciona el grupo visual de la vista.");
+      return;
+    }
+
+    setSavingSpatialTaskView(true);
+    try {
+      const viewId = createSpatialViewId();
+      const viewRef = doc(spatialViewsCollectionRef, viewId);
+      const payload: SpatialTaskView = {
+        id: viewId,
+        projectId,
+        name,
+        scope: viewDraftScope,
+        taskIds: viewDraftScope === "task" ? [viewDraftTaskId] : [],
+        groupIds: viewDraftScope === "group" ? [viewDraftGroupId] : [],
+        includeSubtasks: viewDraftScope === "task" ? viewDraftIncludeSubtasks : true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      await setDoc(viewRef, payload);
+      await loadSpatialTaskViews();
+      setActiveSpatialTaskViewId(viewId);
+      setViewDraftName("");
+      toast.success("Vista espacial guardada.");
+    } catch (error) {
+      console.error("Error saving spatial task view:", error);
+      toast.error("No se pudo guardar la vista espacial.");
+    } finally {
+      setSavingSpatialTaskView(false);
+    }
+  };
+
+  const handleDeleteSpatialTaskView = async (view: SpatialTaskView) => {
+    if (!canManage || view.id === DEFAULT_SPATIAL_VIEW_ID) return;
+    setSavingSpatialTaskView(true);
+    try {
+      await deleteDoc(doc(spatialViewsCollectionRef, view.id));
+      if (activeSpatialTaskViewId === view.id) setActiveSpatialTaskViewId(DEFAULT_SPATIAL_VIEW_ID);
+      await loadSpatialTaskViews();
+      toast.success("Vista espacial eliminada.");
+    } catch (error) {
+      console.error("Error deleting spatial task view:", error);
+      toast.error("No se pudo eliminar la vista espacial.");
+    } finally {
+      setSavingSpatialTaskView(false);
+    }
+  };
+
   const updateLayerStatusColor = (statusKey: SpatialStyleKey, color: string) => {
     setLayerEditStyle((current) => ({
       ...current,
@@ -3383,6 +3637,16 @@ export function ProjectSpatialMap({
               );
             })}
           </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setSpatialPanelTab("views")}
+            className={activeSpatialTaskView.id !== DEFAULT_SPATIAL_VIEW_ID ? "border-indigo-200 bg-indigo-50 text-indigo-700" : ""}
+          >
+            <Eye size={16} className="mr-2" />
+            {activeSpatialTaskView.name}
+          </Button>
 
           <Button type="button" variant="outline" onClick={() => setIsLayerManagerOpen(true)} disabled={layers.length === 0}>
             <Settings2 size={16} className="mr-2" />
@@ -3982,9 +4246,10 @@ export function ProjectSpatialMap({
                 </span>
               </div>
 
-              <div className="mt-4 grid grid-cols-5 gap-1 rounded-xl bg-white/10 p-1">
+              <div className="mt-4 grid grid-cols-3 gap-1 rounded-xl bg-white/10 p-1 2xl:grid-cols-6">
                 {[
                   { key: "summary", label: "Resumen", icon: Layers },
+                  { key: "views", label: "Vistas", icon: Eye },
                   { key: "simulation", label: "Tiempo", icon: Play },
                   { key: "analysis", label: "Análisis", icon: BarChart3 },
                   { key: "style", label: "Anotar", icon: PenLine },
@@ -4046,6 +4311,127 @@ export function ProjectSpatialMap({
                     <span> se compara con </span>
                     <span className="font-black text-slate-900">{effectiveTaskAttribute || "atributo tarea"}</span>
                   </div>
+                  <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-xs font-semibold leading-5 text-indigo-800">
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-indigo-600">Vista activa</p>
+                    <p className="mt-1 text-sm font-black text-slate-950">{activeSpatialTaskView.name}</p>
+                    <p className="mt-1">{activeSpatialTaskViewSummary}</p>
+                    <p className="mt-1 font-black">{spatialScopeTasks.length.toLocaleString("es-CO")} tareas en alcance</p>
+                  </div>
+                </div>
+              )}
+
+              {spatialPanelTab === "views" && (
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3">
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-indigo-700">Vistas espaciales</p>
+                    <p className="mt-1 text-xs font-semibold leading-5 text-indigo-800">
+                      Filtra las tareas que participan en la unión sin cambiar el atributo configurado de la capa.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    {[defaultSpatialTaskView, ...spatialTaskViews].map((view) => {
+                      const isActive = activeSpatialTaskView.id === view.id;
+                      return (
+                        <div
+                          key={view.id}
+                          className={`rounded-xl border p-3 transition ${
+                            isActive ? "border-indigo-300 bg-indigo-50 shadow-sm" : "border-slate-200 bg-white"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <button type="button" onClick={() => setActiveSpatialTaskViewId(view.id)} className="min-w-0 flex-1 text-left">
+                              <p className="truncate text-sm font-black text-slate-950">{view.name}</p>
+                              <p className="mt-1 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">
+                                {view.scope === "all" ? "Todo el proyecto" : view.scope === "group" ? "Grupo visual" : "Tarea especial"}
+                              </p>
+                            </button>
+                            {canManage && view.id !== DEFAULT_SPATIAL_VIEW_ID && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteSpatialTaskView(view)}
+                                disabled={savingSpatialTaskView}
+                                className="rounded-lg p-2 text-slate-400 transition hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                                title="Eliminar vista"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {canManage && (
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">Crear nueva vista</p>
+                      <div className="mt-3 space-y-2">
+                        <input
+                          value={viewDraftName}
+                          onChange={(event) => setViewDraftName(event.target.value)}
+                          placeholder="Ej: Solo ruta crítica, Entregas VANTI, Grupo campo"
+                          className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                        />
+                        <select
+                          value={viewDraftScope}
+                          onChange={(event) => setViewDraftScope(event.target.value as Exclude<SpatialTaskViewScope, "all">)}
+                          className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                        >
+                          <option value="task">Una tarea o workflow</option>
+                          <option value="group">Un grupo visual</option>
+                        </select>
+
+                        {viewDraftScope === "task" ? (
+                          <>
+                            <select
+                              value={viewDraftTaskId}
+                              onChange={(event) => setViewDraftTaskId(event.target.value)}
+                              className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                            >
+                              <option value="">Selecciona tarea matriz</option>
+                              {rootTaskOptions.map((task) => (
+                                <option key={task.id} value={task.id}>
+                                  {getTaskTitle(task)}
+                                </option>
+                              ))}
+                            </select>
+                            <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-white p-3 text-xs font-semibold text-slate-600">
+                              <input
+                                type="checkbox"
+                                checked={viewDraftIncludeSubtasks}
+                                onChange={(event) => setViewDraftIncludeSubtasks(event.target.checked)}
+                                className="mt-0.5"
+                              />
+                              Incluir subtareas, iteraciones y pasos dependientes de la tarea seleccionada.
+                            </label>
+                          </>
+                        ) : (
+                          <select
+                            value={viewDraftGroupId}
+                            onChange={(event) => setViewDraftGroupId(event.target.value)}
+                            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                          >
+                            {normalizedTaskGroups.map((group) => (
+                              <option key={group.id} value={group.id}>
+                                {group.name} ({group.taskCount})
+                              </option>
+                            ))}
+                          </select>
+                        )}
+
+                        <Button
+                          type="button"
+                          onClick={handleSaveSpatialTaskView}
+                          disabled={savingSpatialTaskView}
+                          className="w-full bg-indigo-600 text-white hover:bg-indigo-700"
+                        >
+                          {savingSpatialTaskView ? <Loader2 size={15} className="mr-2 animate-spin" /> : <Save size={15} className="mr-2" />}
+                          Guardar vista
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

@@ -3131,6 +3131,7 @@ export default function ProjectDetailsPage() {
           project={project}
           tasks={tasks}
           teamMembers={projectAssignableTeamMembers}
+          taskGroups={taskGroups}
           currentUser={user}
           canManage={canEditTaskDetails}
         />
