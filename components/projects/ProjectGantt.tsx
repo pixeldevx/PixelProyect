@@ -98,6 +98,38 @@ const formatTaskDateTimeLabel = (value: any, fallback = 'Fecha no registrada') =
   return format(date, 'd MMM yyyy, h:mm a', { locale: es });
 };
 
+const normalizeEmail = (value: unknown) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+const resolveTimelineActorName = (entry: any, teamMembers: any[] = []) => {
+  const entryEmail = normalizeEmail(entry.userEmail || entry.changedByEmail || entry.participantEmail || entry.createdByEmail);
+  const entryIds = [
+    entry.userId,
+    entry.changedBy,
+    entry.memberId,
+    entry.participantId,
+    ...(Array.isArray(entry.userIds) ? entry.userIds : []),
+  ].filter(Boolean).map(String);
+  const actor = teamMembers.find((member) => {
+    if (!member) return false;
+    if (entryEmail && normalizeEmail(member.email) === entryEmail) return true;
+    return entryIds.some((id) => [member.id, member.uid, member.authUserId].includes(id));
+  });
+
+  return (
+    actor?.name ||
+    actor?.displayName ||
+    entry.userEmail ||
+    entry.changedByEmail ||
+    entry.participantEmail ||
+    entry.createdByEmail ||
+    entry.userName ||
+    entry.changedByName ||
+    entry.participantName ||
+    'Usuario'
+  );
+};
+
 const getCompactMeetingScheduleLabel = (task: any) => {
   const start = getMeetingStartDate(task);
   const end = getMeetingEndDate(task);
@@ -115,7 +147,7 @@ const getTaskCommentCount = (task: any) => {
   return Number(task?.commentCount || task?.originalTask?.commentCount || 0);
 };
 
-const getTaskInteractionTimeline = (task: any) => {
+const getTaskInteractionTimeline = (task: any, teamMembers: any[] = []) => {
   if (!task) return [];
 
   const workflowHistory = Array.isArray(task.workflowHistory)
@@ -133,7 +165,7 @@ const getTaskInteractionTimeline = (task: any) => {
                 ? 'Workflow reanudado'
                 : 'Interacción de workflow',
         description: entry.stepLabel || entry.comment || entry.status || '',
-        actor: entry.userName || entry.changedByName || entry.userEmail || entry.changedByEmail || 'Usuario',
+        actor: resolveTimelineActorName(entry, teamMembers),
       }))
     : [];
 
@@ -150,7 +182,7 @@ const getTaskInteractionTimeline = (task: any) => {
               ? 'Tarea reanudada'
               : 'Cambio de estado',
         description: entry.comment || [entry.previousStatus, entry.effectiveStatus || entry.status].filter(Boolean).join(' -> '),
-        actor: entry.changedByName || entry.changedByEmail || 'Usuario',
+        actor: resolveTimelineActorName(entry, teamMembers),
       }))
     : [];
 
@@ -161,7 +193,7 @@ const getTaskInteractionTimeline = (task: any) => {
         date: entry.timestamp || entry.createdAt,
         title: 'Revisión registrada',
         description: entry.comment || entry.status || '',
-        actor: entry.changedByName || entry.changedByEmail || entry.userName || 'Usuario',
+        actor: resolveTimelineActorName(entry, teamMembers),
       }))
     : [];
 
@@ -1097,8 +1129,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     ? teamMembers.find((member) => member.id === selectedTimelineSourceTask.assignedTo)
     : null;
   const selectedTimelineInteractions = useMemo(
-    () => getTaskInteractionTimeline(selectedTimelineSourceTask),
-    [selectedTimelineSourceTask]
+    () => getTaskInteractionTimeline(selectedTimelineSourceTask, teamMembers),
+    [selectedTimelineSourceTask, teamMembers]
   );
 
   const openFullscreenGantt = () => {

@@ -25,6 +25,9 @@ import {
 } from '@/lib/calendar-utils';
 import { isDynamicWorkflowAssignee, isWorkflowTaskType, resolveWorkflowActiveStepIndex, resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
 
+const normalizeEmail = (value: unknown) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+
 interface TaskDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -68,6 +71,25 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       setPendingNextStepNotification(null);
     }
   }, [task]);
+
+  const getCurrentActorName = () => {
+    const currentUser = auth.currentUser;
+    const currentEmail = normalizeEmail(currentUser?.email);
+    const currentId = currentUser?.uid;
+    const actor = teamMembers.find((member) => {
+      if (!member) return false;
+      if (currentEmail && normalizeEmail(member.email) === currentEmail) return true;
+      return currentId && [member.id, member.uid, member.authUserId].includes(currentId);
+    });
+
+    return (
+      actor?.name ||
+      actor?.displayName ||
+      currentUser?.email ||
+      currentUser?.displayName ||
+      "Usuario"
+    );
+  };
 
   if (!isOpen || !task) return null;
 
@@ -290,10 +312,8 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
           taskUpdate.workflowHistory = arrayUnion({
             stepIndex: Math.max(0, pendingNextStepNotification.stepIndex - 1),
             userId: auth.currentUser?.uid || null,
-            userName:
-              auth.currentUser?.displayName ||
-              auth.currentUser?.email ||
-              "Usuario",
+            userEmail: auth.currentUser?.email || null,
+            userName: getCurrentActorName(),
             action: "approve",
             comment:
               "Avance manual desde detalles de la tarea. Se asignó el siguiente paso.",

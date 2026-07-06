@@ -75,6 +75,9 @@ const toggleMultiSelectValue = (value: any, option: string) => {
     : [...current, option];
 };
 
+const normalizeEmail = (value: unknown) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+
 const formatFormValue = (value: any) => {
   if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : 'Sin selección';
   if (typeof value === 'boolean') return value ? 'Sí' : 'No';
@@ -859,6 +862,7 @@ export default function WorkflowTray() {
   const [actionComment, setActionComment] = useState('');
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [nextStepAssignee, setNextStepAssignee] = useState<string>('');
+  const [currentMemberProfiles, setCurrentMemberProfiles] = useState<any[]>([]);
   const [projectTeamMembers, setProjectTeamMembers] = useState<any[]>([]);
   const [projectRateCards, setProjectRateCards] = useState<any[]>([]);
   const [projectQualityCauses, setProjectQualityCauses] = useState<any[]>([]);
@@ -914,6 +918,9 @@ export default function WorkflowTray() {
     const unsubscribeAuth = auth.onAuthStateChanged(async (user) => {
       if (!user) {
         setWorkflows([]);
+        setCurrentMemberProfiles([]);
+        setMemberId(null);
+        setMemberIds([]);
         setLoading(false);
         return;
       }
@@ -927,12 +934,14 @@ export default function WorkflowTray() {
           
           let mId = user.uid; // Fallback to uid (e.g., for admin)
           const allMemberIds = [user.uid];
+          const currentProfiles = querySnapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
           if (!querySnapshot.empty) {
             mId = querySnapshot.docs[0].id;
             querySnapshot.docs.forEach((docSnap) => {
               allMemberIds.push(docSnap.id);
             });
           }
+          setCurrentMemberProfiles(currentProfiles);
           setMemberId(mId || null);
           setMemberIds(Array.from(new Set(allMemberIds.filter(Boolean))));
 
@@ -1155,6 +1164,25 @@ export default function WorkflowTray() {
     };
   };
 
+  const resolveCurrentActorName = React.useCallback((members: any[] = projectTeamMembers) => {
+    const currentEmail = normalizeEmail(user?.email);
+    const currentId = user?.uid;
+    const candidates = [...members, ...currentMemberProfiles];
+    const actor = candidates.find((member) => {
+      if (!member) return false;
+      if (currentEmail && normalizeEmail(member.email) === currentEmail) return true;
+      return currentId && [member.id, member.uid, member.authUserId].includes(currentId);
+    });
+
+    return (
+      actor?.name ||
+      actor?.displayName ||
+      user?.email ||
+      user?.displayName ||
+      'Usuario'
+    );
+  }, [currentMemberProfiles, projectTeamMembers, user?.displayName, user?.email, user?.uid]);
+
   const confirmAction = async () => {
     if (!user || !actionModal.task) return;
     
@@ -1169,6 +1197,9 @@ export default function WorkflowTray() {
     const workflowStepsForRouting = task.workflowSteps || [];
     const currentStep = workflowStepsForRouting[currentIndex];
     const isVariableWorkflow = isVariableWorkflowTaskType(task.type);
+    const actorName = resolveCurrentActorName();
+    const actorEmail = user.email || null;
+    const actorUser = { ...user, displayName: actorName };
     const approveFormData =
       action === 'approve'
         ? Object.keys(formData).length > 0
@@ -1378,7 +1409,8 @@ export default function WorkflowTray() {
           ...getDateKeys(now),
           createdAt: Timestamp.now(),
           createdBy: user.uid,
-          createdByEmail: user.email || null,
+          createdByEmail: actorEmail,
+          createdByName: actorName,
         };
         batch.set(eventRef, qualityEvent);
       }
@@ -1394,7 +1426,7 @@ export default function WorkflowTray() {
               stepIndex: currentIndex,
               action,
               completedAt: actionDate,
-              user,
+              user: actorUser,
               memberId,
               actorIds: reviewActorIds,
             })
@@ -1528,7 +1560,8 @@ export default function WorkflowTray() {
           userId: user.uid,
           memberId,
           userIds: reviewActorIds,
-          userName: user.displayName || user.email || 'Usuario',
+          userEmail: actorEmail,
+          userName: actorName,
           action,
           comment: actionComment,
           timestamp: actionTimestamp,
@@ -1538,7 +1571,8 @@ export default function WorkflowTray() {
           userId: user.uid,
           memberId,
           userIds: reviewActorIds,
-          userName: user.displayName || user.email || 'Usuario',
+          userEmail: actorEmail,
+          userName: actorName,
           action: action,
           comment: actionComment,
           formData: action === 'approve' ? formData : null,
@@ -1688,6 +1722,9 @@ export default function WorkflowTray() {
     const wasCompleted = isCompletedTaskStatus(task.status);
     let isCompleted = isCompletedTaskStatus(finalStatus);
     const reviewActorIds = normalizeActorIds([user.uid, memberId, ...memberIds]);
+    const actorName = resolveCurrentActorName();
+    const actorEmail = user.email || null;
+    const actorUser = { ...user, displayName: actorName };
     let meetingCompletion: {
       response: any;
       responses: any[];
@@ -1719,8 +1756,8 @@ export default function WorkflowTray() {
         userId: user.uid,
         memberId,
         userIds: reviewActorIds,
-        participantName: getMeetingParticipantName(task, participantId, user.displayName || user.email || 'Participante'),
-        participantEmail: user.email || null,
+        participantName: getMeetingParticipantName(task, participantId, actorName || 'Participante'),
+        participantEmail: actorEmail,
         comment: meetingSubmission.comment.trim(),
         timestamp: actionTimestamp,
         source: 'meeting_closure',
@@ -1888,8 +1925,8 @@ export default function WorkflowTray() {
         changedBy: user.uid,
         memberId,
         userIds: reviewActorIds,
-        changedByEmail: user.email || null,
-        changedByName: user.displayName || user.email || 'Usuario',
+        changedByEmail: actorEmail,
+        changedByName: actorName,
         timestamp: actionTimestamp,
         source: 'inbox',
         comment: meetingCompletion?.response?.comment || completionSubmission?.comment || dynamicCharge?.comment || statusComment,
@@ -1906,7 +1943,7 @@ export default function WorkflowTray() {
               task,
               status: finalStatus,
               completedAt: actionDate,
-              user,
+              user: actorUser,
               memberId,
               actorIds: reviewActorIds,
             })
@@ -1936,8 +1973,8 @@ export default function WorkflowTray() {
         taskUpdate.schedulePause = {
           pausedAt: actionTimestamp,
           pausedBy: user.uid,
-          pausedByEmail: user.email || null,
-          pausedByName: user.displayName || user.email || 'Usuario',
+          pausedByEmail: actorEmail,
+          pausedByName: actorName,
           reason: statusComment,
           previousStatus,
           remainingDays,
@@ -1959,8 +1996,8 @@ export default function WorkflowTray() {
           ...(task.schedulePause || {}),
           resumedAt: actionTimestamp,
           resumedBy: user.uid,
-          resumedByEmail: user.email || null,
-          resumedByName: user.displayName || user.email || 'Usuario',
+          resumedByEmail: actorEmail,
+          resumedByName: actorName,
           resumedEndDate: toHistoryDateValue(resumedEndDate),
         });
         taskUpdate.schedulePause = null;
@@ -1995,7 +2032,8 @@ export default function WorkflowTray() {
           userId: user.uid,
           memberId,
           userIds: reviewActorIds,
-          userName: user.displayName || user.email || 'Usuario',
+          userEmail: actorEmail,
+          userName: actorName,
           comment: meetingCompletion?.response?.comment || completionSubmission?.comment || dynamicCharge?.comment || statusComment,
           timestamp: actionTimestamp,
           source: meetingCompletion ? 'meeting_closure' : completionSubmission ? 'subtask_completion_form' : 'inbox_status',
@@ -2018,8 +2056,8 @@ export default function WorkflowTray() {
           comment: completionSubmission.comment,
           rateCardCharges: completionRateCardCharges,
           completedBy: user.uid,
-          completedByEmail: user.email || null,
-          completedByName: user.displayName || user.email || 'Usuario',
+          completedByEmail: actorEmail,
+          completedByName: actorName,
           timestamp: actionTimestamp,
         });
         taskUpdate.completionRateCardLastCharges = completionRateCardCharges;
@@ -2051,7 +2089,8 @@ export default function WorkflowTray() {
           createdAt: actionTimestamp,
           updatedAt: actionTimestamp,
           createdBy: user.uid,
-          createdByEmail: user.email || null,
+          createdByEmail: actorEmail,
+          createdByName: actorName,
         });
         taskUpdate.meetingLogbookEntryId = logbookRef.id;
         taskUpdate.meetingClosedAt = actionTimestamp;
@@ -2514,8 +2553,37 @@ export default function WorkflowTray() {
     );
   };
 
-  const getHistoryActorName = (history: any) =>
-    history.userName || history.changedByName || history.changedByEmail || 'Usuario';
+  const getHistoryActorName = (history: any) => {
+    const historyEmail = normalizeEmail(
+      history.userEmail || history.changedByEmail || history.participantEmail || history.createdByEmail
+    );
+    const historyIds = [
+      history.userId,
+      history.changedBy,
+      history.memberId,
+      history.participantId,
+      ...(Array.isArray(history.userIds) ? history.userIds : []),
+    ].filter(Boolean).map(String);
+    const candidates = [...projectTeamMembers, ...currentMemberProfiles];
+    const actor = candidates.find((member) => {
+      if (!member) return false;
+      if (historyEmail && normalizeEmail(member.email) === historyEmail) return true;
+      return historyIds.some((id) => [member.id, member.uid, member.authUserId].includes(id));
+    });
+
+    return (
+      actor?.name ||
+      actor?.displayName ||
+      history.userEmail ||
+      history.changedByEmail ||
+      history.participantEmail ||
+      history.createdByEmail ||
+      history.userName ||
+      history.changedByName ||
+      history.participantName ||
+      'Usuario'
+    );
+  };
 
   const getHistoryDetailText = (history: any, task: any) => {
     if (history.historyType === 'status') {

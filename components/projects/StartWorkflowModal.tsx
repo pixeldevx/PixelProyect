@@ -15,6 +15,7 @@ interface StartWorkflowModalProps {
   parentTask?: any | null;
   projectId: string;
   userId: string;
+  user?: any;
   teamMembers: any[];
 }
 
@@ -38,6 +39,9 @@ const endOfDate = (date: Date) => {
   next.setHours(23, 59, 59, 999);
   return next;
 };
+const normalizeEmail = (value: unknown) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+
 export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   isOpen,
   onClose,
@@ -45,6 +49,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   parentTask,
   projectId,
   userId,
+  user,
   teamMembers
 }) => {
   const [workflowId, setWorkflowId] = useState('');
@@ -81,6 +86,23 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   const computedWorkflowEndValue = workflowSchedulePreview
     ? toDateInputValue(workflowSchedulePreview.workflowEndDate)
     : workflowEndDate;
+
+  const resolveActorName = () => {
+    const currentEmail = normalizeEmail(user?.email);
+    const actor = teamMembers.find((member) => {
+      if (!member) return false;
+      if (currentEmail && normalizeEmail(member.email) === currentEmail) return true;
+      return userId && [member.id, member.uid, member.authUserId].includes(userId);
+    });
+
+    return (
+      actor?.name ||
+      actor?.displayName ||
+      user?.email ||
+      user?.displayName ||
+      'Usuario'
+    );
+  };
 
   if (!isOpen || !task) return null;
 
@@ -163,6 +185,8 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
       const historyEntry = {
         stepIndex: 0,
         userId: userId,
+        userEmail: user?.email || null,
+        userName: resolveActorName(),
         action: 'start',
         comment: observation || 'Workflow iniciado',
         timestamp: new Date(),

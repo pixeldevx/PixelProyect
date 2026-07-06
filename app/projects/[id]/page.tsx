@@ -70,7 +70,7 @@ import {
   getWorkflowTotalPlannedDays,
   normalizeWorkflowScheduleMode,
 } from '@/lib/workflow-schedule';
-import { isWorkflowTaskType } from '@/lib/workflow-routing';
+import { isDynamicWorkflowAssignee, isWorkflowTaskType } from '@/lib/workflow-routing';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
@@ -144,12 +144,42 @@ const stripWorkflowStepRuntime = (step: any = {}) => {
 const taskReceivesWorkflowStructure = (task: any) =>
   isWorkflowTaskType(task?.type) || Array.isArray(task?.workflowSteps);
 
-const mergeWorkflowStepStructure = (currentStep: any = {}, structuralStep: any = {}, index: number) => ({
-  ...currentStep,
-  ...stripWorkflowStepRuntime(structuralStep),
-  label: structuralStep.label || currentStep.label || `Paso ${index + 1}`,
-  status: currentStep.status || 'not_started',
-});
+const workflowStepHasRuntime = (step: any = {}) => {
+  const status = String(step.status || '').toLowerCase();
+  const hasExecutedStatus = status && !['not_started', 'no iniciado', 'todo', 'pending', 'pendiente'].includes(status);
+
+  return Boolean(
+    hasExecutedStatus ||
+      step.startedAt ||
+      step.startedBy ||
+      step.startedByMemberId ||
+      step.completedAt ||
+      step.completedBy ||
+      step.completedByMemberId ||
+      step.returnedAt ||
+      step.returnedBy ||
+      step.restartedAt ||
+      step.formData
+  );
+};
+
+const mergeWorkflowStepStructure = (currentStep: any = {}, structuralStep: any = {}, index: number) => {
+  const currentAssignedTo = currentStep.assignedTo;
+  const shouldPreserveResolvedAssignee =
+    workflowStepHasRuntime(currentStep) &&
+    currentAssignedTo &&
+    !isDynamicWorkflowAssignee(currentAssignedTo);
+
+  return {
+    ...currentStep,
+    ...stripWorkflowStepRuntime(structuralStep),
+    label: structuralStep.label || currentStep.label || `Paso ${index + 1}`,
+    status: currentStep.status || 'not_started',
+    assignedTo: shouldPreserveResolvedAssignee
+      ? currentAssignedTo
+      : structuralStep.assignedTo ?? currentStep.assignedTo,
+  };
+};
 
 const resetWorkflowStepRuntime = (step: any = {}) => ({
   ...stripWorkflowStepRuntime(step),
@@ -668,6 +698,25 @@ export default function ProjectDetailsPage() {
       .filter(Boolean);
   }, [project?.assignedTeamMembers, teamMembersForAssignment, teamMembersWithSystemProfiles]);
 
+  const currentActorName = React.useMemo(() => {
+    const currentEmail = normalizeEmailAddress(user?.email);
+    const currentId = user?.uid;
+    const candidates = [...projectAssignableTeamMembers, ...teamMembersForAssignment, ...teamMembersWithSystemProfiles];
+    const actor = candidates.find((member) => {
+      if (!member) return false;
+      if (currentId && [member.id, member.uid, member.authUserId].includes(currentId)) return true;
+      return currentEmail && normalizeEmailAddress(member.email) === currentEmail;
+    });
+
+    return (
+      actor?.name ||
+      actor?.displayName ||
+      user?.email ||
+      user?.displayName ||
+      'Usuario'
+    );
+  }, [projectAssignableTeamMembers, teamMembersForAssignment, teamMembersWithSystemProfiles, user?.displayName, user?.email, user?.uid]);
+
   const collectDependentTaskIds = (taskId: string) => {
     const taskIds = new Set<string>([taskId]);
     let foundNewDependent = true;
@@ -1157,7 +1206,7 @@ export default function ProjectDetailsPage() {
       const needsCompletionForm = taskShouldAskCompletionForm(task);
       const actionDate = new Date();
       const actionTimestamp = Timestamp.fromDate(actionDate);
-      const actorName = user?.displayName || user?.email || 'Usuario';
+      const actorName = currentActorName;
       const previousStatus = task.status || null;
       const statusHistoryEntry: any = {
         id: `${taskId}-status-${isRescheduleAction ? 'rescheduled' : finalStatus}-${Date.now()}`,
@@ -2763,6 +2812,8 @@ export default function ProjectDetailsPage() {
         action: 'reset',
         comment: 'Workflow reiniciado',
         userId: user?.uid || null,
+        userEmail: user?.email || null,
+        userName: currentActorName,
         timestamp: new Date().toISOString(),
       };
 
@@ -3298,6 +3349,7 @@ export default function ProjectDetailsPage() {
         parentTask={selectedTaskForStartWorkflow?.parentTaskId ? tasks.find((task) => task.id === selectedTaskForStartWorkflow.parentTaskId) : null}
         projectId={projectId}
         userId={user?.uid || ''}
+        user={user}
         teamMembers={projectAssignableTeamMembers}
       />
 

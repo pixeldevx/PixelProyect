@@ -39,6 +39,9 @@ const foldText = (value: string) =>
     .toLowerCase()
     .trim();
 
+const normalizeEmail = (value: unknown) =>
+  typeof value === "string" ? value.trim().toLowerCase() : "";
+
 const getTaskTitle = (task: any) => task?.title || task?.name || "Workflow";
 
 const getTaskDate = (value: any) => {
@@ -371,6 +374,24 @@ export function BulkWorkflowIterationsModal({
   const [isCreating, setIsCreating] = useState(false);
   const [creationProgress, setCreationProgress] = useState<CreationProgress | null>(null);
 
+  const resolveActorName = () => {
+    const currentEmail = normalizeEmail(user?.email);
+    const currentId = user?.uid;
+    const actor = teamMembers.find((member) => {
+      if (!member) return false;
+      if (currentEmail && normalizeEmail(member.email) === currentEmail) return true;
+      return currentId && [member.id, member.uid, member.authUserId].includes(currentId);
+    });
+
+    return (
+      actor?.name ||
+      actor?.displayName ||
+      user?.email ||
+      user?.displayName ||
+      "Usuario"
+    );
+  };
+
   useEffect(() => {
     if (!isOpen || !task) return;
 
@@ -519,6 +540,8 @@ export function BulkWorkflowIterationsModal({
       const notifications: TaskAssignmentNotificationPayload[] = [];
       const workflowTaskType = isWorkflowTaskType(task.type) ? task.type : "workflow";
       const isVariableWorkflow = isVariableWorkflowTaskType(workflowTaskType);
+      const actorName = resolveActorName();
+      const actorEmail = user.email || null;
 
       for (let chunkStart = 0; chunkStart < iterationsToCreate.length; chunkStart += BULK_ITERATION_CHUNK_SIZE) {
         const chunk = iterationsToCreate.slice(chunkStart, chunkStart + BULK_ITERATION_CHUNK_SIZE);
@@ -619,6 +642,8 @@ export function BulkWorkflowIterationsModal({
               {
                 stepIndex: 0,
                 userId: user.uid,
+                userEmail: actorEmail,
+                userName: actorName,
                 action: "start",
                 comment: cleanObservation || "Workflow iniciado por carga masiva",
                 timestamp: now.toISOString(),

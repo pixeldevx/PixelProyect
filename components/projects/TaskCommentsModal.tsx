@@ -408,28 +408,42 @@ export function TaskCommentsModal({
   };
 
   const getHistoryAuthorName = (history: any) => {
-    const explicitName = firstNonEmpty(history.participantName, history.changedByName, history.userName);
-    if (explicitName) return explicitName;
-
-    const historyEmail = normalizeEmail(history.changedByEmail || history.userEmail);
+    const historyEmail = normalizeEmail(
+      history.changedByEmail || history.userEmail || history.participantEmail || history.createdByEmail
+    );
     const authorByEmail = historyEmail
       ? teamMembers.find((member) => normalizeEmail(member.email) === historyEmail)
       : null;
-    if (authorByEmail?.name) return authorByEmail.name;
+    if (authorByEmail?.name || authorByEmail?.displayName) {
+      return authorByEmail.name || authorByEmail.displayName;
+    }
 
-    if (history.userId === currentUser?.uid || history.changedBy === currentUser?.uid) return currentUser?.displayName || currentUser?.email || 'Usuario';
+    if (history.userId === currentUser?.uid || history.changedBy === currentUser?.uid) {
+      return currentUser?.email || currentUser?.displayName || 'Usuario';
+    }
+
+    const historyIds = [
+      history.userId,
+      history.changedBy,
+      history.memberId,
+      history.participantId,
+      ...(Array.isArray(history.userIds) ? history.userIds : []),
+    ].filter(Boolean).map(String);
 
     const author = teamMembers.find((member) =>
-      member.authUserId === history.userId ||
-      member.uid === history.userId ||
-      member.id === history.userId ||
-      member.authUserId === history.changedBy ||
-      member.uid === history.changedBy ||
-      member.id === history.changedBy
+      historyIds.some((id) =>
+        member.authUserId === id ||
+        member.uid === id ||
+        member.id === id
+      )
     );
 
-    if (author?.name) return author.name;
-    return history.changedByEmail || history.userEmail || 'Usuario';
+    if (author?.name || author?.displayName) return author.name || author.displayName;
+
+    const explicitName = firstNonEmpty(history.participantName, history.changedByName, history.userName);
+    if (explicitName) return explicitName;
+
+    return history.changedByEmail || history.userEmail || history.participantEmail || history.createdByEmail || 'Usuario';
   };
 
   const interactionHistory = [
