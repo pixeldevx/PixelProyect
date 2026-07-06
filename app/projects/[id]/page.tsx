@@ -66,8 +66,10 @@ import {
 } from '@/lib/incremental-rate-tasks';
 import { sanitizeTaskTitleForSave } from '@/lib/task-title';
 import {
+  applyWorkflowStepReferenceDurations,
   applyWorkflowStepSchedule,
   getWorkflowTotalPlannedDays,
+  normalizeWorkflowDayCountingEnabled,
   normalizeWorkflowScheduleMode,
 } from '@/lib/workflow-schedule';
 import { isDynamicWorkflowAssignee, isWorkflowTaskType } from '@/lib/workflow-routing';
@@ -2564,6 +2566,7 @@ export default function ProjectDetailsPage() {
       quantitative?: { indicator: string; indicatorValue: number };
       workflowSteps?: any[];
       workflowScheduleMode?: string;
+      workflowDayCountingEnabled?: boolean;
       rateCard?: any;
       incrementalRateBinding?: any;
     }
@@ -2583,6 +2586,9 @@ export default function ProjectDetailsPage() {
 
     const shouldUpdateWorkflow = Array.isArray(updates.workflowSteps);
     const workflowScheduleMode = normalizeWorkflowScheduleMode(updates.workflowScheduleMode || task.workflowScheduleMode);
+    const workflowDayCountingEnabled = normalizeWorkflowDayCountingEnabled(
+      updates.workflowDayCountingEnabled ?? task.workflowDayCountingEnabled
+    );
     const structuralSteps = shouldUpdateWorkflow
       ? updates.workflowSteps!.map(stripWorkflowStepRuntime)
       : [];
@@ -2614,14 +2620,16 @@ export default function ProjectDetailsPage() {
           const updatedSteps = structuralSteps.map((step, index) =>
             mergeWorkflowStepStructure(currentTask.workflowSteps?.[index], step, index)
           );
+          const referenceWorkflowSteps = applyWorkflowStepReferenceDurations(updatedSteps);
           const taskStartDate = getTaskDateValue(currentTask.startDate || currentTask.start);
-          const scheduledWorkflow = taskStartDate
+          const scheduledWorkflow = workflowDayCountingEnabled && taskStartDate
             ? applyWorkflowStepSchedule(updatedSteps, taskStartDate, workflowScheduleMode)
             : null;
-          updateData.workflowSteps = scheduledWorkflow?.steps || updatedSteps;
+          updateData.workflowSteps = scheduledWorkflow?.steps || referenceWorkflowSteps;
           updateData.workflowScheduleMode = workflowScheduleMode;
+          updateData.workflowDayCountingEnabled = workflowDayCountingEnabled;
           updateData.workflowTotalPlannedDays =
-            scheduledWorkflow?.workflowTotalPlannedDays || getWorkflowTotalPlannedDays(updatedSteps);
+            scheduledWorkflow?.workflowTotalPlannedDays || getWorkflowTotalPlannedDays(referenceWorkflowSteps);
           if (scheduledWorkflow) {
             updateData.startDate = scheduledWorkflow.workflowStartDate;
             updateData.start = scheduledWorkflow.workflowStartDate;
@@ -2693,14 +2701,16 @@ export default function ProjectDetailsPage() {
             const updatedSteps = structuralSteps.map((step, index) =>
               mergeWorkflowStepStructure(currentTask.workflowSteps?.[index], step, index)
             );
+            const referenceWorkflowSteps = applyWorkflowStepReferenceDurations(updatedSteps);
             const taskStartDate = getTaskDateValue(currentTask.startDate || currentTask.start);
-            const scheduledWorkflow = taskStartDate
+            const scheduledWorkflow = workflowDayCountingEnabled && taskStartDate
               ? applyWorkflowStepSchedule(updatedSteps, taskStartDate, workflowScheduleMode)
               : null;
-            updatedTask.workflowSteps = scheduledWorkflow?.steps || updatedSteps;
+            updatedTask.workflowSteps = scheduledWorkflow?.steps || referenceWorkflowSteps;
             updatedTask.workflowScheduleMode = workflowScheduleMode;
+            updatedTask.workflowDayCountingEnabled = workflowDayCountingEnabled;
             updatedTask.workflowTotalPlannedDays =
-              scheduledWorkflow?.workflowTotalPlannedDays || getWorkflowTotalPlannedDays(updatedSteps);
+              scheduledWorkflow?.workflowTotalPlannedDays || getWorkflowTotalPlannedDays(referenceWorkflowSteps);
             if (scheduledWorkflow) {
               updatedTask.startDate = scheduledWorkflow.workflowStartDate;
               updatedTask.start = scheduledWorkflow.workflowStartDate;

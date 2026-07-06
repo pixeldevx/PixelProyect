@@ -7,6 +7,17 @@ export const normalizeWorkflowScheduleMode = (value: unknown): WorkflowScheduleM
     : "calendar";
 };
 
+export const normalizeWorkflowDayCountingEnabled = (value: unknown, fallback = true): boolean => {
+  if (typeof value === "boolean") return value;
+  if (value === null || value === undefined || value === "") return fallback;
+
+  const cleanValue = String(value).trim().toLowerCase();
+  if (["false", "0", "off", "disabled", "inactive", "no"].includes(cleanValue)) return false;
+  if (["true", "1", "on", "enabled", "active", "yes"].includes(cleanValue)) return true;
+
+  return fallback;
+};
+
 export const getWorkflowStepPlannedDuration = (step: any): number => {
   const rawValue =
     step?.plannedDurationDays ??
@@ -21,6 +32,31 @@ export const getWorkflowStepPlannedDuration = (step: any): number => {
 
 export const getWorkflowTotalPlannedDays = (steps: any[] = []) =>
   steps.reduce((total, step) => total + getWorkflowStepPlannedDuration(step), 0);
+
+const stripStepScheduleDates = <T extends Record<string, any>>(step: T): T => {
+  const nextStep: any = { ...step };
+  [
+    "plannedStartDate",
+    "plannedEndDate",
+    "plannedStartAt",
+    "plannedEndAt",
+    "startDate",
+    "endDate",
+    "start",
+    "end",
+    "dueDate",
+  ].forEach((key) => {
+    delete nextStep[key];
+  });
+
+  return nextStep;
+};
+
+export const applyWorkflowStepReferenceDurations = <T extends Record<string, any>>(steps: T[] = []) =>
+  steps.map((step) => ({
+    ...stripStepScheduleDates(step),
+    plannedDurationDays: getWorkflowStepPlannedDuration(step),
+  }));
 
 export const cloneDateOnly = (date: Date) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -70,7 +106,7 @@ export const applyWorkflowStepSchedule = <T extends Record<string, any>>(
   let currentStartDate =
     mode === "business" ? moveToNextBusinessDay(workflowStartDate) : cloneDateOnly(workflowStartDate);
 
-  const scheduledSteps = steps.map((step) => {
+  const scheduledSteps = applyWorkflowStepReferenceDurations(steps).map((step) => {
     const plannedDurationDays = getWorkflowStepPlannedDuration(step);
     const plannedStartDate =
       mode === "business" ? moveToNextBusinessDay(currentStartDate) : cloneDateOnly(currentStartDate);

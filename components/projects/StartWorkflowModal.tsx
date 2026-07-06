@@ -6,7 +6,13 @@ import { db, storage } from '@/lib/backend';
 import { toast } from 'sonner';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
-import { applyWorkflowStepSchedule, normalizeWorkflowScheduleMode } from '@/lib/workflow-schedule';
+import {
+  applyWorkflowStepReferenceDurations,
+  applyWorkflowStepSchedule,
+  getWorkflowTotalPlannedDays,
+  normalizeWorkflowDayCountingEnabled,
+  normalizeWorkflowScheduleMode,
+} from '@/lib/workflow-schedule';
 
 interface StartWorkflowModalProps {
   isOpen: boolean;
@@ -73,8 +79,18 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   }, [isOpen, task, parentTask]);
 
   const workflowScheduleMode = normalizeWorkflowScheduleMode(task?.workflowScheduleMode || parentTask?.workflowScheduleMode);
+  const workflowDayCountingEnabled = normalizeWorkflowDayCountingEnabled(
+    task?.workflowDayCountingEnabled ?? parentTask?.workflowDayCountingEnabled
+  );
   const workflowSchedulePreview = useMemo(() => {
-    if (!isOpen || !task || !workflowStartDate || !Array.isArray(task.workflowSteps) || task.workflowSteps.length === 0) {
+    if (
+      !workflowDayCountingEnabled ||
+      !isOpen ||
+      !task ||
+      !workflowStartDate ||
+      !Array.isArray(task.workflowSteps) ||
+      task.workflowSteps.length === 0
+    ) {
       return null;
     }
 
@@ -82,7 +98,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
     if (!parsedWorkflowStart) return null;
 
     return applyWorkflowStepSchedule(task.workflowSteps, parsedWorkflowStart, workflowScheduleMode);
-  }, [isOpen, task, workflowStartDate, workflowScheduleMode]);
+  }, [isOpen, task, workflowDayCountingEnabled, workflowStartDate, workflowScheduleMode]);
   const computedWorkflowEndValue = workflowSchedulePreview
     ? toDateInputValue(workflowSchedulePreview.workflowEndDate)
     : workflowEndDate;
@@ -130,7 +146,10 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
 
     const parsedWorkflowStart = parseDateInput(workflowStartDate);
     const workflowSchedule =
-      parsedWorkflowStart && Array.isArray(task.workflowSteps) && task.workflowSteps.length > 0
+      workflowDayCountingEnabled &&
+      parsedWorkflowStart &&
+      Array.isArray(task.workflowSteps) &&
+      task.workflowSteps.length > 0
         ? applyWorkflowStepSchedule(task.workflowSteps, parsedWorkflowStart, workflowScheduleMode)
         : null;
     const parsedWorkflowEnd = workflowSchedule?.workflowEndDate || parseDateInput(workflowEndDate);
@@ -197,7 +216,9 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
       };
 
       // 3. Update task
-      const updatedSteps = [...(workflowSchedule?.steps || task.workflowSteps || [])];
+      const updatedSteps = [
+        ...(workflowSchedule?.steps || applyWorkflowStepReferenceDurations(task.workflowSteps || [])),
+      ];
       if (updatedSteps.length > 0) {
         updatedSteps[0] = {
           ...updatedSteps[0],
@@ -234,7 +255,8 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         currentStepIndex: 0,
         workflowSteps: updatedSteps,
         workflowScheduleMode: workflowScheduleMode,
-        workflowTotalPlannedDays: workflowSchedule?.workflowTotalPlannedDays || task.workflowTotalPlannedDays || null,
+        workflowDayCountingEnabled,
+        workflowTotalPlannedDays: workflowSchedule?.workflowTotalPlannedDays || getWorkflowTotalPlannedDays(updatedSteps),
         workflowHistory: [historyEntry, ...(task.workflowHistory || [])],
         updatedAt: serverTimestamp()
       });
@@ -332,7 +354,9 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
                 />
               </div>
               <div>
-                <span className="mb-1 block text-xs font-medium text-slate-600">Fecha fin calculada</span>
+                <span className="mb-1 block text-xs font-medium text-slate-600">
+                  {workflowDayCountingEnabled ? "Fecha fin calculada" : "Fecha fin del workflow"}
+                </span>
                 <input
                   type="date"
                   value={computedWorkflowEndValue}
@@ -346,14 +370,20 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
             </div>
             <div className="mt-3 rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs text-slate-600">
               <span className="font-bold text-indigo-700">
-                {workflowScheduleMode === "business" ? "Dias laborales" : "Dias calendario"}
+                {workflowDayCountingEnabled
+                  ? `Conteo por pasos activo · ${workflowScheduleMode === "business" ? "dias laborales" : "dias calendario"}`
+                  : "Periodo fijo del workflow"}
               </span>
               {workflowSchedulePreview ? (
                 <span>
                   {" "}· {workflowSchedulePreview.workflowTotalPlannedDays} dias distribuidos en {workflowSchedulePreview.steps.length} pasos.
                 </span>
               ) : (
-                <span> · El fin se calcula automaticamente cuando existan pasos configurados.</span>
+                <span>
+                  {workflowDayCountingEnabled
+                    ? " · El fin se calcula automaticamente cuando existan pasos configurados."
+                    : " · Los dias de cada paso se guardan para estadisticas, no para limitar este periodo."}
+                </span>
               )}
             </div>
             {parentTask && parentStartValue && parentEndValue && (

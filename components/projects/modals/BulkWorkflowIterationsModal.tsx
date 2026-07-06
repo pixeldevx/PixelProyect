@@ -5,7 +5,13 @@ import { collection, doc, getDocs, query, serverTimestamp, where, writeBatch } f
 import { db } from "@/lib/backend";
 import { toast } from "sonner";
 import { notifyTaskAssignment, TaskAssignmentNotificationPayload } from "@/lib/notifications";
-import { applyWorkflowStepSchedule, normalizeWorkflowScheduleMode } from "@/lib/workflow-schedule";
+import {
+  applyWorkflowStepReferenceDurations,
+  applyWorkflowStepSchedule,
+  getWorkflowTotalPlannedDays,
+  normalizeWorkflowDayCountingEnabled,
+  normalizeWorkflowScheduleMode,
+} from "@/lib/workflow-schedule";
 import { isVariableWorkflowTaskType, isWorkflowTaskType } from "@/lib/workflow-routing";
 
 type BulkWorkflowIterationsModalProps = {
@@ -235,13 +241,14 @@ const validateIterationSchedule = (
     parentEndDate: Date | null;
     workflowSteps?: any[];
     workflowScheduleMode?: string;
+    workflowDayCountingEnabled?: boolean;
   }
 ) => {
   if (item.error) return item;
 
   const iterationStartDate = dateFromInputValue(item.startDate || options.fallbackStartDate);
   const scheduledWorkflow =
-    iterationStartDate && options.workflowSteps?.length
+    options.workflowDayCountingEnabled && iterationStartDate && options.workflowSteps?.length
       ? applyWorkflowStepSchedule(options.workflowSteps, iterationStartDate, options.workflowScheduleMode)
       : null;
   const iterationEndDate = scheduledWorkflow?.workflowEndDate || dateFromInputValue(item.endDate || options.fallbackEndDate);
@@ -281,6 +288,7 @@ const parseIterations = (
     parentEndDate: Date | null;
     workflowSteps?: any[];
     workflowScheduleMode?: string;
+    workflowDayCountingEnabled?: boolean;
   }
 ) => {
   const seenIds = new Set<string>();
@@ -408,6 +416,7 @@ export function BulkWorkflowIterationsModal({
   const parentStartValue = parentStartDate ? parentStartDate.toISOString().slice(0, 10) : "";
   const parentEndValue = parentEndDate ? parentEndDate.toISOString().slice(0, 10) : "";
   const workflowScheduleMode = normalizeWorkflowScheduleMode(task?.workflowScheduleMode);
+  const workflowDayCountingEnabled = normalizeWorkflowDayCountingEnabled(task?.workflowDayCountingEnabled);
   const existingIds = useMemo(() => getExistingWorkflowIdsForTask(tasks, task), [tasks, task]);
   const parsedIterations = useMemo(
     () =>
@@ -418,8 +427,9 @@ export function BulkWorkflowIterationsModal({
         parentEndDate,
         workflowSteps: task?.workflowSteps || [],
         workflowScheduleMode,
+        workflowDayCountingEnabled,
       }),
-    [rawItems, existingIds, startDate, endDate, parentStartDate, parentEndDate, task?.workflowSteps, workflowScheduleMode]
+    [rawItems, existingIds, startDate, endDate, parentStartDate, parentEndDate, task?.workflowSteps, workflowScheduleMode, workflowDayCountingEnabled]
   );
   const validIterations = parsedIterations.filter((item) => !item.error && !item.existing);
   const invalidIterations = parsedIterations.filter((item) => item.error);
@@ -430,7 +440,7 @@ export function BulkWorkflowIterationsModal({
   );
   const getIterationPreviewEndDate = (item: ParsedIteration) => {
     const iterationStartDate = dateFromInputValue(item.startDate || startDate);
-    if (iterationStartDate && task?.workflowSteps?.length) {
+    if (workflowDayCountingEnabled && iterationStartDate && task?.workflowSteps?.length) {
       return applyWorkflowStepSchedule(task.workflowSteps, iterationStartDate, workflowScheduleMode)
         .workflowEndDate.toISOString()
         .slice(0, 10);
@@ -561,9 +571,13 @@ export function BulkWorkflowIterationsModal({
           const cleanObservation = iteration.observation.trim();
           const cleanMunicipality = iteration.municipality.trim();
           const iterationStartDate = dateFromInputValue(iteration.startDate || startDate) || parsedStartDate;
-          const scheduledWorkflow = applyWorkflowStepSchedule(task.workflowSteps || [], iterationStartDate, workflowScheduleMode);
-          const iterationEndDate = scheduledWorkflow.workflowEndDate || dateFromInputValue(iteration.endDate || endDate) || parsedEndDate;
-          const workflowSteps = scheduledWorkflow.steps.map((step: any, stepIndex: number) => {
+          const scheduledWorkflow = workflowDayCountingEnabled
+            ? applyWorkflowStepSchedule(task.workflowSteps || [], iterationStartDate, workflowScheduleMode)
+            : null;
+          const iterationEndDate =
+            scheduledWorkflow?.workflowEndDate || dateFromInputValue(iteration.endDate || endDate) || parsedEndDate;
+          const workflowBaseSteps = scheduledWorkflow?.steps || applyWorkflowStepReferenceDurations(task.workflowSteps || []);
+          const workflowSteps = workflowBaseSteps.map((step: any, stepIndex: number) => {
             const cleanStep: any = {
               ...stripWorkflowStepRuntime(step),
               status: stepIndex === 0 ? "en_curso" : "not_started",
@@ -636,7 +650,8 @@ export function BulkWorkflowIterationsModal({
             displayOrder: displayOrderBase + index + 1,
             workflowSteps,
             workflowScheduleMode,
-            workflowTotalPlannedDays: scheduledWorkflow.workflowTotalPlannedDays,
+            workflowDayCountingEnabled,
+            workflowTotalPlannedDays: scheduledWorkflow?.workflowTotalPlannedDays || getWorkflowTotalPlannedDays(workflowBaseSteps),
             currentStepIndex: 0,
             workflowHistory: [
               {
@@ -883,8 +898,10 @@ export function BulkWorkflowIterationsModal({
                         {item.startDate || startDate || "Sin inicio"} - {getIterationPreviewEndDate(item) || "Sin fin"}
                       </p>
                       <p className="text-[10px] text-slate-400">
-                        {task?.workflowSteps?.length
+                        {task?.workflowSteps?.length && workflowDayCountingEnabled
                           ? `Calculado por pasos · ${workflowScheduleMode === "business" ? "laborales" : "calendario"}`
+                          : task?.workflowSteps?.length
+                            ? "Periodo de iteracion · dias como estadistica"
                           : item.usesCustomDates
                             ? "Fechas individuales"
                             : "Cronograma general"}

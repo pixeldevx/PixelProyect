@@ -15,9 +15,11 @@ import {
 import { getStaticRateCardAssignmentKey, isInvalidRateCardUnits, normalizeRateCardUnits } from '@/lib/rate-card-config';
 import { syncRateDrivenIncrementalTasksForRate } from '@/lib/incremental-rate-tasks';
 import {
+  applyWorkflowStepReferenceDurations,
   applyWorkflowStepSchedule,
   getWorkflowStepPlannedDuration,
   getWorkflowTotalPlannedDays,
+  normalizeWorkflowDayCountingEnabled,
   normalizeWorkflowScheduleMode,
   type WorkflowScheduleMode,
 } from '@/lib/workflow-schedule';
@@ -208,6 +210,7 @@ export function CreateTaskModal({
     }[]
   >([]);
   const [workflowScheduleMode, setWorkflowScheduleMode] = useState<WorkflowScheduleMode>("calendar");
+  const [workflowDayCountingEnabled, setWorkflowDayCountingEnabled] = useState(true);
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
   const [currentStepIndexForForm, setCurrentStepIndexForForm] = useState<
     number | null
@@ -316,6 +319,7 @@ export function CreateTaskModal({
     setNewTaskType("quantitative");
     setWorkflowSteps([]);
     setWorkflowScheduleMode("calendar");
+    setWorkflowDayCountingEnabled(true);
     setWorkflowCycles(1);
     setNewTaskRequiresDoc(false);
     setNewTaskIsRateCard(false);
@@ -497,6 +501,7 @@ export function CreateTaskModal({
         ...getWorkflowTemplateScopeData(projectId, project),
         steps: sanitizeWorkflowSteps(workflowSteps),
         workflowScheduleMode,
+        workflowDayCountingEnabled,
         updatedAt: serverTimestamp(),
         updatedBy: user?.uid || "unknown",
       };
@@ -571,6 +576,7 @@ export function CreateTaskModal({
       const loadedSteps = sanitizeWorkflowSteps(template.steps);
       setWorkflowSteps(loadedSteps);
       setWorkflowScheduleMode(normalizeWorkflowScheduleMode(template.workflowScheduleMode));
+      setWorkflowDayCountingEnabled(normalizeWorkflowDayCountingEnabled(template.workflowDayCountingEnabled));
       if (template.steps[0]?.isQualityGate) {
         toast.warning("Se desmarcó calidad del primer paso porque necesita un paso anterior.");
       }
@@ -715,9 +721,11 @@ export function CreateTaskModal({
       const parentEndDate = new Date(newTaskEnd + "T00:00:00");
       const cleanWorkflowSteps = isWorkflowTypeSelected ? sanitizeWorkflowSteps(workflowSteps) : [];
       const workflowSchedule =
-        isWorkflowTypeSelected
+        isWorkflowTypeSelected && workflowDayCountingEnabled
           ? applyWorkflowStepSchedule(cleanWorkflowSteps, parentStartDate, workflowScheduleMode)
           : null;
+      const workflowReferenceSteps =
+        isWorkflowTypeSelected ? applyWorkflowStepReferenceDurations(cleanWorkflowSteps) : [];
       const effectiveParentStartDate = workflowSchedule?.workflowStartDate || parentStartDate;
       const effectiveParentEndDate = workflowSchedule?.workflowEndDate || parentEndDate;
       const meetingStartAt = new Date(`${newTaskStart}T${meetingStartTime || "09:00"}:00`);
@@ -975,7 +983,7 @@ export function CreateTaskModal({
       }
 
       if (isWorkflowTypeSelected) {
-        taskData.workflowSteps = (workflowSchedule?.steps || cleanWorkflowSteps).map((step) => {
+        taskData.workflowSteps = (workflowSchedule?.steps || workflowReferenceSteps).map((step) => {
           const cleanStep: any = {
             ...step,
             status: "not_started",
@@ -992,7 +1000,8 @@ export function CreateTaskModal({
         taskData.workflowHistory = [];
         taskData.progress = 0;
         taskData.workflowScheduleMode = workflowScheduleMode;
-        taskData.workflowTotalPlannedDays = getWorkflowTotalPlannedDays(cleanWorkflowSteps);
+        taskData.workflowDayCountingEnabled = workflowDayCountingEnabled;
+        taskData.workflowTotalPlannedDays = getWorkflowTotalPlannedDays(workflowReferenceSteps);
         taskData.workflowCycles = workflowCycles;
         taskData.currentCycle = 1;
         taskData.workflowMode = isVariableWorkflowSelected ? "variable" : "linear";
@@ -1398,23 +1407,37 @@ export function CreateTaskModal({
                   </p>
                 </div>
 
-                <div className="mb-4 grid gap-3 rounded-xl border border-indigo-100 bg-white/80 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                  <div>
+                <div className="mb-4 grid gap-3 rounded-xl border border-indigo-100 bg-white/80 p-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+                  <div className="min-w-0">
                     <label className="text-xs font-bold uppercase tracking-wider text-indigo-600">
                       Programacion de pasos
                     </label>
                     <p className="mt-1 text-[10px] text-slate-500">
-                      Define cuantos dias dura cada paso. La fecha fin del workflow se calcula con la suma de esos tiempos.
+                      {workflowDayCountingEnabled
+                        ? "Activo: la fecha fin del workflow se calcula con la suma de los dias de cada paso."
+                        : "Inactivo: el workflow respeta el periodo definido; los dias se guardan solo como referencia estadistica."}
                     </p>
                   </div>
-                  <select
-                    value={workflowScheduleMode}
-                    onChange={(event) => setWorkflowScheduleMode(normalizeWorkflowScheduleMode(event.target.value))}
-                    className="h-9 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                  >
-                    <option value="calendar">Dias calendario</option>
-                    <option value="business">Dias laborales</option>
-                  </select>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <label className="flex h-9 items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 text-xs font-bold text-indigo-700">
+                      <input
+                        type="checkbox"
+                        checked={workflowDayCountingEnabled}
+                        onChange={(event) => setWorkflowDayCountingEnabled(event.target.checked)}
+                        className="h-4 w-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      Conteo por pasos
+                    </label>
+                    <select
+                      value={workflowScheduleMode}
+                      disabled={!workflowDayCountingEnabled}
+                      onChange={(event) => setWorkflowScheduleMode(normalizeWorkflowScheduleMode(event.target.value))}
+                      className="h-9 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-semibold text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+                    >
+                      <option value="calendar">Dias calendario</option>
+                      <option value="business">Dias laborales</option>
+                    </select>
+                  </div>
                 </div>
 
                 <div className="flex min-w-0 flex-col gap-3 border-t border-indigo-100 pt-4 xl:flex-row xl:items-center xl:justify-between">
@@ -1561,7 +1584,9 @@ export function CreateTaskModal({
                                   Duracion planificada
                                 </p>
                                 <p className="text-[9px] text-indigo-500">
-                                  Este paso consumira esta cantidad de dias en el cronograma del workflow.
+                                  {workflowDayCountingEnabled
+                                    ? "Este paso consumira esta cantidad de dias en el cronograma del workflow."
+                                    : "Referencia estadistica: no limita el fin del workflow cuando el conteo esta inactivo."}
                                 </p>
                               </div>
                               <input
