@@ -61,6 +61,8 @@ const normalizeAllowedTypes = (value: string) =>
 
 const S3_BROWSER_CORS_ERROR =
   'El servidor conecta con S3, pero el navegador no puede subir al bucket. Configura CORS en AWS S3 para permitir PUT, GET y HEAD desde el dominio de la aplicación.';
+const S3_PRIVATE_CONFIG_ERROR =
+  'La conexión todavía no está completa. Revisa la configuración privada del proveedor en Vercel.';
 
 export function DocumentStorageManagement() {
   const { user, userRole } = useAuth();
@@ -199,7 +201,10 @@ export function DocumentStorageManagement() {
       setStatus(payload);
 
       if (!response.ok || payload.ok === false) {
-        throw new Error(payload.error || 'La prueba no fue exitosa.');
+        const safeError = payload.missingS3Variables?.length
+          ? S3_PRIVATE_CONFIG_ERROR
+          : payload.error || 'La prueba no fue exitosa.';
+        throw new Error(safeError);
       }
 
       if (payload.provider === 's3') {
@@ -271,7 +276,7 @@ export function DocumentStorageManagement() {
                 <CardTitle className="text-2xl">Gestor documental</CardTitle>
                 <CardDescription className="mt-1 max-w-2xl text-slate-300">
                   Reapunta el almacenamiento de archivos sin mover usuarios, permisos ni metadatos.
-                  Los secretos viven en Vercel; este panel controla el proveedor y diagnostica la conexión.
+                  Este panel controla el proveedor y diagnostica la conexión activa.
                 </CardDescription>
               </div>
             </div>
@@ -335,7 +340,7 @@ export function DocumentStorageManagement() {
                   <div className="mb-4">
                     <h3 className="text-lg font-black text-slate-950">Configuración de Amazon S3</h3>
                     <p className="text-sm font-medium text-slate-500">
-                      Estos datos no son secretos. Las llaves AWS deben estar en variables de entorno de Vercel.
+                      Define el destino público del almacenamiento. Las credenciales privadas se administran fuera del panel.
                     </p>
                   </div>
 
@@ -405,43 +410,15 @@ export function DocumentStorageManagement() {
                     </div>
                     <p className="mt-2 text-sm font-medium text-slate-500">
                       {settings.provider === 'supabase'
-                        ? 'Supabase Storage está seleccionado. Amazon S3 queda listo como alternativa.'
+                        ? 'Supabase Storage está seleccionado y disponible para documentos del proyecto.'
                         : !s3VariablesReady
-                          ? 'Faltan variables server-only en Vercel para activar S3.'
+                          ? S3_PRIVATE_CONFIG_ERROR
                           : browserUploadPassed
                             ? 'Amazon S3 permite carga desde servidor y desde navegador.'
                             : browserUploadFailed
                               ? status.browserUploadError
-                              : 'Las variables existen. Ejecuta la prueba para validar carga real desde navegador.'}
+                              : 'Configuración detectada. Ejecuta la prueba para validar la carga real desde navegador.'}
                     </p>
-
-                    {status?.missingS3Variables?.length > 0 && (
-                      <div className="mt-4 rounded-xl border border-orange-200 bg-orange-50 p-3">
-                        <div className="text-xs font-black uppercase tracking-[0.18em] text-orange-700">
-                          Variables faltantes
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {status.missingS3Variables.map((item: string) => (
-                            <span key={item} className="rounded-full bg-white px-2 py-1 text-xs font-black text-orange-700">
-                              {item}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="rounded-2xl border border-slate-200 bg-white p-5">
-                    <div className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">
-                      Variables de Vercel requeridas
-                    </div>
-                    <ul className="mt-3 space-y-2 text-sm font-semibold text-slate-700">
-                      <li>AWS_ACCESS_KEY_ID</li>
-                      <li>AWS_SECRET_ACCESS_KEY</li>
-                      <li>AWS_REGION</li>
-                      <li>AWS_S3_BUCKET</li>
-                      <li className="text-slate-400">DOCUMENT_STORAGE_PROVIDER=s3</li>
-                    </ul>
                   </div>
 
                   <div className="flex flex-col gap-3">
