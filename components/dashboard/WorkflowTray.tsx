@@ -4335,6 +4335,10 @@ export default function WorkflowTray() {
         onClose={() => setDocsModalTask(null)}
         task={docsModalTask}
         userId={user?.uid || ''}
+        currentUser={user}
+        teamMembers={projectTeamMembers}
+        canManageAccess={false}
+        canDeleteDocuments={false}
       />
 
       <TaskCommentsModal

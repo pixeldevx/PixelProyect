@@ -8,6 +8,8 @@ import { toast } from 'sonner';
 import { getCompletionStatusForTask } from '@/lib/taskProgress';
 import { normalizeRateCardUnits } from '@/lib/rate-card-config';
 import { isWorkflowTaskType } from '@/lib/workflow-routing';
+import { buildDocumentStoragePath, getTaskStorageFolderSegments } from '@/lib/document-storage';
+import { getTaskDisplayTitle } from '@/lib/task-title';
 
 interface CompleteTaskModalProps {
   isOpen: boolean;
@@ -31,7 +33,17 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
     setIsCompletingTask(true);
     try {
       // 1. Upload document
-      const storageRef = ref(storage, `projects/${projectId}/tasks/${taskId}/${taskDocFile.name}`);
+      const storagePath = buildDocumentStoragePath({
+        projectId,
+        projectName: task?.projectName,
+        task: task || { id: taskId, title: taskDocFile.name, projectId },
+        tasks: task ? [task] : [],
+        fileName: taskDocFile.name,
+        documentName: `evidencia-${taskDocFile.name}`,
+        folderName: 'evidencias',
+      });
+      const storageFolder = storagePath.split('/').slice(0, -1).join('/');
+      const storageRef = ref(storage, storagePath);
       await uploadBytes(storageRef, taskDocFile);
       const downloadURL = await getDownloadURL(storageRef);
 
@@ -39,12 +51,22 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
       const docData = {
         projectId: projectId,
         taskId: taskId,
+        taskTitle: task ? getTaskDisplayTitle(task) : taskDocFile.name,
+        taskFolderSegments: task ? getTaskStorageFolderSegments(task, [task]) : [],
+        scope: 'task',
         name: taskDocFile.name,
         type: 'task_completion',
         url: downloadURL,
         storagePath: storageRef.fullPath,
+        storageFolder,
         uploadedBy: user.uid,
-        uploadedAt: serverTimestamp()
+        uploadedAt: serverTimestamp(),
+        fileName: taskDocFile.name,
+        fileSize: taskDocFile.size,
+        contentType: taskDocFile.type || null,
+        accessMode: 'all',
+        allowedMemberIds: [],
+        providerPathVersion: 'structured-v1',
       };
       
       const docRef = await addDoc(collection(db, 'projects', projectId, 'documents'), docData);

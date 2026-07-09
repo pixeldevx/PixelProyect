@@ -6,6 +6,7 @@ import { db, storage } from '@/lib/backend';
 import { toast } from 'sonner';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
+import { buildDocumentStoragePath, getTaskStorageFolderSegments } from '@/lib/document-storage';
 import {
   applyWorkflowStepReferenceDurations,
   applyWorkflowStepSchedule,
@@ -181,19 +182,40 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
 
       // 1. Upload file if exists
       if (file) {
-        const storageRef = ref(storage, `projects/${projectId}/tasks/${task.id}/start_${file.name}`);
+        const hierarchyTasks = parentTask ? [parentTask, task] : [task];
+        const storagePath = buildDocumentStoragePath({
+          projectId,
+          projectName: task?.projectName || parentTask?.projectName,
+          task,
+          tasks: hierarchyTasks,
+          fileName: file.name,
+          documentName: `inicio-${file.name}`,
+          folderName: 'inicio-workflow',
+        });
+        const storageFolder = storagePath.split('/').slice(0, -1).join('/');
+        const storageRef = ref(storage, storagePath);
         await uploadBytes(storageRef, file);
         const downloadURL = await getDownloadURL(storageRef);
 
         const docData = {
           projectId: projectId,
           taskId: task.id,
+          taskTitle: getTaskDisplayTitle(task),
+          taskFolderSegments: getTaskStorageFolderSegments(task, hierarchyTasks),
+          scope: 'task',
           name: file.name,
           type: 'workflow_start',
           url: downloadURL,
           storagePath: storageRef.fullPath,
+          storageFolder,
           uploadedBy: userId,
-          uploadedAt: serverTimestamp()
+          uploadedAt: serverTimestamp(),
+          fileName: file.name,
+          fileSize: file.size,
+          contentType: file.type || null,
+          accessMode: 'all',
+          allowedMemberIds: [],
+          providerPathVersion: 'structured-v1',
         };
         
         const docRef = await addDoc(collection(db, 'projects', projectId, 'documents'), docData);

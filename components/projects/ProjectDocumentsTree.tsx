@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react';
-import { ChevronRight, ChevronDown, Folder, FileText, Download, Trash2, File, Eye, ExternalLink } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, Download, ExternalLink, Eye, File, FileText, Folder, Lock, Trash2 } from 'lucide-react';
+import { canUserAccessDocument, getDocumentAccessMode } from '@/lib/document-storage';
 
 interface ProjectDocumentsTreeProps {
   documents: any[];
@@ -7,6 +8,10 @@ interface ProjectDocumentsTreeProps {
   onDeleteDocument: (docId: string, storagePath: string, name: string) => void;
   onViewDocument?: (doc: any) => void;
   searchQuery?: string;
+  currentUser?: any;
+  teamMembers?: any[];
+  canManageAccess?: boolean;
+  canDeleteDocuments?: boolean;
 }
 
 const formatFileSize = (bytes?: number) => {
@@ -17,95 +22,129 @@ const formatFileSize = (bytes?: number) => {
   return parseFloat((Number(bytes) / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
+const formatUploadedAt = (value: any) => {
+  if (!value) return '';
+  const date = value?.toDate ? value.toDate() : new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString();
+};
+
 const getDocTypeBadge = (type: string) => {
   switch (type) {
     case 'contract':
-      return <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">Contrato</span>;
+      return <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-bold text-blue-700">Contrato</span>;
     case 'proposal':
-      return <span className="px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium">Propuesta</span>;
+      return <span className="rounded-full bg-purple-100 px-2 py-1 text-xs font-bold text-purple-700">Propuesta</span>;
     case 'task_completion':
-      return <span className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded-full text-xs font-medium">Evidencia Tarea</span>;
+      return <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-700">Evidencia tarea</span>;
+    case 'workflow_start':
+      return <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-700">Inicio workflow</span>;
     default:
-      return <span className="px-2 py-1 bg-slate-100 text-slate-700 rounded-full text-xs font-medium">Otro</span>;
+      return <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">Otro</span>;
   }
 };
 
-const getTaskTitle = (task: any) => task?.title || task?.name || 'Sin título';
+const getTaskTitle = (task: any) => task?.title || task?.name || task?.externalWorkflowId || 'Sin título';
 
-const DocumentItem = ({ doc, onDeleteDocument, onViewDocument }: { doc: any, onDeleteDocument: any, onViewDocument?: (doc: any) => void }) => (
-  <div className="flex items-center justify-between py-2 px-4 hover:bg-slate-50 border-b border-slate-100 last:border-0 group">
-    <button
-      type="button"
-      onClick={() => onViewDocument?.(doc)}
-      className="min-w-0 flex flex-1 items-center gap-3 rounded-lg text-left outline-none transition hover:text-indigo-700 focus-visible:ring-2 focus-visible:ring-indigo-500/30"
-    >
-      <FileText size={16} className="text-slate-400" />
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-slate-700">{doc.name}</span>
-          {getDocTypeBadge(doc.type)}
-        </div>
-        <div className="text-xs text-slate-400 mt-0.5">
-          {doc.fileName ? `${doc.fileName}${formatFileSize(doc.fileSize) ? ` (${formatFileSize(doc.fileSize)})` : ''}` : ''}
-          {doc.uploadedAt ? ` • Subido el ${doc.uploadedAt.toDate().toLocaleDateString()}` : ''}
-        </div>
-      </div>
-    </button>
-    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+const DocumentItem = ({
+  doc,
+  onDeleteDocument,
+  onViewDocument,
+  canDeleteDocuments,
+}: {
+  doc: any;
+  onDeleteDocument: ProjectDocumentsTreeProps['onDeleteDocument'];
+  onViewDocument?: (doc: any) => void;
+  canDeleteDocuments: boolean;
+}) => {
+  const uploadedAt = formatUploadedAt(doc.uploadedAt);
+  const restricted = getDocumentAccessMode(doc) === 'restricted';
+
+  return (
+    <div className="group flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-2.5 last:border-0 hover:bg-slate-50">
       <button
         type="button"
         onClick={() => onViewDocument?.(doc)}
-        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
-        title="Ver en Pixel"
+        className="flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left outline-none transition focus-visible:ring-2 focus-visible:ring-indigo-500/30"
       >
-        <Eye size={16} />
+        <FileText size={16} className="shrink-0 text-slate-400" />
+        <div className="min-w-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-bold text-slate-700">{doc.name}</span>
+            {getDocTypeBadge(doc.type)}
+            {restricted && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">
+                <Lock size={12} />
+                Restringido
+              </span>
+            )}
+          </div>
+          <div className="mt-0.5 text-xs font-medium text-slate-400">
+            {doc.fileName ? `${doc.fileName}${formatFileSize(doc.fileSize) ? ` (${formatFileSize(doc.fileSize)})` : ''}` : 'Archivo del proyecto'}
+            {uploadedAt ? ` · Subido el ${uploadedAt}` : ''}
+          </div>
+          {doc.storageFolder && (
+            <div className="mt-0.5 truncate text-[11px] font-semibold text-slate-400">
+              {String(doc.storageFolder).replaceAll('/', ' / ')}
+            </div>
+          )}
+        </div>
       </button>
-      <a
-        href={doc.url} 
-        target="_blank" 
-        rel="noopener noreferrer"
-        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
-        title="Abrir"
-      >
-        <ExternalLink size={16} />
-      </a>
-      <a
-        href={doc.url}
-        download
-        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
-        title="Descargar"
-      >
-        <Download size={16} />
-      </a>
-      <button 
-        onClick={() => onDeleteDocument(doc.id, doc.storagePath, doc.name)}
-        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-        title="Eliminar"
-      >
-        <Trash2 size={16} />
-      </button>
+      <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100">
+        <button
+          type="button"
+          onClick={() => onViewDocument?.(doc)}
+          className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600"
+          title="Ver en Pixel"
+        >
+          <Eye size={16} />
+        </button>
+        <a
+          href={doc.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600"
+          title="Abrir"
+        >
+          <ExternalLink size={16} />
+        </a>
+        <a
+          href={doc.url}
+          download
+          className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600"
+          title="Descargar"
+        >
+          <Download size={16} />
+        </a>
+        {canDeleteDocuments && (
+          <button
+            type="button"
+            onClick={() => onDeleteDocument(doc.id, doc.storagePath, doc.name)}
+            className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600"
+            title="Eliminar"
+          >
+            <Trash2 size={16} />
+          </button>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
-const FolderNode = ({ title, children, defaultOpen = false }: { title: string, children: React.ReactNode, defaultOpen?: boolean }) => {
+const FolderNode = ({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
   return (
-    <div className="border border-slate-200 rounded-lg mb-3 overflow-hidden bg-white">
-      <button 
+    <div className="mb-3 overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center gap-2 p-3 bg-slate-50/80 hover:bg-slate-100 transition-colors text-left"
+        className="flex w-full items-center gap-2 bg-slate-50/80 p-3 text-left transition-colors hover:bg-slate-100"
       >
         {isOpen ? <ChevronDown size={18} className="text-slate-500" /> : <ChevronRight size={18} className="text-slate-500" />}
         <Folder size={18} className="text-indigo-500" />
-        <span className="font-semibold text-slate-800 text-sm">{title}</span>
+        <span className="text-sm font-black text-slate-800">{title}</span>
       </button>
-      {isOpen && (
-        <div className="pl-6 border-t border-slate-100 bg-white">
-          {children}
-        </div>
-      )}
+      {isOpen && <div className="border-t border-slate-100 bg-white pl-4 md:pl-6">{children}</div>}
     </div>
   );
 };
@@ -115,67 +154,77 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
   tasks,
   onDeleteDocument,
   onViewDocument,
-  searchQuery = ''
+  searchQuery = '',
+  currentUser,
+  teamMembers = [],
+  canManageAccess = false,
+  canDeleteDocuments = false,
 }) => {
-  // Filter documents based on search query
+  const accessibleDocuments = useMemo(
+    () =>
+      documents.filter((document) =>
+        canUserAccessDocument({
+          document,
+          currentUser,
+          teamMembers,
+          canManageAccess,
+        })
+      ),
+    [documents, currentUser, teamMembers, canManageAccess]
+  );
+
   const filteredDocuments = useMemo(() => {
-    if (!searchQuery.trim()) return documents;
+    if (!searchQuery.trim()) return accessibleDocuments;
     const lowerQuery = searchQuery.toLowerCase();
-    return documents.filter(doc => 
-      doc.name?.toLowerCase().includes(lowerQuery) || 
-      doc.taskId?.toLowerCase().includes(lowerQuery)
+    return accessibleDocuments.filter((document) =>
+      document.name?.toLowerCase().includes(lowerQuery) ||
+      document.fileName?.toLowerCase().includes(lowerQuery) ||
+      document.taskTitle?.toLowerCase().includes(lowerQuery) ||
+      document.taskId?.toLowerCase().includes(lowerQuery)
     );
-  }, [documents, searchQuery]);
+  }, [accessibleDocuments, searchQuery]);
 
-  // Group documents
-  const generalDocs = useMemo(() => filteredDocuments.filter(d => !d.taskId), [filteredDocuments]);
-  const taskDocs = useMemo(() => filteredDocuments.filter(d => d.taskId), [filteredDocuments]);
+  const generalDocs = useMemo(() => filteredDocuments.filter((document) => !document.taskId), [filteredDocuments]);
+  const taskDocs = useMemo(() => filteredDocuments.filter((document) => document.taskId), [filteredDocuments]);
+  const parentTasks = useMemo(
+    () => tasks.filter((task) => !task.parentTaskId).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0)),
+    [tasks]
+  );
 
-  // Build task tree
-  const parentTasks = useMemo(() => tasks.filter(t => !t.parentTaskId).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0)), [tasks]);
-  
-  const getSubtasks = (parentId: string) => {
-    return tasks.filter(t => t.parentTaskId === parentId).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
-  };
+  const getSubtasks = (parentId: string) =>
+    tasks.filter((task) => task.parentTaskId === parentId).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
 
-  const getTaskDocuments = (taskId: string) => {
-    return taskDocs.filter(d => d.taskId === taskId);
-  };
+  const getTaskDocuments = (taskId: string) => taskDocs.filter((document) => document.taskId === taskId);
 
-  if (documents.length === 0) {
+  if (accessibleDocuments.length === 0) {
     return (
-      <div className="text-center py-12 px-4 border border-slate-200 rounded-lg bg-white">
-        <File className="w-12 h-12 text-slate-200 mx-auto mb-3" />
-        <h3 className="text-base font-medium text-slate-900">No hay documentos</h3>
-        <p className="text-sm text-slate-500 mt-1">Sube el contrato y la propuesta para empezar.</p>
+      <div className="rounded-xl border border-slate-200 bg-white px-4 py-12 text-center">
+        <File className="mx-auto mb-3 h-12 w-12 text-slate-200" />
+        <h3 className="text-base font-bold text-slate-900">No hay documentos visibles</h3>
+        <p className="mt-1 text-sm font-medium text-slate-500">Sube archivos o solicita acceso a la documentación restringida.</p>
       </div>
     );
   }
 
   if (filteredDocuments.length === 0 && searchQuery) {
     return (
-      <div className="text-center py-12 px-4 border border-slate-200 rounded-lg bg-white">
-        <File className="w-12 h-12 text-slate-200 mx-auto mb-3" />
-        <h3 className="text-base font-medium text-slate-900">No se encontraron documentos</h3>
-        <p className="text-sm text-slate-500 mt-1">No hay documentos que coincidan con &quot;{searchQuery}&quot;.</p>
+      <div className="rounded-xl border border-slate-200 bg-white px-4 py-12 text-center">
+        <File className="mx-auto mb-3 h-12 w-12 text-slate-200" />
+        <h3 className="text-base font-bold text-slate-900">No se encontraron documentos</h3>
+        <p className="mt-1 text-sm font-medium text-slate-500">No hay documentos visibles que coincidan con &quot;{searchQuery}&quot;.</p>
       </div>
     );
   }
 
   const hasDocumentsInSubtree = (taskId: string): boolean => {
-    const docs = getTaskDocuments(taskId);
-    if (docs.length > 0) return true;
-    const subtasks = getSubtasks(taskId);
-    return subtasks.some(st => hasDocumentsInSubtree(st.id));
+    if (getTaskDocuments(taskId).length > 0) return true;
+    return getSubtasks(taskId).some((subtask) => hasDocumentsInSubtree(subtask.id));
   };
 
   const renderTaskNode = (task: any) => {
-    if (!hasDocumentsInSubtree(task.id) && !searchQuery.trim()) return null;
     const taskTitle = getTaskTitle(task);
-    
-    // If there's a search query, we want to show tasks that match the query OR have matching documents
     const matchesSearch = searchQuery.trim() && (
-      taskTitle.toLowerCase().includes(searchQuery.toLowerCase()) || 
+      taskTitle.toLowerCase().includes(searchQuery.toLowerCase()) ||
       task.id?.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
@@ -183,53 +232,69 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
 
     const subtasks = getSubtasks(task.id);
     const docs = getTaskDocuments(task.id);
-    
+
     return (
       <FolderNode key={task.id} title={taskTitle} defaultOpen={!!searchQuery}>
         {docs.length > 0 && (
           <div className="py-1">
-            {docs.map(doc => (
-              <DocumentItem key={doc.id} doc={doc} onDeleteDocument={onDeleteDocument} onViewDocument={onViewDocument} />
+            {docs.map((document) => (
+              <DocumentItem
+                key={document.id}
+                doc={document}
+                onDeleteDocument={onDeleteDocument}
+                onViewDocument={onViewDocument}
+                canDeleteDocuments={canDeleteDocuments}
+              />
             ))}
           </div>
         )}
         {subtasks.length > 0 && (
-          <div className="pl-4 py-2 border-l border-slate-100 ml-4 my-2">
-            {subtasks.map(subtask => renderTaskNode(subtask))}
+          <div className="my-2 ml-3 border-l border-slate-100 py-2 pl-3 md:ml-4 md:pl-4">
+            {subtasks.map((subtask) => renderTaskNode(subtask))}
           </div>
         )}
       </FolderNode>
     );
   };
 
-  const renderedTasks = parentTasks.map(task => renderTaskNode(task)).filter(Boolean);
-  
-  // Find orphaned documents (documents linked to tasks that no longer exist)
-  const allTaskIds = new Set(tasks.map(t => t.id));
-  const orphanedDocs = taskDocs.filter(d => !allTaskIds.has(d.taskId));
+  const renderedTasks = parentTasks.map((task) => renderTaskNode(task)).filter(Boolean);
+  const allTaskIds = new Set(tasks.map((task) => task.id));
+  const orphanedDocs = taskDocs.filter((document) => !allTaskIds.has(document.taskId));
 
   return (
     <div className="space-y-4">
       {generalDocs.length > 0 && (
-        <FolderNode title="Documentos Generales" defaultOpen={true}>
+        <FolderNode title="Documentación del proyecto" defaultOpen>
           <div className="py-1">
-            {generalDocs.map(doc => (
-              <DocumentItem key={doc.id} doc={doc} onDeleteDocument={onDeleteDocument} onViewDocument={onViewDocument} />
+            {generalDocs.map((document) => (
+              <DocumentItem
+                key={document.id}
+                doc={document}
+                onDeleteDocument={onDeleteDocument}
+                onViewDocument={onViewDocument}
+                canDeleteDocuments={canDeleteDocuments}
+              />
             ))}
           </div>
         </FolderNode>
       )}
 
       {(renderedTasks.length > 0 || orphanedDocs.length > 0) && (
-        <FolderNode title="Documentos de Tareas" defaultOpen={true}>
+        <FolderNode title="Documentos de tareas y subtareas" defaultOpen>
           <div className="p-3">
             {renderedTasks}
-            
+
             {orphanedDocs.length > 0 && (
-              <FolderNode title="Tareas Eliminadas (Huérfanos)" defaultOpen={false}>
+              <FolderNode title="Tareas eliminadas o sin vínculo" defaultOpen={false}>
                 <div className="py-1">
-                  {orphanedDocs.map(doc => (
-                    <DocumentItem key={doc.id} doc={doc} onDeleteDocument={onDeleteDocument} onViewDocument={onViewDocument} />
+                  {orphanedDocs.map((document) => (
+                    <DocumentItem
+                      key={document.id}
+                      doc={document}
+                      onDeleteDocument={onDeleteDocument}
+                      onViewDocument={onViewDocument}
+                      canDeleteDocuments={canDeleteDocuments}
+                    />
                   ))}
                 </div>
               </FolderNode>

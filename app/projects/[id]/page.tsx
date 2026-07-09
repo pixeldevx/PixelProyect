@@ -591,6 +591,11 @@ export default function ProjectDetailsPage() {
 
   const executeDeleteDocument = async () => {
     if (!documentToDelete) return;
+    if (!canDeleteDocuments) {
+      toast.error('No tienes permisos para eliminar documentos de este proyecto.');
+      setDocumentToDelete(null);
+      return;
+    }
 
     setIsDeleting(true);
     try {
@@ -634,6 +639,14 @@ export default function ProjectDetailsPage() {
   const canManageDriveRepositories =
     userRole === 'admin' ||
     (userRole === 'org_admin' && (!project?.organizationId || belongsToAnyOrganization(project, managedOrganizationIds)));
+  const hasDocumentManagementScope =
+    userRole !== 'org_admin' ||
+    !project?.organizationId ||
+    belongsToAnyOrganization(project, managedOrganizationIds);
+  const canViewDocuments = Boolean(rolePermissions.documentView);
+  const canUploadDocuments = Boolean(rolePermissions.documentUpload) && hasDocumentManagementScope;
+  const canManageDocumentAccess = Boolean(rolePermissions.documentManageAccess) && hasDocumentManagementScope;
+  const canDeleteDocuments = Boolean(rolePermissions.documentDelete) && hasDocumentManagementScope;
   const canViewProjectInventory = Boolean(rolePermissions.inventoryProjectView);
   const hasInventoryManagementScope =
     userRole !== 'org_admin' ||
@@ -655,6 +668,12 @@ export default function ProjectDetailsPage() {
     setActiveTab('tasks');
     toast.error('No tienes permisos para ver el inventario de este proyecto.');
   }, [activeTab, canViewProjectInventory, rolePermissionsLoading]);
+
+  useEffect(() => {
+    if (rolePermissionsLoading || activeTab !== 'documents' || canViewDocuments) return;
+    setActiveTab('tasks');
+    toast.error('No tienes permisos para ver la documentación de este proyecto.');
+  }, [activeTab, canViewDocuments, rolePermissionsLoading]);
 
   const taskGroups = React.useMemo(
     () =>
@@ -3122,46 +3141,66 @@ export default function ProjectDetailsPage() {
 
       {activeTab === 'documents' && (
         <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-            <div className="relative w-full sm:w-96">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
-              <input
-                type="text"
-                placeholder="Buscar por nombre o ID de tarea..."
-                value={documentSearchQuery}
-                onChange={(e) => setDocumentSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
-              />
-            </div>
-            <Button
-              onClick={() => setIsUploadModalOpen(true)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white w-full sm:w-auto"
-            >
-              <Upload size={16} className="mr-2" />
-              Subir Documento
-            </Button>
-          </div>
+          {!canViewDocuments ? (
+            <Card className="border-slate-200 shadow-sm">
+              <CardContent className="flex flex-col items-center justify-center px-6 py-16 text-center">
+                <ShieldCheck className="mb-4 h-12 w-12 text-slate-300" />
+                <h3 className="text-xl font-black text-slate-900">Documentación protegida</h3>
+                <p className="mt-2 max-w-lg text-sm font-medium text-slate-500">
+                  Tu rol no tiene habilitado el acceso a los documentos de este proyecto.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center">
+                <div className="relative w-full sm:w-96">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Buscar por nombre, archivo o tarea..."
+                    value={documentSearchQuery}
+                    onChange={(e) => setDocumentSearchQuery(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-4 text-sm transition-all focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                </div>
+                {canUploadDocuments && (
+                  <Button
+                    onClick={() => setIsUploadModalOpen(true)}
+                    className="w-full bg-indigo-600 text-white hover:bg-indigo-700 sm:w-auto"
+                  >
+                    <Upload size={16} className="mr-2" />
+                    Subir Documento
+                  </Button>
+                )}
+              </div>
 
-          <Card className="border-slate-200 shadow-sm">
-            <CardHeader className="pb-4 border-b border-slate-100 bg-slate-50/50">
-              <CardTitle className="text-lg font-semibold text-slate-900 flex items-center gap-2">
-                <Folder size={18} className="text-indigo-500" />
-                Documentos del Proyecto
-              </CardTitle>
-              <CardDescription className="text-sm text-slate-500">
-                Listado de todos los archivos asociados a este proyecto.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="p-4">
-              <ProjectDocumentsTree
-                documents={documents}
-                tasks={tasks}
-                onDeleteDocument={confirmDeleteDocument}
-                onViewDocument={setPreviewDocument}
-                searchQuery={documentSearchQuery}
-              />
-            </CardContent>
-          </Card>
+              <Card className="border-slate-200 shadow-sm">
+                <CardHeader className="border-b border-slate-100 bg-slate-50/50 pb-4">
+                  <CardTitle className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+                    <Folder size={18} className="text-indigo-500" />
+                    Gestor documental del proyecto
+                  </CardTitle>
+                  <CardDescription className="text-sm text-slate-500">
+                    Documentos organizados por proyecto, tareas y subtareas, listos para S3.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="p-4">
+                  <ProjectDocumentsTree
+                    documents={documents}
+                    tasks={tasks}
+                    onDeleteDocument={confirmDeleteDocument}
+                    onViewDocument={setPreviewDocument}
+                    searchQuery={documentSearchQuery}
+                    currentUser={user}
+                    teamMembers={projectAssignableTeamMembers}
+                    canManageAccess={canManageDocumentAccess}
+                    canDeleteDocuments={canDeleteDocuments}
+                  />
+                </CardContent>
+              </Card>
+            </>
+          )}
         </div>
       )}
 
@@ -3976,6 +4015,10 @@ export default function ProjectDetailsPage() {
         onClose={() => setIsUploadModalOpen(false)}
         projectId={projectId}
         user={user}
+        project={project}
+        tasks={tasks}
+        teamMembers={projectAssignableTeamMembers}
+        canManageAccess={canManageDocumentAccess}
       />
       <ProjectDocumentViewer
         document={previewDocument}

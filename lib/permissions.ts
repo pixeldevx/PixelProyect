@@ -9,6 +9,10 @@ export type PermissionKey =
   | 'activityCreate'
   | 'activityEditStatus'
   | 'activityDelete'
+  | 'documentView'
+  | 'documentUpload'
+  | 'documentManageAccess'
+  | 'documentDelete'
   | 'billingOverview'
   | 'billingManage'
   | 'inventoryProjectView'
@@ -58,6 +62,15 @@ export const PERMISSION_GROUPS: Array<{
     ],
   },
   {
+    title: 'Documentos',
+    permissions: [
+      { key: 'documentView', label: 'Ver documentos del proyecto' },
+      { key: 'documentUpload', label: 'Subir documentos' },
+      { key: 'documentManageAccess', label: 'Gestionar visibilidad de documentos' },
+      { key: 'documentDelete', label: 'Eliminar documentos' },
+    ],
+  },
+  {
     title: 'Facturación',
     permissions: [
       { key: 'billingOverview', label: 'Ver facturación global' },
@@ -96,6 +109,10 @@ const allPermissions = (value: boolean): RolePermissionSet => ({
   activityCreate: value,
   activityEditStatus: value,
   activityDelete: value,
+  documentView: value,
+  documentUpload: value,
+  documentManageAccess: value,
+  documentDelete: value,
   billingOverview: value,
   billingManage: value,
   inventoryProjectView: value,
@@ -128,6 +145,8 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
     taskEditStatus: true,
     activityCreate: true,
     activityEditStatus: true,
+    documentView: true,
+    documentUpload: true,
     billingOverview: true,
     billingManage: true,
   },
@@ -135,6 +154,8 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
     ...allPermissions(false),
     taskEditStatus: true,
     activityEditStatus: true,
+    documentView: true,
+    documentUpload: true,
   },
 };
 
