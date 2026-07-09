@@ -27,6 +27,28 @@ type VisibleTaskRow =
   | { type: 'group'; id: string; group: TaskGroup; taskCount: number; tasks: any[] }
   | { type: 'task'; id: string; task: any };
 
+type FullscreenGanttTaskMeta = {
+  rowKind: 'group' | 'task';
+  title: string;
+  parentTitle?: string;
+  groupColor?: string;
+  groupTaskCount?: number;
+  depth: number;
+  childCount: number;
+  isExpanded: boolean;
+  isWorkflowStep?: boolean;
+  taskTypeLabel?: string;
+  statusLabel?: string;
+  priorityLabel?: string;
+  assigneeName?: string;
+  dateLabel?: string;
+  progress?: number;
+};
+
+type FullscreenGanttTask = Task & {
+  fullscreenMeta?: FullscreenGanttTaskMeta;
+};
+
 interface ProjectGanttProps {
   tasks: any[];
   teamMembers: any[];
@@ -494,6 +516,195 @@ const getFullscreenGanttLabel = (name: string, mode: ViewMode) => {
   return `${cleanName.slice(0, maxLength - 1)}…`;
 };
 
+const getTaskStatusLabel = (status: string) => {
+  switch (status) {
+    case 'completed': return 'LISTO';
+    case 'completed_late': return 'LISTO CON RETRASO';
+    case 'rescheduled': return 'REPROGRAMACIÓN';
+    case 'in_progress': return 'TRABAJANDO';
+    case 'stuck': return 'ESTANCADO';
+    case 'todo':
+    case 'pending': return 'PENDIENTE';
+    case 'en_curso': return 'EN CURSO';
+    case 'listo': return 'LISTO';
+    case 'devuelto': return 'DEVUELTO';
+    case 'reproceso': return 'REPROCESO';
+    case 'detenido': return 'DETENIDO';
+    case 'not_started': return 'NO INICIADO';
+    default: return status?.toUpperCase();
+  }
+};
+
+const getTaskPriorityLabel = (priority: string) => {
+  if (priority === 'high') return 'Alta';
+  if (priority === 'low') return 'Baja';
+  return 'Media';
+};
+
+const getFullscreenTaskKindLabel = (task: any) => {
+  if (task?.isWorkflowStep) return 'Paso';
+  if (isWorkflowTaskType(task?.type)) return getWorkflowTaskTypeLabel(task.type);
+  if (task?.type === 'quantitative') return 'Cuantitativa';
+  if (isMeetingTask(task)) return 'Reunión';
+  return task?.parentTaskId ? 'Subtarea' : 'Tarea';
+};
+
+const getFullscreenMetaRailClass = (statusLabel?: string) => {
+  if (statusLabel === 'LISTO') return 'bg-emerald-400';
+  if (statusLabel === 'LISTO CON RETRASO' || statusLabel === 'TRABAJANDO' || statusLabel === 'EN CURSO') return 'bg-orange-400';
+  if (statusLabel === 'ESTANCADO' || statusLabel === 'DETENIDO' || statusLabel === 'DEVUELTO') return 'bg-red-500';
+  return 'bg-slate-300';
+};
+
+const getFullscreenStatusPillClass = (statusLabel?: string) => {
+  if (statusLabel === 'LISTO') return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
+  if (statusLabel === 'LISTO CON RETRASO' || statusLabel === 'TRABAJANDO' || statusLabel === 'EN CURSO') return 'bg-orange-50 text-orange-700 ring-orange-100';
+  if (statusLabel === 'ESTANCADO' || statusLabel === 'DETENIDO' || statusLabel === 'DEVUELTO') return 'bg-red-50 text-red-700 ring-red-100';
+  return 'bg-slate-100 text-slate-600 ring-slate-200';
+};
+
+const FullscreenGanttTaskListHeader: React.FC<{
+  headerHeight: number;
+  rowWidth: string;
+  fontFamily: string;
+  fontSize: string;
+}> = ({ headerHeight, rowWidth }) => (
+  <div
+    className="fullscreen-gantt-list-header border-b border-slate-200 bg-white"
+    style={{ height: headerHeight, minWidth: rowWidth, maxWidth: rowWidth }}
+  >
+    <div className="flex h-full items-center justify-between gap-3 px-4">
+      <div>
+        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-500">Estructura</p>
+        <p className="mt-1 text-xs font-bold text-slate-500">Tareas, subtareas y dependencias</p>
+      </div>
+      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-slate-500">
+        Timeline
+      </span>
+    </div>
+  </div>
+);
+
+const FullscreenGanttTaskListTable: React.FC<{
+  rowHeight: number;
+  rowWidth: string;
+  fontFamily: string;
+  fontSize: string;
+  locale: string;
+  tasks: Task[];
+  selectedTaskId: string;
+  setSelectedTask: (taskId: string) => void;
+  onExpanderClick: (task: Task) => void;
+}> = ({ rowHeight, rowWidth, tasks, selectedTaskId, setSelectedTask, onExpanderClick }) => (
+  <div className="fullscreen-gantt-list-table bg-white">
+    {tasks.map((rawTask) => {
+      const task = rawTask as FullscreenGanttTask;
+      const meta = task.fullscreenMeta;
+      const isGroup = meta?.rowKind === 'group';
+      const isSelected = selectedTaskId === task.id;
+      const canExpand = Boolean(meta?.childCount);
+      const indent = isGroup ? 0 : Math.min(meta?.depth || 0, 5) * 18;
+      const connectorLeft = 22 + Math.max(0, (meta?.depth || 0) - 1) * 18;
+
+      return (
+        <div
+          key={`${task.id}-fullscreen-row`}
+          role="button"
+          tabIndex={0}
+          onClick={() => setSelectedTask(task.id)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              setSelectedTask(task.id);
+            }
+          }}
+          className={`group relative flex items-center border-b border-slate-100 transition ${
+            isGroup
+              ? 'bg-slate-50/95'
+              : isSelected
+                ? 'bg-indigo-50/95 shadow-[inset_0_0_0_1px_rgba(79,70,229,0.24)]'
+                : 'bg-white hover:bg-slate-50'
+          }`}
+          style={{ height: rowHeight, minWidth: rowWidth, maxWidth: rowWidth }}
+          title={meta?.title || task.name}
+        >
+          <span
+            className={`absolute inset-y-0 left-0 w-1.5 ${isGroup ? '' : getFullscreenMetaRailClass(meta?.statusLabel)}`}
+            style={isGroup ? { backgroundColor: meta?.groupColor || '#94a3b8' } : undefined}
+          />
+
+          {!isGroup && (meta?.depth || 0) > 0 && (
+            <>
+              <span
+                className="absolute top-0 h-full w-px bg-indigo-100"
+                style={{ left: connectorLeft }}
+              />
+              <span
+                className="absolute top-1/2 h-px w-5 bg-indigo-200"
+                style={{ left: connectorLeft }}
+              />
+            </>
+          )}
+
+          <div className="flex min-w-0 flex-1 items-center gap-2 px-4" style={{ paddingLeft: 16 + indent }}>
+            {canExpand ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onExpanderClick(task);
+                }}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600"
+                aria-label={meta?.isExpanded ? 'Contraer' : 'Expandir'}
+              >
+                <ChevronRight size={15} className={`transition-transform ${meta?.isExpanded ? 'rotate-90' : ''}`} />
+              </button>
+            ) : (
+              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${isGroup ? 'bg-slate-400' : getFullscreenMetaRailClass(meta?.statusLabel)}`} />
+            )}
+
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-2">
+                {isGroup ? (
+                  <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-slate-600">
+                    Grupo
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-indigo-600 ring-1 ring-indigo-100">
+                    {meta?.taskTypeLabel || 'Tarea'}
+                  </span>
+                )}
+                {meta?.parentTitle && (
+                  <span className="truncate text-[10px] font-bold text-slate-400" title={meta.parentTitle}>
+                    {meta.parentTitle}
+                  </span>
+                )}
+              </div>
+
+              <p className={`mt-0.5 truncate text-sm leading-tight ${isGroup ? 'font-black text-slate-900' : 'font-black text-slate-800'}`}>
+                {meta?.title || task.name}
+              </p>
+
+              <div className="mt-1 flex min-w-0 items-center gap-2 text-[10px] font-bold text-slate-500">
+                {meta?.statusLabel && (
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 ring-1 ${getFullscreenStatusPillClass(meta.statusLabel)}`}>
+                    {meta.statusLabel}
+                  </span>
+                )}
+                {meta?.assigneeName && <span className="truncate">{meta.assigneeName}</span>}
+                {typeof meta?.progress === 'number' && <span className="shrink-0">{meta.progress}%</span>}
+                {isGroup && typeof meta?.groupTaskCount === 'number' && (
+                  <span className="shrink-0">{meta.groupTaskCount} tarea{meta.groupTaskCount === 1 ? '' : 's'}</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    })}
+  </div>
+);
+
 export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   tasks,
   teamMembers,
@@ -602,6 +813,14 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         member.projectRole,
         member.projectRoleName,
       ].filter(Boolean).join(' '));
+    });
+    return map;
+  }, [taskAssigneeOptions, teamMembers]);
+  const assigneeNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    [...teamMembers, ...taskAssigneeOptions].forEach((member) => {
+      if (!member?.id || map.has(member.id)) return;
+      map.set(member.id, member.name || member.displayName || member.email || member.id);
     });
     return map;
   }, [taskAssigneeOptions, teamMembers]);
@@ -1049,9 +1268,41 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   };
 
   // Map Supabase tasks to gantt-task-react tasks
-  const ganttTasks: Task[] = useMemo(() => {
+  const visibleRowById = useMemo(
+    () => new Map(visibleRows.map((row) => [row.id, row])),
+    [visibleRows]
+  );
+
+  const visibleTaskMap = useMemo(
+    () => new Map(visibleTasks.map((task) => [task.id, task])),
+    [visibleTasks]
+  );
+
+  const visibleChildCountByParentId = useMemo(() => {
+    return visibleTasks.reduce<Map<string, number>>((map, task) => {
+      if (!task.parentTaskId) return map;
+      map.set(task.parentTaskId, (map.get(task.parentTaskId) || 0) + 1);
+      return map;
+    }, new Map<string, number>());
+  }, [visibleTasks]);
+
+  const ganttTasks: FullscreenGanttTask[] = useMemo(() => {
     if (visibleRows.length === 0) return [];
     const visibleTaskIds = new Set(visibleTasks.map((task) => task.id));
+    const getTaskDepth = (task: any) => {
+      let depth = 0;
+      let parentId = task?.parentTaskId;
+      const visitedIds = new Set<string>();
+
+      while (parentId && !visitedIds.has(parentId)) {
+        visitedIds.add(parentId);
+        depth += 1;
+        const parentTask = visibleTaskMap.get(parentId) || tasksById.get(parentId);
+        parentId = parentTask?.parentTaskId;
+      }
+
+      return depth;
+    };
 
     return visibleRows.map((row, index) => {
       if (row.type === 'group') {
@@ -1066,6 +1317,17 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
           progress: getGroupProgress(row.tasks),
           type: 'project',
           displayOrder: index + 1,
+          hideChildren: row.taskCount > 0 ? Boolean(collapsedGroups[row.group.id] && !hasActiveTaskSearch) : undefined,
+          fullscreenMeta: {
+            rowKind: 'group',
+            title: row.group.name,
+            groupColor,
+            groupTaskCount: row.taskCount,
+            depth: 0,
+            childCount: row.taskCount,
+            isExpanded: !collapsedGroups[row.group.id] || hasActiveTaskSearch,
+            progress: getGroupProgress(row.tasks),
+          },
           styles: {
             backgroundColor: `${groupColor}55`,
             backgroundSelectedColor: `${groupColor}88`,
@@ -1076,18 +1338,45 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       }
 
       const t = row.task;
-      const hasChildren = visibleTasks.some(task => task.parentTaskId === t.id);
+      const visibleChildCount = visibleChildCountByParentId.get(t.id) || 0;
+      const storedChildCount = allChildrenByParentId.get(t.id)?.length || 0;
+      const workflowStepCount = isWorkflowTaskType(t.type) && Array.isArray(t.workflowSteps) ? t.workflowSteps.length : 0;
+      const totalChildCount = Math.max(visibleChildCount, storedChildCount, workflowStepCount);
+      const hasChildren = totalChildCount > 0;
       const barColors = getScheduleBarColors(t);
+      const parentTask = t.parentTaskId ? visibleTaskMap.get(t.parentTaskId) || tasksById.get(t.parentTaskId) : null;
+      const assigneeName =
+        t.assignedTo === 'DYNAMIC'
+          ? 'Asignación dinámica'
+          : assigneeNameMap.get(t.assignedTo || '') || '';
+      const statusLabel = getTaskStatusLabel(t.status || 'todo');
+      const taskTitle = getTaskDisplayTitle(t);
 
       return {
         id: t.id,
-        name: getTaskDisplayTitle(t),
+        name: taskTitle,
         start: getTaskDate(t.startDate) || new Date(),
         end: getTaskDate(t.endDate) || new Date(),
         progress: t.progress || 0,
         type: t.isParentTask || hasChildren ? 'project' : 'task',
         project: t.parentTaskId && visibleTaskIds.has(t.parentTaskId) ? t.parentTaskId : undefined,
         displayOrder: index + 1,
+        hideChildren: hasChildren ? !(expandedParents[t.id] || hasActiveTaskSearch) : undefined,
+        fullscreenMeta: {
+          rowKind: 'task',
+          title: taskTitle,
+          parentTitle: parentTask ? getTaskDisplayTitle(parentTask) : undefined,
+          depth: getTaskDepth(t),
+          childCount: totalChildCount,
+          isExpanded: Boolean(expandedParents[t.id] || hasActiveTaskSearch),
+          isWorkflowStep: Boolean(t.isWorkflowStep),
+          taskTypeLabel: getFullscreenTaskKindLabel(t),
+          statusLabel,
+          priorityLabel: getTaskPriorityLabel(getTaskPriority(t)),
+          assigneeName,
+          dateLabel: `${formatTaskDateLabel(t.startDate || t.start)} - ${formatTaskDateLabel(t.endDate || t.end)}`,
+          progress: Number(t.progress || 0),
+        },
         styles: {
           backgroundColor: barColors.backgroundColor,
           backgroundSelectedColor: barColors.backgroundSelectedColor,
@@ -1096,12 +1385,20 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         }
       };
     });
-  }, [visibleRows, visibleTasks]);
+  }, [allChildrenByParentId, assigneeNameMap, collapsedGroups, expandedParents, hasActiveTaskSearch, tasksById, visibleChildCountByParentId, visibleRows, visibleTaskMap, visibleTasks]);
 
-  const fullscreenGanttTasks: Task[] = useMemo(
+  const fullscreenGanttTasks: FullscreenGanttTask[] = useMemo(
     () => ganttTasks.map((task) => {
-      const sourceTask = visibleTasks.find((candidate) => candidate.id === task.id);
-      const fullscreenStyles = getFullscreenGanttBarColors(sourceTask);
+      const sourceRow = visibleRowById.get(task.id);
+      const sourceTask = sourceRow?.type === 'task' ? sourceRow.task : null;
+      const fullscreenStyles = sourceRow?.type === 'group'
+        ? {
+            backgroundColor: `${getTaskGroupColor(sourceRow.group)}66`,
+            backgroundSelectedColor: `${getTaskGroupColor(sourceRow.group)}99`,
+            progressColor: getTaskGroupColor(sourceRow.group),
+            progressSelectedColor: getTaskGroupColor(sourceRow.group),
+          }
+        : getFullscreenGanttBarColors(sourceTask);
 
       return {
         ...task,
@@ -1112,7 +1409,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
         },
       };
     }),
-    [ganttTasks, viewMode, visibleTasks]
+    [ganttTasks, viewMode, visibleRowById]
   );
 
   const selectedTimelineTask = useMemo(() => {
@@ -1235,22 +1532,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   };
 
   const getStatusLabel = (status: string) => {
-    switch (status) {
-      case 'completed': return 'LISTO';
-      case 'completed_late': return 'LISTO CON RETRASO';
-      case 'rescheduled': return 'REPROGRAMACIÓN';
-      case 'in_progress': return 'TRABAJANDO';
-      case 'stuck': return 'ESTANCADO';
-      case 'todo':
-      case 'pending': return 'PENDIENTE';
-      case 'en_curso': return 'EN CURSO';
-      case 'listo': return 'LISTO';
-      case 'devuelto': return 'DEVUELTO';
-      case 'reproceso': return 'REPROCESO';
-      case 'detenido': return 'DETENIDO';
-      case 'not_started': return 'NO INICIADO';
-      default: return status?.toUpperCase();
-    }
+    return getTaskStatusLabel(status);
   };
 
   const toggleScheduleFilter = (filter: Exclude<ScheduleFilter, null>) => {
@@ -2390,17 +2672,31 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     <Gantt
                       tasks={fullscreenGanttTasks}
                       viewMode={viewMode}
-                      listCellWidth=""
+                      listCellWidth="430px"
                       columnWidth={viewMode === ViewMode.Day ? 72 : viewMode === ViewMode.Week ? 160 : 260}
-                      headerHeight={54}
-                      rowHeight={48}
-                      barCornerRadius={9}
-                      barFill={66}
+                      headerHeight={64}
+                      rowHeight={58}
+                      barCornerRadius={11}
+                      barFill={60}
                       handleWidth={8}
-                      fontSize={viewMode === ViewMode.Month ? "12px" : "11.5px"}
+                      fontSize={viewMode === ViewMode.Month ? "12px" : "11px"}
                       fontFamily="Inter, ui-sans-serif, system-ui, sans-serif"
                       todayColor="rgba(79, 70, 229, 0.07)"
+                      TaskListHeader={FullscreenGanttTaskListHeader}
+                      TaskListTable={FullscreenGanttTaskListTable}
                       onClick={handleFullscreenTaskClick}
+                      onSelect={(task, isSelected) => {
+                        if (isSelected) handleFullscreenTaskClick(task);
+                      }}
+                      onExpanderClick={(task) => {
+                        const meta = (task as FullscreenGanttTask).fullscreenMeta;
+                        if (meta?.rowKind === 'group') {
+                          const groupId = task.id.replace(/^group-/, '');
+                          toggleGroup(groupId);
+                          return;
+                        }
+                        toggleParent(task.id);
+                      }}
                       onProgressChange={canModifyTaskDetails && onUpdateTaskProgress ? (task) => {
                         const originalTask = tasks.find(t => t.id === task.id);
                         if (!originalTask) return;
