@@ -4,7 +4,7 @@ type Primitive = string | number | boolean | null;
 type DataValue = Primitive | DataValue[] | { [key: string]: DataValue };
 
 type Row = {
-  id: string;
+  id?: string;
   collection_path: string;
   doc_id: string;
   data: Record<string, any>;
@@ -40,6 +40,7 @@ const COLLECTION_FETCH_PAGE_SIZE = 1000;
 const BULK_WRITE_CHUNK_SIZE = 250;
 const BULK_READ_ID_CHUNK_SIZE = 250;
 const REMOTE_CHANGE_DEBOUNCE_MS = 450;
+const DOCUMENT_SELECT_COLUMNS = 'collection_path,doc_id,data,created_at,updated_at';
 
 class IncrementTransform {
   constructor(public by: number) {}
@@ -364,6 +365,14 @@ const setByPath = (data: Record<string, any>, path: string, value: any) => {
 };
 
 const stableStringify = (value: any) => JSON.stringify(normalizeValue(value));
+const collectionFetchInFlight = new Map<string, Promise<Row[]>>();
+
+const getCollectionFetchKey = (source: CollectionReference, constraints: QueryConstraint[] = []) =>
+  stableStringify({
+    collectionPath: source.collectionPath,
+    collectionGroup: source.isCollectionGroup ? source.id : null,
+    constraints,
+  });
 
 const applyUpdate = (base: Record<string, any>, update: Record<string, any>) => {
   const next = { ...base };
@@ -545,40 +554,56 @@ const applyServerConstraints = (request: any, constraints: QueryConstraint[]) =>
 };
 
 const fetchRowsForCollection = async (source: CollectionReference, constraints: QueryConstraint[] = []) => {
-  const rows: Row[] = [];
-  let from = 0;
+  const fetchKey = getCollectionFetchKey(source, constraints);
+  const activeFetch = collectionFetchInFlight.get(fetchKey);
+  if (activeFetch) return activeFetch;
 
-  while (true) {
-    let request: any = supabase.from(SUPABASE_DOCUMENTS_TABLE).select('*');
+  const fetchPromise = (async () => {
+    const rows: Row[] = [];
+    let from = 0;
 
-    if (source.isCollectionGroup) {
-      request = request.eq('collection_group', source.id);
-    } else {
-      request = request.eq('collection_path', source.collectionPath);
+    while (true) {
+      let request: any = supabase.from(SUPABASE_DOCUMENTS_TABLE).select(DOCUMENT_SELECT_COLUMNS);
+
+      if (source.isCollectionGroup) {
+        request = request.eq('collection_group', source.id);
+      } else {
+        request = request.eq('collection_path', source.collectionPath);
+      }
+
+      request = applyServerConstraints(request, constraints);
+
+      const { data, error } = await request
+        .order('collection_path', { ascending: true })
+        .order('doc_id', { ascending: true })
+        .range(from, from + COLLECTION_FETCH_PAGE_SIZE - 1);
+      if (error) throw error;
+
+      const page = (data || []) as Row[];
+      rows.push(...page);
+
+      if (page.length < COLLECTION_FETCH_PAGE_SIZE) break;
+      from += COLLECTION_FETCH_PAGE_SIZE;
     }
 
-    request = applyServerConstraints(request, constraints);
+    return rows;
+  })();
 
-    const { data, error } = await request
-      .order('collection_path', { ascending: true })
-      .order('doc_id', { ascending: true })
-      .range(from, from + COLLECTION_FETCH_PAGE_SIZE - 1);
-    if (error) throw error;
+  collectionFetchInFlight.set(fetchKey, fetchPromise);
 
-    const page = (data || []) as Row[];
-    rows.push(...page);
-
-    if (page.length < COLLECTION_FETCH_PAGE_SIZE) break;
-    from += COLLECTION_FETCH_PAGE_SIZE;
+  try {
+    return await fetchPromise;
+  } finally {
+    if (collectionFetchInFlight.get(fetchKey) === fetchPromise) {
+      collectionFetchInFlight.delete(fetchKey);
+    }
   }
-
-  return rows;
 };
 
 const fetchDocRow = async (ref: DocumentReference) => {
   const { data, error } = await supabase
     .from(SUPABASE_DOCUMENTS_TABLE)
-    .select('*')
+    .select(DOCUMENT_SELECT_COLUMNS)
     .eq('collection_path', ref.collectionPath)
     .eq('doc_id', ref.id)
     .maybeSingle();
@@ -604,7 +629,7 @@ const fetchDocRows = async (refs: DocumentReference[]) => {
       chunkArray(ids, BULK_READ_ID_CHUNK_SIZE).map(async (idChunk) => {
         const { data, error } = await supabase
           .from(SUPABASE_DOCUMENTS_TABLE)
-          .select('*')
+          .select(DOCUMENT_SELECT_COLUMNS)
           .eq('collection_path', collectionPath)
           .in('doc_id', idChunk);
 
