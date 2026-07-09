@@ -47,7 +47,9 @@ flowchart LR
   Browser["Navegador / PWA"] --> Next["Next.js App Router"]
   Next --> Auth["Supabase Auth"]
   Next --> Store["Supabase Postgres + app_documents"]
-  Next --> Storage["Supabase Storage"]
+  Next --> Storage["Gestor documental"]
+  Storage --> SupabaseFiles["Supabase Storage"]
+  Storage --> S3["Amazon S3 opcional"]
   Next --> Email["Resend Email"]
   Next --> Push["Web Push / VAPID"]
   Store --> Views["Vistas app_* y PostGIS"]
@@ -78,6 +80,12 @@ Variables principales:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET`
+- `DOCUMENT_STORAGE_PROVIDER`
+- `AWS_REGION`
+- `AWS_S3_BUCKET`
+- `AWS_S3_PREFIX`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `NEXT_PUBLIC_SITE_URL`
 - `BOOTSTRAP_ADMIN_EMAILS`
@@ -89,6 +97,17 @@ Variables principales:
 - `WEB_PUSH_SUBJECT`
 
 Nunca publiques `.env.local` ni claves reales. El repositorio ignora `.env*` salvo `.env.example`.
+
+### Gestor documental con Amazon S3
+
+Supabase sigue siendo la fuente de metadatos, permisos y registros documentales. Los archivos pueden vivir en:
+
+- Supabase Storage, proveedor por defecto.
+- Amazon S3, activable con `DOCUMENT_STORAGE_PROVIDER=s3`.
+
+Cuando S3 está activo, el navegador pide a una API interna una URL temporal de carga. Las credenciales AWS nunca llegan al cliente. En el panel de **Configuración > Gestor documental**, el administrador global puede escoger proveedor, definir bucket/región/prefijo visible, límites de peso y ejecutar una prueba real de carga/lectura/borrado.
+
+Los documentos históricos de Supabase siguen funcionando. Los documentos nuevos en S3 guardan rutas con formato `s3://bucket/key`, lo que permite descargar y eliminar sin adivinar el proveedor.
 
 ## Base de datos
 

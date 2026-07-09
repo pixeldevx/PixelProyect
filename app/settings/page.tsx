@@ -5,7 +5,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Plus, Trash2, Edit2, AlertCircle, Shield, Users, SlidersHorizontal, Palette } from 'lucide-react';
+import { Plus, Trash2, Edit2, AlertCircle, Shield, Users, SlidersHorizontal, Palette, Cloud } from 'lucide-react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
@@ -14,12 +14,13 @@ import { UserManagement } from '@/components/settings/UserManagement';
 import { OrganizationManagement } from '@/components/settings/OrganizationManagement';
 import { PermissionManagement } from '@/components/settings/PermissionManagement';
 import { BrandingManagement } from '@/components/settings/BrandingManagement';
+import { DocumentStorageManagement } from '@/components/settings/DocumentStorageManagement';
 import { Building } from 'lucide-react';
 import { belongsToAnyOrganization } from '@/lib/organizations';
 
 export default function SettingsPage() {
   const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
-  const [activeTab, setActiveTab] = useState<'roles' | 'users' | 'permissions' | 'organizations' | 'branding'>('roles');
+  const [activeTab, setActiveTab] = useState<'roles' | 'users' | 'permissions' | 'organizations' | 'branding' | 'storage'>('roles');
   const [roles, setRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
@@ -227,6 +228,22 @@ export default function SettingsPage() {
               </div>
             </button>
           )}
+
+          {userRole === 'admin' && (
+            <button
+              onClick={() => setActiveTab('storage')}
+              className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'storage'
+                  ? 'border-indigo-600 text-indigo-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Cloud size={16} />
+                Gestor documental
+              </div>
+            </button>
+          )}
         </div>
       </div>
 
@@ -234,6 +251,8 @@ export default function SettingsPage() {
         <OrganizationManagement />
       ) : activeTab === 'branding' && userRole === 'admin' ? (
         <BrandingManagement />
+      ) : activeTab === 'storage' && userRole === 'admin' ? (
+        <DocumentStorageManagement />
       ) : activeTab === 'permissions' ? (
         <PermissionManagement currentUser={user} />
       ) : activeTab === 'roles' ? (

@@ -28,6 +28,7 @@ flowchart TB
   end
 
   subgraph External["Servicios externos"]
+    S3["Amazon S3 opcional"]
     Resend["Resend email"]
     Push["Web Push VAPID"]
     OSM["OpenStreetMap tiles"]
@@ -39,6 +40,8 @@ flowchart TB
   Modules --> Docs
   APIs --> Auth
   APIs --> Docs
+  APIs --> Files
+  APIs --> S3
   APIs --> Resend
   APIs --> Push
   Maps --> GIS
@@ -85,12 +88,13 @@ Esto permite mantener una API parecida a documentos mientras se aprovechan Postg
 
 - Auth: inicio de sesión, recuperación, invitaciones y usuarios.
 - Postgres: `app_documents`, vistas `app_*`, funciones RLS y tablas espaciales.
-- Storage: archivos de proyecto, documentos, fotos de inventario y perfiles.
+- Storage: archivos de proyecto, documentos, fotos de inventario y perfiles cuando se usa el proveedor Supabase.
 - Realtime: sincronización de documentos y capas espaciales cuando aplica.
 - PostGIS: geometrías, capas, anotaciones, uniones con tareas y simulación temporal.
 
 ### Integraciones
 
+- Amazon S3: proveedor documental opcional para archivos pesados. Next.js genera URLs temporales de carga/descarga y guarda metadatos en `app_documents`.
 - Resend: correos transaccionales con plantillas HTML.
 - Web Push: notificaciones PWA mediante VAPID.
 - OpenStreetMap: mapa base para visualización espacial.
@@ -143,6 +147,7 @@ Cruza personas, roles, proyectos, cobertura presupuestal, invitados, desempeño,
 - Las claves reales viven en variables de entorno.
 - `.env*` está ignorado, salvo `.env.example`.
 - `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY` y `WEB_PUSH_PRIVATE_KEY` solo deben existir en servidor.
+- `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY` son server-only y se configuran en Vercel, nunca en el panel ni con prefijo `NEXT_PUBLIC_`.
 - Los administradores bootstrap se configuran con `BOOTSTRAP_ADMIN_EMAILS` y `NEXT_PUBLIC_BOOTSTRAP_ADMIN_EMAILS`.
 - Las migraciones públicas usan placeholders y `app.bootstrap_admin_email`.
 
@@ -157,6 +162,7 @@ Cruza personas, roles, proyectos, cobertura presupuestal, invitados, desempeño,
 
 - Nuevos módulos de proyecto: agregar componente en `components/projects/` y tab en `app/projects/[id]/page.tsx`.
 - Nuevas colecciones: usar `lib/supabase/document-store.ts`.
+- Nuevos proveedores de archivos: implementar adaptador compatible con `lib/supabase/storage-shim.ts` y rutas server en `app/api/storage`.
 - Nuevas vistas SQL: agregar migración en `supabase/migrations`.
 - Nuevos reportes: preferir agregación en memoria para vistas pequeñas y vistas SQL para tableros pesados.
 - Nuevas notificaciones: usar `lib/notifications.ts`, API routes en `app/api/notifications` y plantillas en `lib/email`.
