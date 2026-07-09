@@ -15,6 +15,9 @@ const getAuthHeaders = async (): Promise<Record<string, string>> => {
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
+const S3_BROWSER_UPLOAD_ERROR =
+  'Amazon S3 bloqueó la carga desde el navegador. La conexión servidor-S3 puede estar correcta, pero falta configurar CORS del bucket para permitir PUT desde este dominio.';
+
 const getS3DownloadPath = (storageRef: StorageRef) => {
   if (storageRef.provider === 's3' && storageRef.key) {
     return formatS3StoragePath(storageRef.bucket, storageRef.key);
@@ -62,11 +65,17 @@ export const uploadBytes = async (storageRef: StorageRef, file: File) => {
   if (planResponse.ok) {
     const plan = await planResponse.json();
     if (plan.provider === 's3') {
-      const uploadResponse = await fetch(plan.uploadUrl, {
-        method: 'PUT',
-        body: file,
-        headers: file.type ? { 'Content-Type': file.type } : undefined,
-      });
+      let uploadResponse: Response;
+      try {
+        uploadResponse = await fetch(plan.uploadUrl, {
+          method: 'PUT',
+          body: file,
+          headers: file.type ? { 'Content-Type': file.type } : undefined,
+        });
+      } catch (error) {
+        console.error('Browser upload to S3 failed:', error);
+        throw new Error(S3_BROWSER_UPLOAD_ERROR);
+      }
 
       if (!uploadResponse.ok) {
         const message = await uploadResponse.text().catch(() => '');

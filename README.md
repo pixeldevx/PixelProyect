@@ -109,6 +109,22 @@ Cuando S3 está activo, el navegador pide a una API interna una URL temporal de 
 
 Los documentos históricos de Supabase siguen funcionando. Los documentos nuevos en S3 guardan rutas con formato `s3://bucket/key`, lo que permite descargar y eliminar sin adivinar el proveedor.
 
+El bucket S3 debe tener CORS habilitado para que el navegador pueda usar URLs temporales de carga:
+
+```json
+[
+  {
+    "AllowedHeaders": ["*"],
+    "AllowedMethods": ["GET", "HEAD", "PUT"],
+    "AllowedOrigins": ["https://pixelprojects.com.co"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3000
+  }
+]
+```
+
+Agrega también los dominios de cada instancia o preview que vaya a subir documentos.
+
 ## Base de datos
 
 Ejecuta las migraciones de `supabase/migrations` en orden. Para una instalación nueva:

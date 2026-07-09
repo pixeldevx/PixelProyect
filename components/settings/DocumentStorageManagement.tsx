@@ -59,6 +59,9 @@ const normalizeAllowedTypes = (value: string) =>
     .map((item) => item.trim())
     .filter(Boolean);
 
+const S3_BROWSER_CORS_ERROR =
+  'El servidor conecta con S3, pero el navegador no puede subir al bucket. Configura CORS en AWS S3 para permitir PUT, GET y HEAD desde el dominio de la aplicación.';
+
 export function DocumentStorageManagement() {
   const { user, userRole } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -70,6 +73,11 @@ export function DocumentStorageManagement() {
   const canManage = userRole === 'admin';
   const activeProvider = providerCopy[settings.provider];
   const ActiveProviderIcon = activeProvider.icon;
+  const isS3Provider = settings.provider === 's3';
+  const s3VariablesReady = Boolean(status?.s3Ready);
+  const browserUploadPassed = status?.browserUploadOk === true;
+  const browserUploadFailed = status?.browserUploadOk === false && Boolean(status?.browserUploadError);
+  const connectionHealthy = settings.provider === 'supabase' || (isS3Provider && browserUploadPassed);
 
   useEffect(() => {
     if (!canManage) {
@@ -108,10 +116,66 @@ export function DocumentStorageManagement() {
     [settings.allowedContentTypes]
   );
 
-  const authHeaders = async (): Promise<HeadersInit> => {
+  const authHeaders = async (): Promise<Record<string, string>> => {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
     return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
+  const testBrowserS3Upload = async (headers: Record<string, string>) => {
+    const diagnosticType = allowedTypesPreview[0] || 'text/plain';
+    const diagnosticFile = new File(
+      [`Pixel Project browser S3 test ${new Date().toISOString()}`],
+      `pixel-browser-storage-test-${Date.now()}.bin`,
+      { type: diagnosticType }
+    );
+
+    const planResponse = await fetch('/api/storage/upload-url', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: JSON.stringify({
+        path: `diagnostics/browser/${diagnosticFile.name}`,
+        fileName: diagnosticFile.name,
+        contentType: diagnosticType,
+        size: diagnosticFile.size,
+      }),
+    });
+
+    const plan = await planResponse.json().catch(() => ({}));
+    if (!planResponse.ok) {
+      throw new Error(plan.error || 'No se pudo preparar la prueba desde el navegador.');
+    }
+
+    if (plan.provider !== 's3') return;
+
+    let uploadResponse: Response;
+    try {
+      uploadResponse = await fetch(plan.uploadUrl, {
+        method: 'PUT',
+        body: diagnosticFile,
+        headers: { 'Content-Type': diagnosticType },
+      });
+    } catch (error) {
+      console.error('Browser S3 diagnostic upload failed:', error);
+      throw new Error(S3_BROWSER_CORS_ERROR);
+    }
+
+    if (!uploadResponse.ok) {
+      const message = await uploadResponse.text().catch(() => '');
+      throw new Error(`S3 rechazó la carga desde navegador (${uploadResponse.status}). ${message}`.trim());
+    }
+
+    await fetch('/api/storage/object', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: JSON.stringify({ path: plan.storagePath }),
+    }).catch(() => null);
   };
 
   const fetchStatus = async () => {
@@ -138,8 +202,15 @@ export function DocumentStorageManagement() {
         throw new Error(payload.error || 'La prueba no fue exitosa.');
       }
 
-      toast.success(payload.message || 'Gestor documental probado correctamente.');
+      if (payload.provider === 's3') {
+        await testBrowserS3Upload(headers);
+        setStatus({ ...payload, browserUploadOk: true });
+        toast.success('Amazon S3 respondió correctamente desde servidor y navegador.');
+      } else {
+        toast.success(payload.message || 'Gestor documental probado correctamente.');
+      }
     } catch (error: any) {
+      setStatus((current: any) => current ? { ...current, browserUploadOk: false, browserUploadError: error?.message } : current);
       toast.error(error?.message || 'No se pudo probar el gestor documental.');
     } finally {
       setTesting(false);
@@ -323,8 +394,10 @@ export function DocumentStorageManagement() {
                 <div className="space-y-4">
                   <div className="rounded-2xl border border-slate-200 bg-white p-5">
                     <div className="flex items-center gap-2">
-                      {status?.s3Ready || settings.provider === 'supabase' ? (
+                      {connectionHealthy ? (
                         <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+                      ) : browserUploadFailed ? (
+                        <AlertCircle className="h-5 w-5 text-red-600" />
                       ) : (
                         <AlertCircle className="h-5 w-5 text-orange-600" />
                       )}
@@ -333,9 +406,13 @@ export function DocumentStorageManagement() {
                     <p className="mt-2 text-sm font-medium text-slate-500">
                       {settings.provider === 'supabase'
                         ? 'Supabase Storage está seleccionado. Amazon S3 queda listo como alternativa.'
-                        : status?.s3Ready
-                          ? 'Las variables mínimas de S3 están presentes.'
-                          : 'Faltan variables server-only en Vercel para activar S3.'}
+                        : !s3VariablesReady
+                          ? 'Faltan variables server-only en Vercel para activar S3.'
+                          : browserUploadPassed
+                            ? 'Amazon S3 permite carga desde servidor y desde navegador.'
+                            : browserUploadFailed
+                              ? status.browserUploadError
+                              : 'Las variables existen. Ejecuta la prueba para validar carga real desde navegador.'}
                     </p>
 
                     {status?.missingS3Variables?.length > 0 && (
