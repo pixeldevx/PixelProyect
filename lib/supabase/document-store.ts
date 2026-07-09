@@ -39,6 +39,7 @@ const LOCAL_DOCUMENT_CHANGE_EVENT = 'pixel-project:document-store-change';
 const COLLECTION_FETCH_PAGE_SIZE = 1000;
 const BULK_WRITE_CHUNK_SIZE = 250;
 const BULK_READ_ID_CHUNK_SIZE = 250;
+const REMOTE_CHANGE_DEBOUNCE_MS = 450;
 
 class IncrementTransform {
   constructor(public by: number) {}
@@ -205,7 +206,7 @@ const changeMatchesSource = (
 
 const getRealtimeFilter = (source: DocumentReference | CollectionReference | SupabaseQuery) => {
   const watched = getWatchedCollection(source);
-  if (watched.isCollectionGroup) return undefined;
+  if (watched.isCollectionGroup && watched.collectionGroupId) return `collection_group=eq.${watched.collectionGroupId}`;
   return `collection_path=eq.${watched.collectionPath}`;
 };
 
@@ -551,7 +552,7 @@ const fetchRowsForCollection = async (source: CollectionReference, constraints: 
     let request: any = supabase.from(SUPABASE_DOCUMENTS_TABLE).select('*');
 
     if (source.isCollectionGroup) {
-      request = request.like('collection_path', `%/${source.id}`);
+      request = request.eq('collection_group', source.id);
     } else {
       request = request.eq('collection_path', source.collectionPath);
     }
@@ -839,6 +840,7 @@ export function onSnapshot(
   let active = true;
   let emitting = false;
   let pendingEmit = false;
+  let remoteEmitTimer: ReturnType<typeof setTimeout> | null = null;
 
   const emit = async () => {
     try {
@@ -886,7 +888,11 @@ export function onSnapshot(
     };
 
     if (changeMatchesSource(source, change)) {
-      requestEmit();
+      if (remoteEmitTimer) clearTimeout(remoteEmitTimer);
+      remoteEmitTimer = setTimeout(() => {
+        remoteEmitTimer = null;
+        requestEmit();
+      }, REMOTE_CHANGE_DEBOUNCE_MS);
     }
   };
 
@@ -915,6 +921,10 @@ export function onSnapshot(
 
   return () => {
     active = false;
+    if (remoteEmitTimer) {
+      clearTimeout(remoteEmitTimer);
+      remoteEmitTimer = null;
+    }
     if (typeof window !== 'undefined') {
       window.removeEventListener(LOCAL_DOCUMENT_CHANGE_EVENT, handleLocalChange);
     }
