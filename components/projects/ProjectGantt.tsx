@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import { Gantt, Task, ViewMode } from 'gantt-task-react';
 import "gantt-task-react/dist/index.css";
@@ -573,13 +573,13 @@ const FullscreenGanttTaskListHeader: React.FC<{
     className="fullscreen-gantt-list-header border-b border-slate-200 bg-white"
     style={{ height: headerHeight, minWidth: rowWidth, maxWidth: rowWidth }}
   >
-    <div className="flex h-full items-center justify-between gap-3 px-4">
+    <div className="flex h-full items-center justify-between gap-3 px-3">
       <div>
-        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-500">Estructura</p>
-        <p className="mt-1 text-xs font-bold text-slate-500">Tareas, subtareas y dependencias</p>
+        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-500">Tareas</p>
+        <p className="mt-0.5 text-[11px] font-bold text-slate-500">Jerarquía compacta</p>
       </div>
-      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-slate-500">
-        Timeline
+      <span className="rounded-full bg-indigo-50 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-indigo-600">
+        Línea
       </span>
     </div>
   </div>
@@ -603,8 +603,8 @@ const FullscreenGanttTaskListTable: React.FC<{
       const isGroup = meta?.rowKind === 'group';
       const isSelected = selectedTaskId === task.id;
       const canExpand = Boolean(meta?.childCount);
-      const indent = isGroup ? 0 : Math.min(meta?.depth || 0, 5) * 18;
-      const connectorLeft = 22 + Math.max(0, (meta?.depth || 0) - 1) * 18;
+      const indent = isGroup ? 0 : Math.min(meta?.depth || 0, 5) * 14;
+      const connectorLeft = 18 + Math.max(0, (meta?.depth || 0) - 1) * 14;
 
       return (
         <div
@@ -646,7 +646,7 @@ const FullscreenGanttTaskListTable: React.FC<{
             </>
           )}
 
-          <div className="flex min-w-0 flex-1 items-center gap-2 px-4" style={{ paddingLeft: 16 + indent }}>
+          <div className="flex min-w-0 flex-1 items-center gap-2 px-3" style={{ paddingLeft: 12 + indent }}>
             {canExpand ? (
               <button
                 type="button"
@@ -654,49 +654,29 @@ const FullscreenGanttTaskListTable: React.FC<{
                   event.stopPropagation();
                   onExpanderClick(task);
                 }}
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600"
                 aria-label={meta?.isExpanded ? 'Contraer' : 'Expandir'}
               >
-                <ChevronRight size={15} className={`transition-transform ${meta?.isExpanded ? 'rotate-90' : ''}`} />
+                <ChevronRight size={13} className={`transition-transform ${meta?.isExpanded ? 'rotate-90' : ''}`} />
               </button>
             ) : (
-              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${isGroup ? 'bg-slate-400' : getFullscreenMetaRailClass(meta?.statusLabel)}`} />
+              <span className={`h-2 w-2 shrink-0 rounded-full ${isGroup ? 'bg-slate-400' : getFullscreenMetaRailClass(meta?.statusLabel)}`} />
             )}
 
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 items-center gap-2">
-                {isGroup ? (
-                  <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-slate-600">
-                    Grupo
-                  </span>
-                ) : (
-                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-indigo-600 ring-1 ring-indigo-100">
-                    {meta?.taskTypeLabel || 'Tarea'}
-                  </span>
-                )}
-                {meta?.parentTitle && (
-                  <span className="truncate text-[10px] font-bold text-slate-400" title={meta.parentTitle}>
-                    {meta.parentTitle}
-                  </span>
-                )}
-              </div>
-
-              <p className={`mt-0.5 truncate text-sm leading-tight ${isGroup ? 'font-black text-slate-900' : 'font-black text-slate-800'}`}>
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <p className={`min-w-0 flex-1 truncate text-sm leading-tight ${isGroup ? 'font-black text-slate-900' : 'font-black text-slate-800'}`}>
                 {meta?.title || task.name}
               </p>
-
-              <div className="mt-1 flex min-w-0 items-center gap-2 text-[10px] font-bold text-slate-500">
-                {meta?.statusLabel && (
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 ring-1 ${getFullscreenStatusPillClass(meta.statusLabel)}`}>
-                    {meta.statusLabel}
-                  </span>
-                )}
-                {meta?.assigneeName && <span className="truncate">{meta.assigneeName}</span>}
-                {typeof meta?.progress === 'number' && <span className="shrink-0">{meta.progress}%</span>}
-                {isGroup && typeof meta?.groupTaskCount === 'number' && (
-                  <span className="shrink-0">{meta.groupTaskCount} tarea{meta.groupTaskCount === 1 ? '' : 's'}</span>
-                )}
-              </div>
+              {!isGroup && meta?.statusLabel && (
+                <span className={`hidden shrink-0 rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-wider ring-1 lg:inline-flex ${getFullscreenStatusPillClass(meta.statusLabel)}`}>
+                  {meta.statusLabel}
+                </span>
+              )}
+              {isGroup && typeof meta?.groupTaskCount === 'number' && (
+                <span className="shrink-0 rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-black text-slate-600">
+                  {meta.groupTaskCount}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -760,7 +740,9 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
   const [taskSearchQuery, setTaskSearchQuery] = useState("");
   const [repairingMatrixIds, setRepairingMatrixIds] = useState<string[]>([]);
   const [isFullscreenGanttOpen, setIsFullscreenGanttOpen] = useState(false);
+  const [isFullscreenDetailOpen, setIsFullscreenDetailOpen] = useState(false);
   const [selectedTimelineTaskId, setSelectedTimelineTaskId] = useState<string | null>(null);
+  const fullscreenGanttPanRef = useRef<HTMLDivElement | null>(null);
   const taskAssigneeOptions = assigneeOptions || teamMembers;
   const canModifyTaskDetails = Boolean(canEditTaskDetails);
   const canModifyTaskDates = Boolean(canEditTaskDates && onUpdateTaskDates);
@@ -1435,6 +1417,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
       const firstSelectableTask = visibleTasks.find((task) => !task.isWorkflowStep) || visibleTasks[0];
       setSelectedTimelineTaskId(firstSelectableTask?.id || null);
     }
+    setIsFullscreenDetailOpen(false);
     setIsFullscreenGanttOpen(true);
   };
 
@@ -1442,8 +1425,85 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
     const clickedTask = visibleTasks.find((task) => task.id === ganttTask.id);
     if (clickedTask) {
       setSelectedTimelineTaskId(clickedTask.id);
+      setIsFullscreenDetailOpen(true);
     }
   };
+
+  useEffect(() => {
+    if (!isFullscreenGanttOpen) return;
+    const root = fullscreenGanttPanRef.current;
+    if (!root) return;
+
+    let isPointerDown = false;
+    let didDrag = false;
+    let startX = 0;
+    let startY = 0;
+    let startScrollX = 0;
+    let startScrollY = 0;
+    let suppressClickUntil = 0;
+
+    const getHorizontalScroller = () => root.querySelector<HTMLElement>('._2k9Ys') || root;
+    const getVerticalScroller = () => root.querySelector<HTMLElement>('._1eT-t') || root;
+
+    const shouldIgnorePanTarget = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return true;
+      return Boolean(target.closest('button, a, input, select, textarea, [role="button"], [data-no-pan]'));
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 || shouldIgnorePanTarget(event.target)) return;
+      isPointerDown = true;
+      didDrag = false;
+      startX = event.clientX;
+      startY = event.clientY;
+      startScrollX = getHorizontalScroller().scrollLeft;
+      startScrollY = getVerticalScroller().scrollTop;
+      root.setPointerCapture?.(event.pointerId);
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!isPointerDown) return;
+      const deltaX = event.clientX - startX;
+      const deltaY = event.clientY - startY;
+      if (!didDrag && Math.hypot(deltaX, deltaY) < 5) return;
+
+      didDrag = true;
+      root.classList.add('is-panning');
+      getHorizontalScroller().scrollLeft = startScrollX - deltaX;
+      getVerticalScroller().scrollTop = startScrollY - deltaY;
+      event.preventDefault();
+    };
+
+    const stopPan = (event: PointerEvent) => {
+      if (didDrag) suppressClickUntil = Date.now() + 120;
+      isPointerDown = false;
+      didDrag = false;
+      root.classList.remove('is-panning');
+      root.releasePointerCapture?.(event.pointerId);
+    };
+
+    const handleClickCapture = (event: MouseEvent) => {
+      if (Date.now() < suppressClickUntil) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+
+    root.addEventListener('pointerdown', handlePointerDown);
+    root.addEventListener('pointermove', handlePointerMove);
+    root.addEventListener('pointerup', stopPan);
+    root.addEventListener('pointercancel', stopPan);
+    root.addEventListener('click', handleClickCapture, true);
+
+    return () => {
+      root.removeEventListener('pointerdown', handlePointerDown);
+      root.removeEventListener('pointermove', handlePointerMove);
+      root.removeEventListener('pointerup', stopPan);
+      root.removeEventListener('pointercancel', stopPan);
+      root.removeEventListener('click', handleClickCapture, true);
+      root.classList.remove('is-panning');
+    };
+  }, [isFullscreenGanttOpen]);
 
   const handleDragEnd = (result: DropResult) => {
     if (!canModifyTaskDetails || !onReorderTasks) return;
@@ -2634,7 +2694,10 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setIsFullscreenGanttOpen(false)}
+                  onClick={() => {
+                    setIsFullscreenDetailOpen(false);
+                    setIsFullscreenGanttOpen(false);
+                  }}
                   className="rounded-2xl p-2 text-slate-300 transition hover:bg-white/10 hover:text-white"
                   aria-label="Cerrar Gantt completo"
                 >
@@ -2644,8 +2707,8 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col xl:flex-row">
-            <div className="min-w-0 flex-1 bg-slate-100">
+          <div className="relative min-h-0 flex-1 bg-slate-100">
+            <div className="min-h-0 bg-slate-100">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-3 text-xs font-bold text-slate-500 shadow-sm">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-emerald-700">
@@ -2661,25 +2724,30 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                     Atrasadas / estancadas
                   </span>
                 </div>
-                <span className="rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
-                  Vista {viewMode === ViewMode.Day ? 'diaria' : viewMode === ViewMode.Week ? 'semanal' : 'mensual'}
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.16em] text-indigo-600">
+                    Arrastra para navegar
+                  </span>
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
+                    Vista {viewMode === ViewMode.Day ? 'diaria' : viewMode === ViewMode.Week ? 'semanal' : 'mensual'}
+                  </span>
+                </div>
               </div>
 
-              <div className="h-[calc(100vh-134px)] overflow-auto bg-[#f8fafc] p-3">
+              <div ref={fullscreenGanttPanRef} className="project-gantt-fullscreen-scroll h-[calc(100vh-134px)] overflow-auto bg-[#f8fafc] p-3">
                 {fullscreenGanttTasks.length > 0 ? (
-                  <div className="project-gantt-fullscreen-canvas min-w-[980px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <div className="project-gantt-fullscreen-canvas min-w-[900px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                     <Gantt
                       tasks={fullscreenGanttTasks}
                       viewMode={viewMode}
-                      listCellWidth="430px"
-                      columnWidth={viewMode === ViewMode.Day ? 72 : viewMode === ViewMode.Week ? 160 : 260}
-                      headerHeight={64}
-                      rowHeight={58}
-                      barCornerRadius={11}
-                      barFill={60}
+                      listCellWidth="320px"
+                      columnWidth={viewMode === ViewMode.Day ? 68 : viewMode === ViewMode.Week ? 150 : 240}
+                      headerHeight={52}
+                      rowHeight={42}
+                      barCornerRadius={8}
+                      barFill={52}
                       handleWidth={8}
-                      fontSize={viewMode === ViewMode.Month ? "12px" : "11px"}
+                      fontSize={viewMode === ViewMode.Month ? "11px" : "10px"}
                       fontFamily="Inter, ui-sans-serif, system-ui, sans-serif"
                       todayColor="rgba(79, 70, 229, 0.07)"
                       TaskListHeader={FullscreenGanttTaskListHeader}
@@ -2717,12 +2785,23 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
               </div>
             </div>
 
-            <aside className="flex max-h-[45vh] min-h-0 w-full flex-col border-t border-white/10 bg-slate-950 xl:max-h-none xl:w-[420px] xl:border-l xl:border-t-0">
+            {isFullscreenDetailOpen && selectedTimelineSourceTask && (
+            <aside className="absolute bottom-4 right-4 top-4 z-30 flex w-[min(390px,calc(100vw-2rem))] flex-col overflow-hidden rounded-3xl border border-white/10 bg-slate-950/95 shadow-2xl shadow-slate-950/30 backdrop-blur-xl">
               <div className="border-b border-white/10 p-4">
-                <p className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.18em] text-indigo-300">
-                  <Activity size={14} />
-                  Detalle seleccionado
-                </p>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.18em] text-indigo-300">
+                    <Activity size={14} />
+                    Detalle seleccionado
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsFullscreenDetailOpen(false)}
+                    className="rounded-xl p-1.5 text-slate-400 transition hover:bg-white/10 hover:text-white"
+                    aria-label="Cerrar detalle"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
                 {selectedTimelineSourceTask ? (
                   <>
                     <h3 className="mt-3 break-words text-xl font-black leading-tight text-white [overflow-wrap:anywhere]">
@@ -2869,6 +2948,7 @@ export const ProjectGantt: React.FC<ProjectGanttProps> = ({
                 </div>
               )}
             </aside>
+            )}
           </div>
         </div>
       )}

@@ -105,6 +105,21 @@
     background: #ffffff;
   }
 
+  .project-gantt-fullscreen-scroll {
+    cursor: grab;
+    overscroll-behavior: contain;
+    touch-action: none;
+  }
+
+  .project-gantt-fullscreen-scroll.is-panning {
+    cursor: grabbing;
+    user-select: none;
+  }
+
+  .project-gantt-fullscreen-scroll.is-panning * {
+    user-select: none;
+  }
+
   .project-gantt-fullscreen-canvas .fullscreen-gantt-list-header,
   .project-gantt-fullscreen-canvas .fullscreen-gantt-list-table {
     box-shadow: inset -1px 0 0 #e2e8f0;
@@ -154,7 +169,7 @@
 
   .project-gantt-fullscreen-canvas ._3zRJQ {
     fill: #111827;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 900;
     letter-spacing: 0;
     paint-order: stroke;
@@ -165,7 +180,7 @@
 
   .project-gantt-fullscreen-canvas ._3KcaM {
     fill: #111827;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 900;
     letter-spacing: 0;
     paint-order: stroke;
@@ -190,6 +205,15 @@
   .project-gantt-fullscreen-canvas ._19jgW {
     background: #e2e8f0;
     border-radius: 999px;
+  }
+
+  .project-gantt-fullscreen-canvas ._2k9Ys {
+    position: sticky;
+    bottom: 0;
+    z-index: 12;
+    height: 14px;
+    background: rgba(248, 250, 252, 0.96);
+    backdrop-filter: blur(8px);
   }
 
   .project-gantt-fullscreen-canvas ._1eT-t::-webkit-scrollbar,
