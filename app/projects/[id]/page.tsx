@@ -267,6 +267,7 @@ export default function ProjectDetailsPage() {
   const [documents, setDocuments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [uploadTargetFolderId, setUploadTargetFolderId] = useState<string | null>(null);
   const [documentSearchQuery, setDocumentSearchQuery] = useState('');
   const [previewDocument, setPreviewDocument] = useState<any | null>(null);
 
@@ -647,6 +648,56 @@ export default function ProjectDetailsPage() {
   const canUploadDocuments = Boolean(rolePermissions.documentUpload) && hasDocumentManagementScope;
   const canManageDocumentAccess = Boolean(rolePermissions.documentManageAccess) && hasDocumentManagementScope;
   const canDeleteDocuments = Boolean(rolePermissions.documentDelete) && hasDocumentManagementScope;
+
+  const openUploadDocumentModal = (folderId: string | null = null) => {
+    setUploadTargetFolderId(folderId);
+    setIsUploadModalOpen(true);
+  };
+
+  const closeUploadDocumentModal = () => {
+    setIsUploadModalOpen(false);
+    setUploadTargetFolderId(null);
+  };
+
+  const handleCreateDocumentFolder = async (name: string, parentFolderId: string | null) => {
+    if (!canUploadDocuments || !user) {
+      toast.error('No tienes permisos para crear carpetas en este proyecto.');
+      return;
+    }
+
+    const cleanName = name.trim();
+    if (!cleanName) return;
+
+    const siblingExists = documents.some((document) =>
+      document?.itemKind === 'folder' &&
+      !document?.taskId &&
+      (document?.parentFolderId || null) === (parentFolderId || null) &&
+      String(document?.name || '').trim().toLowerCase() === cleanName.toLowerCase()
+    );
+
+    if (siblingExists) {
+      toast.warning('Ya existe una carpeta con ese nombre en esta ubicación.');
+      return;
+    }
+
+    await addDoc(collection(db, 'projects', projectId, 'documents'), {
+      projectId,
+      name: cleanName,
+      type: 'folder',
+      itemKind: 'folder',
+      scope: 'project',
+      parentFolderId: parentFolderId || null,
+      createdAt: serverTimestamp(),
+      uploadedAt: serverTimestamp(),
+      createdBy: user.uid,
+      uploadedBy: user.uid,
+      accessMode: 'all',
+      providerPathVersion: 'structured-v1',
+    });
+
+    toast.success('Carpeta creada');
+  };
+
   const canViewProjectInventory = Boolean(rolePermissions.inventoryProjectView);
   const hasInventoryManagementScope =
     userRole !== 'org_admin' ||
@@ -3166,7 +3217,7 @@ export default function ProjectDetailsPage() {
                 </div>
                 {canUploadDocuments && (
                   <Button
-                    onClick={() => setIsUploadModalOpen(true)}
+                    onClick={() => openUploadDocumentModal(null)}
                     className="w-full bg-indigo-600 text-white hover:bg-indigo-700 sm:w-auto"
                   >
                     <Upload size={16} className="mr-2" />
@@ -3191,11 +3242,14 @@ export default function ProjectDetailsPage() {
                     tasks={tasks}
                     onDeleteDocument={confirmDeleteDocument}
                     onViewDocument={setPreviewDocument}
+                    onCreateFolder={handleCreateDocumentFolder}
+                    onUploadToFolder={openUploadDocumentModal}
                     searchQuery={documentSearchQuery}
                     currentUser={user}
                     teamMembers={projectAssignableTeamMembers}
                     canManageAccess={canManageDocumentAccess}
                     canDeleteDocuments={canDeleteDocuments}
+                    canCreateFolders={canUploadDocuments}
                   />
                 </CardContent>
               </Card>
@@ -4012,11 +4066,13 @@ export default function ProjectDetailsPage() {
       />
       <UploadDocumentModal
         isOpen={isUploadModalOpen}
-        onClose={() => setIsUploadModalOpen(false)}
+        onClose={closeUploadDocumentModal}
         projectId={projectId}
         user={user}
         project={project}
         tasks={tasks}
+        documents={documents}
+        initialFolderId={uploadTargetFolderId}
         teamMembers={projectAssignableTeamMembers}
         canManageAccess={canManageDocumentAccess}
       />

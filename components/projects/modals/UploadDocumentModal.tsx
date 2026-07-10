@@ -6,8 +6,10 @@ import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { collection, addDoc, serverTimestamp } from '@/lib/supabase/document-store';
 import {
   buildDocumentStoragePath,
+  getDocumentFolderStorageSegments,
   getProjectTeamMembers,
   getTaskStorageFolderSegments,
+  isDocumentFolder,
 } from '@/lib/document-storage';
 import { toast } from 'sonner';
 
@@ -18,6 +20,8 @@ interface UploadDocumentModalProps {
   user: any;
   project?: any;
   tasks?: any[];
+  documents?: any[];
+  initialFolderId?: string | null;
   teamMembers?: any[];
   canManageAccess?: boolean;
 }
@@ -55,6 +59,34 @@ const buildTaskOptions = (tasks: any[] = []) => {
   return output;
 };
 
+const buildFolderOptions = (documents: any[] = []) => {
+  const folders = documents.filter((document) => isDocumentFolder(document));
+  const childrenByParent = new Map<string, any[]>();
+  const roots: any[] = [];
+
+  folders.forEach((folder) => {
+    if (folder?.parentFolderId) {
+      const children = childrenByParent.get(folder.parentFolderId) || [];
+      children.push(folder);
+      childrenByParent.set(folder.parentFolderId, children);
+    } else {
+      roots.push(folder);
+    }
+  });
+
+  const sortFolders = (items: any[]) =>
+    [...items].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+
+  const output: Array<{ folder: any; label: string }> = [];
+  const walk = (folder: any, depth = 0) => {
+    output.push({ folder, label: `${depth > 0 ? `${'  '.repeat(depth)}↳ ` : ''}${folder.name || 'Carpeta sin nombre'}` });
+    sortFolders(childrenByParent.get(folder.id) || []).forEach((child) => walk(child, depth + 1));
+  };
+
+  sortFolders(roots).forEach((folder) => walk(folder));
+  return output;
+};
+
 export function UploadDocumentModal({
   isOpen,
   onClose,
@@ -62,6 +94,8 @@ export function UploadDocumentModal({
   user,
   project,
   tasks = [],
+  documents = [],
+  initialFolderId = null,
   teamMembers = [],
   canManageAccess = false,
 }: UploadDocumentModalProps) {
@@ -72,6 +106,7 @@ export function UploadDocumentModal({
   const [uploadProgress, setUploadProgress] = useState(0);
   const [scope, setScope] = useState<UploadScope>('project');
   const [selectedTaskId, setSelectedTaskId] = useState('');
+  const [selectedFolderId, setSelectedFolderId] = useState('');
   const [accessMode, setAccessMode] = useState<AccessMode>('all');
   const [allowedMemberIds, setAllowedMemberIds] = useState<string[]>([]);
 
@@ -80,9 +115,18 @@ export function UploadDocumentModal({
     [project, teamMembers]
   );
   const taskOptions = useMemo(() => buildTaskOptions(tasks), [tasks]);
+  const folderOptions = useMemo(() => buildFolderOptions(documents), [documents]);
   const selectedTask = useMemo(
     () => taskOptions.find((option) => option.task.id === selectedTaskId)?.task || null,
     [selectedTaskId, taskOptions]
+  );
+  const selectedFolder = useMemo(
+    () => folderOptions.find((option) => option.folder.id === selectedFolderId)?.folder || null,
+    [selectedFolderId, folderOptions]
+  );
+  const selectedFolderSegments = useMemo(
+    () => getDocumentFolderStorageSegments(selectedFolderId, folderOptions.map((option) => option.folder)),
+    [selectedFolderId, folderOptions]
   );
 
   useEffect(() => {
@@ -94,9 +138,10 @@ export function UploadDocumentModal({
     setUploadProgress(0);
     setScope('project');
     setSelectedTaskId('');
+    setSelectedFolderId(initialFolderId || '');
     setAccessMode('all');
     setAllowedMemberIds([]);
-  }, [isOpen]);
+  }, [initialFolderId, isOpen]);
 
   if (!isOpen) return null;
 
@@ -150,6 +195,7 @@ export function UploadDocumentModal({
       tasks,
       fileName: file.name,
       documentName: docName,
+      folderSegments: scope === 'project' ? selectedFolderSegments : [],
     });
     const storageFolder = storagePath.split('/').slice(0, -1).join('/');
     const storageRef = ref(storage, storagePath);
@@ -166,9 +212,11 @@ export function UploadDocumentModal({
         name: docName.trim(),
         type: docType,
         scope,
+        parentFolderId: scope === 'project' ? selectedFolderId || null : null,
         taskId: scope === 'task' ? selectedTask?.id || null : null,
         taskTitle: scope === 'task' ? getTaskTitle(selectedTask) : null,
         taskFolderSegments: scope === 'task' ? getTaskStorageFolderSegments(selectedTask, tasks) : [],
+        projectFolderSegments: scope === 'project' ? selectedFolderSegments : [],
         url: downloadURL,
         storagePath: storageRef.fullPath,
         storageFolder,
@@ -202,6 +250,7 @@ export function UploadDocumentModal({
         tasks,
         fileName: file.name,
         documentName: docName || file.name,
+        folderSegments: scope === 'project' ? selectedFolderSegments : [],
       }).split('/').slice(0, -1).join(' / ')
     : scope === 'task'
       ? 'projects / proyecto / tareas / tarea seleccionada'
@@ -300,6 +349,25 @@ export function UploadDocumentModal({
                   <option key={task.id} value={task.id}>{label}</option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {scope === 'project' && (
+            <div className="mt-4 space-y-2">
+              <label className="text-sm font-bold text-slate-700">Carpeta destino</label>
+              <select
+                value={selectedFolderId}
+                onChange={(e) => setSelectedFolderId(e.target.value)}
+                className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              >
+                <option value="">Documentación del proyecto / raíz</option>
+                {folderOptions.map(({ folder, label }) => (
+                  <option key={folder.id} value={folder.id}>{label}</option>
+                ))}
+              </select>
+              <p className="text-xs font-semibold text-slate-400">
+                {selectedFolder ? `El archivo quedará dentro de "${selectedFolder.name}".` : 'Usa la raíz o una carpeta creada en el gestor documental.'}
+              </p>
             </div>
           )}
 

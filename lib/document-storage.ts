@@ -15,6 +15,7 @@ type BuildDocumentStoragePathOptions = {
   documentName?: string | null;
   date?: Date;
   folderName?: string;
+  folderSegments?: string[];
 };
 
 const normalizeText = (value: unknown) =>
@@ -76,6 +77,26 @@ export const getTaskStorageFolderSegments = (task: TaskLike | null | undefined, 
   return chain.map((item) => `${slugifyStorageSegment(getTaskName(item), 'tarea')}--${shortId(item.id)}`);
 };
 
+export const isDocumentFolder = (document: any) =>
+  document?.itemKind === 'folder' || document?.kind === 'folder' || document?.isFolder === true;
+
+export const getDocumentFolderStorageSegments = (folderId: string | null | undefined, folders: any[] = []) => {
+  if (!folderId) return [];
+
+  const byId = new Map(folders.filter((item) => item?.id).map((item) => [item.id as string, item]));
+  const chain: any[] = [];
+  const visited = new Set<string>();
+  let current = byId.get(folderId);
+
+  while (current?.id && !visited.has(current.id)) {
+    visited.add(current.id);
+    chain.unshift(current);
+    current = current.parentFolderId ? byId.get(current.parentFolderId) : undefined;
+  }
+
+  return chain.map((item) => `${slugifyStorageSegment(item.name || 'carpeta', 'carpeta')}--${shortId(item.id)}`);
+};
+
 export const buildDocumentStoragePath = ({
   projectId,
   projectName,
@@ -85,14 +106,18 @@ export const buildDocumentStoragePath = ({
   documentName,
   date = new Date(),
   folderName,
+  folderSegments = [],
 }: BuildDocumentStoragePathOptions) => {
   const projectFolder = `${slugifyStorageSegment(projectName || projectId, 'proyecto')}--${shortId(projectId)}`;
   const fileSegment = getDocumentFileName(fileName, documentName, date);
-  const folderSegments = task?.id
+  const storageFolderSegments = task?.id
     ? ['tareas', ...getTaskStorageFolderSegments(task, tasks)]
-    : [slugifyStorageSegment(folderName || 'documentacion-del-proyecto', 'documentacion-del-proyecto')];
+    : [
+        slugifyStorageSegment(folderName || 'documentacion-del-proyecto', 'documentacion-del-proyecto'),
+        ...folderSegments.map((segment) => slugifyStorageSegment(segment, 'carpeta')),
+      ];
 
-  return ['projects', projectFolder, ...folderSegments, fileSegment].filter(Boolean).join('/');
+  return ['projects', projectFolder, ...storageFolderSegments, fileSegment].filter(Boolean).join('/');
 };
 
 export const getDocumentAccessMode = (document: any): 'all' | 'restricted' =>

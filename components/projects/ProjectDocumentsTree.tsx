@@ -1,17 +1,20 @@
-import React, { useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Download, ExternalLink, Eye, File, FileText, Folder, Lock, Trash2 } from 'lucide-react';
-import { canUserAccessDocument, getDocumentAccessMode } from '@/lib/document-storage';
+import React, { useCallback, useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, Download, ExternalLink, Eye, File, FileText, Folder, FolderPlus, Lock, Trash2, Upload } from 'lucide-react';
+import { canUserAccessDocument, getDocumentAccessMode, isDocumentFolder } from '@/lib/document-storage';
 
 interface ProjectDocumentsTreeProps {
   documents: any[];
   tasks: any[];
   onDeleteDocument: (docId: string, storagePath: string, name: string) => void;
   onViewDocument?: (doc: any) => void;
+  onCreateFolder?: (name: string, parentFolderId: string | null) => Promise<void> | void;
+  onUploadToFolder?: (folderId: string | null) => void;
   searchQuery?: string;
   currentUser?: any;
   teamMembers?: any[];
   canManageAccess?: boolean;
   canDeleteDocuments?: boolean;
+  canCreateFolders?: boolean;
 }
 
 const formatFileSize = (bytes?: number) => {
@@ -149,16 +152,282 @@ const FolderNode = ({ title, children, defaultOpen = false }: { title: string; c
   );
 };
 
+const ProjectFolderBrowser = ({
+  documents,
+  searchQuery,
+  onDeleteDocument,
+  onViewDocument,
+  onCreateFolder,
+  onUploadToFolder,
+  canCreateFolders,
+  canDeleteDocuments,
+}: {
+  documents: any[];
+  searchQuery: string;
+  onDeleteDocument: ProjectDocumentsTreeProps['onDeleteDocument'];
+  onViewDocument?: (doc: any) => void;
+  onCreateFolder?: ProjectDocumentsTreeProps['onCreateFolder'];
+  onUploadToFolder?: ProjectDocumentsTreeProps['onUploadToFolder'];
+  canCreateFolders: boolean;
+  canDeleteDocuments: boolean;
+}) => {
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [isSavingFolder, setIsSavingFolder] = useState(false);
+
+  const folders = useMemo(() => documents.filter((document) => isDocumentFolder(document)), [documents]);
+  const files = useMemo(() => documents.filter((document) => !isDocumentFolder(document)), [documents]);
+  const folderById = useMemo(
+    () => new Map(folders.filter((folder) => folder?.id).map((folder) => [folder.id as string, folder])),
+    [folders]
+  );
+  const activeFolderId = currentFolderId && folderById.has(currentFolderId) ? currentFolderId : null;
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+
+  const getFolderPath = useCallback((folderId: string | null | undefined) => {
+    const path: any[] = [];
+    const visited = new Set<string>();
+    let current = folderId ? folderById.get(folderId) : null;
+
+    while (current?.id && !visited.has(current.id)) {
+      visited.add(current.id);
+      path.unshift(current);
+      current = current.parentFolderId ? folderById.get(current.parentFolderId) : null;
+    }
+
+    return path;
+  }, [folderById]);
+
+  const currentBreadcrumb = getFolderPath(activeFolderId);
+
+  const getFolderPathLabel = useCallback((folderId: string | null | undefined) => {
+    const path = getFolderPath(folderId);
+    return path.length ? path.map((folder) => folder.name).join(' / ') : 'Documentación del proyecto';
+  }, [getFolderPath]);
+
+  const childCountByFolderId = useMemo(() => {
+    const counts = new Map<string, number>();
+    documents.forEach((document) => {
+      if (!document?.parentFolderId) return;
+      counts.set(document.parentFolderId, (counts.get(document.parentFolderId) || 0) + 1);
+    });
+    return counts;
+  }, [documents]);
+
+  const matchesQuery = useCallback((document: any) => {
+    if (!normalizedSearch) return true;
+    return (
+      document.name?.toLowerCase().includes(normalizedSearch) ||
+      document.fileName?.toLowerCase().includes(normalizedSearch) ||
+      document.type?.toLowerCase().includes(normalizedSearch) ||
+      getFolderPathLabel(document.parentFolderId).toLowerCase().includes(normalizedSearch)
+    );
+  }, [getFolderPathLabel, normalizedSearch]);
+
+  const visibleFolders = useMemo(() => {
+    const sorted = [...folders].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+    if (normalizedSearch) return sorted.filter(matchesQuery);
+    return sorted.filter((folder) => (folder.parentFolderId || null) === activeFolderId);
+  }, [activeFolderId, folders, matchesQuery, normalizedSearch]);
+
+  const visibleFiles = useMemo(() => {
+    const sorted = [...files].sort((a, b) => {
+      const aTime = a.uploadedAt?.toDate ? a.uploadedAt.toDate().getTime() : new Date(a.uploadedAt || 0).getTime();
+      const bTime = b.uploadedAt?.toDate ? b.uploadedAt.toDate().getTime() : new Date(b.uploadedAt || 0).getTime();
+      return bTime - aTime || String(a.name || '').localeCompare(String(b.name || ''));
+    });
+    if (normalizedSearch) return sorted.filter(matchesQuery);
+    return sorted.filter((document) => (document.parentFolderId || null) === activeFolderId);
+  }, [activeFolderId, files, matchesQuery, normalizedSearch]);
+
+  const handleCreateFolder = async () => {
+    const cleanName = newFolderName.trim();
+    if (!cleanName || !onCreateFolder) return;
+
+    setIsSavingFolder(true);
+    try {
+      await onCreateFolder(cleanName, activeFolderId);
+      setNewFolderName('');
+      setIsCreatingFolder(false);
+    } finally {
+      setIsSavingFolder(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4 p-1">
+      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-3 md:flex-row md:items-center md:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs font-black text-slate-500">
+            <button
+              type="button"
+              onClick={() => setCurrentFolderId(null)}
+              className={`rounded-full px-2.5 py-1 transition ${!activeFolderId ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-indigo-50 hover:text-indigo-700'}`}
+            >
+              Proyecto
+            </button>
+            {currentBreadcrumb.map((folder) => (
+              <React.Fragment key={folder.id}>
+                <ChevronRight size={14} className="text-slate-300" />
+                <button
+                  type="button"
+                  onClick={() => setCurrentFolderId(folder.id)}
+                  className="max-w-44 truncate rounded-full bg-white px-2.5 py-1 text-slate-700 transition hover:bg-indigo-50 hover:text-indigo-700"
+                >
+                  {folder.name}
+                </button>
+              </React.Fragment>
+            ))}
+          </div>
+          <p className="mt-2 text-xs font-semibold text-slate-400">
+            {normalizedSearch
+              ? 'Mostrando coincidencias en todas las carpetas.'
+              : activeFolderId
+                ? `Dentro de ${getFolderPathLabel(activeFolderId)}`
+                : 'Raíz documental del proyecto.'}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {canCreateFolders && onCreateFolder && (
+            <button
+              type="button"
+              onClick={() => setIsCreatingFolder((value) => !value)}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+            >
+              <FolderPlus size={15} />
+              Nueva carpeta
+            </button>
+          )}
+          {onUploadToFolder && (
+            <button
+              type="button"
+              onClick={() => onUploadToFolder(activeFolderId)}
+              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-xs font-black text-white shadow-sm transition hover:bg-indigo-700"
+            >
+              <Upload size={15} />
+              Subir aquí
+            </button>
+          )}
+        </div>
+      </div>
+
+      {isCreatingFolder && (
+        <div className="flex flex-col gap-2 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-3 sm:flex-row">
+          <input
+            type="text"
+            value={newFolderName}
+            onChange={(event) => setNewFolderName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                handleCreateFolder();
+              }
+            }}
+            className="min-h-10 flex-1 rounded-xl border border-indigo-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+            placeholder="Nombre de la carpeta"
+            autoFocus
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setIsCreatingFolder(false);
+                setNewFolderName('');
+              }}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={handleCreateFolder}
+              disabled={!newFolderName.trim() || isSavingFolder}
+              className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSavingFolder ? 'Creando...' : 'Crear'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(visibleFolders.length > 0 || visibleFiles.length > 0) ? (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          {visibleFolders.map((folder) => {
+            const childCount = childCountByFolderId.get(folder.id) || 0;
+            const canDeleteFolder = canDeleteDocuments && childCount === 0;
+
+            return (
+              <div key={folder.id} className="group flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 hover:bg-indigo-50/50">
+                <button
+                  type="button"
+                  onClick={() => setCurrentFolderId(folder.id)}
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                >
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-100 text-indigo-600">
+                    <Folder size={18} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-black text-slate-800">{folder.name}</span>
+                    <span className="mt-0.5 block text-xs font-semibold text-slate-400">
+                      {normalizedSearch ? getFolderPathLabel(folder.parentFolderId) : `${childCount} elemento${childCount === 1 ? '' : 's'}`}
+                    </span>
+                  </span>
+                </button>
+                {canDeleteDocuments && (
+                  <button
+                    type="button"
+                    onClick={() => canDeleteFolder && onDeleteDocument(folder.id, '', folder.name)}
+                    disabled={!canDeleteFolder}
+                    className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-400"
+                    title={canDeleteFolder ? 'Eliminar carpeta' : 'La carpeta debe estar vacía para eliminarla'}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+
+          {visibleFiles.map((document) => (
+            <DocumentItem
+              key={document.id}
+              doc={document}
+              onDeleteDocument={onDeleteDocument}
+              onViewDocument={onViewDocument}
+              canDeleteDocuments={canDeleteDocuments}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-10 text-center">
+          <Folder className="mx-auto mb-3 h-10 w-10 text-slate-200" />
+          <h3 className="text-sm font-black text-slate-800">
+            {normalizedSearch ? 'No hay coincidencias en carpetas' : 'Esta carpeta está vacía'}
+          </h3>
+          <p className="mt-1 text-xs font-semibold text-slate-400">
+            {normalizedSearch ? 'Prueba con otro nombre, archivo o ruta.' : 'Crea una carpeta o sube documentos en esta ubicación.'}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
   documents,
   tasks,
   onDeleteDocument,
   onViewDocument,
+  onCreateFolder,
+  onUploadToFolder,
   searchQuery = '',
   currentUser,
   teamMembers = [],
   canManageAccess = false,
   canDeleteDocuments = false,
+  canCreateFolders = false,
 }) => {
   const accessibleDocuments = useMemo(
     () =>
@@ -184,8 +453,14 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
     );
   }, [accessibleDocuments, searchQuery]);
 
-  const generalDocs = useMemo(() => filteredDocuments.filter((document) => !document.taskId), [filteredDocuments]);
-  const taskDocs = useMemo(() => filteredDocuments.filter((document) => document.taskId), [filteredDocuments]);
+  const projectDocuments = useMemo(
+    () => accessibleDocuments.filter((document) => !document.taskId),
+    [accessibleDocuments]
+  );
+  const taskDocs = useMemo(
+    () => filteredDocuments.filter((document) => document.taskId && !isDocumentFolder(document)),
+    [filteredDocuments]
+  );
   const parentTasks = useMemo(
     () => tasks.filter((task) => !task.parentTaskId).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0)),
     [tasks]
@@ -196,7 +471,7 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
 
   const getTaskDocuments = (taskId: string) => taskDocs.filter((document) => document.taskId === taskId);
 
-  if (accessibleDocuments.length === 0) {
+  if (accessibleDocuments.length === 0 && !canCreateFolders && !onUploadToFolder) {
     return (
       <div className="rounded-xl border border-slate-200 bg-white px-4 py-12 text-center">
         <File className="mx-auto mb-3 h-12 w-12 text-slate-200" />
@@ -263,21 +538,18 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
 
   return (
     <div className="space-y-4">
-      {generalDocs.length > 0 && (
-        <FolderNode title="Documentación del proyecto" defaultOpen>
-          <div className="py-1">
-            {generalDocs.map((document) => (
-              <DocumentItem
-                key={document.id}
-                doc={document}
-                onDeleteDocument={onDeleteDocument}
-                onViewDocument={onViewDocument}
-                canDeleteDocuments={canDeleteDocuments}
-              />
-            ))}
-          </div>
-        </FolderNode>
-      )}
+      <FolderNode title="Documentación del proyecto" defaultOpen>
+        <ProjectFolderBrowser
+          documents={projectDocuments}
+          searchQuery={searchQuery}
+          onDeleteDocument={onDeleteDocument}
+          onViewDocument={onViewDocument}
+          onCreateFolder={onCreateFolder}
+          onUploadToFolder={onUploadToFolder}
+          canCreateFolders={canCreateFolders}
+          canDeleteDocuments={canDeleteDocuments}
+        />
+      </FolderNode>
 
       {(renderedTasks.length > 0 || orphanedDocs.length > 0) && (
         <FolderNode title="Documentos de tareas y subtareas" defaultOpen>
