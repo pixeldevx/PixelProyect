@@ -32,6 +32,9 @@ export function OrgChartNode({ data, isConnectable, selected }: NodeProps) {
   const coverageStatus = String(data.coverageStatus || 'uncovered');
   const style = statusStyles[coverageStatus] || statusStyles.uncovered;
   const budgetAmount = typeof data.budgetAmount === 'number' ? data.budgetAmount : null;
+  const canEdit = data.canEdit === true;
+  const alias = String(data.alias || data.member || 'Cargo sin definir');
+  const aliasValue = String(data.alias || data.member || '');
 
   const onBlur = () => {
     setIsEditing(false);
@@ -62,7 +65,8 @@ export function OrgChartNode({ data, isConnectable, selected }: NodeProps) {
                 onChange={(event) => setLabel(event.target.value)}
                 onBlur={onBlur}
                 autoFocus
-                className="h-8 border-slate-200 bg-white text-sm font-black"
+                className="nodrag nowheel h-8 border-slate-200 bg-white text-sm font-black"
+                onMouseDown={(event) => event.stopPropagation()}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') onBlur();
                 }}
@@ -76,8 +80,20 @@ export function OrgChartNode({ data, isConnectable, selected }: NodeProps) {
                 {label}
               </button>
             )}
-            {!!data.member && (
-              <p className="mt-0.5 truncate text-xs font-bold text-slate-500">{data.member as string}</p>
+            {selected && canEdit ? (
+              <Input
+                value={aliasValue}
+                placeholder="Alias o cargo"
+                onChange={(event) => {
+                  if (typeof data.onAliasChange === 'function') {
+                    (data.onAliasChange as (alias: string) => void)(event.target.value);
+                  }
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+                className="nodrag nowheel mt-1 h-7 border-indigo-100 bg-white text-xs font-bold text-slate-600"
+              />
+            ) : (
+              <p className="mt-0.5 truncate text-xs font-bold text-slate-500">{alias}</p>
             )}
           </div>
         </div>

@@ -2,7 +2,6 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import Image from 'next/image';
 import {
   ReactFlow,
-  MiniMap,
   Controls,
   Background,
   useNodesState,
@@ -17,7 +16,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { Save, Plus, Trash2, Users, ShieldCheck, WalletCards, AlertTriangle, BriefcaseBusiness } from 'lucide-react';
+import { Save, Plus, Trash2, Users, ShieldCheck, WalletCards, AlertTriangle, BriefcaseBusiness, Maximize2, Minimize2, X } from 'lucide-react';
 import { collection, doc, getDoc, getDocs, setDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
@@ -232,6 +231,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const loadedOrgChartProjectRef = useRef<string | null>(null);
 
   const nodeTypes = useMemo(() => ({ orgChartNode: OrgChartNode }), []);
@@ -242,15 +242,33 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
 
   const handleNodeLabelChange = useCallback((id: string, newLabel: string) => {
     setNodes((nds) =>
-      nds.map((node) => {
-        if (node.id === id) {
-          node.data = {
-            ...node.data,
-            label: newLabel,
-          };
-        }
-        return node;
-      })
+      nds.map((node) => (
+        node.id === id
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                label: newLabel,
+              },
+            }
+          : node
+      ))
+    );
+  }, [setNodes]);
+
+  const handleNodeAliasChange = useCallback((id: string, newAlias: string) => {
+    setNodes((nds) =>
+      nds.map((node) => (
+        node.id === id
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                alias: newAlias,
+              },
+            }
+          : node
+      ))
     );
   }, [setNodes]);
 
@@ -270,14 +288,36 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
         ...node.data,
         label: member ? memberName(member) : node.data?.label || 'Doble clic para editar',
         member: member?.role || member?.systemRole || node.data?.member || 'Miembro',
+        alias: node.data?.alias || node.data?.positionAlias || '',
         photoURL: member?.photoURL || node.data?.photoURL || null,
         coverageStatus: coverage?.status,
         coverageLabel: canViewBudget ? coverage?.statusLabel : 'Presupuesto protegido',
         budgetAmount: canViewBudget ? coverage?.allocated : null,
+        canEdit,
         onChange: (newLabel: string) => handleNodeLabelChange(node.id, newLabel),
+        onAliasChange: (newAlias: string) => handleNodeAliasChange(node.id, newAlias),
       },
     };
-  }, [canViewBudget, coverageByMember, handleNodeLabelChange, teamMembers]);
+  }, [canEdit, canViewBudget, coverageByMember, handleNodeAliasChange, handleNodeLabelChange, teamMembers]);
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsFullscreen(false);
+      }
+    };
+
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isFullscreen]);
 
   useEffect(() => {
     if (!canView) return;
@@ -349,7 +389,10 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
     setIsSaving(true);
     try {
       const nodesToSave = nodes.map(node => {
-        const { onChange, ...dataToSave } = node.data;
+        const dataToSave = { ...node.data };
+        delete dataToSave.onChange;
+        delete dataToSave.onAliasChange;
+        delete dataToSave.canEdit;
         return {
           ...node,
           data: dataToSave
@@ -377,7 +420,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
     const newNode: Node = enrichNodeData({
       id: newId,
       type: 'orgChartNode',
-      data: { label: 'Doble clic para editar' },
+      data: { label: 'Doble clic para editar', alias: 'Cargo o alias' },
       position: { x: Math.random() * 300, y: Math.random() * 300 },
     });
     setNodes((nds) => nds.concat(newNode));
@@ -393,6 +436,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
       data: {
         label: memberName(member),
         member: member.role || member.systemRole || 'Miembro',
+        alias: member.role || member.systemRole || '',
         memberId: member.id,
         photoURL: member.photoURL || null,
       },
@@ -417,6 +461,109 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
       gaps: coverages.filter((coverage) => coverage.status === 'gap').length,
     };
   }, [coverageByMember, teamMembers.length]);
+
+  const flowCanvas = (
+    <div
+      className={
+        isFullscreen
+          ? 'fixed inset-0 z-[90] flex flex-col bg-white'
+          : 'flex h-[680px] min-h-[560px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm'
+      }
+    >
+      {isFullscreen && (
+        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-950 px-5 py-4 text-white">
+          <div className="min-w-0">
+            <p className="text-[10px] font-black uppercase tracking-[0.28em] text-indigo-200">Organigrama interactivo</p>
+            <h2 className="truncate text-2xl font-black">Vista completa del equipo</h2>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => setIsFullscreen(false)}
+            className="text-white hover:bg-white/10 hover:text-white"
+            aria-label="Cerrar pantalla completa"
+          >
+            <X size={22} />
+          </Button>
+        </div>
+      )}
+      <div className="min-h-0 flex-1">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          onNodesChange={canEdit ? onNodesChange : undefined}
+          onEdgesChange={canEdit ? onEdgesChange : undefined}
+          onConnect={onConnect}
+          nodesDraggable={canEdit}
+          nodesConnectable={canEdit}
+          elementsSelectable={canEdit}
+          fitView
+          attributionPosition="bottom-left"
+        >
+          <Panel position="top-right" className="flex flex-wrap justify-end gap-2">
+            <Button onClick={() => setIsFullscreen((value) => !value)} variant="outline" size="sm" className="bg-white font-bold shadow-sm">
+              {isFullscreen ? <Minimize2 size={16} className="mr-1" /> : <Maximize2 size={16} className="mr-1" />}
+              {isFullscreen ? 'Salir' : 'Pantalla completa'}
+            </Button>
+            {canEdit && (
+              <>
+                <div className="relative">
+                  <Button onClick={() => setIsAddMenuOpen(!isAddMenuOpen)} variant="outline" size="sm" className="bg-white font-bold shadow-sm">
+                    <Plus size={16} className="mr-1" /> Nuevo nodo
+                  </Button>
+                  {isAddMenuOpen && (
+                    <div className="absolute right-0 top-full z-50 mt-2 max-h-96 w-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-2xl shadow-slate-900/10">
+                      <div className="px-2 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Estructura</div>
+                      <button
+                        onClick={addCustomNode}
+                        className="w-full rounded-lg px-2 py-2 text-left text-sm font-bold text-slate-700 hover:bg-slate-50"
+                      >
+                        Nodo personalizado
+                      </button>
+                      {teamMembers.length > 0 && (
+                        <>
+                          <div className="mt-3 px-2 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Personas del proyecto</div>
+                          {teamMembers.map(member => (
+                            <button
+                              key={member.id}
+                              onClick={() => addTeamMemberNode(member)}
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-indigo-50"
+                            >
+                              <div className="relative h-8 w-8 shrink-0 overflow-hidden rounded-full bg-indigo-100 text-indigo-600">
+                                {member.photoURL ? (
+                                  <Image src={member.photoURL} alt={memberName(member)} fill className="object-cover" referrerPolicy="no-referrer" />
+                                ) : (
+                                  <span className="flex h-full w-full items-center justify-center text-xs font-black">{memberName(member).charAt(0).toUpperCase()}</span>
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-black text-slate-900">{memberName(member)}</div>
+                                <div className="truncate text-xs font-semibold text-slate-500">{member.role || member.systemRole || 'Miembro'}</div>
+                              </div>
+                            </button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <Button onClick={deleteSelected} variant="outline" size="sm" className="bg-white font-bold text-red-600 shadow-sm hover:text-red-700">
+                  <Trash2 size={16} className="mr-1" /> Eliminar
+                </Button>
+              </>
+            )}
+            <Button onClick={onSave} disabled={isSaving || !canEdit} size="sm" className="bg-indigo-600 font-bold text-white shadow-sm hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-500">
+              <Save size={16} className="mr-1" /> {isSaving ? 'Guardando...' : canEdit ? 'Guardar' : 'Solo lectura'}
+            </Button>
+          </Panel>
+          <Controls />
+          <Background color="#dbe4f0" gap={18} />
+        </ReactFlow>
+      </div>
+    </div>
+  );
 
   if (!canView) {
     return (
@@ -470,77 +617,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
       </section>
 
       <section className="grid gap-5 xl:grid-cols-[1fr_360px]">
-        <div className="h-[680px] min-h-[560px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={canEdit ? onNodesChange : undefined}
-            onEdgesChange={canEdit ? onEdgesChange : undefined}
-            onConnect={onConnect}
-            nodesDraggable={canEdit}
-            nodesConnectable={canEdit}
-            elementsSelectable={canEdit}
-            fitView
-            attributionPosition="bottom-right"
-          >
-            <Panel position="top-right" className="flex gap-2">
-              {canEdit && (
-                <>
-                  <div className="relative">
-                    <Button onClick={() => setIsAddMenuOpen(!isAddMenuOpen)} variant="outline" size="sm" className="bg-white font-bold shadow-sm">
-                      <Plus size={16} className="mr-1" /> Nuevo nodo
-                    </Button>
-                    {isAddMenuOpen && (
-                      <div className="absolute right-0 top-full z-50 mt-2 max-h-96 w-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-2xl shadow-slate-900/10">
-                        <div className="px-2 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Estructura</div>
-                        <button
-                          onClick={addCustomNode}
-                          className="w-full rounded-lg px-2 py-2 text-left text-sm font-bold text-slate-700 hover:bg-slate-50"
-                        >
-                          Nodo personalizado
-                        </button>
-                        {teamMembers.length > 0 && (
-                          <>
-                            <div className="mt-3 px-2 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Personas del proyecto</div>
-                            {teamMembers.map(member => (
-                              <button
-                                key={member.id}
-                                onClick={() => addTeamMemberNode(member)}
-                                className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-indigo-50"
-                              >
-                                <div className="relative h-8 w-8 shrink-0 overflow-hidden rounded-full bg-indigo-100 text-indigo-600">
-                                  {member.photoURL ? (
-                                    <Image src={member.photoURL} alt={memberName(member)} fill className="object-cover" referrerPolicy="no-referrer" />
-                                  ) : (
-                                    <span className="flex h-full w-full items-center justify-center text-xs font-black">{memberName(member).charAt(0).toUpperCase()}</span>
-                                  )}
-                                </div>
-                                <div className="min-w-0">
-                                  <div className="truncate text-sm font-black text-slate-900">{memberName(member)}</div>
-                                  <div className="truncate text-xs font-semibold text-slate-500">{member.role || member.systemRole || 'Miembro'}</div>
-                                </div>
-                              </button>
-                            ))}
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <Button onClick={deleteSelected} variant="outline" size="sm" className="bg-white font-bold text-red-600 shadow-sm hover:text-red-700">
-                    <Trash2 size={16} className="mr-1" /> Eliminar
-                  </Button>
-                </>
-              )}
-              <Button onClick={onSave} disabled={isSaving || !canEdit} size="sm" className="bg-indigo-600 font-bold text-white shadow-sm hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-500">
-                <Save size={16} className="mr-1" /> {isSaving ? 'Guardando...' : canEdit ? 'Guardar' : 'Solo lectura'}
-              </Button>
-            </Panel>
-            <MiniMap />
-            <Controls />
-            <Background color="#dbe4f0" gap={18} />
-          </ReactFlow>
-        </div>
+        {flowCanvas}
 
         <aside className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 p-4">
