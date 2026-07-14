@@ -7,7 +7,7 @@ import { getStaticRateCardAssignmentKey, isInvalidRateCardUnits, normalizeRateCa
 export interface FormField {
   id: string;
   label: string;
-  type: 'text' | 'number' | 'date' | 'datetime' | 'select' | 'checkbox';
+  type: 'text' | 'number' | 'date' | 'datetime' | 'select' | 'checkbox' | 'document';
   required: boolean;
   options?: string[];
   selectionMode?: 'single' | 'multiple';
@@ -597,6 +597,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                             <option value="datetime">Fecha y hora</option>
                             <option value="select">Selección</option>
                             <option value="checkbox">Casilla de verificación</option>
+                            <option value="document">Adjuntar documento</option>
                           </select>
                         </div>
                       </div>

@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, CalendarClock, CheckCircle2, Download, ExternalLink, History, MapPin, MessageSquare, Pause, Play, Send, Users, X } from 'lucide-react';
+import { ArrowLeft, CalendarClock, CheckCircle2, Download, ExternalLink, FileText, History, MapPin, MessageSquare, Pause, Play, Send, Users, X } from 'lucide-react';
 import { addDoc, collection, doc, increment, onSnapshot, orderBy, query, serverTimestamp, updateDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,7 @@ import {
   isMeetingLocationUrl,
   isMeetingTask,
 } from '@/lib/calendar-utils';
+import { getWorkflowDocumentDisplayName, isWorkflowDocumentValue } from '@/lib/workflow-form-documents';
 
 interface TaskCommentsModalProps {
   isOpen: boolean;
@@ -272,6 +273,7 @@ const MeetingContextCard = ({ task }: { task: any }) => {
 };
 
 const formatHistoryFormValue = (value: any) => {
+  if (isWorkflowDocumentValue(value)) return getWorkflowDocumentDisplayName(value);
   if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : 'Sin selección';
   if (typeof value === 'boolean') return value ? 'Sí' : 'No';
   if (value === null || value === undefined || value === '') return 'Sin respuesta';
@@ -279,6 +281,21 @@ const formatHistoryFormValue = (value: any) => {
 };
 
 const renderHistoryFormValue = (value: any) => {
+  if (isWorkflowDocumentValue(value)) {
+    return (
+      <a
+        href={value.url}
+        target="_blank"
+        rel="noreferrer"
+        className="flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs font-bold text-indigo-700 shadow-sm hover:border-indigo-200 hover:text-indigo-900"
+      >
+        <FileText size={14} className="shrink-0" />
+        <span className="min-w-0 truncate">{getWorkflowDocumentDisplayName(value)}</span>
+        <ExternalLink size={12} className="ml-auto shrink-0" />
+      </a>
+    );
+  }
+
   const formattedValue = formatHistoryFormValue(value);
   const isUrl = /^https?:\/\//i.test(formattedValue.trim());
 

@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ClipboardList, CreditCard, Loader2, X } from "lucide-react";
+import { CheckCircle2, ClipboardList, CreditCard, ExternalLink, FileUp, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CustomForm } from "@/components/projects/WorkflowStepFormBuilderModal";
 import {
@@ -11,6 +11,11 @@ import {
   normalizeRateCardUnits,
   StaticRateCardSource,
 } from "@/lib/rate-card-config";
+import {
+  getWorkflowDocumentDisplayName,
+  isWorkflowDocumentValue,
+  uploadWorkflowFormDocument,
+} from "@/lib/workflow-form-documents";
 import { toast } from "sonner";
 
 export type SubtaskCompletionSubmission = {
@@ -30,6 +35,8 @@ interface CompleteSubtaskFormModalProps {
   onClose: () => void;
   task: any | null;
   user: any;
+  project?: any;
+  tasks?: any[];
   teamMembers: any[];
   rateCards: any[];
   onSubmit: (submission: SubtaskCompletionSubmission) => Promise<void> | void;
@@ -41,6 +48,7 @@ const getCompletionForm = (task: any): CustomForm | undefined =>
   task?.completionForm || task?.subtaskCompletionForm || undefined;
 
 const hasRequiredValue = (value: any) => {
+  if (isWorkflowDocumentValue(value)) return true;
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return true;
@@ -77,6 +85,8 @@ export function CompleteSubtaskFormModal({
   onClose,
   task,
   user,
+  project,
+  tasks = [],
   teamMembers,
   rateCards,
   onSubmit,
@@ -92,6 +102,7 @@ export function CompleteSubtaskFormModal({
   const [comment, setComment] = useState("");
   const [staticRateCardUnits, setStaticRateCardUnits] = useState<Record<string, string>>({});
   const [staticRateCardAssignees, setStaticRateCardAssignees] = useState<Record<string, string>>({});
+  const [documentFiles, setDocumentFiles] = useState<Record<string, File | null>>({});
   const [dynamicRateCardAssignee, setDynamicRateCardAssignee] = useState("");
   const [dynamicRateCardId, setDynamicRateCardId] = useState("");
   const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState("1");
@@ -101,6 +112,7 @@ export function CompleteSubtaskFormModal({
     if (!isOpen || !task) return;
 
     setFormData(task.completionFormData || {});
+    setDocumentFiles({});
     setComment("");
     setStaticRateCardUnits(
       Object.fromEntries(staticRateCardSources.map((source) => [source.key, String(normalizeRateCardUnits(source.unitsToAdd))]))
@@ -119,9 +131,11 @@ export function CompleteSubtaskFormModal({
   if (!isOpen || !task || !completionForm) return null;
 
   const validateSubmission = () => {
-    const missingRequired = (completionForm.fields || []).some(
-      (field) => field.required && !hasRequiredValue(formData[field.id])
-    );
+    const missingRequired = (completionForm.fields || []).some((field) => {
+      if (!field.required) return false;
+      if (field.type === "document" && documentFiles[field.id]) return false;
+      return !hasRequiredValue(formData[field.id]);
+    });
     if (missingRequired) {
       toast.warning("Completa los campos obligatorios del formulario.");
       return false;
@@ -171,8 +185,27 @@ export function CompleteSubtaskFormModal({
 
     setIsSubmitting(true);
     try {
+      const preparedFormData = { ...formData };
+      for (const field of completionForm.fields || []) {
+        if (field.type !== "document") continue;
+        const file = documentFiles[field.id];
+        if (!file) continue;
+
+        preparedFormData[field.id] = await uploadWorkflowFormDocument({
+          file,
+          projectId: task.projectId,
+          projectName: project?.name || task.projectName,
+          task,
+          tasks,
+          user,
+          field,
+          stepIndex: null,
+          stepLabel: "Cierre de subtarea",
+        });
+      }
+
       await onSubmit({
-        formData,
+        formData: preparedFormData,
         comment: comment.trim() || null,
         staticRateCardUnits,
         staticRateCardAssignees,
@@ -184,6 +217,7 @@ export function CompleteSubtaskFormModal({
             }
           : null,
       });
+      setDocumentFiles({});
       onClose();
     } catch (error: any) {
       console.error("Error completing subtask form:", error);
@@ -291,6 +325,44 @@ export function CompleteSubtaskFormModal({
           />
           Confirmar
         </label>
+      )}
+
+      {field.type === "document" && (
+        <div className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50/50 p-3">
+          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-white bg-white px-3 py-2 text-sm font-bold text-slate-700 shadow-sm transition-colors hover:border-indigo-200">
+            <span className="flex min-w-0 items-center gap-2">
+              <FileUp size={16} className="text-indigo-600" />
+              <span className="truncate">
+                {documentFiles[field.id]?.name || "Seleccionar documento"}
+              </span>
+            </span>
+            <span className="rounded-full bg-indigo-100 px-2 py-1 text-[10px] uppercase tracking-wider text-indigo-700">
+              Adjuntar
+            </span>
+            <input
+              type="file"
+              className="hidden"
+              onChange={(event) => {
+                const selectedFile = event.target.files?.[0] || null;
+                setDocumentFiles({ ...documentFiles, [field.id]: selectedFile });
+              }}
+            />
+          </label>
+          {isWorkflowDocumentValue(formData[field.id]) && (
+            <a
+              href={formData[field.id].url}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white/80 px-3 py-2 text-xs font-bold text-indigo-700 hover:text-indigo-900"
+            >
+              <ExternalLink size={14} />
+              <span className="truncate">{getWorkflowDocumentDisplayName(formData[field.id])}</span>
+            </a>
+          )}
+          <p className="mt-2 text-[11px] leading-5 text-slate-500">
+            El archivo quedará guardado en la carpeta documental de esta tarea y visible en la trazabilidad del workflow.
+          </p>
+        </div>
       )}
     </div>
   );

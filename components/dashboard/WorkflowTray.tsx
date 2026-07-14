@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { collection, query, where, onSnapshot, doc, arrayUnion, Timestamp, writeBatch, increment, getDoc, getDocs } from '@/lib/supabase/document-store';
 import { db, auth } from '@/lib/backend';
-import { CheckCircle2, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, X, ClipboardList, Play, Pause, FolderOpen, ShieldCheck, FileText, Eye, CalendarDays, Download, ExternalLink, MapPin, GitBranch, CornerDownRight, ChevronDown, ChevronRight } from 'lucide-react';
+import { CheckCircle2, MessageSquare, Clock, ArrowRight, ArrowLeft, Loader2, X, ClipboardList, Play, Pause, FolderOpen, ShieldCheck, FileText, Eye, CalendarDays, Download, ExternalLink, MapPin, GitBranch, CornerDownRight, ChevronDown, ChevronRight, FileUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -54,8 +54,15 @@ import {
   resolveWorkflowQualitySourceStepIndex,
   resolveWorkflowPreviousStepIndex,
 } from '@/lib/workflow-routing';
+import {
+  collectWorkflowDocumentsFromHistory,
+  getWorkflowDocumentDisplayName,
+  isWorkflowDocumentValue,
+  uploadWorkflowFormDocument,
+} from '@/lib/workflow-form-documents';
 
 const hasRequiredFormValue = (value: any) => {
+  if (isWorkflowDocumentValue(value)) return true;
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return true;
@@ -79,6 +86,7 @@ const normalizeEmail = (value: unknown) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
 
 const formatFormValue = (value: any) => {
+  if (isWorkflowDocumentValue(value)) return getWorkflowDocumentDisplayName(value);
   if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : 'Sin selección';
   if (typeof value === 'boolean') return value ? 'Sí' : 'No';
   return value || 'Sin respuesta';
@@ -92,6 +100,21 @@ const formatDateTimeFormValue = (value: any) => {
 };
 
 const renderHistoryFormValue = (value: any, field?: any) => {
+  if (isWorkflowDocumentValue(value)) {
+    return (
+      <a
+        href={value.url}
+        target="_blank"
+        rel="noreferrer"
+        className="flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs font-bold text-indigo-700 shadow-sm hover:border-indigo-200 hover:text-indigo-900"
+      >
+        <FileText size={14} className="shrink-0" />
+        <span className="min-w-0 truncate">{getWorkflowDocumentDisplayName(value)}</span>
+        <ExternalLink size={12} className="ml-auto shrink-0" />
+      </a>
+    );
+  }
+
   const formattedValue =
     field?.type === 'datetime'
       ? formatDateTimeFormValue(value)
@@ -861,6 +884,7 @@ export default function WorkflowTray() {
   const [staticRateCardAssignees, setStaticRateCardAssignees] = useState<Record<string, string>>({});
   const [actionComment, setActionComment] = useState('');
   const [formData, setFormData] = useState<Record<string, any>>({});
+  const [workflowDocumentFiles, setWorkflowDocumentFiles] = useState<Record<string, File | null>>({});
   const [nextStepAssignee, setNextStepAssignee] = useState<string>('');
   const [currentMemberProfiles, setCurrentMemberProfiles] = useState<any[]>([]);
   const [projectTeamMembers, setProjectTeamMembers] = useState<any[]>([]);
@@ -1183,6 +1207,33 @@ export default function WorkflowTray() {
     );
   }, [currentMemberProfiles, projectTeamMembers, user?.displayName, user?.email, user?.uid]);
 
+  const prepareWorkflowApproveFormData = async (task: any, currentStep: any, currentIndex: number) => {
+    const preparedFormData =
+      Object.keys(formData).length > 0
+        ? { ...formData }
+        : { ...(currentStep?.formData || {}) };
+
+    for (const field of currentStep?.form?.fields || []) {
+      if (field.type !== 'document') continue;
+      const file = workflowDocumentFiles[field.id];
+      if (!file) continue;
+
+      preparedFormData[field.id] = await uploadWorkflowFormDocument({
+        file,
+        projectId: task.projectId,
+        projectName: task.projectName,
+        task,
+        tasks: workflows,
+        user,
+        field,
+        stepIndex: currentIndex,
+        stepLabel: currentStep?.label || `Paso ${currentIndex + 1}`,
+      });
+    }
+
+    return preparedFormData;
+  };
+
   const confirmAction = async () => {
     if (!user || !actionModal.task) return;
     
@@ -1248,7 +1299,11 @@ export default function WorkflowTray() {
 
     // Validate form data if approving and form exists
     if (action === 'approve' && currentStep?.form?.fields) {
-      const missingRequired = currentStep.form.fields.some((f: any) => f.required && !hasRequiredFormValue(formData[f.id]));
+      const missingRequired = currentStep.form.fields.some((f: any) => {
+        if (!f.required) return false;
+        if (f.type === 'document' && workflowDocumentFiles[f.id]) return false;
+        return !hasRequiredFormValue(formData[f.id]);
+      });
       if (missingRequired) {
         toast.warning("Por favor complete todos los campos obligatorios del formulario.");
         return;
@@ -1318,6 +1373,10 @@ export default function WorkflowTray() {
     setProcessingId(task.id);
 
     try {
+      const preparedApproveFormData =
+        action === 'approve'
+          ? await prepareWorkflowApproveFormData(task, currentStep, currentIndex)
+          : {};
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', task.projectId, 'tasks', task.id);
       const steps = [...task.workflowSteps];
@@ -1445,14 +1504,14 @@ export default function WorkflowTray() {
           completedLate: Boolean(workflowPerformanceEntry?.completedLate),
         };
         // Save form data to the step
-        if (Object.keys(formData).length > 0) {
-          steps[currentIndex].formData = formData;
+        if (Object.keys(preparedApproveFormData).length > 0) {
+          steps[currentIndex].formData = preparedApproveFormData;
         }
 
         const resolvedNextIndex = resolveWorkflowNextStepIndex({
           steps,
           currentIndex,
-          formData: Object.keys(formData).length > 0 ? formData : steps[currentIndex]?.formData || {},
+          formData: Object.keys(preparedApproveFormData).length > 0 ? preparedApproveFormData : steps[currentIndex]?.formData || {},
         });
 
         if (resolvedNextIndex !== null) {
@@ -1575,7 +1634,7 @@ export default function WorkflowTray() {
           userName: actorName,
           action: action,
           comment: actionComment,
-          formData: action === 'approve' ? formData : null,
+          formData: action === 'approve' ? preparedApproveFormData : null,
           nextStepAssignee: action === 'approve' && approveNeedsNextAssignee && assignedNextWorkflowIndex !== null ? nextStepAssignee : null,
           nextStepIndex: action === 'return' ? nextIndex : assignedNextWorkflowIndex,
           dynamicRateCard: dynamicRateCardCharge,
@@ -1632,6 +1691,7 @@ export default function WorkflowTray() {
       setActionModal({ isOpen: false, task: null, type: 'approve' });
       setActionComment('');
       setFormData({});
+      setWorkflowDocumentFiles({});
       setStaticRateCardAssignees({});
       setQualityCauseId('');
       resetDynamicRateCardFields();
@@ -1652,6 +1712,7 @@ export default function WorkflowTray() {
     setActionModal({ isOpen: true, task, type });
     setActionComment('');
     setFormData(initialFormData);
+    setWorkflowDocumentFiles({});
     setNextStepAssignee('');
     setQualityCauseId('');
     
@@ -3164,7 +3225,7 @@ export default function WorkflowTray() {
       {/* Action Modal */}
       {actionModal.isOpen && actionModal.task && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl overflow-hidden">
             <div className="p-6 border-b border-slate-100">
               <h2 className="text-xl font-bold text-slate-800">
                 {actionModal.type === 'approve' ? 'Aprobar y Continuar' : 
@@ -3298,6 +3359,48 @@ export default function WorkflowTray() {
                           <label htmlFor={`cb-${field.id}`} className="text-sm text-slate-600 cursor-pointer">
                             Confirmar
                           </label>
+                        </div>
+                      )}
+
+                      {field.type === 'document' && (
+                        <div className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50/60 p-3">
+                          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-white bg-white px-3 py-2 text-sm font-bold text-slate-700 shadow-sm transition-colors hover:border-indigo-200">
+                            <span className="flex min-w-0 items-center gap-2">
+                              <FileUp size={16} className="text-indigo-600" />
+                              <span className="truncate">
+                                {workflowDocumentFiles[field.id]?.name || 'Seleccionar documento'}
+                              </span>
+                            </span>
+                            <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-1 text-[10px] uppercase tracking-wider text-indigo-700">
+                              Adjuntar
+                            </span>
+                            <input
+                              type="file"
+                              className="hidden"
+                              onChange={(event) => {
+                                const selectedFile = event.target.files?.[0] || null;
+                                setWorkflowDocumentFiles((current) => ({
+                                  ...current,
+                                  [field.id]: selectedFile,
+                                }));
+                              }}
+                            />
+                          </label>
+                          {isWorkflowDocumentValue(formData[field.id]) && (
+                            <a
+                              href={formData[field.id].url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-2 flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white/80 px-3 py-2 text-xs font-bold text-indigo-700 hover:text-indigo-900"
+                            >
+                              <FileText size={14} className="shrink-0" />
+                              <span className="truncate">{getWorkflowDocumentDisplayName(formData[field.id])}</span>
+                              <ExternalLink size={12} className="ml-auto shrink-0" />
+                            </a>
+                          )}
+                          <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                            El archivo se guardará en la carpeta documental de esta tarea y quedará como evidencia del paso.
+                          </p>
                         </div>
                       )}
                     </div>
@@ -3511,6 +3614,99 @@ export default function WorkflowTray() {
                 </div>
               )}
 
+              {actionModal.type === 'approve' && actionModal.task && (() => {
+                const evidenceDocs = collectWorkflowDocumentsFromHistory(actionModal.task);
+                const recentHistory = [...(actionModal.task.workflowHistory || [])]
+                  .sort((left: any, right: any) => getTaskTimestamp(right.timestamp) - getTaskTimestamp(left.timestamp))
+                  .slice(0, 5);
+
+                return (
+                  <div className="mb-4 rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                          <FileText size={16} className="text-indigo-600" />
+                          Documentos e interacciones del workflow
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Revisa la evidencia generada en pasos anteriores antes de aprobar.
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-indigo-50 px-3 py-1 text-[11px] font-bold text-indigo-700">
+                        {evidenceDocs.length} documentos
+                      </span>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                        <p className="mb-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+                          Documentación por paso
+                        </p>
+                        {evidenceDocs.length > 0 ? (
+                          <div className="space-y-2">
+                            {evidenceDocs.slice(0, 6).map((docValue: any, index: number) => (
+                              <a
+                                key={`${docValue.documentId || docValue.storagePath || docValue.url}-${index}`}
+                                href={docValue.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex min-w-0 items-start gap-2 rounded-lg border border-white bg-white px-3 py-2 text-xs shadow-sm hover:border-indigo-100"
+                              >
+                                <FileText size={14} className="mt-0.5 shrink-0 text-indigo-600" />
+                                <span className="min-w-0">
+                                  <span className="block truncate font-bold text-slate-800">
+                                    {getWorkflowDocumentDisplayName(docValue)}
+                                  </span>
+                                  <span className="mt-0.5 block truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                                    {docValue.stepLabel || 'Paso'} · {docValue.fieldLabel || 'Documento'}
+                                  </span>
+                                </span>
+                                <ExternalLink size={12} className="ml-auto mt-0.5 shrink-0 text-slate-400" />
+                              </a>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="rounded-lg border border-dashed border-slate-200 bg-white p-3 text-xs text-slate-500">
+                            Este workflow aún no tiene documentos adjuntos en sus pasos.
+                          </p>
+                        )}
+                      </div>
+                      <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                        <p className="mb-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
+                          Últimas interacciones
+                        </p>
+                        {recentHistory.length > 0 ? (
+                          <div className="space-y-2">
+                            {recentHistory.map((history: any, index: number) => {
+                              const historyDate = getTaskDate(history.timestamp);
+                              return (
+                                <div key={`${history.timestamp?.seconds || index}-${history.action}`} className="rounded-lg border border-white bg-white p-3 text-xs shadow-sm">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-bold text-slate-800">{history.userName || history.userEmail || 'Usuario'}</span>
+                                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                                      {history.action || 'interacción'}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 line-clamp-2 text-slate-600">{history.comment || 'Sin observación registrada.'}</p>
+                                  {historyDate && (
+                                    <p className="mt-1 text-[10px] font-semibold text-slate-400">
+                                      {format(historyDate, "d MMM yyyy, h:mm a", { locale: es })}
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="rounded-lg border border-dashed border-slate-200 bg-white p-3 text-xs text-slate-500">
+                            Este workflow aún no tiene interacciones registradas.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
                   Observaciones <span className="text-red-500">*</span>
@@ -3530,6 +3726,7 @@ export default function WorkflowTray() {
                 variant="outline"
                 onClick={() => {
                   setActionModal({ isOpen: false, task: null, type: 'approve' });
+                  setWorkflowDocumentFiles({});
                   setStaticRateCardAssignees({});
                 }}
               >
@@ -3984,6 +4181,7 @@ export default function WorkflowTray() {
         user={user}
         teamMembers={projectTeamMembers}
         rateCards={projectRateCards}
+        tasks={workflows}
         onSubmit={confirmAssignedSubtaskCompletionForm}
       />
 

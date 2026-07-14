@@ -3721,6 +3721,8 @@ export default function ProjectDetailsPage() {
         onClose={() => setCompletionFormStatusChange(null)}
         task={completionFormStatusChange?.task || null}
         user={user}
+        project={project}
+        tasks={tasks}
         teamMembers={projectAssignableTeamMembers}
         rateCards={rateCards}
         onSubmit={async (submission) => {
