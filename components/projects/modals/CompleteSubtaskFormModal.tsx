@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, ClipboardList, CreditCard, ExternalLink, FileUp, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CustomForm } from "@/components/projects/WorkflowStepFormBuilderModal";
@@ -97,6 +97,18 @@ export function CompleteSubtaskFormModal({
   const runtimeStaticSources = staticRateCardSources.filter((source) => source.assigneeMode === "runtime");
   const usesDynamicRateCard = isDynamicRateCardForm(completionForm);
   const dynamicRequestsUnits = shouldRequestDynamicRateCardUnits(completionForm);
+  const completionFormSignature = useMemo(
+    () =>
+      (completionForm?.fields || [])
+        .map((field: any) => `${field.id}:${field.type}:${field.label || ""}:${field.required ? "1" : "0"}`)
+        .join("|"),
+    [completionForm?.fields]
+  );
+  const modalSessionKey =
+    isOpen && task
+      ? `${task.id || task.originalId || "task"}::${(completionForm as any)?.id || completionForm?.title || "form"}::${completionFormSignature}`
+      : "";
+  const initializedSessionRef = useRef("");
 
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [comment, setComment] = useState("");
@@ -109,24 +121,32 @@ export function CompleteSubtaskFormModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!isOpen || !task) return;
+    if (!isOpen || !task) {
+      initializedSessionRef.current = "";
+      return;
+    }
+    if (initializedSessionRef.current === modalSessionKey) return;
+
+    initializedSessionRef.current = modalSessionKey;
+    const initialStaticSources = getStaticSources(completionForm);
+    const initialRuntimeSources = initialStaticSources.filter((source) => source.assigneeMode === "runtime");
 
     setFormData(task.completionFormData || {});
     setDocumentFiles({});
     setComment("");
     setStaticRateCardUnits(
-      Object.fromEntries(staticRateCardSources.map((source) => [source.key, String(normalizeRateCardUnits(source.unitsToAdd))]))
+      Object.fromEntries(initialStaticSources.map((source) => [source.key, String(normalizeRateCardUnits(source.unitsToAdd))]))
     );
     setStaticRateCardAssignees(
       Object.fromEntries(
-        runtimeStaticSources.map((source) => [source.key, source.assignedTo || ""])
+        initialRuntimeSources.map((source) => [source.key, source.assignedTo || ""])
       )
     );
     setDynamicRateCardAssignee(task.assignedTo || user?.uid || "");
     setDynamicRateCardId("");
     setDynamicRateCardUnits(String(getDynamicRateCardUnits(completionForm)));
     setIsSubmitting(false);
-  }, [completionForm, isOpen, runtimeStaticSources, staticRateCardSources, task, user?.uid]);
+  }, [completionForm, isOpen, modalSessionKey, task, user?.uid]);
 
   if (!isOpen || !task || !completionForm) return null;
 
@@ -237,7 +257,7 @@ export function CompleteSubtaskFormModal({
         <input
           type="text"
           value={formData[field.id] || ""}
-          onChange={(event) => setFormData({ ...formData, [field.id]: event.target.value })}
+          onChange={(event) => setFormData((current) => ({ ...current, [field.id]: event.target.value }))}
           className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
         />
       )}
@@ -247,7 +267,7 @@ export function CompleteSubtaskFormModal({
           type="number"
           step="any"
           value={formData[field.id] || ""}
-          onChange={(event) => setFormData({ ...formData, [field.id]: event.target.value })}
+          onChange={(event) => setFormData((current) => ({ ...current, [field.id]: event.target.value }))}
           className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
         />
       )}
@@ -256,7 +276,7 @@ export function CompleteSubtaskFormModal({
         <input
           type="date"
           value={formData[field.id] || ""}
-          onChange={(event) => setFormData({ ...formData, [field.id]: event.target.value })}
+          onChange={(event) => setFormData((current) => ({ ...current, [field.id]: event.target.value }))}
           className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
         />
       )}
@@ -265,7 +285,7 @@ export function CompleteSubtaskFormModal({
         <input
           type="datetime-local"
           value={formData[field.id] || ""}
-          onChange={(event) => setFormData({ ...formData, [field.id]: event.target.value })}
+          onChange={(event) => setFormData((current) => ({ ...current, [field.id]: event.target.value }))}
           className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
         />
       )}
@@ -276,7 +296,7 @@ export function CompleteSubtaskFormModal({
             field.selectionMode === "single" ? (
               <select
                 value={Array.isArray(formData[field.id]) ? formData[field.id][0] || "" : formData[field.id] || ""}
-                onChange={(event) => setFormData({ ...formData, [field.id]: event.target.value })}
+                onChange={(event) => setFormData((current) => ({ ...current, [field.id]: event.target.value }))}
                 className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
               >
                 <option value="">Selecciona una opción</option>
@@ -296,10 +316,10 @@ export function CompleteSubtaskFormModal({
                         type="checkbox"
                         checked={selectedValues.includes(option)}
                         onChange={() =>
-                          setFormData({
-                            ...formData,
-                            [field.id]: toggleMultiSelectValue(formData[field.id], option),
-                          })
+                          setFormData((current) => ({
+                            ...current,
+                            [field.id]: toggleMultiSelectValue(current[field.id], option),
+                          }))
                         }
                         className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                       />
@@ -320,7 +340,7 @@ export function CompleteSubtaskFormModal({
           <input
             type="checkbox"
             checked={Boolean(formData[field.id])}
-            onChange={(event) => setFormData({ ...formData, [field.id]: event.target.checked })}
+            onChange={(event) => setFormData((current) => ({ ...current, [field.id]: event.target.checked }))}
             className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
           />
           Confirmar
@@ -344,7 +364,7 @@ export function CompleteSubtaskFormModal({
               className="hidden"
               onChange={(event) => {
                 const selectedFile = event.target.files?.[0] || null;
-                setDocumentFiles({ ...documentFiles, [field.id]: selectedFile });
+                setDocumentFiles((current) => ({ ...current, [field.id]: selectedFile }));
               }}
             />
           </label>
@@ -425,10 +445,10 @@ export function CompleteSubtaskFormModal({
                           pattern="[0-9]*[.,]?[0-9]*"
                           value={staticRateCardUnits[source.key] ?? String(source.unitsToAdd ?? "")}
                           onChange={(event) =>
-                            setStaticRateCardUnits({
-                              ...staticRateCardUnits,
+                            setStaticRateCardUnits((current) => ({
+                              ...current,
                               [source.key]: event.target.value,
-                            })
+                            }))
                           }
                           className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                         />
@@ -449,10 +469,10 @@ export function CompleteSubtaskFormModal({
                         <select
                           value={staticRateCardAssignees[source.key] || ""}
                           onChange={(event) =>
-                            setStaticRateCardAssignees({
-                              ...staticRateCardAssignees,
+                            setStaticRateCardAssignees((current) => ({
+                              ...current,
                               [source.key]: event.target.value,
-                            })
+                            }))
                           }
                           className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                         >

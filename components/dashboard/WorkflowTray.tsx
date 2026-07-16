@@ -3257,7 +3257,7 @@ export default function WorkflowTray() {
                         <input
                           type="text"
                           value={formData[field.id] || ''}
-                          onChange={(e) => setFormData({...formData, [field.id]: e.target.value})}
+                          onChange={(e) => setFormData((current) => ({ ...current, [field.id]: e.target.value }))}
                           className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                           required={field.required}
                         />
@@ -3267,7 +3267,7 @@ export default function WorkflowTray() {
                         <input
                           type="number"
                           value={formData[field.id] || ''}
-                          onChange={(e) => setFormData({...formData, [field.id]: e.target.value})}
+                          onChange={(e) => setFormData((current) => ({ ...current, [field.id]: e.target.value }))}
                           className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                           required={field.required}
                         />
@@ -3277,7 +3277,7 @@ export default function WorkflowTray() {
                         <input
                           type="date"
                           value={formData[field.id] || ''}
-                          onChange={(e) => setFormData({...formData, [field.id]: e.target.value})}
+                          onChange={(e) => setFormData((current) => ({ ...current, [field.id]: e.target.value }))}
                           className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                           required={field.required}
                         />
@@ -3287,7 +3287,7 @@ export default function WorkflowTray() {
                         <input
                           type="datetime-local"
                           value={formData[field.id] || ''}
-                          onChange={(e) => setFormData({...formData, [field.id]: e.target.value})}
+                          onChange={(e) => setFormData((current) => ({ ...current, [field.id]: e.target.value }))}
                           className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                           required={field.required}
                         />
@@ -3299,7 +3299,7 @@ export default function WorkflowTray() {
                             field.selectionMode === 'single' ? (
                               <select
                                 value={Array.isArray(formData[field.id]) ? (formData[field.id][0] || '') : (formData[field.id] || '')}
-                                onChange={(e) => setFormData({...formData, [field.id]: e.target.value})}
+                                onChange={(e) => setFormData((current) => ({ ...current, [field.id]: e.target.value }))}
                                 className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                                 required={field.required}
                               >
@@ -3320,10 +3320,10 @@ export default function WorkflowTray() {
                                         type="checkbox"
                                         checked={selectedValues.includes(opt)}
                                         onChange={() =>
-                                          setFormData({
-                                            ...formData,
-                                            [field.id]: toggleMultiSelectValue(formData[field.id], opt),
-                                          })
+                                          setFormData((current) => ({
+                                            ...current,
+                                            [field.id]: toggleMultiSelectValue(current[field.id], opt),
+                                          }))
                                         }
                                         className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4"
                                       />
@@ -3352,7 +3352,7 @@ export default function WorkflowTray() {
                             type="checkbox"
                             id={`cb-${field.id}`}
                             checked={formData[field.id] || false}
-                            onChange={(e) => setFormData({...formData, [field.id]: e.target.checked})}
+                            onChange={(e) => setFormData((current) => ({ ...current, [field.id]: e.target.checked }))}
                             className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4"
                             required={field.required}
                           />
