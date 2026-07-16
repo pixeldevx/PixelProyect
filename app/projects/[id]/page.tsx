@@ -73,6 +73,7 @@ import {
   normalizeWorkflowScheduleMode,
 } from '@/lib/workflow-schedule';
 import { isDynamicWorkflowAssignee, isWorkflowTaskType } from '@/lib/workflow-routing';
+import { addTraceableRateCardMovementToBatch } from '@/lib/rate-card-trace';
 
 const getTaskTitle = (task: any) => task?.title || task?.name || 'Tarea';
 const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
@@ -2856,35 +2857,62 @@ export default function ProjectDetailsPage() {
     try {
       const batch = writeBatch(db);
       const taskRef = doc(db, 'projects', projectId, 'tasks', task.id);
+      const actionAt = new Date();
+      const affectedRateCardIds = new Set<string>();
+      const actor = {
+        id: user?.uid || null,
+        email: user?.email || null,
+        name: currentActorName,
+      };
 
-      (task.workflowSteps || []).forEach((step: any) => {
+      (task.workflowSteps || []).forEach((step: any, stepIndex: number) => {
         const stepRateCardSources = getStaticRateCardSources(step);
         if (step.status === 'listo' && stepRateCardSources.length > 0) {
           stepRateCardSources.forEach((stepRateCardSource) => {
-            const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
             const stepUnits = normalizeRateCardUnits(stepRateCardSource.unitsToAdd);
-            const updateData: any = {
-              currentValue: increment(-stepUnits),
-            };
             const stepAssignee = getStaticRateCardAssignee(stepRateCardSource, step.assignedTo);
-            if (stepAssignee) {
-              updateData[`userStats.${stepAssignee}`] = increment(-stepUnits);
+            if (stepAssignee && stepUnits > 0) {
+              addTraceableRateCardMovementToBatch(batch, {
+                projectId,
+                task,
+                rateCardId: stepRateCardSource.rateCardId,
+                assignedTo: stepAssignee,
+                units: stepUnits,
+                source: 'workflow_reset_step_reversal',
+                rateCardSourceKey: stepRateCardSource.key,
+                stepIndex,
+                stepName: step.name || step.title || step.label || `Paso ${stepIndex + 1}`,
+                comment: 'Reverso automático por reinicio completo del workflow.',
+                occurredAt: actionAt,
+                actor,
+                reversal: true,
+                completionMode: 'workflow_reset',
+              });
+              affectedRateCardIds.add(stepRateCardSource.rateCardId);
             }
-            batch.update(stepRcRef, updateData);
           });
         }
       });
 
       if ((task.status === 'completed' || task.status === 'completed_late') && task.isRateCardTask && task.rateCardId) {
-        const taskRcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
         const taskUnits = normalizeRateCardUnits(task.unitsToAdd);
-        const updateData: any = {
-          currentValue: increment(-taskUnits),
-        };
-        if (task.assignedTo) {
-          updateData[`userStats.${task.assignedTo}`] = increment(-taskUnits);
+        if (task.assignedTo && taskUnits > 0) {
+          addTraceableRateCardMovementToBatch(batch, {
+            projectId,
+            task,
+            rateCardId: task.rateCardId,
+            assignedTo: task.assignedTo,
+            units: taskUnits,
+            source: 'workflow_reset_task_reversal',
+            rateCardSourceKey: 'task:workflow-completion',
+            comment: 'Reverso automático del Rate Card de la tarea por reinicio del workflow.',
+            occurredAt: actionAt,
+            actor,
+            reversal: true,
+            completionMode: 'workflow_reset',
+          });
+          affectedRateCardIds.add(task.rateCardId);
         }
-        batch.update(taskRcRef, updateData);
       }
 
       const resetTitle = task.originalTitle || getTaskTitle(task);
@@ -2905,6 +2933,9 @@ export default function ProjectDetailsPage() {
         currentStepIndex: 0,
         workflowSteps: (task.workflowSteps || []).map(resetWorkflowStepRuntime),
         workflowHistory: [resetHistoryEntry, ...(task.workflowHistory || [])],
+        completedAt: null,
+        completedBy: null,
+        completedByMemberId: null,
         externalWorkflowId: null,
         initialObservation: null,
         startDocumentId: null,
@@ -2913,6 +2944,12 @@ export default function ProjectDetailsPage() {
       });
 
       await batch.commit();
+
+      await Promise.all(
+        Array.from(affectedRateCardIds).map((rateCardId) =>
+          syncRateDrivenIncrementalTasksForRate({ projectId, rateCardId }),
+        ),
+      );
 
       if (task.parentTaskId) {
         const { updateParentTaskStatus } = await import('@/lib/taskUtils');

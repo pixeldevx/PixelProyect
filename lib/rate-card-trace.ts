@@ -1,0 +1,385 @@
+import {
+  collection,
+  doc,
+  increment,
+  serverTimestamp,
+  Timestamp,
+  writeBatch,
+} from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
+import {
+  getStaticRateCardAssignee,
+  getStaticRateCardSources,
+  normalizeRateCardUnits,
+} from '@/lib/rate-card-config';
+import { getTaskTitle } from '@/lib/task-title';
+import { getTaskDateValue, isCompletedTaskStatus } from '@/lib/taskProgress';
+
+const EPSILON = 0.000001;
+
+export const getRateCardPeriodKeys = (date = new Date()) => {
+  const year = date.getFullYear();
+  const dateKey = `${year}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const monthKey = `${year}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  const startOfYear = new Date(year, 0, 1);
+  const dayOfYear = Math.floor((date.getTime() - startOfYear.getTime()) / 86400000) + 1;
+  const weekKey = `${year}-W${String(Math.ceil(dayOfYear / 7)).padStart(2, '0')}`;
+
+  return { dateKey, weekKey, monthKey };
+};
+
+export const parseRateCardTraceDate = (value: any): Date | null => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value?.toDate === 'function') return getTaskDateValue(value.toDate());
+  if (typeof value?.toMillis === 'function') return getTaskDateValue(value.toMillis());
+  if (typeof value?.seconds === 'number') return getTaskDateValue(value.seconds * 1000);
+  return getTaskDateValue(value);
+};
+
+type RateCardActor = {
+  id?: string | null;
+  email?: string | null;
+  name?: string | null;
+};
+
+export const addTraceableRateCardMovementToBatch = (
+  batch: ReturnType<typeof writeBatch>,
+  params: {
+    projectId: string;
+    task: any;
+    rateCardId: string;
+    assignedTo?: string | null;
+    units: number;
+    source: string;
+    rateCardSourceKey?: string | null;
+    stepIndex?: number | null;
+    stepName?: string | null;
+    comment?: string | null;
+    occurredAt?: Date | null;
+    actor?: RateCardActor | null;
+    isRework?: boolean;
+    reversal?: boolean;
+    updateAggregate?: boolean;
+    completionMode?: string | null;
+    extra?: Record<string, any>;
+  },
+) => {
+  const absoluteUnits = normalizeRateCardUnits(params.units, 0);
+  if (!params.rateCardId || absoluteUnits <= EPSILON) return null;
+
+  const signedUnits = params.reversal ? -absoluteUnits : absoluteUnits;
+  const assignedTo = params.assignedTo || null;
+  const occurredAt = params.occurredAt && !Number.isNaN(params.occurredAt.getTime())
+    ? params.occurredAt
+    : new Date();
+
+  if (params.updateAggregate !== false) {
+    const rateCardRef = doc(db, 'projects', params.projectId, 'rateCards', params.rateCardId);
+    const valueField = params.isRework ? 'reworkValue' : 'currentValue';
+    const statsField = params.isRework ? 'userReworkStats' : 'userStats';
+    const aggregateUpdate: Record<string, any> = {
+      [valueField]: increment(signedUnits),
+      updatedAt: serverTimestamp(),
+    };
+
+    if (assignedTo) {
+      aggregateUpdate[`${statsField}.${assignedTo}`] = increment(signedUnits);
+    }
+    batch.update(rateCardRef, aggregateUpdate);
+  }
+
+  const entryRef = doc(collection(db, 'projects', params.projectId, 'rateCardEntries'));
+  const stepIndex = typeof params.stepIndex === 'number' ? params.stepIndex : null;
+  const traceKey = [
+    params.task?.id || 'sin-tarea',
+    stepIndex ?? 'task',
+    params.rateCardId,
+    assignedTo || 'sin-profesional',
+    params.rateCardSourceKey || params.source,
+    params.reversal ? 'reversal' : 'charge',
+  ].join('::');
+
+  const entryData = {
+    projectId: params.projectId,
+    taskId: params.task?.id || null,
+    taskTitle: getTaskTitle(params.task, 'Tarea'),
+    externalWorkflowId: params.task?.externalWorkflowId || null,
+    parentTaskId: params.task?.parentTaskId || null,
+    rateCardId: params.rateCardId,
+    assignedTo,
+    units: signedUnits,
+    source: params.source,
+    rateCardSourceKey: params.rateCardSourceKey || null,
+    stepIndex,
+    stepName: params.stepName || null,
+    comment: params.comment || null,
+    isRework: Boolean(params.isRework),
+    reversal: Boolean(params.reversal),
+    completionMode: params.completionMode || null,
+    traceKey,
+    ...getRateCardPeriodKeys(occurredAt),
+    completedAt: Timestamp.fromDate(occurredAt),
+    createdAt: Timestamp.fromDate(occurredAt),
+    recordedAt: serverTimestamp(),
+    createdBy: params.actor?.id || null,
+    createdByEmail: params.actor?.email || null,
+    createdByName: params.actor?.name || null,
+    ...(params.extra || {}),
+  };
+
+  batch.set(entryRef, entryData);
+  return { id: entryRef.id, ...entryData };
+};
+
+export type HistoricalRateCardGap = {
+  id: string;
+  entryId?: string;
+  assignedTo: string;
+  units: number;
+  isRework: boolean;
+  source?: string;
+  taskTitle?: string;
+};
+
+export type HistoricalRateCardRepairMatch = {
+  taskId: string;
+  taskTitle: string;
+  externalWorkflowId: string | null;
+  parentTaskId: string | null;
+  assignedTo: string;
+  units: number;
+  stepIndex: number | null;
+  stepName: string | null;
+  rateCardSourceKeys: string[];
+  occurredAt: Date;
+  completionEvidence: 'step_completed_at' | 'workflow_history' | 'task_completed_at' | 'status_history' | 'task_updated_at';
+  originalCompletedBy: string | null;
+  traceKey: string;
+};
+
+export type HistoricalRateCardRepairPlan = {
+  matches: HistoricalRateCardRepairMatch[];
+  unresolved: HistoricalRateCardGap[];
+  recoverableUnits: number;
+  unresolvedUnits: number;
+};
+
+const getWorkflowHistoryDate = (task: any, stepIndex: number) => {
+  const history = Array.isArray(task?.workflowHistory) ? task.workflowHistory : [];
+  const entry = [...history].reverse().find((item: any) =>
+    Number(item?.stepIndex) === stepIndex &&
+    ['approve', 'approved', 'complete', 'completed'].includes(String(item?.action || '').toLowerCase())
+  );
+  return parseRateCardTraceDate(entry?.timestamp || entry?.createdAt || entry?.completedAt);
+};
+
+const getTaskCompletionEvidence = (task: any) => {
+  const completedAt = parseRateCardTraceDate(task?.completedAt);
+  if (completedAt) return { date: completedAt, evidence: 'task_completed_at' as const };
+
+  const statusHistory = Array.isArray(task?.statusHistory) ? task.statusHistory : [];
+  const completedHistory = [...statusHistory].reverse().find((item: any) =>
+    isCompletedTaskStatus(item?.status || item?.newStatus || item?.to)
+  );
+  const historyDate = parseRateCardTraceDate(
+    completedHistory?.timestamp || completedHistory?.createdAt || completedHistory?.completedAt,
+  );
+  if (historyDate) return { date: historyDate, evidence: 'status_history' as const };
+
+  if (isCompletedTaskStatus(task?.status)) {
+    const updatedAt = parseRateCardTraceDate(task?.updatedAt);
+    if (updatedAt) return { date: updatedAt, evidence: 'task_updated_at' as const };
+  }
+  return null;
+};
+
+const resolveRepairAssignee = (
+  source: any,
+  step: any,
+  task: any,
+  gapUsers: Set<string>,
+) => {
+  const candidates = [
+    getStaticRateCardAssignee(source, step?.assignedTo),
+    source?.assignedTo,
+    step?.completedBy,
+    task?.assignedTo,
+  ].filter((value, index, values): value is string =>
+    typeof value === 'string' && value.length > 0 && value !== 'DYNAMIC' && values.indexOf(value) === index
+  );
+
+  return candidates.find(candidate => gapUsers.has(candidate)) || null;
+};
+
+export const buildHistoricalRateCardRepairPlan = ({
+  rateCard,
+  gaps,
+  entries,
+  tasks,
+}: {
+  rateCard: any;
+  gaps: HistoricalRateCardGap[];
+  entries: any[];
+  tasks: any[];
+}): HistoricalRateCardRepairPlan => {
+  const productionGaps = gaps.filter(gap => !gap.isRework && gap.units > EPSILON);
+  const gapUsers = new Set(productionGaps.map(gap => gap.assignedTo).filter(Boolean));
+  const existingByOrigin = new Map<string, number>();
+
+  entries
+    .filter(entry => entry?.rateCardId === rateCard?.id && !entry?.isRework)
+    .forEach(entry => {
+      const key = [
+        entry.taskId || '',
+        typeof entry.stepIndex === 'number' ? entry.stepIndex : 'task',
+        entry.assignedTo || '',
+      ].join('::');
+      existingByOrigin.set(key, (existingByOrigin.get(key) || 0) + Number(entry.units || 0));
+    });
+
+  const groupedCandidates = new Map<string, Omit<HistoricalRateCardRepairMatch, 'units' | 'rateCardSourceKeys' | 'traceKey'> & {
+    expectedUnits: number;
+    sourceKeys: string[];
+  }>();
+
+  (tasks || []).forEach(task => {
+    const taskCompletion = getTaskCompletionEvidence(task);
+    const steps = Array.isArray(task?.workflowSteps) ? task.workflowSteps : [];
+
+    steps.forEach((step: any, stepIndex: number) => {
+      if (step?.status !== 'listo') return;
+      const sources = getStaticRateCardSources(step).filter(source => source.rateCardId === rateCard?.id);
+      if (sources.length === 0) return;
+
+      sources.forEach(source => {
+        const units = normalizeRateCardUnits(source.unitsToAdd, 0);
+        const assignedTo = resolveRepairAssignee(source, step, task, gapUsers);
+        if (units <= EPSILON || !assignedTo) return;
+
+        const stepDate = parseRateCardTraceDate(step?.completedAt);
+        const historyDate = getWorkflowHistoryDate(task, stepIndex);
+        // Historical balances were posted when the workflow was finally
+        // closed. Prefer that date so repaired reports keep the original
+        // accounting cut-off instead of inventing a step date.
+        const completion = taskCompletion || (stepDate
+          ? { date: stepDate, evidence: 'step_completed_at' as const }
+          : historyDate
+            ? { date: historyDate, evidence: 'workflow_history' as const }
+            : null);
+        if (!completion) return;
+
+        const originKey = [task.id, stepIndex, assignedTo].join('::');
+        const current = groupedCandidates.get(originKey);
+        if (current) {
+          current.expectedUnits += units;
+          current.sourceKeys.push(source.key);
+          return;
+        }
+
+        groupedCandidates.set(originKey, {
+          taskId: task.id,
+          taskTitle: getTaskTitle(task, 'Tarea'),
+          externalWorkflowId: task.externalWorkflowId || null,
+          parentTaskId: task.parentTaskId || null,
+          assignedTo,
+          stepIndex,
+          stepName: step?.name || step?.title || `Paso ${stepIndex + 1}`,
+          occurredAt: completion.date,
+          completionEvidence: completion.evidence,
+          originalCompletedBy: step?.completedBy || null,
+          expectedUnits: units,
+          sourceKeys: [source.key],
+        });
+      });
+    });
+
+    if (
+      task?.isRateCardTask &&
+      task?.rateCardId === rateCard?.id &&
+      steps.length > 0 &&
+      steps.every((step: any) => step?.status === 'listo') &&
+      taskCompletion
+    ) {
+      const assignedTo = typeof task.assignedTo === 'string' && gapUsers.has(task.assignedTo)
+        ? task.assignedTo
+        : null;
+      const units = normalizeRateCardUnits(task.unitsToAdd, 0);
+      if (assignedTo && units > EPSILON) {
+        const originKey = [task.id, 'task', assignedTo].join('::');
+        groupedCandidates.set(originKey, {
+          taskId: task.id,
+          taskTitle: getTaskTitle(task, 'Tarea'),
+          externalWorkflowId: task.externalWorkflowId || null,
+          parentTaskId: task.parentTaskId || null,
+          assignedTo,
+          stepIndex: null,
+          stepName: null,
+          occurredAt: taskCompletion.date,
+          completionEvidence: taskCompletion.evidence,
+          originalCompletedBy: task.completedBy || null,
+          expectedUnits: units,
+          sourceKeys: ['task:workflow-completion'],
+        });
+      }
+    }
+  });
+
+  const remainingByUser = new Map<string, number>();
+  productionGaps.forEach(gap => {
+    remainingByUser.set(
+      gap.assignedTo,
+      (remainingByUser.get(gap.assignedTo) || 0) + gap.units,
+    );
+  });
+  const matches: HistoricalRateCardRepairMatch[] = [];
+
+  Array.from(groupedCandidates.values())
+    .sort((left, right) => left.occurredAt.getTime() - right.occurredAt.getTime())
+    .forEach(candidate => {
+      const originKey = [candidate.taskId, candidate.stepIndex ?? 'task', candidate.assignedTo].join('::');
+      const missingUnits = candidate.expectedUnits - (existingByOrigin.get(originKey) || 0);
+      const remainingGap = remainingByUser.get(candidate.assignedTo) || 0;
+      if (missingUnits <= EPSILON || missingUnits - remainingGap > EPSILON) return;
+
+      const sourceKeys = Array.from(new Set(candidate.sourceKeys)).sort();
+      matches.push({
+        taskId: candidate.taskId,
+        taskTitle: candidate.taskTitle,
+        externalWorkflowId: candidate.externalWorkflowId,
+        parentTaskId: candidate.parentTaskId,
+        assignedTo: candidate.assignedTo,
+        units: missingUnits,
+        stepIndex: candidate.stepIndex,
+        stepName: candidate.stepName,
+        occurredAt: candidate.occurredAt,
+        completionEvidence: candidate.completionEvidence,
+        originalCompletedBy: candidate.originalCompletedBy,
+        rateCardSourceKeys: sourceKeys,
+        traceKey: [candidate.taskId, candidate.stepIndex ?? 'task', rateCard.id, candidate.assignedTo, sourceKeys.join('|'), 'repair'].join('::'),
+      });
+      remainingByUser.set(candidate.assignedTo, Math.max(0, remainingGap - missingUnits));
+    });
+
+  const unresolved = gaps.reduce<HistoricalRateCardGap[]>((rows, gap) => {
+    if (gap.isRework) {
+      rows.push(gap);
+      return rows;
+    }
+
+    const remainingUnits = remainingByUser.get(gap.assignedTo) || 0;
+    const unresolvedUnits = Math.min(gap.units, remainingUnits);
+    if (unresolvedUnits > EPSILON) {
+      rows.push({ ...gap, units: unresolvedUnits });
+      remainingByUser.set(gap.assignedTo, Math.max(0, remainingUnits - unresolvedUnits));
+    }
+    return rows;
+  }, []);
+
+  return {
+    matches,
+    unresolved,
+    recoverableUnits: matches.reduce((sum, match) => sum + match.units, 0),
+    unresolvedUnits: unresolved.reduce((sum, gap) => sum + gap.units, 0),
+  };
+};

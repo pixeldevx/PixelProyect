@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, CheckCircle2, Circle, RotateCcw, BookOpen, CalendarDays, Download, ExternalLink, MapPin, Users } from 'lucide-react';
-import { doc, updateDoc, serverTimestamp, addDoc, collection, writeBatch, increment, arrayUnion, Timestamp } from '@/lib/supabase/document-store';
+import { doc, serverTimestamp, collection, writeBatch, arrayUnion, Timestamp } from '@/lib/supabase/document-store';
 import { auth, db } from '@/lib/backend';
 import { toast } from 'sonner';
 import {
@@ -10,7 +10,9 @@ import {
   normalizeRateCardUnits,
 } from '@/lib/rate-card-config';
 import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
-import { getCompletionStatusForTask } from '@/lib/taskProgress';
+import { getCompletionStatusForTask, isCompletedTaskStatus } from '@/lib/taskProgress';
+import { addTraceableRateCardMovementToBatch, parseRateCardTraceDate } from '@/lib/rate-card-trace';
+import { syncRateDrivenIncrementalTasksForRate } from '@/lib/incremental-rate-tasks';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import {
   createGoogleCalendarUrl,
@@ -199,6 +201,13 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     try {
       const batch = writeBatch(db);
       const taskRef = doc(db, "projects", projectId, "tasks", task.id);
+      const actionAt = new Date();
+      const currentActor = {
+        id: auth.currentUser?.uid || null,
+        email: auth.currentUser?.email || null,
+        name: getCurrentActorName(),
+      };
+      const affectedRateCardIds = new Set<string>();
 
       // Calculate progress and status for workflow tasks
       let newProgress = task.progress;
@@ -241,26 +250,31 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
 
         if (wasApproved !== isApproved && rateCardSources.length > 0) {
           rateCardSources.forEach((rateCardSource) => {
-            const rcRef = doc(
-              db,
-              "projects",
-              projectId,
-              "rateCards",
-              rateCardSource.rateCardId,
-            );
             const units = normalizeRateCardUnits(rateCardSource.unitsToAdd);
-            const updateData: any = {
-              currentValue: increment(isApproved ? units : -units),
-            };
-
             const stepAssignee = getStaticRateCardAssignee(rateCardSource, step.assignedTo);
-            if (stepAssignee) {
-              updateData[`userStats.${stepAssignee}`] = increment(
-                isApproved ? units : -units,
-              );
-            }
-
-            batch.update(rcRef, updateData);
+            const movement = addTraceableRateCardMovementToBatch(batch, {
+              projectId,
+              task,
+              rateCardId: rateCardSource.rateCardId,
+              assignedTo: stepAssignee,
+              units,
+              source: isApproved
+                ? "workflow_step_manual_approval"
+                : "workflow_step_manual_reversal",
+              rateCardSourceKey: rateCardSource.key,
+              stepIndex: idx,
+              stepName: step?.name || step?.title || `Paso ${idx + 1}`,
+              comment: isApproved
+                ? "Rate Card registrado al aprobar manualmente el paso desde detalles de la tarea."
+                : "Reversión del Rate Card al devolver manualmente el paso desde detalles de la tarea.",
+              occurredAt: isApproved
+                ? parseRateCardTraceDate(step?.completedAt) || actionAt
+                : actionAt,
+              actor: currentActor,
+              reversal: !isApproved,
+              completionMode: "manual_workflow_step",
+            });
+            if (movement) affectedRateCardIds.add(rateCardSource.rateCardId);
           });
         }
       });
@@ -275,25 +289,26 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
           workflowSteps.every((s: any) => s.status === "listo");
 
         if (wasAllApproved !== isAllApproved) {
-          const rcRef = doc(
-            db,
-            "projects",
-            projectId,
-            "rateCards",
-            task.rateCardId,
-          );
           const units = normalizeRateCardUnits(task.unitsToAdd);
-          const updateData: any = {
-            currentValue: increment(isAllApproved ? units : -units),
-          };
-
-          if (task.assignedTo) {
-            updateData[`userStats.${task.assignedTo}`] = increment(
-              isAllApproved ? units : -units,
-            );
-          }
-
-          batch.update(rcRef, updateData);
+          const movement = addTraceableRateCardMovementToBatch(batch, {
+            projectId,
+            task,
+            rateCardId: task.rateCardId,
+            assignedTo: task.assignedTo || null,
+            units,
+            source: isAllApproved
+              ? "workflow_task_manual_completion"
+              : "workflow_task_manual_reversal",
+            rateCardSourceKey: "task:workflow-completion",
+            comment: isAllApproved
+              ? "Rate Card registrado al finalizar manualmente todos los pasos del workflow."
+              : "Reversión del Rate Card al reabrir manualmente el workflow.",
+            occurredAt: actionAt,
+            actor: currentActor,
+            reversal: !isAllApproved,
+            completionMode: "manual_workflow_task",
+          });
+          if (movement) affectedRateCardIds.add(task.rateCardId);
         }
       }
 
@@ -303,7 +318,21 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         progress: newProgress,
         status: newStatus,
         updatedAt: serverTimestamp(),
+        updatedBy: currentActor.id,
+        updatedByEmail: currentActor.email,
       };
+
+      const wasCompleted = isCompletedTaskStatus(task.status);
+      const isCompleted = isCompletedTaskStatus(newStatus);
+      if (!wasCompleted && isCompleted) {
+        taskUpdate.completedAt = Timestamp.fromDate(actionAt);
+        taskUpdate.completedBy = currentActor.id;
+        taskUpdate.completedByEmail = currentActor.email;
+      } else if (wasCompleted && !isCompleted) {
+        taskUpdate.completedAt = null;
+        taskUpdate.completedBy = null;
+        taskUpdate.completedByEmail = null;
+      }
 
       if (isWorkflowTaskType(task.type)) {
         taskUpdate.currentStepIndex = newCurrentStepIndex;
@@ -327,6 +356,12 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       batch.update(taskRef, taskUpdate);
 
       await batch.commit();
+
+      await Promise.all(
+        Array.from(affectedRateCardIds).map((rateCardId) =>
+          syncRateDrivenIncrementalTasksForRate({ projectId, rateCardId })
+        ),
+      );
 
       if (pendingNextStepNotification) {
         void notifyTaskAssignment({

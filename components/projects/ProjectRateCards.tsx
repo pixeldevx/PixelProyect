@@ -21,6 +21,10 @@ import {
   normalizeRateCardValueType,
 } from '@/lib/rate-card-config';
 import { syncRateDrivenIncrementalTasksForRate } from '@/lib/incremental-rate-tasks';
+import {
+  addTraceableRateCardMovementToBatch,
+  buildHistoricalRateCardRepairPlan,
+} from '@/lib/rate-card-trace';
 
 export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembers = [], budgetLines = [] }: { projectId: string, currentUser: any, tasks?: any[], teamMembers?: any[], budgetLines?: any[] }) {
   const [rateCards, setRateCards] = useState<any[]>([]);
@@ -50,7 +54,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [maintenanceRateCardId, setMaintenanceRateCardId] = useState<string | null>(null);
   const [entryDrafts, setEntryDrafts] = useState<Record<string, { units: string; assignedTo: string; comment: string }>>({});
   const [maintenanceLoading, setMaintenanceLoading] = useState(false);
-  const [maintenanceConfirm, setMaintenanceConfirm] = useState<{ type: 'reset' | 'deleteEntry'; entry?: any } | null>(null);
+  const [maintenanceConfirm, setMaintenanceConfirm] = useState<{ type: 'reset' | 'deleteEntry' | 'repairTrace'; entry?: any } | null>(null);
 
   const EPSILON = 0.000001;
 
@@ -539,14 +543,47 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       }))
       .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || ''))
     : [];
+  const isStoredHistoricalEntry = (entry: any) =>
+    Boolean(entry?.historicalBalance) ||
+    entry?.source === 'historical_user_stats' ||
+    entry?.source === 'historical_rework_stats';
+  const maintenanceStoredHistoricalRows = maintenanceEntries
+    .filter(isStoredHistoricalEntry)
+    .map((entry: any) => ({
+      id: `stored-${entry.id}`,
+      entryId: entry.id,
+      assignedTo: entry.assignedTo || '',
+      units: entry.isRework
+        ? Math.abs(normalizeDecimalInput(entry.units, 0))
+        : Math.max(0, normalizeDecimalInput(entry.units, 0)),
+      isRework: Boolean(entry.isRework),
+      source: entry.source || (entry.isRework ? 'historical_rework_stats' : 'historical_user_stats'),
+      taskTitle: entry.taskTitle || (entry.isRework ? 'Reproceso histórico sin detalle' : 'Producción histórica sin detalle'),
+    }))
+    .filter(row => row.units > EPSILON);
   const maintenanceHistoricalRows = maintenanceRateCard
     ? buildMaintenanceHistoricalRows(maintenanceRateCard, maintenanceEntries)
     : [];
-  const maintenanceHasHistoricalBalance = maintenanceHistoricalRows.length > 0;
-  const maintenanceHistoricalProduction = maintenanceHistoricalRows
+  const maintenanceHistoricalGaps = [
+    ...maintenanceStoredHistoricalRows,
+    ...maintenanceHistoricalRows,
+  ];
+  const maintenanceDetailedEntries = maintenanceEntries.filter(entry => !isStoredHistoricalEntry(entry));
+  const maintenanceRepairPlan = maintenanceRateCard
+    ? buildHistoricalRateCardRepairPlan({
+        rateCard: maintenanceRateCard,
+        gaps: maintenanceHistoricalGaps,
+        entries: maintenanceDetailedEntries,
+        tasks,
+      })
+    : { matches: [], unresolved: [], recoverableUnits: 0, unresolvedUnits: 0 };
+  const maintenanceUnresolvedRows = maintenanceRepairPlan.unresolved;
+  const maintenanceUnresolvedVirtualRows = maintenanceUnresolvedRows.filter(row => !row.entryId);
+  const maintenanceHasHistoricalBalance = maintenanceHistoricalGaps.length > 0;
+  const maintenanceHistoricalProduction = maintenanceHistoricalGaps
     .filter(row => !row.isRework)
     .reduce((sum, row) => sum + row.units, 0);
-  const maintenanceHistoricalRework = maintenanceHistoricalRows
+  const maintenanceHistoricalRework = maintenanceHistoricalGaps
     .filter(row => row.isRework)
     .reduce((sum, row) => sum + row.units, 0);
   const chartDisplayData = userChartData.slice(0, 8);
@@ -760,14 +797,14 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   };
 
   const handleCreateHistoricalMaintenanceEntries = async () => {
-    if (!maintenanceRateCard || maintenanceHistoricalRows.length === 0) return;
+    if (!maintenanceRateCard || maintenanceUnresolvedVirtualRows.length === 0) return;
 
     setMaintenanceLoading(true);
     try {
       const batch = writeBatch(db);
       const now = new Date();
       const periodKeys = getEntryPeriodKeys(now);
-      const nextHistoricalEntries = maintenanceHistoricalRows.map((row) => {
+      const nextHistoricalEntries = maintenanceUnresolvedVirtualRows.map((row) => {
         const entryRef = doc(collection(db, 'projects', projectId, 'rateCardEntries'));
         const entryData = {
           projectId,
@@ -821,6 +858,107 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     }
   };
 
+  const executeRepairHistoricalTrace = async () => {
+    if (!maintenanceRateCard || maintenanceRepairPlan.matches.length === 0) return;
+
+    setMaintenanceLoading(true);
+    try {
+      const existingTraceKeys = new Set(
+        maintenanceEntries.map(entry => entry.traceKey).filter(Boolean),
+      );
+      const repairableMatches = maintenanceRepairPlan.matches.filter(
+        match => !existingTraceKeys.has(match.traceKey),
+      );
+
+      if (repairableMatches.length === 0) {
+        toast.info('La trazabilidad recuperable ya fue registrada.');
+        setMaintenanceConfirm(null);
+        return;
+      }
+
+      const batch = writeBatch(db);
+      const repairedEntries = repairableMatches.map(match =>
+        addTraceableRateCardMovementToBatch(batch, {
+          projectId,
+          task: {
+            id: match.taskId,
+            title: match.taskTitle,
+            externalWorkflowId: match.externalWorkflowId,
+            parentTaskId: match.parentTaskId,
+          },
+          rateCardId: maintenanceRateCard.id,
+          assignedTo: match.assignedTo,
+          units: match.units,
+          source: 'workflow_manual_trace_repair',
+          rateCardSourceKey: match.rateCardSourceKeys.join('|'),
+          stepIndex: match.stepIndex,
+          stepName: match.stepName,
+          comment: 'Trazabilidad reconstruida desde la tarea, el paso aprobado, el profesional, las unidades y la fecha real de cierre.',
+          occurredAt: match.occurredAt,
+          actor: {
+            id: currentUser?.uid || null,
+            email: currentUser?.email || null,
+            name: currentUser?.displayName || currentUser?.email || 'Administrador',
+          },
+          updateAggregate: false,
+          completionMode: 'historical_manual_workflow_repair',
+          extra: {
+            traceKey: match.traceKey,
+            repairedFromHistoricalBalance: true,
+            manuallyAdjusted: false,
+            historicalBalance: false,
+            completionEvidence: match.completionEvidence,
+            originalCompletedBy: match.originalCompletedBy,
+          },
+        }),
+      ).filter(Boolean) as any[];
+
+      const repairUnitsByUser = repairableMatches.reduce((totals, match) => {
+        totals.set(match.assignedTo, (totals.get(match.assignedTo) || 0) + match.units);
+        return totals;
+      }, new Map<string, number>());
+
+      maintenanceStoredHistoricalRows
+        .filter(row => !row.isRework && row.entryId)
+        .forEach(row => {
+          const remainingRepairUnits = repairUnitsByUser.get(row.assignedTo) || 0;
+          if (remainingRepairUnits <= EPSILON || !row.entryId) return;
+
+          const consumedUnits = Math.min(row.units, remainingRepairUnits);
+          const leftoverUnits = row.units - consumedUnits;
+          const historicalEntryRef = doc(db, 'projects', projectId, 'rateCardEntries', row.entryId);
+
+          if (leftoverUnits <= EPSILON) {
+            batch.delete(historicalEntryRef);
+          } else {
+            batch.update(historicalEntryRef, {
+              units: leftoverUnits,
+              comment: 'Saldo histórico remanente después de recuperar trazabilidad verificable.',
+              updatedAt: serverTimestamp(),
+              updatedBy: currentUser?.uid || null,
+              updatedByEmail: currentUser?.email || null,
+            });
+          }
+          repairUnitsByUser.set(row.assignedTo, Math.max(0, remainingRepairUnits - consumedUnits));
+        });
+
+      await batch.commit();
+      setEntryDrafts(previous => ({
+        ...previous,
+        ...buildEntryDrafts(repairedEntries),
+      }));
+      toast.success(
+        `Se recuperó la trazabilidad de ${repairedEntries.length} movimiento${repairedEntries.length === 1 ? '' : 's'} sin alterar el acumulado.`,
+      );
+    } catch (error: any) {
+      console.error('Error repairing historical rate card trace:', error);
+      toast.error(`No se pudo reparar la trazabilidad: ${error.message}`);
+    } finally {
+      setMaintenanceLoading(false);
+      setMaintenanceConfirm(null);
+    }
+  };
+
   const handleResetMaintenanceRateCard = async () => {
     if (!maintenanceRateCard) return;
     setMaintenanceConfirm({ type: 'reset' });
@@ -864,6 +1002,15 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       manual_adjustment: 'Ajuste manual',
       historical_user_stats: 'Balance histórico',
       historical_rework_stats: 'Reproceso histórico',
+      workflow_step_manual_approval: 'Aprobación manual de paso',
+      workflow_step_manual_reversal: 'Reversión manual de paso',
+      workflow_task_manual_completion: 'Cierre manual de workflow',
+      workflow_task_manual_reversal: 'Reapertura manual de workflow',
+      workflow_manual_trace_repair: 'Trazabilidad recuperada',
+      workflow_task_completion: 'Cierre de workflow',
+      assigned_task_progress: 'Avance de tarea',
+      workflow_reset_step_reversal: 'Reverso por reinicio de paso',
+      workflow_reset_task_reversal: 'Reverso por reinicio de workflow',
     };
 
     return labels[source] || source || 'Movimiento';
@@ -1983,19 +2130,45 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                           </span>
                         )}
                         <span className="rounded-full bg-white px-3 py-1 text-slate-700">
-                          {maintenanceHistoricalRows.length} ajuste{maintenanceHistoricalRows.length === 1 ? '' : 's'} posible{maintenanceHistoricalRows.length === 1 ? '' : 's'}
+                          {maintenanceHistoricalGaps.length} ajuste{maintenanceHistoricalGaps.length === 1 ? '' : 's'} posible{maintenanceHistoricalGaps.length === 1 ? '' : 's'}
                         </span>
+                        {maintenanceRepairPlan.matches.length > 0 && (
+                          <span className="rounded-full bg-indigo-100 px-3 py-1 text-indigo-800">
+                            {maintenanceRepairPlan.matches.length} con tarea y fecha verificadas
+                          </span>
+                        )}
+                        {maintenanceRepairPlan.unresolved.length > 0 && (
+                          <span className="rounded-full bg-slate-200 px-3 py-1 text-slate-700">
+                            {maintenanceRepairPlan.unresolved.length} requieren revisión manual
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <Button
-                      type="button"
-                      onClick={handleCreateHistoricalMaintenanceEntries}
-                      disabled={maintenanceLoading}
-                      className="shrink-0 bg-amber-600 text-white hover:bg-amber-700"
-                    >
-                      <Save size={15} className="mr-2" />
-                      Convertir en movimiento editable
-                    </Button>
+                    <div className="flex shrink-0 flex-col gap-2 sm:flex-row lg:flex-col">
+                      {maintenanceRepairPlan.matches.length > 0 && (
+                        <Button
+                          type="button"
+                          onClick={() => setMaintenanceConfirm({ type: 'repairTrace' })}
+                          disabled={maintenanceLoading}
+                          className="bg-indigo-600 text-white hover:bg-indigo-700"
+                        >
+                          <Wrench size={15} className="mr-2" />
+                          Reparar trazabilidad
+                        </Button>
+                      )}
+                      {maintenanceUnresolvedVirtualRows.length > 0 && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleCreateHistoricalMaintenanceEntries}
+                          disabled={maintenanceLoading}
+                          className="border-amber-300 bg-white text-amber-800 hover:bg-amber-50"
+                        >
+                          <Save size={15} className="mr-2" />
+                          Convertir remanente manual
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -2138,20 +2311,43 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-start gap-3">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-rose-50 text-rose-600">
-                <AlertCircle size={22} />
+              <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${maintenanceConfirm.type === 'repairTrace' ? 'bg-indigo-50 text-indigo-600' : 'bg-rose-50 text-rose-600'}`}>
+                {maintenanceConfirm.type === 'repairTrace' ? <Wrench size={22} /> : <AlertCircle size={22} />}
               </div>
               <div>
                 <h4 className="text-lg font-black text-slate-950">
-                  {maintenanceConfirm.type === 'reset' ? 'Reiniciar rate card' : 'Eliminar movimiento'}
+                  {maintenanceConfirm.type === 'reset'
+                    ? 'Reiniciar rate card'
+                    : maintenanceConfirm.type === 'repairTrace'
+                      ? 'Reparar trazabilidad histórica'
+                      : 'Eliminar movimiento'}
                 </h4>
                 <p className="mt-2 text-sm font-medium leading-6 text-slate-600">
                   {maintenanceConfirm.type === 'reset'
                     ? `Se eliminarán ${maintenanceEntries.length} movimiento${maintenanceEntries.length === 1 ? '' : 's'}${maintenanceHasHistoricalBalance ? ' y el saldo histórico sin detalle' : ''}; los acumulados de "${maintenanceRateCard.name}" quedarán en cero.`
-                    : `Se eliminará este movimiento de "${maintenanceRateCard.name}" y se recalcularán sus totales.`}
+                    : maintenanceConfirm.type === 'repairTrace'
+                      ? `Se crearán ${maintenanceRepairPlan.matches.length} movimiento${maintenanceRepairPlan.matches.length === 1 ? '' : 's'} detallado${maintenanceRepairPlan.matches.length === 1 ? '' : 's'} con su tarea, paso, profesional y fecha de cierre. El acumulado de "${maintenanceRateCard.name}" no cambiará.`
+                      : `Se eliminará este movimiento de "${maintenanceRateCard.name}" y se recalcularán sus totales.`}
                 </p>
               </div>
             </div>
+
+            {maintenanceConfirm.type === 'repairTrace' && (
+              <div className="mt-4 grid grid-cols-2 gap-3 rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-sm">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-500">Recuperable</p>
+                  <p className="mt-1 font-black text-indigo-950">
+                    {formatRateCardUnits(maintenanceRepairPlan.recoverableUnits, maintenanceRateCard, 2)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Sin evidencia suficiente</p>
+                  <p className="mt-1 font-black text-slate-800">
+                    {formatRateCardUnits(maintenanceRepairPlan.unresolvedUnits, maintenanceRateCard, 2)}
+                  </p>
+                </div>
+              </div>
+            )}
 
             {maintenanceConfirm.type === 'deleteEntry' && maintenanceConfirm.entry && (
               <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm">
@@ -2177,14 +2373,22 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 onClick={() => {
                   if (maintenanceConfirm.type === 'reset') {
                     void executeResetMaintenanceRateCard();
+                  } else if (maintenanceConfirm.type === 'repairTrace') {
+                    void executeRepairHistoricalTrace();
                   } else if (maintenanceConfirm.entry) {
                     void executeDeleteRateCardEntry(maintenanceConfirm.entry);
                   }
                 }}
                 disabled={maintenanceLoading}
-                className="bg-rose-600 text-white hover:bg-rose-700"
+                className={maintenanceConfirm.type === 'repairTrace' ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-rose-600 text-white hover:bg-rose-700'}
               >
-                {maintenanceLoading ? 'Procesando...' : maintenanceConfirm.type === 'reset' ? 'Sí, reiniciar' : 'Sí, eliminar'}
+                {maintenanceLoading
+                  ? 'Procesando...'
+                  : maintenanceConfirm.type === 'reset'
+                    ? 'Sí, reiniciar'
+                    : maintenanceConfirm.type === 'repairTrace'
+                      ? 'Reparar movimientos'
+                      : 'Sí, eliminar'}
               </Button>
             </div>
           </div>

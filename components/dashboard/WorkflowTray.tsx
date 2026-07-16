@@ -33,6 +33,7 @@ import {
   normalizeRateCardUnits,
 } from '@/lib/rate-card-config';
 import { syncRateDrivenIncrementalTasksForRate } from '@/lib/incremental-rate-tasks';
+import { addTraceableRateCardMovementToBatch } from '@/lib/rate-card-trace';
 import { getTaskDisplayTitle } from '@/lib/task-title';
 import {
   createGoogleCalendarUrl,
@@ -1148,39 +1149,34 @@ export default function WorkflowTray() {
   ) => {
     const amount = Number(params.units);
     if (!params.rateCardId || !params.assigneeId || !Number.isFinite(amount)) return null;
-
-    const rcRef = doc(db, 'projects', params.projectId, 'rateCards', params.rateCardId);
-    const statsField = params.isRework ? 'userReworkStats' : 'userStats';
-    batch.update(rcRef, {
-      [params.isRework ? 'reworkValue' : 'currentValue']: increment(amount),
-      [`${statsField}.${params.assigneeId}`]: increment(amount),
-    });
-
-    const entryRef = doc(collection(db, 'projects', params.projectId, 'rateCardEntries'));
     const now = new Date();
-    batch.set(entryRef, {
+    const entry = addTraceableRateCardMovementToBatch(batch, {
       projectId: params.projectId,
-      taskId: params.task.id,
-      taskTitle: params.task.title || params.task.name || 'Tarea',
+      task: params.task,
       rateCardId: params.rateCardId,
       assignedTo: params.assigneeId,
-      units: amount,
+      units: params.reversal ? Math.abs(amount) : amount,
       source: params.source,
       stepIndex: params.stepIndex ?? null,
       comment: params.comment || null,
+      occurredAt: now,
+      actor: {
+        id: user?.uid || null,
+        email: user?.email || null,
+        name: user?.displayName || user?.email || null,
+      },
       isRework: Boolean(params.isRework),
       reversal: Boolean(params.reversal),
-      ...getDateKeys(now),
-      createdAt: Timestamp.now(),
-      createdBy: user?.uid || null,
-      createdByEmail: user?.email || null,
+      completionMode: 'workflow_tray',
     });
 
+    if (!entry) return null;
+
     return {
-      entryId: entryRef.id,
+      entryId: entry.id,
       rateCardId: params.rateCardId,
       assignedTo: params.assigneeId,
-      units: amount,
+      units: entry.units,
       source: params.source,
       stepIndex: params.stepIndex ?? null,
       reversal: Boolean(params.reversal),
@@ -1540,26 +1536,26 @@ export default function WorkflowTray() {
           
           // Task-level rate card update if whole workflow completes
           if (task.isRateCardTask && task.rateCardId) {
-            const rcRef = doc(db, 'projects', task.projectId, 'rateCards', task.rateCardId);
             const units = normalizeRateCardUnits(task.unitsToAdd);
             const assignedUser = task.assignedTo || user?.uid;
             
             // Check if the task was already completed before (i.e., this is a rework of the final step)
             const taskWasCompletedBefore = task.workflowHistory?.some((h: any) => h.stepIndex === steps.length - 1 && h.action === 'approve');
             
-            const updateData: any = {};
-            if (!taskWasCompletedBefore) {
-              updateData.currentValue = increment(units);
-              if (assignedUser) {
-                updateData[`userStats.${assignedUser}`] = increment(units);
-              }
-            } else {
-              updateData.reworkValue = increment(units);
-              if (assignedUser) {
-                updateData[`userReworkStats.${assignedUser}`] = increment(units);
-              }
+            if (assignedUser) {
+              const charge = addDynamicRateCardChargeToBatch(batch, {
+                projectId: task.projectId,
+                task,
+                rateCardId: task.rateCardId,
+                assigneeId: assignedUser,
+                units,
+                source: 'workflow_task_completion',
+                stepIndex: currentIndex,
+                comment: actionComment || 'Rate Card registrado al finalizar el workflow.',
+                isRework: taskWasCompletedBefore,
+              });
+              if (charge) rateCardChargesToSync.push(charge);
             }
-            batch.update(rcRef, updateData);
           }
         }
       } else if (action === 'return') {
@@ -1935,14 +1931,20 @@ export default function WorkflowTray() {
         const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
 
         if (unitsDelta !== 0) {
-          const rcRef = doc(db, 'projects', task.projectId, 'rateCards', task.rateCardId);
-          const updateData: any = {
-            currentValue: increment(unitsDelta),
-          };
-          if (task.assignedTo) {
-            updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
+          const assignedUser = task.assignedTo || user?.uid;
+          if (assignedUser) {
+            const charge = addDynamicRateCardChargeToBatch(batch, {
+              projectId: task.projectId,
+              task,
+              rateCardId: task.rateCardId,
+              assigneeId: assignedUser,
+              units: unitsDelta,
+              source: 'assigned_task_progress',
+              comment: completionSubmission?.comment || statusComment || 'Ajuste por cambio de progreso de la tarea.',
+              reversal: unitsDelta < 0,
+            });
+            if (charge) completionRateCardCharges.push(charge);
           }
-          batch.update(rcRef, updateData);
         }
       }
 
