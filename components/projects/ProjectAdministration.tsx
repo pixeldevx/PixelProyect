@@ -19,6 +19,8 @@ import {
   Send,
   Settings2,
   ShieldCheck,
+  Sparkles,
+  Trash2,
   Upload,
   X,
   XCircle,
@@ -80,6 +82,30 @@ type AdvanceReceipt = {
   reviewedBy?: string;
   reviewComment?: string;
   billingPaymentId?: string;
+  aiExtracted?: boolean;
+  aiConfidence?: number;
+  aiWarnings?: string[];
+};
+
+type AiReceiptDraft = {
+  id: string;
+  file: File;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  categoryId: string;
+  categoryName?: string;
+  amount: string;
+  date: string;
+  businessName: string;
+  taxId: string;
+  invoiceNumber: string;
+  cufe: string;
+  description: string;
+  confidence?: number;
+  warnings?: string[];
+  status: 'ready' | 'error';
+  error?: string;
 };
 
 type TravelAdvance = {
@@ -294,6 +320,9 @@ export function ProjectAdministration({
   const [advanceDraftItem, setAdvanceDraftItem] = useState<AdvanceItem | null>(null);
   const [selectedAdvance, setSelectedAdvance] = useState<TravelAdvance | null>(null);
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
+  const [receiptMode, setReceiptMode] = useState<'manual' | 'ai'>('manual');
+  const [aiReceiptDrafts, setAiReceiptDrafts] = useState<AiReceiptDraft[]>([]);
+  const [aiAnalyzingReceipts, setAiAnalyzingReceipts] = useState(false);
   const [receiptForm, setReceiptForm] = useState({
     categoryId: '',
     amount: '',
@@ -718,6 +747,68 @@ export function ProjectAdministration({
     setReceiptFile(null);
   };
 
+  const resetAiReceiptState = () => {
+    setAiReceiptDrafts([]);
+    setAiAnalyzingReceipts(false);
+  };
+
+  const closeReceiptModal = () => {
+    resetReceiptForm();
+    resetAiReceiptState();
+    setReceiptMode('manual');
+    setSelectedAdvance(null);
+  };
+
+  const uploadReceiptDocument = async (
+    advance: TravelAdvance,
+    category: ExpenseCategory,
+    file?: File | null,
+    documentLabel?: string
+  ) => {
+    if (!file) return { fileUrl: '', storagePath: '' };
+
+    const uploadDate = new Date();
+    let storagePath = buildDocumentStoragePath({
+      projectId,
+      projectName: project?.name,
+      fileName: file.name,
+      documentName: `legalizacion-${advance.destination}-${documentLabel || category.name}`,
+      date: uploadDate,
+      folderName: 'administrativo',
+      folderSegments: ['anticipos', advance.id, category.name],
+    });
+    const storageRef = ref(storage, storagePath);
+    await uploadBytes(storageRef, file);
+    storagePath = storageRef.fullPath;
+    const fileUrl = await getDownloadURL(storageRef);
+
+    await addDoc(collection(db, 'projects', projectId, 'documents'), {
+      projectId,
+      name: file.name,
+      documentName: `Soporte ${category.name}`,
+      type: 'Comprobante administrativo',
+      itemKind: 'file',
+      scope: 'project',
+      administrativeRequestId: advance.id,
+      documentContext: 'advanceReceipt',
+      category: category.name,
+      url: fileUrl,
+      downloadURL: fileUrl,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type || 'application/octet-stream',
+      storagePath,
+      uploadedAt: serverTimestamp(),
+      uploadedBy: currentUser?.uid || null,
+      uploadedByName: getCurrentUserName(currentUser),
+      createdAt: serverTimestamp(),
+      accessMode: 'all',
+      providerPathVersion: 'structured-v1',
+    });
+
+    return { fileUrl, storagePath };
+  };
+
   const handleCreateReceipt = async () => {
     if (!selectedAdvance || !canManage) return;
     const category = categoryOptions.find((item) => item.id === receiptForm.categoryId);
@@ -733,49 +824,13 @@ export function ProjectAdministration({
 
     setSubmitting(true);
     try {
-      let fileUrl = '';
-      let storagePath = '';
-
-      if (receiptFile) {
-        const uploadDate = new Date();
-        storagePath = buildDocumentStoragePath({
-          projectId,
-          projectName: project?.name,
-          fileName: receiptFile.name,
-          documentName: `legalizacion-${selectedAdvance.destination}-${category.name}`,
-          date: uploadDate,
-          folderName: 'administrativo',
-          folderSegments: ['anticipos', selectedAdvance.id, category.name],
-        });
-        const storageRef = ref(storage, storagePath);
-        await uploadBytes(storageRef, receiptFile);
-        storagePath = storageRef.fullPath;
-        fileUrl = await getDownloadURL(storageRef);
-
-        await addDoc(collection(db, 'projects', projectId, 'documents'), {
-          projectId,
-          name: receiptFile.name,
-          documentName: `Soporte ${category.name}`,
-          type: 'Comprobante administrativo',
-          itemKind: 'file',
-          scope: 'project',
-          administrativeRequestId: selectedAdvance.id,
-          documentContext: 'advanceReceipt',
-          category: category.name,
-          url: fileUrl,
-          downloadURL: fileUrl,
-          fileName: receiptFile.name,
-          fileSize: receiptFile.size,
-          fileType: receiptFile.type || 'application/octet-stream',
-          storagePath,
-          uploadedAt: serverTimestamp(),
-          uploadedBy: currentUser?.uid || null,
-          uploadedByName: getCurrentUserName(currentUser),
-          createdAt: serverTimestamp(),
-          accessMode: 'all',
-          providerPathVersion: 'structured-v1',
-        });
-      }
+      const latestAdvance = advances.find((advance) => advance.id === selectedAdvance.id) || selectedAdvance;
+      const { fileUrl, storagePath } = await uploadReceiptDocument(
+        latestAdvance,
+        category,
+        receiptFile,
+        receiptForm.businessName || category.name
+      );
 
       const receipt: AdvanceReceipt = {
         id: safeId(),
@@ -799,7 +854,7 @@ export function ProjectAdministration({
       };
 
       await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', selectedAdvance.id), {
-        receipts: [...(selectedAdvance.receipts || []), receipt],
+        receipts: [...(latestAdvance.receipts || []), receipt],
         nextAction: 'validate_receipt',
         pendingRole: 'administrative_validation',
         updatedAt: serverTimestamp(),
@@ -810,11 +865,190 @@ export function ProjectAdministration({
         categoryName: category.name,
       });
       toast.success('Soporte cargado para validación.');
-      resetReceiptForm();
-      setSelectedAdvance(null);
+      closeReceiptModal();
     } catch (error: any) {
       console.error('Error creating receipt:', error);
       toast.error(error?.message || 'No se pudo guardar el soporte.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAnalyzeReceiptFiles = async (fileList: FileList | null) => {
+    if (!selectedAdvance) return;
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+
+    setReceiptMode('ai');
+    setAiAnalyzingReceipts(true);
+    try {
+      const body = new FormData();
+      files.forEach((file) => body.append('files', file));
+      body.append(
+        'categories',
+        JSON.stringify(
+          categoryOptions.map((category) => ({
+            id: category.id,
+            name: category.name,
+            requiresCufe: category.requiresCufe,
+            defaultDailyAmount: category.defaultDailyAmount,
+            description: category.description,
+          }))
+        )
+      );
+      body.append(
+        'advanceContext',
+        JSON.stringify({
+          id: selectedAdvance.id,
+          destination: selectedAdvance.destination,
+          purpose: selectedAdvance.purpose,
+          items: selectedAdvance.items,
+          travelStart: selectedAdvance.travelStart,
+          travelEnd: selectedAdvance.travelEnd,
+        })
+      );
+
+      const response = await fetch('/api/administration/receipts/analyze', {
+        method: 'POST',
+        body,
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.error || 'No se pudo analizar el lote.');
+      }
+
+      const drafts = ((data?.receipts || []) as any[])
+        .map((item, fallbackIndex) => {
+          const fileIndex = Number.isInteger(item?.index) ? item.index : fallbackIndex;
+          const file = files[fileIndex];
+          if (!file) return null;
+          const categoryById = categoryOptions.find((category) => category.id === item?.categoryId);
+          const categoryByName = categoryOptions.find(
+            (category) => category.name.toLowerCase() === String(item?.categoryName || '').toLowerCase()
+          );
+          const category = categoryById || categoryByName || categoryOptions[0];
+
+          return {
+            id: safeId(),
+            file,
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type || 'application/octet-stream',
+            categoryId: category?.id || item?.categoryId || '',
+            categoryName: item?.categoryName || category?.name || '',
+            amount: item?.amount ? String(item.amount) : '',
+            date: item?.date || todayInputValue(),
+            businessName: item?.businessName || '',
+            taxId: item?.taxId || '',
+            invoiceNumber: item?.invoiceNumber || '',
+            cufe: item?.cufe || '',
+            description: item?.description || '',
+            confidence: typeof item?.confidence === 'number' ? item.confidence : undefined,
+            warnings: Array.isArray(item?.warnings) ? item.warnings : [],
+            status: item?.status === 'error' ? 'error' : 'ready',
+            error: item?.error || '',
+          } as AiReceiptDraft;
+        })
+        .filter(Boolean) as AiReceiptDraft[];
+
+      setAiReceiptDrafts((current) => [...current, ...drafts]);
+      const errors = drafts.filter((draft) => draft.status === 'error').length;
+      toast.success(
+        errors > 0
+          ? `${drafts.length - errors} soportes listos y ${errors} con alertas.`
+          : `${drafts.length} soportes analizados.`
+      );
+    } catch (error: any) {
+      console.error('Error analyzing receipts:', error);
+      toast.error(error?.message || 'No se pudo analizar el lote.');
+    } finally {
+      setAiAnalyzingReceipts(false);
+    }
+  };
+
+  const updateAiReceiptDraft = (id: string, updates: Partial<AiReceiptDraft>) => {
+    setAiReceiptDrafts((current) => current.map((draft) => (draft.id === id ? { ...draft, ...updates } : draft)));
+  };
+
+  const removeAiReceiptDraft = (id: string) => {
+    setAiReceiptDrafts((current) => current.filter((draft) => draft.id !== id));
+  };
+
+  const handleCreateAiReceipts = async () => {
+    if (!selectedAdvance || !canManage) return;
+    const readyDrafts = aiReceiptDrafts.filter((draft) => draft.status !== 'error');
+    if (readyDrafts.length === 0) {
+      toast.error('No hay soportes listos para guardar.');
+      return;
+    }
+
+    for (const draft of readyDrafts) {
+      const category = categoryOptions.find((item) => item.id === draft.categoryId);
+      const amount = asNumber(draft.amount);
+      if (!category || amount <= 0 || !draft.businessName.trim()) {
+        toast.error(`Revisa categoría, valor y proveedor en ${draft.fileName}.`);
+        return;
+      }
+      if (category.requiresCufe && !draft.cufe.trim()) {
+        toast.error(`${draft.fileName} requiere CUFE para el dominio ${category.name}.`);
+        return;
+      }
+    }
+
+    setSubmitting(true);
+    try {
+      const latestAdvance = advances.find((advance) => advance.id === selectedAdvance.id) || selectedAdvance;
+      const createdReceipts: AdvanceReceipt[] = [];
+
+      for (const draft of readyDrafts) {
+        const category = categoryOptions.find((item) => item.id === draft.categoryId)!;
+        const { fileUrl, storagePath } = await uploadReceiptDocument(
+          latestAdvance,
+          category,
+          draft.file,
+          draft.businessName || category.name
+        );
+
+        createdReceipts.push({
+          id: safeId(),
+          categoryId: category.id,
+          categoryName: category.name,
+          amount: asNumber(draft.amount),
+          date: draft.date || todayInputValue(),
+          businessName: draft.businessName.trim(),
+          taxId: draft.taxId.trim(),
+          invoiceNumber: draft.invoiceNumber.trim(),
+          cufe: draft.cufe.trim(),
+          description: draft.description.trim(),
+          fileName: draft.fileName,
+          fileSize: draft.fileSize,
+          fileUrl,
+          storagePath,
+          status: 'submitted',
+          createdAt: new Date().toISOString(),
+          createdBy: currentUser?.uid || null,
+          createdByName: getCurrentUserName(currentUser),
+          aiExtracted: true,
+          aiConfidence: draft.confidence,
+          aiWarnings: draft.warnings || [],
+        });
+      }
+
+      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', selectedAdvance.id), {
+        receipts: [...(latestAdvance.receipts || []), ...createdReceipts],
+        nextAction: 'validate_receipt',
+        pendingRole: 'administrative_validation',
+        updatedAt: serverTimestamp(),
+      });
+      await logAdministrativeEvent(selectedAdvance.id, 'receipts_ai_bulk_submitted', {
+        receiptCount: createdReceipts.length,
+        amount: createdReceipts.reduce((sum, receipt) => sum + asNumber(receipt.amount), 0),
+      });
+      toast.success(`${createdReceipts.length} soportes creados para validación.`);
+      closeReceiptModal();
+    } catch (error: any) {
+      console.error('Error creating AI receipts:', error);
+      toast.error(error?.message || 'No se pudieron crear las legalizaciones.');
     } finally {
       setSubmitting(false);
     }
@@ -1394,47 +1628,193 @@ export function ProjectAdministration({
       )}
 
       {selectedAdvance && (
-        <ModalShell title="Legalizar anticipo" subtitle={selectedAdvance.purpose || selectedAdvance.destination} onClose={() => setSelectedAdvance(null)} wide>
+        <ModalShell title="Legalizar anticipo" subtitle={selectedAdvance.purpose || selectedAdvance.destination} onClose={closeReceiptModal} wide>
           <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
             <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-2">
-                <Field label="Tipo de gasto">
-                  <select className={inputClass} value={receiptForm.categoryId} onChange={(event) => setReceiptForm((current) => ({ ...current, categoryId: event.target.value }))}>
-                    {categoryOptions.map((category) => (
-                      <option key={category.id} value={category.id}>{category.name}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Valor del soporte">
-                  <input className={inputClass} type="number" min="0" step="0.01" value={receiptForm.amount} onChange={(event) => setReceiptForm((current) => ({ ...current, amount: event.target.value }))} />
-                </Field>
-                <Field label="Fecha del gasto">
-                  <input className={inputClass} type="date" value={receiptForm.date} onChange={(event) => setReceiptForm((current) => ({ ...current, date: event.target.value }))} />
-                </Field>
-                <Field label="Razón social / proveedor">
-                  <input className={inputClass} value={receiptForm.businessName} onChange={(event) => setReceiptForm((current) => ({ ...current, businessName: event.target.value }))} />
-                </Field>
-                <Field label="NIT o documento">
-                  <input className={inputClass} value={receiptForm.taxId} onChange={(event) => setReceiptForm((current) => ({ ...current, taxId: event.target.value }))} />
-                </Field>
-                <Field label="Factura / recibo">
-                  <input className={inputClass} value={receiptForm.invoiceNumber} onChange={(event) => setReceiptForm((current) => ({ ...current, invoiceNumber: event.target.value }))} />
-                </Field>
+              <div className="grid gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-2 md:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => setReceiptMode('manual')}
+                  className={`rounded-xl px-4 py-3 text-left transition ${
+                    receiptMode === 'manual' ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-100' : 'text-slate-500 hover:bg-white/70'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 text-sm font-black">
+                    <ReceiptText size={16} />
+                    Manual
+                  </span>
+                  <span className="mt-1 block text-xs font-semibold">Carga un soporte y diligencia los datos.</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReceiptMode('ai')}
+                  className={`rounded-xl px-4 py-3 text-left transition ${
+                    receiptMode === 'ai' ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-100' : 'text-slate-500 hover:bg-white/70'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 text-sm font-black">
+                    <Sparkles size={16} />
+                    IA por lote
+                  </span>
+                  <span className="mt-1 block text-xs font-semibold">Sube varios recibos y Pixel crea los registros.</span>
+                </button>
               </div>
-              <Field label={selectedReceiptCategory?.requiresCufe ? 'CUFE requerido' : 'CUFE (opcional)'}>
-                <input className={inputClass} value={receiptForm.cufe} onChange={(event) => setReceiptForm((current) => ({ ...current, cufe: event.target.value }))} placeholder="Código CUFE de la factura electrónica" />
-              </Field>
-              <Field label="Descripción / justificación">
-                <textarea className={textareaClass} value={receiptForm.description} onChange={(event) => setReceiptForm((current) => ({ ...current, description: event.target.value }))} placeholder="Qué gasto se realizó y por qué corresponde al anticipo." />
-              </Field>
-              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4">
-                <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg bg-white p-6 text-center ring-1 ring-slate-200 transition hover:bg-slate-50">
-                  <Upload size={24} className="text-indigo-600" />
-                  <span className="mt-2 text-sm font-black text-slate-900">{receiptFile ? receiptFile.name : 'Adjuntar foto o PDF del soporte'}</span>
-                  <span className="mt-1 text-xs font-semibold text-slate-400">Se guardará dentro del gestor documental del proyecto.</span>
-                  <input type="file" className="hidden" accept="image/*,application/pdf" onChange={(event) => setReceiptFile(event.target.files?.[0] || null)} />
-                </label>
-              </div>
+
+              {receiptMode === 'manual' ? (
+                <>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field label="Tipo de gasto">
+                      <select className={inputClass} value={receiptForm.categoryId} onChange={(event) => setReceiptForm((current) => ({ ...current, categoryId: event.target.value }))}>
+                        {categoryOptions.map((category) => (
+                          <option key={category.id} value={category.id}>{category.name}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Valor del soporte">
+                      <input className={inputClass} type="number" min="0" step="0.01" value={receiptForm.amount} onChange={(event) => setReceiptForm((current) => ({ ...current, amount: event.target.value }))} />
+                    </Field>
+                    <Field label="Fecha del gasto">
+                      <input className={inputClass} type="date" value={receiptForm.date} onChange={(event) => setReceiptForm((current) => ({ ...current, date: event.target.value }))} />
+                    </Field>
+                    <Field label="Razón social / proveedor">
+                      <input className={inputClass} value={receiptForm.businessName} onChange={(event) => setReceiptForm((current) => ({ ...current, businessName: event.target.value }))} />
+                    </Field>
+                    <Field label="NIT o documento">
+                      <input className={inputClass} value={receiptForm.taxId} onChange={(event) => setReceiptForm((current) => ({ ...current, taxId: event.target.value }))} />
+                    </Field>
+                    <Field label="Factura / recibo">
+                      <input className={inputClass} value={receiptForm.invoiceNumber} onChange={(event) => setReceiptForm((current) => ({ ...current, invoiceNumber: event.target.value }))} />
+                    </Field>
+                  </div>
+                  <Field label={selectedReceiptCategory?.requiresCufe ? 'CUFE requerido' : 'CUFE (opcional)'}>
+                    <input className={inputClass} value={receiptForm.cufe} onChange={(event) => setReceiptForm((current) => ({ ...current, cufe: event.target.value }))} placeholder="Código CUFE de la factura electrónica" />
+                  </Field>
+                  <Field label="Descripción / justificación">
+                    <textarea className={textareaClass} value={receiptForm.description} onChange={(event) => setReceiptForm((current) => ({ ...current, description: event.target.value }))} placeholder="Qué gasto se realizó y por qué corresponde al anticipo." />
+                  </Field>
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4">
+                    <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg bg-white p-6 text-center ring-1 ring-slate-200 transition hover:bg-slate-50">
+                      <Upload size={24} className="text-indigo-600" />
+                      <span className="mt-2 text-sm font-black text-slate-900">{receiptFile ? receiptFile.name : 'Adjuntar foto o PDF del soporte'}</span>
+                      <span className="mt-1 text-xs font-semibold text-slate-400">Se guardará dentro del gestor documental del proyecto.</span>
+                      <input type="file" className="hidden" accept="image/*,application/pdf" onChange={(event) => setReceiptFile(event.target.files?.[0] || null)} />
+                    </label>
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-indigo-100 bg-indigo-50/70 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="flex gap-3">
+                        <span className="rounded-xl bg-indigo-600 p-2 text-white">
+                          <Sparkles size={20} />
+                        </span>
+                        <div>
+                          <h3 className="text-lg font-black text-slate-950">Legalización inteligente por lote</h3>
+                          <p className="mt-1 max-w-2xl text-sm font-semibold leading-6 text-slate-600">
+                            Sube fotos o PDF de recibos. Pixel leerá proveedor, fecha, valor, CUFE y dominio sugerido para crear una legalización por cada soporte.
+                          </p>
+                        </div>
+                      </div>
+                      {aiAnalyzingReceipts && (
+                        <span className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-black uppercase tracking-[0.16em] text-indigo-600 ring-1 ring-indigo-100">
+                          <Loader2 size={14} className="mr-2 animate-spin" />
+                          Analizando
+                        </span>
+                      )}
+                    </div>
+                    <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-indigo-200 bg-white/80 p-6 text-center transition hover:bg-white">
+                      <Upload size={24} className="text-indigo-600" />
+                      <span className="mt-2 text-sm font-black text-slate-900">Subir recibos para leer con IA</span>
+                      <span className="mt-1 text-xs font-semibold text-slate-500">Máximo 12 archivos por lote. Puedes corregir cada registro antes de guardarlo.</span>
+                      <input
+                        type="file"
+                        multiple
+                        className="hidden"
+                        accept="image/*,application/pdf"
+                        onChange={(event) => {
+                          void handleAnalyzeReceiptFiles(event.target.files);
+                          event.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  {aiReceiptDrafts.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
+                      <FileImage className="mx-auto h-8 w-8 text-slate-300" />
+                      <p className="mt-3 text-sm font-black text-slate-800">Sin soportes analizados.</p>
+                      <p className="mt-1 text-xs font-semibold text-slate-400">Cuando subas recibos, aparecerán aquí como registros editables.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {aiReceiptDrafts.map((draft) => {
+                        const draftCategory = categoryOptions.find((category) => category.id === draft.categoryId);
+                        const confidence = Math.round(asNumber(draft.confidence) * 100);
+                        return (
+                          <div key={draft.id} className={`rounded-2xl border p-4 ${draft.status === 'error' ? 'border-rose-200 bg-rose-50/60' : 'border-slate-200 bg-white'}`}>
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-black text-slate-950">{draft.fileName}</p>
+                                <p className="mt-1 text-xs font-semibold text-slate-500">
+                                  {draft.status === 'error'
+                                    ? draft.error || 'No se pudo leer este soporte.'
+                                    : `Confianza IA ${confidence || 0}% · ${formatMoney(draft.amount)}`}
+                                </p>
+                              </div>
+                              <button type="button" onClick={() => removeAiReceiptDraft(draft.id)} className="rounded-lg p-2 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600">
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+
+                            {draft.status !== 'error' && (
+                              <>
+                                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                  <Field label="Tipo de gasto">
+                                    <select className={inputClass} value={draft.categoryId} onChange={(event) => updateAiReceiptDraft(draft.id, { categoryId: event.target.value })}>
+                                      {categoryOptions.map((category) => (
+                                        <option key={category.id} value={category.id}>{category.name}</option>
+                                      ))}
+                                    </select>
+                                  </Field>
+                                  <Field label="Valor">
+                                    <input className={inputClass} type="number" min="0" step="0.01" value={draft.amount} onChange={(event) => updateAiReceiptDraft(draft.id, { amount: event.target.value })} />
+                                  </Field>
+                                  <Field label="Fecha">
+                                    <input className={inputClass} type="date" value={draft.date} onChange={(event) => updateAiReceiptDraft(draft.id, { date: event.target.value })} />
+                                  </Field>
+                                  <Field label="Razón social / proveedor">
+                                    <input className={inputClass} value={draft.businessName} onChange={(event) => updateAiReceiptDraft(draft.id, { businessName: event.target.value })} />
+                                  </Field>
+                                  <Field label="NIT o documento">
+                                    <input className={inputClass} value={draft.taxId} onChange={(event) => updateAiReceiptDraft(draft.id, { taxId: event.target.value })} />
+                                  </Field>
+                                  <Field label="Factura / recibo">
+                                    <input className={inputClass} value={draft.invoiceNumber} onChange={(event) => updateAiReceiptDraft(draft.id, { invoiceNumber: event.target.value })} />
+                                  </Field>
+                                </div>
+                                <div className="mt-3 grid gap-3">
+                                  <Field label={draftCategory?.requiresCufe ? 'CUFE requerido' : 'CUFE (opcional)'}>
+                                    <input className={inputClass} value={draft.cufe} onChange={(event) => updateAiReceiptDraft(draft.id, { cufe: event.target.value })} />
+                                  </Field>
+                                  <Field label="Descripción">
+                                    <textarea className={textareaClass} value={draft.description} onChange={(event) => updateAiReceiptDraft(draft.id, { description: event.target.value })} />
+                                  </Field>
+                                </div>
+                                {(draft.warnings || []).length > 0 && (
+                                  <div className="mt-3 rounded-xl bg-amber-50 p-3 text-xs font-semibold leading-5 text-amber-700 ring-1 ring-amber-100">
+                                    {(draft.warnings || []).join(' · ')}
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-4">
               <p className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-400">Anticipo</p>
@@ -1444,6 +1824,7 @@ export function ProjectAdministration({
                 <SummaryLine label="Aprobado" value={formatMoney(selectedAdvance.amountApproved)} />
                 <SummaryLine label="Legalizado" value={formatMoney(selectedAdvance.amountLegalized)} />
                 <SummaryLine label="Saldo" value={formatMoney(selectedAdvance.balance)} strong />
+                {receiptMode === 'ai' && <SummaryLine label="Borradores IA" value={`${aiReceiptDrafts.length}`} />}
               </div>
               <div className="mt-5 rounded-xl bg-slate-50 p-3 text-xs font-semibold leading-5 text-slate-500">
                 La validación DIAN por CUFE queda preparada como dato estructurado; la consulta automática se conectará
@@ -1452,10 +1833,15 @@ export function ProjectAdministration({
             </div>
           </div>
           <ModalFooter>
-            <Button type="button" variant="outline" onClick={() => setSelectedAdvance(null)}>Cancelar</Button>
-            <Button type="button" onClick={handleCreateReceipt} disabled={submitting} className="bg-emerald-600 font-bold text-white hover:bg-emerald-700">
+            <Button type="button" variant="outline" onClick={closeReceiptModal}>Cancelar</Button>
+            <Button
+              type="button"
+              onClick={receiptMode === 'ai' ? handleCreateAiReceipts : handleCreateReceipt}
+              disabled={submitting || (receiptMode === 'ai' && (aiAnalyzingReceipts || aiReceiptDrafts.length === 0))}
+              className="bg-emerald-600 font-bold text-white hover:bg-emerald-700"
+            >
               {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
-              Enviar soporte
+              {receiptMode === 'ai' ? 'Crear legalizaciones' : 'Enviar soporte'}
             </Button>
           </ModalFooter>
         </ModalShell>
