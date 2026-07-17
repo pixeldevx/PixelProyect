@@ -59,8 +59,11 @@ type AdvanceItem = {
   customAmount?: boolean;
 };
 
+type ReceiptDocumentType = 'invoice' | 'cash_receipt';
+
 type AdvanceReceipt = {
   id: string;
+  documentType?: ReceiptDocumentType;
   categoryId: string;
   categoryName: string;
   amount: number;
@@ -93,6 +96,7 @@ type AiReceiptDraft = {
   fileName: string;
   fileSize: number;
   fileType: string;
+  documentType: ReceiptDocumentType;
   categoryId: string;
   categoryName?: string;
   amount: string;
@@ -271,8 +275,34 @@ const receiptStatusConfig: Record<AdvanceReceipt['status'], { label: string; cla
   rejected: { label: 'Rechazado', className: 'bg-rose-50 text-rose-700 ring-rose-100' },
 };
 
+const receiptDocumentTypeConfig: Record<
+  ReceiptDocumentType,
+  { label: string; shortLabel: string; numberLabel: string; className: string; hint: string }
+> = {
+  invoice: {
+    label: 'Factura electrónica',
+    shortLabel: 'Factura',
+    numberLabel: 'No. factura',
+    className: 'bg-blue-50 text-blue-700 ring-blue-100',
+    hint: 'Usa esta opción cuando el soporte tenga factura electrónica o CUFE.',
+  },
+  cash_receipt: {
+    label: 'Recibo de caja',
+    shortLabel: 'Recibo de caja',
+    numberLabel: 'No. recibo de caja',
+    className: 'bg-amber-50 text-amber-700 ring-amber-100',
+    hint: 'Usa esta opción cuando en campo no fue posible conseguir factura electrónica.',
+  },
+};
+
 const getReceiptStatusMeta = (status: any) =>
   receiptStatusConfig[status as AdvanceReceipt['status']] || receiptStatusConfig.submitted;
+
+const getReceiptDocumentType = (value: any): ReceiptDocumentType =>
+  value === 'cash_receipt' ? 'cash_receipt' : 'invoice';
+
+const getReceiptDocumentTypeMeta = (value: any) =>
+  receiptDocumentTypeConfig[getReceiptDocumentType(value)];
 
 const buildEmptyAdvanceForm = (currentUser: any, teamMembers: any[]) => {
   const currentMember = teamMembers.find((member) => {
@@ -324,6 +354,7 @@ export function ProjectAdministration({
   const [aiReceiptDrafts, setAiReceiptDrafts] = useState<AiReceiptDraft[]>([]);
   const [aiAnalyzingReceipts, setAiAnalyzingReceipts] = useState(false);
   const [receiptForm, setReceiptForm] = useState({
+    documentType: 'invoice' as ReceiptDocumentType,
     categoryId: '',
     amount: '',
     date: todayInputValue(),
@@ -394,6 +425,8 @@ export function ProjectAdministration({
   }, [categories]);
 
   const selectedReceiptCategory = categoryOptions.find((category) => category.id === receiptForm.categoryId);
+  const selectedReceiptDocumentType = getReceiptDocumentType(receiptForm.documentType);
+  const selectedReceiptDocumentMeta = getReceiptDocumentTypeMeta(receiptForm.documentType);
   const municipalityOptions = useMemo(
     () => locationOptions.find((item) => item.department === advanceForm.department)?.municipalities || [],
     [advanceForm.department, locationOptions]
@@ -641,6 +674,8 @@ export function ProjectAdministration({
       if (reviewAction.type === 'approveReceipt') {
         const advance = reviewAction.advance;
         const receipt = reviewAction.receipt;
+        const receiptDocumentType = getReceiptDocumentType(receipt.documentType);
+        const receiptDocumentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
         const paymentRef = await addDoc(collection(db, 'projects', projectId, 'billingPayments'), {
           projectId,
           description: `Legalización anticipo: ${receipt.categoryName}`,
@@ -650,10 +685,17 @@ export function ProjectAdministration({
           status: 'paid',
           budgetLineId: null,
           budgetPieceId: null,
-          notes: [receipt.description, receipt.cufe ? `CUFE: ${receipt.cufe}` : null].filter(Boolean).join(' · '),
+          notes: [
+            receiptDocumentMeta.label,
+            receipt.invoiceNumber ? `${receiptDocumentMeta.numberLabel}: ${receipt.invoiceNumber}` : null,
+            receipt.description,
+            receipt.cufe ? `CUFE: ${receipt.cufe}` : null,
+          ].filter(Boolean).join(' · '),
           source: 'advance_receipt',
           advanceId: advance.id,
           receiptId: receipt.id,
+          documentType: receiptDocumentType,
+          documentTypeLabel: receiptDocumentMeta.label,
           expenseCategoryId: receipt.categoryId,
           createdAt: serverTimestamp(),
           createdBy: currentUser?.uid || null,
@@ -688,6 +730,7 @@ export function ProjectAdministration({
         });
         await logAdministrativeEvent(advance.id, 'receipt_approved', {
           receiptId: receipt.id,
+          documentType: receiptDocumentType,
           amount: receipt.amount,
           billingPaymentId: paymentRef.id,
           comment: reviewComment.trim(),
@@ -735,6 +778,7 @@ export function ProjectAdministration({
 
   const resetReceiptForm = () => {
     setReceiptForm({
+      documentType: 'invoice',
       categoryId: categoryOptions[0]?.id || '',
       amount: '',
       date: todayInputValue(),
@@ -763,19 +807,21 @@ export function ProjectAdministration({
     advance: TravelAdvance,
     category: ExpenseCategory,
     file?: File | null,
-    documentLabel?: string
+    documentLabel?: string,
+    documentType: ReceiptDocumentType = 'invoice'
   ) => {
     if (!file) return { fileUrl: '', storagePath: '' };
 
     const uploadDate = new Date();
+    const documentTypeMeta = getReceiptDocumentTypeMeta(documentType);
     let storagePath = buildDocumentStoragePath({
       projectId,
       projectName: project?.name,
       fileName: file.name,
-      documentName: `legalizacion-${advance.destination}-${documentLabel || category.name}`,
+      documentName: `legalizacion-${advance.destination}-${documentTypeMeta.shortLabel}-${documentLabel || category.name}`,
       date: uploadDate,
       folderName: 'administrativo',
-      folderSegments: ['anticipos', advance.id, category.name],
+      folderSegments: ['anticipos', advance.id, documentTypeMeta.shortLabel, category.name],
     });
     const storageRef = ref(storage, storagePath);
     await uploadBytes(storageRef, file);
@@ -785,12 +831,14 @@ export function ProjectAdministration({
     await addDoc(collection(db, 'projects', projectId, 'documents'), {
       projectId,
       name: file.name,
-      documentName: `Soporte ${category.name}`,
-      type: 'Comprobante administrativo',
+      documentName: `${documentTypeMeta.label} ${category.name}`,
+      type: documentTypeMeta.label,
       itemKind: 'file',
       scope: 'project',
       administrativeRequestId: advance.id,
       documentContext: 'advanceReceipt',
+      documentType,
+      documentTypeLabel: documentTypeMeta.label,
       category: category.name,
       url: fileUrl,
       downloadURL: fileUrl,
@@ -817,8 +865,10 @@ export function ProjectAdministration({
       toast.error('Completa categoría, valor y razón social del soporte.');
       return;
     }
-    if (category.requiresCufe && !receiptForm.cufe.trim()) {
-      toast.error('Este dominio requiere CUFE.');
+    const documentType = getReceiptDocumentType(receiptForm.documentType);
+    const documentTypeMeta = getReceiptDocumentTypeMeta(documentType);
+    if (documentType === 'invoice' && category.requiresCufe && !receiptForm.cufe.trim()) {
+      toast.error('Este dominio requiere CUFE cuando se legaliza con factura electrónica.');
       return;
     }
 
@@ -829,11 +879,13 @@ export function ProjectAdministration({
         latestAdvance,
         category,
         receiptFile,
-        receiptForm.businessName || category.name
+        receiptForm.businessName || category.name,
+        documentType
       );
 
       const receipt: AdvanceReceipt = {
         id: safeId(),
+        documentType,
         categoryId: category.id,
         categoryName: category.name,
         amount,
@@ -861,6 +913,8 @@ export function ProjectAdministration({
       });
       await logAdministrativeEvent(selectedAdvance.id, 'receipt_submitted', {
         receiptId: receipt.id,
+        documentType,
+        documentTypeLabel: documentTypeMeta.label,
         amount,
         categoryName: category.name,
       });
@@ -934,6 +988,7 @@ export function ProjectAdministration({
             fileName: file.name,
             fileSize: file.size,
             fileType: file.type || 'application/octet-stream',
+            documentType: getReceiptDocumentType(item?.documentType),
             categoryId: category?.id || item?.categoryId || '',
             categoryName: item?.categoryName || category?.name || '',
             amount: item?.amount ? String(item.amount) : '',
@@ -989,8 +1044,8 @@ export function ProjectAdministration({
         toast.error(`Revisa categoría, valor y proveedor en ${draft.fileName}.`);
         return;
       }
-      if (category.requiresCufe && !draft.cufe.trim()) {
-        toast.error(`${draft.fileName} requiere CUFE para el dominio ${category.name}.`);
+      if (draft.documentType === 'invoice' && category.requiresCufe && !draft.cufe.trim()) {
+        toast.error(`${draft.fileName} requiere CUFE para el dominio ${category.name} cuando es factura electrónica.`);
         return;
       }
     }
@@ -1002,15 +1057,18 @@ export function ProjectAdministration({
 
       for (const draft of readyDrafts) {
         const category = categoryOptions.find((item) => item.id === draft.categoryId)!;
+        const documentType = getReceiptDocumentType(draft.documentType);
         const { fileUrl, storagePath } = await uploadReceiptDocument(
           latestAdvance,
           category,
           draft.file,
-          draft.businessName || category.name
+          draft.businessName || category.name,
+          documentType
         );
 
         createdReceipts.push({
           id: safeId(),
+          documentType,
           categoryId: category.id,
           categoryName: category.name,
           amount: asNumber(draft.amount),
@@ -1042,6 +1100,7 @@ export function ProjectAdministration({
       });
       await logAdministrativeEvent(selectedAdvance.id, 'receipts_ai_bulk_submitted', {
         receiptCount: createdReceipts.length,
+        documentTypes: Array.from(new Set(createdReceipts.map((receipt) => receipt.documentType))),
         amount: createdReceipts.reduce((sum, receipt) => sum + asNumber(receipt.amount), 0),
       });
       toast.success(`${createdReceipts.length} soportes creados para validación.`);
@@ -1250,46 +1309,53 @@ export function ProjectAdministration({
             <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
               <div className="border-b border-slate-100 p-4">
                 <h3 className="text-lg font-black text-slate-950">Legalizaciones y soportes</h3>
-                <p className="text-sm font-medium text-slate-500">Cada soporte conserva factura, CUFE, foto y su trazabilidad de validación.</p>
+                <p className="text-sm font-medium text-slate-500">Cada soporte conserva tipo de documento, foto, datos fiscales y trazabilidad de validación.</p>
               </div>
               {receipts.length === 0 ? (
                 <EmptyState title="Sin soportes cargados" body="Los comprobantes de campo aparecerán aquí cuando se legalice un anticipo." />
               ) : (
                 <div className="divide-y divide-slate-100">
-                  {receipts.map((receipt: any) => (
-                    <div key={`${receipt.advanceId}-${receipt.id}`} className="grid gap-3 p-4 lg:grid-cols-[1fr_auto] lg:items-center">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-black text-slate-950">{receipt.categoryName}</span>
-                          <span className={`rounded-md px-2 py-1 text-[11px] font-black ring-1 ${getReceiptStatusMeta(receipt.status).className}`}>
-                            {getReceiptStatusMeta(receipt.status).label}
-                          </span>
-                          <span className="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-500">{formatMoney(receipt.amount)}</span>
+                  {receipts.map((receipt: any) => {
+                    const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
+                    return (
+                      <div key={`${receipt.advanceId}-${receipt.id}`} className="grid gap-3 p-4 lg:grid-cols-[1fr_auto] lg:items-center">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-black text-slate-950">{receipt.categoryName}</span>
+                            <span className={`rounded-md px-2 py-1 text-[11px] font-black ring-1 ${documentMeta.className}`}>
+                              {documentMeta.shortLabel}
+                            </span>
+                            <span className={`rounded-md px-2 py-1 text-[11px] font-black ring-1 ${getReceiptStatusMeta(receipt.status).className}`}>
+                              {getReceiptStatusMeta(receipt.status).label}
+                            </span>
+                            <span className="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-500">{formatMoney(receipt.amount)}</span>
+                          </div>
+                          <p className="mt-1 text-sm font-semibold text-slate-600">{receipt.businessName || 'Sin razón social'} · {formatDate(receipt.date)}</p>
+                          <p className="mt-1 text-xs font-semibold text-slate-400">
+                            {receipt.advanceTitle} · {receipt.requesterName}
+                            {receipt.invoiceNumber ? ` · ${documentMeta.numberLabel} ${receipt.invoiceNumber}` : ''}
+                            {receipt.cufe ? ` · CUFE ${receipt.cufe}` : ''}
+                          </p>
+                          {receipt.fileUrl && (
+                            <a href={receipt.fileUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-black text-indigo-600 hover:text-indigo-800">
+                              <FileImage size={14} />
+                              Ver soporte
+                            </a>
+                          )}
                         </div>
-                        <p className="mt-1 text-sm font-semibold text-slate-600">{receipt.businessName || 'Sin razón social'} · {formatDate(receipt.date)}</p>
-                        <p className="mt-1 text-xs font-semibold text-slate-400">
-                          {receipt.advanceTitle} · {receipt.requesterName}
-                          {receipt.cufe ? ` · CUFE ${receipt.cufe}` : ''}
-                        </p>
-                        {receipt.fileUrl && (
-                          <a href={receipt.fileUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-black text-indigo-600 hover:text-indigo-800">
-                            <FileImage size={14} />
-                            Ver soporte
-                          </a>
+                        {canValidate && receipt.status === 'submitted' && (
+                          <div className="flex gap-2">
+                            <Button type="button" size="sm" onClick={() => setReviewAction({ type: 'approveReceipt', advance: receipt.advance, receipt })} className="bg-emerald-600 text-white hover:bg-emerald-700">
+                              Aprobar
+                            </Button>
+                            <Button type="button" size="sm" variant="outline" onClick={() => setReviewAction({ type: 'returnReceipt', advance: receipt.advance, receipt })} className="border-orange-200 text-orange-700 hover:bg-orange-50">
+                              Devolver
+                            </Button>
+                          </div>
                         )}
                       </div>
-                      {canValidate && receipt.status === 'submitted' && (
-                        <div className="flex gap-2">
-                          <Button type="button" size="sm" onClick={() => setReviewAction({ type: 'approveReceipt', advance: receipt.advance, receipt })} className="bg-emerald-600 text-white hover:bg-emerald-700">
-                            Aprobar
-                          </Button>
-                          <Button type="button" size="sm" variant="outline" onClick={() => setReviewAction({ type: 'returnReceipt', advance: receipt.advance, receipt })} className="border-orange-200 text-orange-700 hover:bg-orange-50">
-                            Devolver
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1663,6 +1729,22 @@ export function ProjectAdministration({
               {receiptMode === 'manual' ? (
                 <>
                   <div className="grid gap-3 md:grid-cols-2">
+                    <Field label="Tipo de documento">
+                      <select
+                        className={inputClass}
+                        value={receiptForm.documentType}
+                        onChange={(event) =>
+                          setReceiptForm((current) => ({
+                            ...current,
+                            documentType: getReceiptDocumentType(event.target.value),
+                          }))
+                        }
+                      >
+                        <option value="invoice">Factura electrónica</option>
+                        <option value="cash_receipt">Recibo de caja</option>
+                      </select>
+                      <span className="mt-1 block text-xs font-semibold text-slate-400">{selectedReceiptDocumentMeta.hint}</span>
+                    </Field>
                     <Field label="Tipo de gasto">
                       <select className={inputClass} value={receiptForm.categoryId} onChange={(event) => setReceiptForm((current) => ({ ...current, categoryId: event.target.value }))}>
                         {categoryOptions.map((category) => (
@@ -1682,12 +1764,22 @@ export function ProjectAdministration({
                     <Field label="NIT o documento">
                       <input className={inputClass} value={receiptForm.taxId} onChange={(event) => setReceiptForm((current) => ({ ...current, taxId: event.target.value }))} />
                     </Field>
-                    <Field label="Factura / recibo">
+                    <Field label={selectedReceiptDocumentMeta.numberLabel}>
                       <input className={inputClass} value={receiptForm.invoiceNumber} onChange={(event) => setReceiptForm((current) => ({ ...current, invoiceNumber: event.target.value }))} />
                     </Field>
                   </div>
-                  <Field label={selectedReceiptCategory?.requiresCufe ? 'CUFE requerido' : 'CUFE (opcional)'}>
-                    <input className={inputClass} value={receiptForm.cufe} onChange={(event) => setReceiptForm((current) => ({ ...current, cufe: event.target.value }))} placeholder="Código CUFE de la factura electrónica" />
+                  <Field label={selectedReceiptDocumentType === 'invoice' && selectedReceiptCategory?.requiresCufe ? 'CUFE requerido' : 'CUFE (opcional)'}>
+                    <input
+                      className={inputClass}
+                      value={receiptForm.cufe}
+                      onChange={(event) => setReceiptForm((current) => ({ ...current, cufe: event.target.value }))}
+                      placeholder={selectedReceiptDocumentType === 'cash_receipt' ? 'No aplica para recibo de caja' : 'Código CUFE de la factura electrónica'}
+                    />
+                    {selectedReceiptDocumentType === 'cash_receipt' && (
+                      <span className="mt-1 block text-xs font-semibold text-amber-600">
+                        Para recibo de caja el CUFE no es obligatorio.
+                      </span>
+                    )}
                   </Field>
                   <Field label="Descripción / justificación">
                     <textarea className={textareaClass} value={receiptForm.description} onChange={(event) => setReceiptForm((current) => ({ ...current, description: event.target.value }))} placeholder="Qué gasto se realizó y por qué corresponde al anticipo." />
@@ -1712,7 +1804,7 @@ export function ProjectAdministration({
                         <div>
                           <h3 className="text-lg font-black text-slate-950">Legalización inteligente por lote</h3>
                           <p className="mt-1 max-w-2xl text-sm font-semibold leading-6 text-slate-600">
-                            Sube fotos o PDF de recibos. Pixel leerá proveedor, fecha, valor, CUFE y dominio sugerido para crear una legalización por cada soporte.
+                            Sube fotos o PDF de recibos. Pixel leerá tipo de documento, proveedor, fecha, valor, CUFE si aplica y dominio sugerido para crear una legalización por cada soporte.
                           </p>
                         </div>
                       </div>
@@ -1750,6 +1842,7 @@ export function ProjectAdministration({
                     <div className="space-y-3">
                       {aiReceiptDrafts.map((draft) => {
                         const draftCategory = categoryOptions.find((category) => category.id === draft.categoryId);
+                        const draftDocumentMeta = getReceiptDocumentTypeMeta(draft.documentType);
                         const confidence = Math.round(asNumber(draft.confidence) * 100);
                         return (
                           <div key={draft.id} className={`rounded-2xl border p-4 ${draft.status === 'error' ? 'border-rose-200 bg-rose-50/60' : 'border-slate-200 bg-white'}`}>
@@ -1770,6 +1863,16 @@ export function ProjectAdministration({
                             {draft.status !== 'error' && (
                               <>
                                 <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                  <Field label="Tipo de documento">
+                                    <select
+                                      className={inputClass}
+                                      value={draft.documentType}
+                                      onChange={(event) => updateAiReceiptDraft(draft.id, { documentType: getReceiptDocumentType(event.target.value) })}
+                                    >
+                                      <option value="invoice">Factura electrónica</option>
+                                      <option value="cash_receipt">Recibo de caja</option>
+                                    </select>
+                                  </Field>
                                   <Field label="Tipo de gasto">
                                     <select className={inputClass} value={draft.categoryId} onChange={(event) => updateAiReceiptDraft(draft.id, { categoryId: event.target.value })}>
                                       {categoryOptions.map((category) => (
@@ -1789,13 +1892,23 @@ export function ProjectAdministration({
                                   <Field label="NIT o documento">
                                     <input className={inputClass} value={draft.taxId} onChange={(event) => updateAiReceiptDraft(draft.id, { taxId: event.target.value })} />
                                   </Field>
-                                  <Field label="Factura / recibo">
+                                  <Field label={draftDocumentMeta.numberLabel}>
                                     <input className={inputClass} value={draft.invoiceNumber} onChange={(event) => updateAiReceiptDraft(draft.id, { invoiceNumber: event.target.value })} />
                                   </Field>
                                 </div>
                                 <div className="mt-3 grid gap-3">
-                                  <Field label={draftCategory?.requiresCufe ? 'CUFE requerido' : 'CUFE (opcional)'}>
-                                    <input className={inputClass} value={draft.cufe} onChange={(event) => updateAiReceiptDraft(draft.id, { cufe: event.target.value })} />
+                                  <Field label={draft.documentType === 'invoice' && draftCategory?.requiresCufe ? 'CUFE requerido' : 'CUFE (opcional)'}>
+                                    <input
+                                      className={inputClass}
+                                      value={draft.cufe}
+                                      onChange={(event) => updateAiReceiptDraft(draft.id, { cufe: event.target.value })}
+                                      placeholder={draft.documentType === 'cash_receipt' ? 'No aplica para recibo de caja' : 'Código CUFE de la factura electrónica'}
+                                    />
+                                    {draft.documentType === 'cash_receipt' && (
+                                      <span className="mt-1 block text-xs font-semibold text-amber-600">
+                                        Para recibo de caja el CUFE no es obligatorio.
+                                      </span>
+                                    )}
                                   </Field>
                                   <Field label="Descripción">
                                     <textarea className={textareaClass} value={draft.description} onChange={(event) => updateAiReceiptDraft(draft.id, { description: event.target.value })} />
@@ -1827,8 +1940,8 @@ export function ProjectAdministration({
                 {receiptMode === 'ai' && <SummaryLine label="Borradores IA" value={`${aiReceiptDrafts.length}`} />}
               </div>
               <div className="mt-5 rounded-xl bg-slate-50 p-3 text-xs font-semibold leading-5 text-slate-500">
-                La validación DIAN por CUFE queda preparada como dato estructurado; la consulta automática se conectará
-                cuando definamos el servicio de verificación.
+                La validación DIAN por CUFE queda preparada para facturas electrónicas. Los recibos de caja quedan aceptados
+                como soporte manual cuando no se consiga factura en campo.
               </div>
             </div>
           </div>

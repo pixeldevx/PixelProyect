@@ -11,7 +11,10 @@ type ReceiptCategoryInput = {
   description?: string;
 };
 
+type ReceiptDocumentType = 'invoice' | 'cash_receipt';
+
 type ParsedReceipt = {
+  documentType?: ReceiptDocumentType | string | null;
   categoryId?: string | null;
   categoryName?: string | null;
   amount?: number | string | null;
@@ -36,6 +39,19 @@ const isAllowedFile = (file: File) =>
   file.type.startsWith('image/') || ALLOWED_TYPES.has(file.type);
 
 const safeText = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+
+const normalizeDocumentType = (value: unknown): ReceiptDocumentType => {
+  const text = safeText(value).toLowerCase();
+  if (
+    text.includes('recibo') ||
+    text.includes('caja') ||
+    text.includes('cash') ||
+    text.includes('comprobante')
+  ) {
+    return 'cash_receipt';
+  }
+  return 'invoice';
+};
 
 const normalizeAmount = (value: unknown) => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
@@ -123,6 +139,7 @@ ${JSON.stringify(advanceContext || {}, null, 2)}
 
 Devuelve SOLO un JSON válido con esta forma:
 {
+  "documentType": "invoice | cash_receipt",
   "categoryId": "id exacto de la categoría elegida o vacío si no hay certeza",
   "categoryName": "nombre de la categoría elegida",
   "amount": 0,
@@ -138,9 +155,12 @@ Devuelve SOLO un JSON válido con esta forma:
 
 Reglas:
 - No inventes valores. Si un campo no se ve, déjalo vacío y agrega una advertencia.
+- documentType debe ser "invoice" cuando el soporte sea factura o factura electrónica.
+- documentType debe ser "cash_receipt" cuando el soporte sea recibo de caja, comprobante físico o recibo manual sin factura electrónica.
 - amount debe ser el total pagado del soporte, sin símbolos.
 - date debe ser la fecha del gasto, no la fecha de vencimiento.
 - Si aparece CUFE o factura electrónica, conserva el CUFE completo.
+- Si el soporte es recibo de caja o comprobante manual, no inventes CUFE.
 `.trim();
 
 const normalizeReceipt = ({
@@ -160,13 +180,16 @@ const normalizeReceipt = ({
   const category = categoryById || categoryByName || categories[0] || {};
   const amount = normalizeAmount(parsed.amount);
   const confidence = Number(parsed.confidence);
+  const documentType = normalizeDocumentType(parsed.documentType);
   const warnings = Array.isArray(parsed.warnings)
     ? parsed.warnings.map((warning) => safeText(warning)).filter(Boolean)
     : [];
 
   if (!amount) warnings.push('No se pudo leer un valor total confiable.');
   if (!safeText(parsed.businessName)) warnings.push('No se identificó razón social o proveedor.');
-  if (category.requiresCufe && !safeText(parsed.cufe)) warnings.push('La categoría seleccionada requiere CUFE.');
+  if (documentType === 'invoice' && category.requiresCufe && !safeText(parsed.cufe)) {
+    warnings.push('La categoría seleccionada requiere CUFE para factura electrónica.');
+  }
 
   return {
     index,
@@ -174,6 +197,7 @@ const normalizeReceipt = ({
     fileSize: file.size,
     fileType: file.type || 'application/octet-stream',
     status: 'ready',
+    documentType,
     categoryId: category.id || '',
     categoryName: category.name || safeText(parsed.categoryName),
     amount,
