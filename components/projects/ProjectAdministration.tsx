@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   ArrowRight,
@@ -29,7 +29,11 @@ import { addDoc, collection, doc, onSnapshot, orderBy, query, serverTimestamp, u
 import { db, storage } from '@/lib/backend';
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { buildDocumentStoragePath } from '@/lib/document-storage';
-import { COLOMBIA_DEPARTMENTS, getMunicipalitiesByDepartment } from '@/lib/colombia-municipalities';
+
+type ColombiaDepartment = {
+  department: string;
+  municipalities: string[];
+};
 
 type ExpenseCategory = {
   id: string;
@@ -280,6 +284,9 @@ export function ProjectAdministration({
   const [advances, setAdvances] = useState<TravelAdvance[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [payments, setPayments] = useState<BillingPayment[]>([]);
+  const [locationOptions, setLocationOptions] = useState<ColombiaDepartment[]>([]);
+  const [locationsLoading, setLocationsLoading] = useState(false);
+  const [locationsLoaded, setLocationsLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'requests' | 'receipts' | 'payments' | 'settings'>('requests');
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
@@ -359,8 +366,8 @@ export function ProjectAdministration({
 
   const selectedReceiptCategory = categoryOptions.find((category) => category.id === receiptForm.categoryId);
   const municipalityOptions = useMemo(
-    () => getMunicipalitiesByDepartment(advanceForm.department),
-    [advanceForm.department]
+    () => locationOptions.find((item) => item.department === advanceForm.department)?.municipalities || [],
+    [advanceForm.department, locationOptions]
   );
   const selectedAdvanceTasks = useMemo(
     () => tasks.filter((task) => advanceForm.taskIds.includes(task.id)),
@@ -424,8 +431,29 @@ export function ProjectAdministration({
     [advances]
   );
 
+  const loadLocationOptions = useCallback(async () => {
+    if (locationsLoaded || locationsLoading) return;
+
+    setLocationsLoading(true);
+    try {
+      const response = await fetch('/data/colombia-municipalities.json', { cache: 'force-cache' });
+      if (!response.ok) {
+        throw new Error('No se pudo cargar el catálogo de municipios.');
+      }
+      const data = (await response.json()) as ColombiaDepartment[];
+      setLocationOptions(data);
+      setLocationsLoaded(true);
+    } catch (error) {
+      console.error('Error loading Colombia municipalities:', error);
+      toast.error('No se pudo cargar la lista de departamentos y municipios.');
+    } finally {
+      setLocationsLoading(false);
+    }
+  }, [locationsLoaded, locationsLoading]);
+
   const openNewAdvance = () => {
     setAdvanceForm(buildEmptyAdvanceForm(currentUser, teamMembers));
+    void loadLocationOptions();
     setIsAdvanceModalOpen(true);
   };
 
@@ -1221,6 +1249,7 @@ export function ProjectAdministration({
                   <select
                     className={inputClass}
                     value={advanceForm.department}
+                    disabled={locationsLoading || locationOptions.length === 0}
                     onChange={(event) =>
                       setAdvanceForm((current) => ({
                         ...current,
@@ -1229,8 +1258,14 @@ export function ProjectAdministration({
                       }))
                     }
                   >
-                    <option value="">Selecciona departamento</option>
-                    {COLOMBIA_DEPARTMENTS.map((department) => (
+                    <option value="">
+                      {locationsLoading
+                        ? 'Cargando departamentos...'
+                        : locationOptions.length > 0
+                          ? 'Selecciona departamento'
+                          : 'Departamentos no disponibles'}
+                    </option>
+                    {locationOptions.map((department) => (
                       <option key={department.department} value={department.department}>
                         {department.department}
                       </option>
@@ -1241,10 +1276,16 @@ export function ProjectAdministration({
                   <select
                     className={inputClass}
                     value={advanceForm.municipality}
-                    disabled={!advanceForm.department}
+                    disabled={locationsLoading || !advanceForm.department}
                     onChange={(event) => setAdvanceForm((current) => ({ ...current, municipality: event.target.value }))}
                   >
-                    <option value="">{advanceForm.department ? 'Selecciona municipio' : 'Primero elige departamento'}</option>
+                    <option value="">
+                      {locationsLoading
+                        ? 'Cargando municipios...'
+                        : advanceForm.department
+                          ? 'Selecciona municipio'
+                          : 'Primero elige departamento'}
+                    </option>
                     {municipalityOptions.map((municipality) => (
                       <option key={municipality} value={municipality}>
                         {municipality}

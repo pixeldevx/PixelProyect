@@ -1,12 +1,4 @@
-// Generated from Datos Abiertos Colombia: Departamentos y municipios códigos (82di-kkh9).
-// Keep this file static at runtime so forms do not query external services or the database.
-
-export type ColombiaDepartment = {
-  department: string;
-  municipalities: string[];
-};
-
-export const COLOMBIA_DEPARTMENTS: ColombiaDepartment[] = [
+[
   {
     "department": "Amazonas",
     "municipalities": [
@@ -1294,7 +1286,4 @@ export const COLOMBIA_DEPARTMENTS: ColombiaDepartment[] = [
       "Santa Rosalía"
     ]
   }
-];
-
-export const getMunicipalitiesByDepartment = (department?: string) =>
-  COLOMBIA_DEPARTMENTS.find((item) => item.department === department)?.municipalities ?? [];
+]
