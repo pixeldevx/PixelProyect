@@ -6,7 +6,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen, BarChart3, Package, Map as MapIcon } from 'lucide-react';
+import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen, BarChart3, Package, Map as MapIcon, BriefcaseBusiness } from 'lucide-react';
 import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, setDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment, Timestamp } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
@@ -23,6 +23,7 @@ import { ProjectDocumentViewer } from '@/components/projects/ProjectDocumentView
 import { ProjectDriveRepositories } from '@/components/projects/ProjectDriveRepositories';
 import { ProjectInventory } from '@/components/projects/ProjectInventory';
 import { ProjectSpatialMap } from '@/components/projects/ProjectSpatialMap';
+import { ProjectAdministration } from '@/components/projects/ProjectAdministration';
 import { ProjectQuality } from '@/components/projects/ProjectQuality';
 import { ProjectLogbook } from '@/components/projects/ProjectLogbook';
 import { TaskDetailsModal } from '@/components/projects/TaskDetailsModal';
@@ -281,7 +282,7 @@ export default function ProjectDetailsPage() {
   const [userProfiles, setUserProfiles] = useState<any[]>([]);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'inventory' | 'map' | 'tasks' | 'logbook' | 'quality' | 'rateCards' | 'budget' | 'billing' | 'orgChart'>('tasks');
+  const [activeTab, setActiveTab] = useState<'documents' | 'drive' | 'inventory' | 'map' | 'tasks' | 'logbook' | 'quality' | 'rateCards' | 'budget' | 'administration' | 'billing' | 'orgChart'>('tasks');
   const [showDocumentIssueAlert, setShowDocumentIssueAlert] = useState(false);
   const canAccessProjectBudget = PROJECT_BUDGET_ACCESS_ROLES.has(userRole || '');
 
@@ -291,7 +292,7 @@ export default function ProjectDetailsPage() {
       setActiveTab('tasks');
       return;
     }
-    if (tabParam && ['documents', 'drive', 'inventory', 'map', 'tasks', 'logbook', 'quality', 'rateCards', 'budget', 'billing', 'orgChart'].includes(tabParam)) {
+    if (tabParam && ['documents', 'drive', 'inventory', 'map', 'tasks', 'logbook', 'quality', 'rateCards', 'budget', 'administration', 'billing', 'orgChart'].includes(tabParam)) {
       setActiveTab(tabParam as any);
     }
   }, [searchParams]);
@@ -707,6 +708,22 @@ export default function ProjectDetailsPage() {
   const canManageInventory =
     Boolean(rolePermissions.inventoryProjectManage) &&
     hasInventoryManagementScope;
+  const hasProjectAdministrationScope =
+    userRole !== 'org_admin' ||
+    !project?.organizationId ||
+    belongsToAnyOrganization(project, managedOrganizationIds);
+  const canViewProjectAdministration =
+    Boolean(rolePermissions.administrationProjectView) &&
+    hasProjectAdministrationScope;
+  const canManageProjectAdministration =
+    Boolean(rolePermissions.administrationProjectManage) &&
+    hasProjectAdministrationScope;
+  const canValidateProjectAdministration =
+    Boolean(rolePermissions.administrationProjectValidate) &&
+    hasProjectAdministrationScope;
+  const canConfigureProjectAdministration =
+    Boolean(rolePermissions.administrationConfigManage) &&
+    hasProjectAdministrationScope;
   const canDeleteLogbookEntries =
     userRole === 'admin' ||
     userRole === 'manager' ||
@@ -720,6 +737,12 @@ export default function ProjectDetailsPage() {
     setActiveTab('tasks');
     toast.error('No tienes permisos para ver el inventario de este proyecto.');
   }, [activeTab, canViewProjectInventory, rolePermissionsLoading]);
+
+  useEffect(() => {
+    if (rolePermissionsLoading || activeTab !== 'administration' || canViewProjectAdministration) return;
+    setActiveTab('tasks');
+    toast.error('No tienes permisos para ver el módulo administrativo de este proyecto.');
+  }, [activeTab, canViewProjectAdministration, rolePermissionsLoading]);
 
   useEffect(() => {
     if (rolePermissionsLoading || activeTab !== 'documents' || canViewDocuments) return;
@@ -3198,6 +3221,21 @@ export default function ProjectDetailsPage() {
               </div>
             </button>
           )}
+          {canViewProjectAdministration && (
+            <button
+              onClick={() => setActiveTab('administration')}
+              className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
+                activeTab === 'administration'
+                  ? 'bg-indigo-50 text-indigo-700'
+                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <BriefcaseBusiness size={16} />
+                Administrativo
+              </div>
+            </button>
+          )}
           <button
             onClick={() => setActiveTab('billing')}
             className={`min-h-11 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors ${
@@ -3520,6 +3558,22 @@ export default function ProjectDetailsPage() {
               </div>
             </section>
           )}
+        </div>
+      )}
+
+      {activeTab === 'administration' && (
+        <div className="mt-6">
+          <ProjectAdministration
+            projectId={projectId}
+            project={project}
+            tasks={tasks}
+            teamMembers={projectAssignableTeamMembers}
+            currentUser={user}
+            canView={canViewProjectAdministration}
+            canManage={canManageProjectAdministration}
+            canValidate={canValidateProjectAdministration}
+            canConfigure={canConfigureProjectAdministration}
+          />
         </div>
       )}
 

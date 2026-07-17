@@ -15,6 +15,10 @@ export type PermissionKey =
   | 'documentDelete'
   | 'billingOverview'
   | 'billingManage'
+  | 'administrationProjectView'
+  | 'administrationProjectManage'
+  | 'administrationProjectValidate'
+  | 'administrationConfigManage'
   | 'inventoryProjectView'
   | 'inventoryProjectManage'
   | 'inventoryOverview'
@@ -78,6 +82,15 @@ export const PERMISSION_GROUPS: Array<{
     ],
   },
   {
+    title: 'Administrativo',
+    permissions: [
+      { key: 'administrationProjectView', label: 'Ver anticipos y costos del proyecto' },
+      { key: 'administrationProjectManage', label: 'Crear anticipos y legalizaciones' },
+      { key: 'administrationProjectValidate', label: 'Validar anticipos y soportes' },
+      { key: 'administrationConfigManage', label: 'Configurar dominios de gastos' },
+    ],
+  },
+  {
     title: 'Inventario',
     permissions: [
       { key: 'inventoryProjectView', label: 'Ver inventario del proyecto' },
@@ -115,6 +128,10 @@ const allPermissions = (value: boolean): RolePermissionSet => ({
   documentDelete: value,
   billingOverview: value,
   billingManage: value,
+  administrationProjectView: value,
+  administrationProjectManage: value,
+  administrationProjectValidate: value,
+  administrationConfigManage: value,
   inventoryProjectView: value,
   inventoryProjectManage: value,
   inventoryOverview: value,
@@ -135,6 +152,8 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
     taskEditStructure: false,
     billingOverview: false,
     billingManage: false,
+    administrationProjectValidate: false,
+    administrationConfigManage: false,
     inventoryOverview: false,
     orgChartManage: false,
     personnelManage: false,
@@ -149,6 +168,9 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
     documentUpload: true,
     billingOverview: true,
     billingManage: true,
+    administrationProjectView: true,
+    administrationProjectManage: true,
+    administrationProjectValidate: true,
   },
   user: {
     ...allPermissions(false),
@@ -156,6 +178,8 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionSettings = {
     activityEditStatus: true,
     documentView: true,
     documentUpload: true,
+    administrationProjectView: true,
+    administrationProjectManage: true,
   },
 };
 
