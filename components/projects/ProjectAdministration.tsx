@@ -32,7 +32,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { addDoc, collection, doc, onSnapshot, orderBy, query, serverTimestamp, updateDoc } from '@/lib/supabase/document-store';
+import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, updateDoc, where } from '@/lib/supabase/document-store';
 import { db, storage } from '@/lib/backend';
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { buildDocumentStoragePath } from '@/lib/document-storage';
@@ -196,6 +196,7 @@ type ReviewAction =
   | { type: 'approveAdvance'; advance: TravelAdvance }
   | { type: 'returnAdvance'; advance: TravelAdvance }
   | { type: 'rejectAdvance'; advance: TravelAdvance }
+  | { type: 'deleteAdvance'; advance: TravelAdvance }
   | { type: 'returnReceipt'; advance: TravelAdvance; receipt: AdvanceReceipt }
   | null;
 
@@ -541,6 +542,11 @@ export function ProjectAdministration({
   const [receiptCorrectionFile, setReceiptCorrectionFile] = useState<File | null>(null);
   const [expandedReceiptGroups, setExpandedReceiptGroups] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
+
+  const openReviewAction = (action: NonNullable<ReviewAction>) => {
+    setReviewComment('');
+    setReviewAction(action);
+  };
 
   useEffect(() => {
     if (!canView) return;
@@ -1304,8 +1310,9 @@ export function ProjectAdministration({
 
   const applyReviewAction = async () => {
     if (!reviewAction) return;
-    if (!canValidate) {
-      toast.error('No tienes permisos para validar este proceso.');
+    const isDeleteAction = reviewAction.type === 'deleteAdvance';
+    if (isDeleteAction ? !canManage : !canValidate) {
+      toast.error(isDeleteAction ? 'Solo administradores o coordinadores pueden eliminar anticipos.' : 'No tienes permisos para validar este proceso.');
       return;
     }
     if (reviewAction.type === 'returnReceipt' && !reviewComment.trim()) {
@@ -1315,6 +1322,28 @@ export function ProjectAdministration({
 
     setSubmitting(true);
     try {
+      if (reviewAction.type === 'deleteAdvance') {
+        const advance = reviewAction.advance;
+        const [eventSnapshot, paymentSnapshot] = await Promise.all([
+          getDocs(query(collection(db, 'projects', projectId, 'administrativeEvents'), where('advanceId', '==', advance.id))),
+          getDocs(query(collection(db, 'projects', projectId, 'billingPayments'), where('advanceId', '==', advance.id))),
+        ]);
+
+        await Promise.all([
+          ...eventSnapshot.docs.map((snapshot) =>
+            deleteDoc(doc(db, 'projects', projectId, 'administrativeEvents', snapshot.id))
+          ),
+          ...paymentSnapshot.docs.map((snapshot) =>
+            deleteDoc(doc(db, 'projects', projectId, 'billingPayments', snapshot.id))
+          ),
+        ]);
+        await deleteDoc(doc(db, 'projects', projectId, 'advanceRequests', advance.id));
+        if (selectedAdvance?.id === advance.id) {
+          setSelectedAdvance(null);
+        }
+        toast.success('Anticipo eliminado junto con sus pagos y trazabilidad asociada.');
+      }
+
       if (reviewAction.type === 'approveAdvance') {
         const approvedAmount = asNumber(reviewAction.advance.amountRequested);
         await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', reviewAction.advance.id), {
@@ -2044,9 +2073,10 @@ export function ProjectAdministration({
                     canCorrect={canCorrectAdvanceReceipt(advance)}
                     onOpenReceipt={() => setSelectedAdvance(advance)}
                     onComplete={() => handleCompleteAdvance(advance)}
-                    onApprove={() => setReviewAction({ type: 'approveAdvance', advance })}
-                    onReturn={() => setReviewAction({ type: 'returnAdvance', advance })}
-                    onReject={() => setReviewAction({ type: 'rejectAdvance', advance })}
+                    onApprove={() => openReviewAction({ type: 'approveAdvance', advance })}
+                    onReturn={() => openReviewAction({ type: 'returnAdvance', advance })}
+                    onReject={() => openReviewAction({ type: 'rejectAdvance', advance })}
+                    onDelete={() => openReviewAction({ type: 'deleteAdvance', advance })}
                   />
                 ))
               )}
@@ -2220,7 +2250,7 @@ export function ProjectAdministration({
                                       <Button type="button" size="sm" onClick={() => openReceiptEditor('review', group.advance, receipt)} className="bg-emerald-600 text-white hover:bg-emerald-700">
                                         <PencilLine size={14} className="mr-1" /> Revisar y aprobar
                                       </Button>
-                                      <Button type="button" size="sm" variant="outline" onClick={() => setReviewAction({ type: 'returnReceipt', advance: group.advance, receipt })} className="border-rose-200 text-rose-700 hover:bg-rose-50">
+                                      <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnReceipt', advance: group.advance, receipt })} className="border-rose-200 text-rose-700 hover:bg-rose-50">
                                         Devolver
                                       </Button>
                                     </>
@@ -3038,7 +3068,9 @@ export function ProjectAdministration({
       {reviewAction && (
         <ModalShell
           title={
-            reviewAction.type.includes('Receipt')
+            reviewAction.type === 'deleteAdvance'
+              ? 'Eliminar anticipo'
+              : reviewAction.type.includes('Receipt')
               ? 'Devolver soporte'
               : reviewAction.type === 'approveAdvance'
                 ? 'Aprobar anticipo'
@@ -3046,22 +3078,44 @@ export function ProjectAdministration({
                   ? 'Rechazar anticipo'
                   : 'Devolver anticipo'
           }
-          subtitle="La decisión quedará en la trazabilidad administrativa."
+          subtitle={
+            reviewAction.type === 'deleteAdvance'
+              ? 'Se eliminará el anticipo y los registros administrativos asociados.'
+              : 'La decisión quedará en la trazabilidad administrativa.'
+          }
           onClose={() => setReviewAction(null)}
         >
-          <Field label="Comentario administrativo">
+          {reviewAction.type === 'deleteAdvance' && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold leading-6 text-rose-700">
+              Esta acción borra el anticipo, sus pagos reales y la trazabilidad administrativa relacionada. No elimina otros documentos del proyecto.
+            </div>
+          )}
+          <Field label={reviewAction.type === 'deleteAdvance' ? 'Comentario administrativo (opcional)' : 'Comentario administrativo'}>
             <textarea
               className={textareaClass}
               value={reviewComment}
               onChange={(event) => setReviewComment(event.target.value)}
-              placeholder="Explica la decisión, observaciones o ajustes solicitados."
+              placeholder={
+                reviewAction.type === 'deleteAdvance'
+                  ? 'Opcional: deja una nota interna antes de eliminar este anticipo.'
+                  : 'Explica la decisión, observaciones o ajustes solicitados.'
+              }
             />
           </Field>
           <ModalFooter>
             <Button type="button" variant="outline" onClick={() => setReviewAction(null)}>Cancelar</Button>
-            <Button type="button" onClick={applyReviewAction} disabled={submitting} className="bg-indigo-600 font-bold text-white hover:bg-indigo-700">
+            <Button
+              type="button"
+              onClick={applyReviewAction}
+              disabled={submitting}
+              className={
+                reviewAction.type === 'deleteAdvance'
+                  ? 'bg-rose-600 font-bold text-white hover:bg-rose-700'
+                  : 'bg-indigo-600 font-bold text-white hover:bg-indigo-700'
+              }
+            >
               {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
-              Confirmar
+              {reviewAction.type === 'deleteAdvance' ? 'Eliminar anticipo' : 'Confirmar'}
             </Button>
           </ModalFooter>
         </ModalShell>
@@ -3186,6 +3240,7 @@ function AdvanceCard({
   onApprove,
   onReturn,
   onReject,
+  onDelete,
 }: {
   advance: TravelAdvance;
   canValidate: boolean;
@@ -3196,6 +3251,7 @@ function AdvanceCard({
   onApprove: () => void;
   onReturn: () => void;
   onReject: () => void;
+  onDelete: () => void;
 }) {
   const status = statusConfig[advance.status] || statusConfig.submitted;
   const linkedTaskTitles =
@@ -3290,6 +3346,12 @@ function AdvanceCard({
                 Rechazar
               </Button>
             </>
+          )}
+          {canManage && (
+            <Button type="button" size="sm" variant="outline" onClick={onDelete} className="border-rose-200 text-rose-700 hover:bg-rose-50">
+              <Trash2 size={15} className="mr-2" />
+              Eliminar
+            </Button>
           )}
           <ArrowRight size={18} className="hidden text-slate-300 lg:block" />
         </div>
