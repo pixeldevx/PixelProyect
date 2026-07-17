@@ -6,6 +6,8 @@ import {
   ArrowRight,
   Banknote,
   CalendarDays,
+  ChevronDown,
+  ChevronRight,
   CheckCircle2,
   ClipboardCheck,
   FileImage,
@@ -163,7 +165,7 @@ type TravelAdvance = {
   taskTitle?: string;
   taskIds?: string[];
   taskTitles?: string[];
-  status: 'submitted' | 'approved' | 'returned' | 'rejected' | 'closed';
+  status: 'submitted' | 'approved' | 'completed' | 'returned' | 'rejected' | 'closed';
   items: AdvanceItem[];
   receipts?: AdvanceReceipt[];
   amountRequested: number;
@@ -175,6 +177,9 @@ type TravelAdvance = {
   updatedAt?: any;
   submittedAt?: any;
   approvedAt?: any;
+  completedAt?: any;
+  completedBy?: string | null;
+  completedByName?: string;
   closedAt?: any;
 };
 
@@ -321,10 +326,11 @@ const getTaskTitle = (task: any) =>
 
 const statusConfig: Record<TravelAdvance['status'], { label: string; className: string }> = {
   submitted: { label: 'Por validar', className: 'bg-amber-50 text-amber-700 ring-amber-100' },
-  approved: { label: 'Aprobado', className: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
+  approved: { label: 'En elaboración', className: 'bg-sky-50 text-sky-700 ring-sky-100' },
+  completed: { label: 'Completado', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
   returned: { label: 'Devuelto', className: 'bg-orange-50 text-orange-700 ring-orange-100' },
   rejected: { label: 'Rechazado', className: 'bg-rose-50 text-rose-700 ring-rose-100' },
-  closed: { label: 'Legalizado', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
+  closed: { label: 'Legalizado', className: 'bg-teal-50 text-teal-700 ring-teal-100' },
 };
 
 const receiptStatusConfig: Record<AdvanceReceipt['status'], { label: string; className: string }> = {
@@ -370,6 +376,55 @@ const isApprovedReceipt = (receipt: Pick<AdvanceReceipt, 'status'>) =>
   APPROVED_RECEIPT_STATUSES.includes(receipt.status);
 
 const normalizeCufe = (value: string) => value.replace(/\s+/g, '').trim();
+
+type ReceiptIdentityInput = Pick<
+  AdvanceReceipt,
+  'documentType' | 'cufe' | 'invoiceNumber' | 'taxId' | 'businessName' | 'amount' | 'date'
+>;
+
+type ReceiptDuplicateUsage = {
+  advanceId: string;
+  advanceTitle: string;
+  requesterName: string;
+  receiptId: string;
+  documentType: ReceiptDocumentType;
+  invoiceNumber?: string;
+  cufe?: string;
+  taxId?: string;
+  businessName: string;
+  amount: number;
+  date: string;
+};
+
+const normalizeReceiptToken = (value?: string | number | null) =>
+  String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+const getReceiptIdentity = (receipt: Partial<ReceiptIdentityInput>) => {
+  const documentType = getReceiptDocumentType(receipt.documentType);
+  const cufe = normalizeCufe(String(receipt.cufe || '')).toLowerCase();
+  if (documentType === 'invoice' && cufe) return `invoice:cufe:${cufe}`;
+
+  const invoiceNumber = normalizeReceiptToken(receipt.invoiceNumber);
+  const taxId = normalizeReceiptToken(receipt.taxId);
+  if (invoiceNumber && taxId) return `${documentType}:number-tax:${invoiceNumber}:${taxId}`;
+
+  const businessName = normalizeReceiptToken(receipt.businessName);
+  const date = normalizeReceiptToken(receipt.date);
+  const amount = asNumber(receipt.amount).toFixed(2);
+  if (invoiceNumber && businessName && amount !== '0.00') {
+    return `${documentType}:number-business:${invoiceNumber}:${businessName}:${amount}`;
+  }
+  if (businessName && date && amount !== '0.00') {
+    return `${documentType}:fallback:${businessName}:${date}:${amount}`;
+  }
+
+  return null;
+};
 
 const buildDianDocumentUrl = (cufe: string) =>
   `https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=${encodeURIComponent(normalizeCufe(cufe))}`;
@@ -484,6 +539,7 @@ export function ProjectAdministration({
   const [receiptEditor, setReceiptEditor] = useState<ReceiptEditorState | null>(null);
   const [receiptEditorForm, setReceiptEditorForm] = useState<ReceiptEditorForm | null>(null);
   const [receiptCorrectionFile, setReceiptCorrectionFile] = useState<File | null>(null);
+  const [expandedReceiptGroups, setExpandedReceiptGroups] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -572,7 +628,10 @@ export function ProjectAdministration({
     const approved = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountApproved), 0);
     const legalized = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountLegalized), 0);
     const pendingValidation = advances.filter((advance) => advance.status === 'submitted').length;
-    const returned = advances.filter((advance) => advance.status === 'returned').length;
+    const returned = advances.filter(
+      (advance) =>
+        advance.status === 'returned' || (advance.receipts || []).some((receipt) => receipt.status === 'returned')
+    ).length;
     const realAdminPayments = payments
       .filter((payment) => payment.source === 'advance_receipt' && payment.status !== 'cancelled')
       .reduce((sum, payment) => sum + asNumber(payment.amount), 0);
@@ -602,6 +661,44 @@ export function ProjectAdministration({
     [advances]
   );
 
+  const receiptUsageIndex = useMemo(() => {
+    const index = new Map<string, ReceiptDuplicateUsage[]>();
+
+    advances.forEach((advance) => {
+      (advance.receipts || []).forEach((receipt) => {
+        const identity = getReceiptIdentity(receipt);
+        if (!identity || receipt.status === 'rejected') return;
+
+        const usage: ReceiptDuplicateUsage = {
+          advanceId: advance.id,
+          advanceTitle: advance.purpose || advance.destination || 'Anticipo sin nombre',
+          requesterName: advance.requesterName || 'Solicitante',
+          receiptId: receipt.id,
+          documentType: getReceiptDocumentType(receipt.documentType),
+          invoiceNumber: receipt.invoiceNumber,
+          cufe: receipt.cufe,
+          taxId: receipt.taxId,
+          businessName: receipt.businessName || 'Sin razón social',
+          amount: asNumber(receipt.amount),
+          date: receipt.date,
+        };
+
+        index.set(identity, [...(index.get(identity) || []), usage]);
+      });
+    });
+
+    return index;
+  }, [advances]);
+
+  const findDuplicateReceiptUsage = useCallback(
+    (receiptLike: Partial<ReceiptIdentityInput>, currentAdvanceId: string) => {
+      const identity = getReceiptIdentity(receiptLike);
+      if (!identity) return null;
+      return (receiptUsageIndex.get(identity) || []).find((usage) => usage.advanceId !== currentAdvanceId) || null;
+    },
+    [receiptUsageIndex]
+  );
+
   const receiptGroups = useMemo(
     () =>
       advances
@@ -617,6 +714,9 @@ export function ProjectAdministration({
           const returned = advanceReceipts
             .filter((receipt) => receipt.status === 'returned')
             .reduce((sum, receipt) => sum + asNumber(receipt.amount), 0);
+          const pendingCount = advanceReceipts.filter((receipt) => receipt.status === 'submitted').length;
+          const returnedCount = advanceReceipts.filter((receipt) => receipt.status === 'returned').length;
+          const duplicateCount = advanceReceipts.filter((receipt) => findDuplicateReceiptUsage(receipt, advance.id)).length;
           const approved = asNumber(advance.amountApproved || advance.amountRequested);
           const difference = approved - legalized;
 
@@ -627,11 +727,14 @@ export function ProjectAdministration({
             legalized,
             pending,
             returned,
+            pendingCount,
+            returnedCount,
+            duplicateCount,
             difference,
             progress: approved > 0 ? Math.min(100, Math.round((legalized / approved) * 100)) : 0,
           };
         }),
-    [advances]
+    [advances, findDuplicateReceiptUsage]
   );
 
   const currentActorIds = useMemo(() => {
@@ -904,6 +1007,22 @@ export function ProjectAdministration({
       toast.error('Consulta y confirma el CUFE en la DIAN antes de aprobar.');
       return;
     }
+    const duplicateUsage = findDuplicateReceiptUsage(
+      {
+        documentType,
+        cufe,
+        invoiceNumber: receiptEditorForm.invoiceNumber,
+        taxId: receiptEditorForm.taxId,
+        businessName: receiptEditorForm.businessName,
+        amount,
+        date: receiptEditorForm.date,
+      },
+      latestAdvance.id
+    );
+    if (duplicateUsage) {
+      toast.error(`Este soporte ya fue usado en "${duplicateUsage.advanceTitle}" por ${duplicateUsage.requesterName}.`);
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -995,14 +1114,21 @@ export function ProjectAdministration({
       const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
       const difference = amountApproved - amountLegalized;
       const isClosed = amountApproved > 0 && amountLegalized >= amountApproved;
+      const shouldStayCompleted = latestAdvance.status === 'completed';
+      const nextAdvanceStatus: TravelAdvance['status'] = isClosed
+        ? 'closed'
+        : shouldStayCompleted
+          ? 'completed'
+          : 'approved';
 
       await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
         receipts: nextReceipts,
         amountLegalized,
         balance: difference,
-        status: isClosed ? 'closed' : 'approved',
-        nextAction: isClosed ? 'closed' : 'justify_advance',
-        inboxTargetUserId: isClosed ? null : latestAdvance.requesterId,
+        status: nextAdvanceStatus,
+        nextAction: isClosed ? 'closed' : shouldStayCompleted ? 'validate_receipt' : 'justify_advance',
+        pendingRole: isClosed ? null : shouldStayCompleted ? 'administrative_validation' : null,
+        inboxTargetUserId: isClosed || shouldStayCompleted ? null : latestAdvance.requesterId,
         closedAt: isClosed ? serverTimestamp() : null,
         updatedAt: serverTimestamp(),
       });
@@ -1051,6 +1177,22 @@ export function ProjectAdministration({
     }
     if (documentType === 'invoice' && category.requiresCufe && !cufe) {
       toast.error('Este tipo de gasto requiere CUFE para reenviar la factura.');
+      return;
+    }
+    const duplicateUsage = findDuplicateReceiptUsage(
+      {
+        documentType,
+        cufe,
+        invoiceNumber: receiptEditorForm.invoiceNumber,
+        taxId: receiptEditorForm.taxId,
+        businessName: receiptEditorForm.businessName,
+        amount,
+        date: receiptEditorForm.date,
+      },
+      latestAdvance.id
+    );
+    if (duplicateUsage) {
+      toast.error(`Este soporte ya fue usado en "${duplicateUsage.advanceTitle}" por ${duplicateUsage.requesterName}.`);
       return;
     }
 
@@ -1135,10 +1277,13 @@ export function ProjectAdministration({
         receipts: nextReceipts,
         amountLegalized,
         balance: amountApproved - amountLegalized,
-        status: amountApproved > 0 ? 'approved' : latestAdvance.status,
+        status: 'approved',
         nextAction: 'validate_receipt',
         pendingRole: 'administrative_validation',
         inboxTargetUserId: null,
+        completedAt: null,
+        completedBy: null,
+        completedByName: '',
         updatedAt: serverTimestamp(),
       });
       await logAdministrativeEvent(latestAdvance.id, 'receipt_resubmitted', {
@@ -1230,11 +1375,21 @@ export function ProjectAdministration({
               }
             : item
         );
+        const amountLegalized = nextReceipts
+          .filter(isApprovedReceipt)
+          .reduce((sum, item) => sum + asNumber(item.amount), 0);
+        const amountApproved = asNumber(advance.amountApproved || advance.amountRequested);
         await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', advance.id), {
           receipts: nextReceipts,
-          status: 'returned',
+          amountLegalized,
+          balance: amountApproved - amountLegalized,
+          status: 'approved',
           nextAction: 'correct_receipt',
+          pendingRole: null,
           inboxTargetUserId: advance.requesterId,
+          completedAt: null,
+          completedBy: null,
+          completedByName: '',
           updatedAt: serverTimestamp(),
         });
         await logAdministrativeEvent(advance.id, 'receipt_returned', {
@@ -1249,6 +1404,57 @@ export function ProjectAdministration({
     } catch (error: any) {
       console.error('Error reviewing advance action:', error);
       toast.error(error?.message || 'No se pudo completar la validación.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCompleteAdvance = async (advance: TravelAdvance) => {
+    if (!canCorrectAdvanceReceipt(advance)) {
+      toast.error('Solo el solicitante o el área administrativa pueden completar este anticipo.');
+      return;
+    }
+
+    const latestAdvance = advances.find((item) => item.id === advance.id) || advance;
+    const nextReceipts = latestAdvance.receipts || [];
+    if (nextReceipts.length === 0) {
+      toast.error('Carga al menos un soporte antes de completar el anticipo.');
+      return;
+    }
+    if (nextReceipts.some((receipt) => receipt.status === 'returned')) {
+      toast.error('Subsanar los soportes devueltos antes de completar.');
+      return;
+    }
+
+    const amountLegalized = nextReceipts.filter(isApprovedReceipt).reduce((sum, item) => sum + asNumber(item.amount), 0);
+    const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
+    const balance = amountApproved - amountLegalized;
+    const isClosed = amountApproved > 0 && amountLegalized >= amountApproved && nextReceipts.every(isApprovedReceipt);
+
+    setSubmitting(true);
+    try {
+      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
+        amountLegalized,
+        balance,
+        status: isClosed ? 'closed' : 'completed',
+        nextAction: isClosed ? 'closed' : 'validate_receipt',
+        pendingRole: isClosed ? null : 'administrative_validation',
+        inboxTargetUserId: null,
+        completedAt: serverTimestamp(),
+        completedBy: currentUser?.uid || null,
+        completedByName: getCurrentUserName(currentUser),
+        closedAt: isClosed ? serverTimestamp() : null,
+        updatedAt: serverTimestamp(),
+      });
+      await logAdministrativeEvent(latestAdvance.id, isClosed ? 'advance_closed_by_requester' : 'advance_completed_by_requester', {
+        amountApproved,
+        amountLegalized,
+        balance,
+      });
+      toast.success(isClosed ? 'Anticipo legalizado completamente.' : 'Anticipo marcado como completado para revisión administrativa.');
+    } catch (error: any) {
+      console.error('Error completing advance:', error);
+      toast.error(error?.message || 'No se pudo completar el anticipo.');
     } finally {
       setSubmitting(false);
     }
@@ -1349,10 +1555,27 @@ export function ProjectAdministration({
       toast.error('Este dominio requiere CUFE cuando se legaliza con factura electrónica.');
       return;
     }
+    const latestAdvance = advances.find((advance) => advance.id === selectedAdvance.id) || selectedAdvance;
+    const cufe = normalizeCufe(receiptForm.cufe);
+    const duplicateUsage = findDuplicateReceiptUsage(
+      {
+        documentType,
+        cufe,
+        invoiceNumber: receiptForm.invoiceNumber,
+        taxId: receiptForm.taxId,
+        businessName: receiptForm.businessName,
+        amount,
+        date: receiptForm.date,
+      },
+      latestAdvance.id
+    );
+    if (duplicateUsage) {
+      toast.error(`Este soporte ya fue usado en "${duplicateUsage.advanceTitle}" por ${duplicateUsage.requesterName}.`);
+      return;
+    }
 
     setSubmitting(true);
     try {
-      const latestAdvance = advances.find((advance) => advance.id === selectedAdvance.id) || selectedAdvance;
       const { fileUrl, storagePath } = await uploadReceiptDocument(
         latestAdvance,
         category,
@@ -1371,7 +1594,7 @@ export function ProjectAdministration({
         businessName: receiptForm.businessName.trim(),
         taxId: receiptForm.taxId.trim(),
         invoiceNumber: receiptForm.invoiceNumber.trim(),
-        cufe: receiptForm.cufe.trim(),
+        cufe,
         description: receiptForm.description.trim(),
         fileName: receiptFile?.name,
         fileSize: receiptFile?.size,
@@ -1385,8 +1608,13 @@ export function ProjectAdministration({
 
       await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', selectedAdvance.id), {
         receipts: [...(latestAdvance.receipts || []), receipt],
+        status: 'approved',
         nextAction: 'validate_receipt',
         pendingRole: 'administrative_validation',
+        inboxTargetUserId: null,
+        completedAt: null,
+        completedBy: null,
+        completedByName: '',
         updatedAt: serverTimestamp(),
       });
       await logAdministrativeEvent(selectedAdvance.id, 'receipt_submitted', {
@@ -1515,22 +1743,57 @@ export function ProjectAdministration({
       return;
     }
 
+    const latestAdvance = advances.find((advance) => advance.id === selectedAdvance.id) || selectedAdvance;
+    const batchIdentities = new Map<string, string>();
     for (const draft of readyDrafts) {
       const category = categoryOptions.find((item) => item.id === draft.categoryId);
       const amount = asNumber(draft.amount);
+      const documentType = getReceiptDocumentType(draft.documentType);
+      const cufe = normalizeCufe(draft.cufe);
       if (!category || amount <= 0 || !draft.businessName.trim()) {
         toast.error(`Revisa categoría, valor y proveedor en ${draft.fileName}.`);
         return;
       }
-      if (draft.documentType === 'invoice' && category.requiresCufe && !draft.cufe.trim()) {
+      if (documentType === 'invoice' && category.requiresCufe && !cufe) {
         toast.error(`${draft.fileName} requiere CUFE para el dominio ${category.name} cuando es factura electrónica.`);
+        return;
+      }
+
+      const identity = getReceiptIdentity({
+        documentType,
+        cufe,
+        invoiceNumber: draft.invoiceNumber,
+        taxId: draft.taxId,
+        businessName: draft.businessName,
+        amount,
+        date: draft.date || todayInputValue(),
+      });
+      if (identity && batchIdentities.has(identity)) {
+        toast.error(`${draft.fileName} repite el mismo soporte de ${batchIdentities.get(identity)} dentro del lote.`);
+        return;
+      }
+      if (identity) batchIdentities.set(identity, draft.fileName);
+
+      const duplicateUsage = findDuplicateReceiptUsage(
+        {
+          documentType,
+          cufe,
+          invoiceNumber: draft.invoiceNumber,
+          taxId: draft.taxId,
+          businessName: draft.businessName,
+          amount,
+          date: draft.date || todayInputValue(),
+        },
+        latestAdvance.id
+      );
+      if (duplicateUsage) {
+        toast.error(`${draft.fileName} ya fue usado en "${duplicateUsage.advanceTitle}" por ${duplicateUsage.requesterName}.`);
         return;
       }
     }
 
     setSubmitting(true);
     try {
-      const latestAdvance = advances.find((advance) => advance.id === selectedAdvance.id) || selectedAdvance;
       const createdReceipts: AdvanceReceipt[] = [];
 
       for (const draft of readyDrafts) {
@@ -1554,7 +1817,7 @@ export function ProjectAdministration({
           businessName: draft.businessName.trim(),
           taxId: draft.taxId.trim(),
           invoiceNumber: draft.invoiceNumber.trim(),
-          cufe: draft.cufe.trim(),
+          cufe: normalizeCufe(draft.cufe),
           description: draft.description.trim(),
           fileName: draft.fileName,
           fileSize: draft.fileSize,
@@ -1572,8 +1835,13 @@ export function ProjectAdministration({
 
       await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', selectedAdvance.id), {
         receipts: [...(latestAdvance.receipts || []), ...createdReceipts],
+        status: 'approved',
         nextAction: 'validate_receipt',
         pendingRole: 'administrative_validation',
+        inboxTargetUserId: null,
+        completedAt: null,
+        completedBy: null,
+        completedByName: '',
         updatedAt: serverTimestamp(),
       });
       await logAdministrativeEvent(selectedAdvance.id, 'receipts_ai_bulk_submitted', {
@@ -1773,7 +2041,9 @@ export function ProjectAdministration({
                     advance={advance}
                     canValidate={canValidate}
                     canManage={canManage}
+                    canCorrect={canCorrectAdvanceReceipt(advance)}
                     onOpenReceipt={() => setSelectedAdvance(advance)}
+                    onComplete={() => handleCompleteAdvance(advance)}
                     onApprove={() => setReviewAction({ type: 'approveAdvance', advance })}
                     onReturn={() => setReviewAction({ type: 'returnAdvance', advance })}
                     onReject={() => setReviewAction({ type: 'rejectAdvance', advance })}
@@ -1792,117 +2062,183 @@ export function ProjectAdministration({
               {receiptGroups.length === 0 ? (
                 <EmptyState title="Sin soportes cargados" body="Los comprobantes de campo aparecerán aquí cuando se legalice un anticipo." />
               ) : (
-                receiptGroups.map((group) => (
-                  <section key={group.advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                    <div className="border-b border-slate-200 bg-slate-50 p-4">
-                      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_repeat(4,minmax(120px,auto))] xl:items-center">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">Anticipo</span>
-                            <span className="text-xs font-black text-slate-400">{group.advance.id}</span>
-                          </div>
-                          <h4 className="mt-2 truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</h4>
-                          <p className="mt-1 text-xs font-bold text-slate-500">{group.advance.requesterName} · {group.advance.destination} · {group.receipts.length} soportes</p>
-                        </div>
-                        <ReceiptGroupMetric label="Aprobado" value={formatMoney(group.approved)} tone="slate" />
-                        <ReceiptGroupMetric label="Legalizado" value={formatMoney(group.legalized)} tone="emerald" />
-                        <ReceiptGroupMetric label="En revisión" value={formatMoney(group.pending)} tone="amber" />
-                        <ReceiptGroupMetric
-                          label={group.difference < 0 ? 'Dinero a reintegrar' : group.difference > 0 ? 'Falta legalizar' : 'Saldo'}
-                          value={formatMoney(Math.abs(group.difference))}
-                          tone={group.difference < 0 ? 'rose' : group.difference > 0 ? 'amber' : 'emerald'}
-                        />
-                      </div>
-                      <div className="mt-3 flex items-center gap-3">
-                        <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
-                          <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${group.progress}%` }} />
-                        </div>
-                        <span className="text-xs font-black text-slate-500">{group.progress}% legalizado</span>
-                        {group.returned > 0 && (
-                          <span className="rounded-md bg-rose-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-200">
-                            {formatMoney(group.returned)} devuelto
-                          </span>
-                        )}
-                      </div>
-                    </div>
+                receiptGroups.map((group) => {
+                  const isExpanded = expandedReceiptGroups[group.advance.id] ?? false;
+                  const advanceStatus = statusConfig[group.advance.status] || statusConfig.submitted;
+                  const hasReturned = group.returnedCount > 0;
+                  const hasDuplicates = group.duplicateCount > 0;
+                  const isCompleted = group.advance.status === 'completed' || group.advance.status === 'closed';
 
-                    <div className="divide-y divide-slate-100">
-                      {group.receipts.map((receipt) => {
-                        const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
-                        const statusMeta = getReceiptStatusMeta(receipt.status);
-                        const isReturned = receipt.status === 'returned';
-                        return (
-                          <div
-                            key={receipt.id}
-                            className={`grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center ${isReturned ? 'border-l-4 border-rose-500 bg-rose-50/80' : ''}`}
-                          >
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-sm font-black text-slate-950">{receipt.categoryName}</span>
-                                <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${documentMeta.className}`}>
-                                  {documentMeta.shortLabel}
+                  return (
+                    <section
+                      key={group.advance.id}
+                      className={`overflow-hidden rounded-xl border bg-white shadow-sm transition ${
+                        isCompleted
+                          ? 'border-emerald-200 ring-2 ring-emerald-50'
+                          : hasReturned
+                            ? 'border-rose-200 ring-2 ring-rose-50'
+                            : hasDuplicates
+                              ? 'border-amber-200 ring-2 ring-amber-50'
+                              : 'border-slate-200'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedReceiptGroups((current) => ({
+                            ...current,
+                            [group.advance.id]: !isExpanded,
+                          }))
+                        }
+                        className="block w-full border-b border-slate-200 bg-slate-50 p-4 text-left transition hover:bg-slate-100"
+                      >
+                        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_repeat(4,minmax(120px,auto))] xl:items-center">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-white text-slate-500 ring-1 ring-slate-200">
+                                {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                              </span>
+                              <span className="rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">Anticipo</span>
+                              <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${advanceStatus.className}`}>
+                                {advanceStatus.label}
+                              </span>
+                              <span className="text-xs font-black text-slate-400">{group.advance.id}</span>
+                              {group.pendingCount > 0 && (
+                                <span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-amber-700 ring-1 ring-amber-100">
+                                  {group.pendingCount} por revisar
                                 </span>
-                                <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${statusMeta.className}`}>
-                                  {statusMeta.label}
+                              )}
+                              {hasReturned && (
+                                <span className="rounded-md bg-rose-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-200">
+                                  {group.returnedCount} devuelto{group.returnedCount === 1 ? '' : 's'}
                                 </span>
-                                <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-black text-slate-700">{formatMoney(receipt.amount)}</span>
-                                {receipt.dianVerificationStatus === 'confirmed' && (
-                                  <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-700 ring-1 ring-emerald-200">
-                                    <ShieldCheck size={12} /> CUFE confirmado
-                                  </span>
-                                )}
-                              </div>
-                              <p className="mt-1 text-sm font-semibold text-slate-600">{receipt.businessName || 'Sin razón social'} · {formatDate(receipt.date)}</p>
-                              <p className="mt-1 break-words text-xs font-semibold text-slate-400">
-                                {receipt.invoiceNumber ? `${documentMeta.numberLabel} ${receipt.invoiceNumber}` : documentMeta.label}
-                                {receipt.cufe ? ` · CUFE ${receipt.cufe}` : ''}
-                                {receipt.revisionCount ? ` · ${receipt.revisionCount} subsanación${receipt.revisionCount === 1 ? '' : 'es'}` : ''}
-                              </p>
-                              {isReturned && receipt.reviewComment && (
-                                <div className="mt-3 rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-700">
-                                  <span className="font-black">Corrección solicitada:</span> {receipt.reviewComment}
+                              )}
+                              {hasDuplicates && (
+                                <span className="rounded-md bg-red-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-red-700 ring-1 ring-red-200">
+                                  {group.duplicateCount} duplicado{group.duplicateCount === 1 ? '' : 's'}
+                                </span>
+                              )}
+                            </div>
+                            <h4 className="mt-2 truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</h4>
+                            <p className="mt-1 text-xs font-bold text-slate-500">
+                              {group.advance.requesterName} · {group.advance.destination} · {group.receipts.length} soportes
+                            </p>
+                          </div>
+                          <ReceiptGroupMetric label="Aprobado" value={formatMoney(group.approved)} tone="slate" />
+                          <ReceiptGroupMetric label="Legalizado" value={formatMoney(group.legalized)} tone="emerald" />
+                          <ReceiptGroupMetric label="En revisión" value={formatMoney(group.pending)} tone="amber" />
+                          <ReceiptGroupMetric
+                            label={group.difference < 0 ? 'Dinero a reintegrar' : group.difference > 0 ? 'Falta legalizar' : 'Saldo'}
+                            value={formatMoney(Math.abs(group.difference))}
+                            tone={group.difference < 0 ? 'rose' : group.difference > 0 ? 'amber' : 'emerald'}
+                          />
+                        </div>
+                        <div className="mt-3 flex items-center gap-3">
+                          <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
+                            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${group.progress}%` }} />
+                          </div>
+                          <span className="text-xs font-black text-slate-500">{group.progress}% legalizado</span>
+                          {group.returned > 0 && (
+                            <span className="rounded-md bg-rose-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-200">
+                              {formatMoney(group.returned)} devuelto
+                            </span>
+                          )}
+                        </div>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="divide-y divide-slate-100">
+                          {group.receipts.map((receipt) => {
+                            const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
+                            const statusMeta = getReceiptStatusMeta(receipt.status);
+                            const isReturned = receipt.status === 'returned';
+                            const duplicateUsage = findDuplicateReceiptUsage(receipt, group.advance.id);
+                            return (
+                              <div
+                                key={receipt.id}
+                                className={`grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center ${
+                                  isReturned ? 'border-l-4 border-rose-500 bg-rose-50/80' : duplicateUsage ? 'border-l-4 border-red-500 bg-red-50/70' : ''
+                                }`}
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-sm font-black text-slate-950">{receipt.categoryName}</span>
+                                    <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${documentMeta.className}`}>
+                                      {documentMeta.shortLabel}
+                                    </span>
+                                    <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${statusMeta.className}`}>
+                                      {statusMeta.label}
+                                    </span>
+                                    <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-black text-slate-700">{formatMoney(receipt.amount)}</span>
+                                    {duplicateUsage && (
+                                      <span className="rounded-md bg-red-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-red-700 ring-1 ring-red-200">
+                                        Factura repetida
+                                      </span>
+                                    )}
+                                    {receipt.dianVerificationStatus === 'confirmed' && (
+                                      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-700 ring-1 ring-emerald-200">
+                                        <ShieldCheck size={12} /> CUFE confirmado
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="mt-1 text-sm font-semibold text-slate-600">{receipt.businessName || 'Sin razón social'} · {formatDate(receipt.date)}</p>
+                                  <p className="mt-1 break-words text-xs font-semibold text-slate-400">
+                                    {receipt.invoiceNumber ? `${documentMeta.numberLabel} ${receipt.invoiceNumber}` : documentMeta.label}
+                                    {receipt.cufe ? ` · CUFE ${receipt.cufe}` : ''}
+                                    {receipt.revisionCount ? ` · ${receipt.revisionCount} subsanación${receipt.revisionCount === 1 ? '' : 'es'}` : ''}
+                                  </p>
+                                  {duplicateUsage && (
+                                    <div className="mt-3 rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-700">
+                                      Este soporte coincide con &quot;{duplicateUsage.advanceTitle}&quot; de {duplicateUsage.requesterName}.
+                                    </div>
+                                  )}
+                                  {isReturned && receipt.reviewComment && (
+                                    <div className="mt-3 rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-700">
+                                      <span className="font-black">Corrección solicitada:</span> {receipt.reviewComment}
+                                    </div>
+                                  )}
+                                  {receipt.status === 'approved_modified' && (receipt.approvalChanges || []).length > 0 && (
+                                    <p className="mt-2 text-xs font-bold text-indigo-600">Aprobado con {(receipt.approvalChanges || []).length} ajuste(s) administrativo(s) registrados.</p>
+                                  )}
+                                  <div className="mt-3 flex flex-wrap gap-3">
+                                    {receipt.fileUrl && (
+                                      <a href={receipt.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-black text-indigo-600 hover:text-indigo-800">
+                                        <FileImage size={14} /> Ver soporte
+                                      </a>
+                                    )}
+                                    {receipt.dianDocumentUrl && (
+                                      <a href={receipt.dianDocumentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-black text-sky-700 hover:text-sky-900">
+                                        <ExternalLink size={14} /> Consultar en DIAN
+                                      </a>
+                                    )}
+                                  </div>
                                 </div>
-                              )}
-                              {receipt.status === 'approved_modified' && (receipt.approvalChanges || []).length > 0 && (
-                                <p className="mt-2 text-xs font-bold text-indigo-600">Aprobado con {(receipt.approvalChanges || []).length} ajuste(s) administrativo(s) registrados.</p>
-                              )}
-                              <div className="mt-3 flex flex-wrap gap-3">
-                                {receipt.fileUrl && (
-                                  <a href={receipt.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-black text-indigo-600 hover:text-indigo-800">
-                                    <FileImage size={14} /> Ver soporte
-                                  </a>
-                                )}
-                                {receipt.dianDocumentUrl && (
-                                  <a href={receipt.dianDocumentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-black text-sky-700 hover:text-sky-900">
-                                    <ExternalLink size={14} /> Consultar en DIAN
-                                  </a>
-                                )}
-                              </div>
-                            </div>
 
-                            <div className="flex flex-wrap justify-end gap-2">
-                              {canValidate && receipt.status === 'submitted' && (
-                                <>
-                                  <Button type="button" size="sm" onClick={() => openReceiptEditor('review', group.advance, receipt)} className="bg-emerald-600 text-white hover:bg-emerald-700">
-                                    <PencilLine size={14} className="mr-1" /> Revisar y aprobar
-                                  </Button>
-                                  <Button type="button" size="sm" variant="outline" onClick={() => setReviewAction({ type: 'returnReceipt', advance: group.advance, receipt })} className="border-rose-200 text-rose-700 hover:bg-rose-50">
-                                    Devolver
-                                  </Button>
-                                </>
-                              )}
-                              {isReturned && canCorrectAdvanceReceipt(group.advance) && (
-                                <Button type="button" size="sm" onClick={() => openReceiptEditor('correction', group.advance, receipt)} className="bg-rose-600 text-white hover:bg-rose-700">
-                                  <RotateCcw size={14} className="mr-1" /> Subsanar y reenviar
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </section>
-                ))
+                                <div className="flex flex-wrap justify-end gap-2">
+                                  {canValidate && receipt.status === 'submitted' && (
+                                    <>
+                                      <Button type="button" size="sm" onClick={() => openReceiptEditor('review', group.advance, receipt)} className="bg-emerald-600 text-white hover:bg-emerald-700">
+                                        <PencilLine size={14} className="mr-1" /> Revisar y aprobar
+                                      </Button>
+                                      <Button type="button" size="sm" variant="outline" onClick={() => setReviewAction({ type: 'returnReceipt', advance: group.advance, receipt })} className="border-rose-200 text-rose-700 hover:bg-rose-50">
+                                        Devolver
+                                      </Button>
+                                    </>
+                                  )}
+                                  {isReturned && canCorrectAdvanceReceipt(group.advance) && (
+                                    <Button type="button" size="sm" onClick={() => openReceiptEditor('correction', group.advance, receipt)} className="bg-rose-600 text-white hover:bg-rose-700">
+                                      <RotateCcw size={14} className="mr-1" /> Subsanar y reenviar
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                  );
+                })
               )}
             </div>
           )}
@@ -2844,7 +3180,9 @@ function AdvanceCard({
   advance,
   canValidate,
   canManage,
+  canCorrect,
   onOpenReceipt,
+  onComplete,
   onApprove,
   onReturn,
   onReject,
@@ -2852,7 +3190,9 @@ function AdvanceCard({
   advance: TravelAdvance;
   canValidate: boolean;
   canManage: boolean;
+  canCorrect: boolean;
   onOpenReceipt: () => void;
+  onComplete: () => void;
   onApprove: () => void;
   onReturn: () => void;
   onReject: () => void;
@@ -2930,6 +3270,12 @@ function AdvanceCard({
             <Button type="button" size="sm" onClick={onOpenReceipt} className="bg-emerald-600 text-white hover:bg-emerald-700">
               <ReceiptText size={15} className="mr-2" />
               Legalizar
+            </Button>
+          )}
+          {canCorrect && advance.status === 'approved' && (advance.receipts || []).length > 0 && (
+            <Button type="button" size="sm" variant="outline" onClick={onComplete} className="border-emerald-200 text-emerald-700 hover:bg-emerald-50">
+              <CheckCircle2 size={15} className="mr-2" />
+              Marcar completado
             </Button>
           )}
           {canValidate && advance.status === 'submitted' && (
