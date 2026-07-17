@@ -11,11 +11,14 @@ import {
   FileImage,
   FileText,
   FolderKanban,
+  ExternalLink,
   Loader2,
   MapPin,
+  PencilLine,
   Plus,
   ReceiptText,
   RefreshCw,
+  RotateCcw,
   Send,
   Settings2,
   ShieldCheck,
@@ -61,6 +64,24 @@ type AdvanceItem = {
 
 type ReceiptDocumentType = 'invoice' | 'cash_receipt';
 
+type ReceiptStatus = 'submitted' | 'approved' | 'approved_modified' | 'returned' | 'rejected';
+
+type ReceiptFieldChange = {
+  field: string;
+  label: string;
+  previousValue: string | number | null;
+  nextValue: string | number | null;
+};
+
+type ReceiptRevision = {
+  type: 'returned' | 'resubmitted' | 'approved' | 'approved_modified';
+  actorId?: string | null;
+  actorName?: string;
+  at: string;
+  comment?: string;
+  changes?: ReceiptFieldChange[];
+};
+
 type AdvanceReceipt = {
   id: string;
   documentType?: ReceiptDocumentType;
@@ -77,13 +98,27 @@ type AdvanceReceipt = {
   fileSize?: number;
   fileUrl?: string;
   storagePath?: string;
-  status: 'submitted' | 'approved' | 'returned' | 'rejected';
+  status: ReceiptStatus;
   createdAt: string;
-  createdBy?: string;
+  createdBy?: string | null;
   createdByName?: string;
   reviewedAt?: string;
-  reviewedBy?: string;
+  reviewedBy?: string | null;
+  reviewedByName?: string;
   reviewComment?: string;
+  revisionCount?: number;
+  revisions?: ReceiptRevision[];
+  approvalChanges?: ReceiptFieldChange[];
+  correctionNote?: string;
+  resubmittedAt?: string;
+  resubmittedBy?: string | null;
+  resubmittedByName?: string;
+  dianVerificationStatus?: 'pending' | 'confirmed' | 'failed' | 'not_applicable';
+  dianLookupOpenedAt?: string;
+  dianVerifiedAt?: string;
+  dianVerifiedBy?: string | null;
+  dianVerifiedByName?: string;
+  dianDocumentUrl?: string;
   billingPaymentId?: string;
   aiExtracted?: boolean;
   aiConfidence?: number;
@@ -156,9 +191,33 @@ type ReviewAction =
   | { type: 'approveAdvance'; advance: TravelAdvance }
   | { type: 'returnAdvance'; advance: TravelAdvance }
   | { type: 'rejectAdvance'; advance: TravelAdvance }
-  | { type: 'approveReceipt'; advance: TravelAdvance; receipt: AdvanceReceipt }
   | { type: 'returnReceipt'; advance: TravelAdvance; receipt: AdvanceReceipt }
   | null;
+
+type ReceiptEditorMode = 'review' | 'correction';
+
+type ReceiptEditorState = {
+  mode: ReceiptEditorMode;
+  advance: TravelAdvance;
+  receipt: AdvanceReceipt;
+};
+
+type ReceiptEditorForm = {
+  documentType: ReceiptDocumentType;
+  categoryId: string;
+  amount: string;
+  date: string;
+  businessName: string;
+  taxId: string;
+  invoiceNumber: string;
+  cufe: string;
+  description: string;
+  correctionNote: string;
+  dianVerificationStatus: 'pending' | 'confirmed' | 'failed' | 'not_applicable';
+  dianLookupOpenedAt: string;
+  dianVerifiedAt: string;
+  dianDocumentUrl: string;
+};
 
 type ProjectAdministrationProps = {
   projectId: string;
@@ -271,7 +330,8 @@ const statusConfig: Record<TravelAdvance['status'], { label: string; className: 
 const receiptStatusConfig: Record<AdvanceReceipt['status'], { label: string; className: string }> = {
   submitted: { label: 'Por revisar', className: 'bg-amber-50 text-amber-700 ring-amber-100' },
   approved: { label: 'Aceptado', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
-  returned: { label: 'Devuelto', className: 'bg-orange-50 text-orange-700 ring-orange-100' },
+  approved_modified: { label: 'Aprobado con modificación', className: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
+  returned: { label: 'Devuelto', className: 'bg-rose-50 text-rose-700 ring-rose-100' },
   rejected: { label: 'Rechazado', className: 'bg-rose-50 text-rose-700 ring-rose-100' },
 };
 
@@ -303,6 +363,52 @@ const getReceiptDocumentType = (value: any): ReceiptDocumentType =>
 
 const getReceiptDocumentTypeMeta = (value: any) =>
   receiptDocumentTypeConfig[getReceiptDocumentType(value)];
+
+const APPROVED_RECEIPT_STATUSES: ReceiptStatus[] = ['approved', 'approved_modified'];
+
+const isApprovedReceipt = (receipt: Pick<AdvanceReceipt, 'status'>) =>
+  APPROVED_RECEIPT_STATUSES.includes(receipt.status);
+
+const normalizeCufe = (value: string) => value.replace(/\s+/g, '').trim();
+
+const buildDianDocumentUrl = (cufe: string) =>
+  `https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=${encodeURIComponent(normalizeCufe(cufe))}`;
+
+const RECEIPT_EDITABLE_FIELDS: Array<{ key: keyof ReceiptEditorForm; label: string }> = [
+  { key: 'documentType', label: 'Tipo de documento' },
+  { key: 'categoryId', label: 'Tipo de gasto' },
+  { key: 'amount', label: 'Valor' },
+  { key: 'date', label: 'Fecha' },
+  { key: 'businessName', label: 'Razón social' },
+  { key: 'taxId', label: 'NIT o documento' },
+  { key: 'invoiceNumber', label: 'Número del soporte' },
+  { key: 'cufe', label: 'CUFE' },
+  { key: 'description', label: 'Descripción' },
+];
+
+const buildReceiptEditorForm = (receipt: AdvanceReceipt): ReceiptEditorForm => {
+  const documentType = getReceiptDocumentType(receipt.documentType);
+  const cufe = receipt.cufe || '';
+  return {
+    documentType,
+    categoryId: receipt.categoryId || '',
+    amount: String(asNumber(receipt.amount) || ''),
+    date: receipt.date || todayInputValue(),
+    businessName: receipt.businessName || '',
+    taxId: receipt.taxId || '',
+    invoiceNumber: receipt.invoiceNumber || '',
+    cufe,
+    description: receipt.description || '',
+    correctionNote: '',
+    dianVerificationStatus:
+      documentType === 'cash_receipt'
+        ? 'not_applicable'
+        : receipt.dianVerificationStatus || (cufe ? 'pending' : 'not_applicable'),
+    dianLookupOpenedAt: receipt.dianLookupOpenedAt || '',
+    dianVerifiedAt: receipt.dianVerifiedAt || '',
+    dianDocumentUrl: receipt.dianDocumentUrl || (cufe ? buildDianDocumentUrl(cufe) : ''),
+  };
+};
 
 const buildEmptyAdvanceForm = (currentUser: any, teamMembers: any[]) => {
   const currentMember = teamMembers.find((member) => {
@@ -375,6 +481,9 @@ export function ProjectAdministration({
   });
   const [reviewAction, setReviewAction] = useState<ReviewAction>(null);
   const [reviewComment, setReviewComment] = useState('');
+  const [receiptEditor, setReceiptEditor] = useState<ReceiptEditorState | null>(null);
+  const [receiptEditorForm, setReceiptEditorForm] = useState<ReceiptEditorForm | null>(null);
+  const [receiptCorrectionFile, setReceiptCorrectionFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -493,6 +602,67 @@ export function ProjectAdministration({
     [advances]
   );
 
+  const receiptGroups = useMemo(
+    () =>
+      advances
+        .filter((advance) => (advance.receipts || []).length > 0)
+        .map((advance) => {
+          const advanceReceipts = advance.receipts || [];
+          const legalized = advanceReceipts
+            .filter(isApprovedReceipt)
+            .reduce((sum, receipt) => sum + asNumber(receipt.amount), 0);
+          const pending = advanceReceipts
+            .filter((receipt) => receipt.status === 'submitted')
+            .reduce((sum, receipt) => sum + asNumber(receipt.amount), 0);
+          const returned = advanceReceipts
+            .filter((receipt) => receipt.status === 'returned')
+            .reduce((sum, receipt) => sum + asNumber(receipt.amount), 0);
+          const approved = asNumber(advance.amountApproved || advance.amountRequested);
+          const difference = approved - legalized;
+
+          return {
+            advance,
+            receipts: advanceReceipts,
+            approved,
+            legalized,
+            pending,
+            returned,
+            difference,
+            progress: approved > 0 ? Math.min(100, Math.round((legalized / approved) * 100)) : 0,
+          };
+        }),
+    [advances]
+  );
+
+  const currentActorIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (currentUser?.uid) ids.add(String(currentUser.uid));
+    const currentEmail = String(currentUser?.email || '').toLowerCase();
+    teamMembers.forEach((member) => {
+      const memberEmail = String(member?.email || '').toLowerCase();
+      if (
+        member?.id === currentUser?.uid ||
+        member?.authUserId === currentUser?.uid ||
+        (currentEmail && memberEmail === currentEmail)
+      ) {
+        if (member?.id) ids.add(String(member.id));
+        if (member?.authUserId) ids.add(String(member.authUserId));
+      }
+    });
+    return ids;
+  }, [currentUser?.email, currentUser?.uid, teamMembers]);
+
+  const canCorrectAdvanceReceipt = useCallback(
+    (advance: TravelAdvance) => {
+      const emailMatches =
+        advance.requesterEmail &&
+        currentUser?.email &&
+        String(advance.requesterEmail).toLowerCase() === String(currentUser.email).toLowerCase();
+      return canValidate || currentActorIds.has(String(advance.requesterId)) || Boolean(emailMatches);
+    },
+    [canValidate, currentActorIds, currentUser?.email]
+  );
+
   const loadLocationOptions = useCallback(async () => {
     if (locationsLoaded || locationsLoading) return;
 
@@ -564,6 +734,86 @@ export function ProjectAdministration({
     });
   };
 
+  const openReceiptEditor = (mode: ReceiptEditorMode, advance: TravelAdvance, receipt: AdvanceReceipt) => {
+    setReceiptEditor({ mode, advance, receipt });
+    setReceiptEditorForm(buildReceiptEditorForm(receipt));
+    setReceiptCorrectionFile(null);
+  };
+
+  const updateReceiptEditorForm = (patch: Partial<ReceiptEditorForm>) => {
+    setReceiptEditorForm((current) => current ? { ...current, ...patch } : current);
+  };
+
+  const closeReceiptEditor = () => {
+    setReceiptEditor(null);
+    setReceiptEditorForm(null);
+    setReceiptCorrectionFile(null);
+  };
+
+  const getReceiptEditorChanges = (
+    receipt: AdvanceReceipt,
+    form: ReceiptEditorForm
+  ): ReceiptFieldChange[] => {
+    const original = buildReceiptEditorForm(receipt);
+    const changes: ReceiptFieldChange[] = [];
+
+    RECEIPT_EDITABLE_FIELDS.forEach(({ key, label }) => {
+      const normalizeValue = (value: any) => {
+        if (key === 'amount') return asNumber(value);
+        if (key === 'cufe') return normalizeCufe(String(value || ''));
+        return String(value || '').trim();
+      };
+      const previousValue = normalizeValue(original[key]);
+      const nextValue = normalizeValue(form[key]);
+      if (previousValue === nextValue) return;
+
+      if (key === 'categoryId') {
+        changes.push({
+          field: key,
+          label,
+          previousValue: categoryOptions.find((category) => category.id === previousValue)?.name || previousValue,
+          nextValue: categoryOptions.find((category) => category.id === nextValue)?.name || nextValue,
+        });
+        return;
+      }
+
+      changes.push({ field: key, label, previousValue, nextValue });
+    });
+
+    return changes;
+  };
+
+  const openDianLookup = () => {
+    if (!receiptEditorForm) return;
+    const cufe = normalizeCufe(receiptEditorForm.cufe);
+    if (!cufe) {
+      toast.error('Ingresa el CUFE antes de consultar la DIAN.');
+      return;
+    }
+    const dianDocumentUrl = buildDianDocumentUrl(cufe);
+    window.open(dianDocumentUrl, '_blank', 'noopener,noreferrer');
+    setReceiptEditorForm((current) => current ? {
+      ...current,
+      cufe,
+      dianVerificationStatus: 'pending',
+      dianLookupOpenedAt: new Date().toISOString(),
+      dianDocumentUrl,
+    } : current);
+  };
+
+  const confirmDianLookup = () => {
+    if (!receiptEditorForm?.dianLookupOpenedAt) {
+      toast.error('Primero consulta el CUFE en el portal oficial de la DIAN.');
+      return;
+    }
+    setReceiptEditorForm((current) => current ? {
+      ...current,
+      dianVerificationStatus: 'confirmed',
+      dianVerifiedAt: new Date().toISOString(),
+    } : current);
+    toast.success('Consulta CUFE confirmada y vinculada a la trazabilidad.');
+  };
+
   const handleCreateAdvance = async () => {
     if (!canManage) {
       toast.error('No tienes permisos para crear anticipos.');
@@ -628,10 +878,293 @@ export function ProjectAdministration({
     }
   };
 
+  const handleApproveReceipt = async () => {
+    if (!receiptEditor || !receiptEditorForm || receiptEditor.mode !== 'review') return;
+    if (!canValidate) {
+      toast.error('No tienes permisos para aprobar legalizaciones.');
+      return;
+    }
+
+    const latestAdvance = advances.find((advance) => advance.id === receiptEditor.advance.id) || receiptEditor.advance;
+    const latestReceipt = (latestAdvance.receipts || []).find((receipt) => receipt.id === receiptEditor.receipt.id) || receiptEditor.receipt;
+    const category = categoryOptions.find((item) => item.id === receiptEditorForm.categoryId);
+    const amount = asNumber(receiptEditorForm.amount);
+    const documentType = getReceiptDocumentType(receiptEditorForm.documentType);
+    const cufe = normalizeCufe(receiptEditorForm.cufe);
+
+    if (!category || amount <= 0 || !receiptEditorForm.businessName.trim() || !receiptEditorForm.date) {
+      toast.error('Completa tipo de gasto, valor, fecha y razón social.');
+      return;
+    }
+    if (documentType === 'invoice' && category.requiresCufe && !cufe) {
+      toast.error('Este tipo de gasto requiere CUFE para aprobar la factura.');
+      return;
+    }
+    if (documentType === 'invoice' && cufe && receiptEditorForm.dianVerificationStatus !== 'confirmed') {
+      toast.error('Consulta y confirma el CUFE en la DIAN antes de aprobar.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const changes = getReceiptEditorChanges(latestReceipt, receiptEditorForm);
+      const status: 'approved' | 'approved_modified' = changes.length > 0 ? 'approved_modified' : 'approved';
+      const now = new Date().toISOString();
+      const documentMeta = getReceiptDocumentTypeMeta(documentType);
+      const paymentData = {
+        projectId,
+        description: `Legalización anticipo: ${category.name}`,
+        vendor: receiptEditorForm.businessName.trim() || 'Proveedor sin nombre',
+        amount,
+        date: new Date(`${receiptEditorForm.date || todayInputValue()}T00:00:00`),
+        status: 'paid',
+        budgetLineId: null,
+        budgetPieceId: null,
+        notes: [
+          documentMeta.label,
+          receiptEditorForm.invoiceNumber.trim() ? `${documentMeta.numberLabel}: ${receiptEditorForm.invoiceNumber.trim()}` : null,
+          receiptEditorForm.description.trim(),
+          cufe ? `CUFE: ${cufe}` : null,
+          changes.length > 0 ? 'Aprobado con modificación administrativa' : null,
+        ].filter(Boolean).join(' · '),
+        source: 'advance_receipt',
+        advanceId: latestAdvance.id,
+        receiptId: latestReceipt.id,
+        documentType,
+        documentTypeLabel: documentMeta.label,
+        expenseCategoryId: category.id,
+        updatedAt: serverTimestamp(),
+      };
+
+      let billingPaymentId = latestReceipt.billingPaymentId || '';
+      if (billingPaymentId) {
+        await updateDoc(doc(db, 'projects', projectId, 'billingPayments', billingPaymentId), paymentData);
+      } else {
+        const paymentRef = await addDoc(collection(db, 'projects', projectId, 'billingPayments'), {
+          ...paymentData,
+          createdAt: serverTimestamp(),
+          createdBy: currentUser?.uid || null,
+        });
+        billingPaymentId = paymentRef.id;
+      }
+
+      const approvedReceipt: AdvanceReceipt = {
+        ...latestReceipt,
+        documentType,
+        categoryId: category.id,
+        categoryName: category.name,
+        amount,
+        date: receiptEditorForm.date,
+        businessName: receiptEditorForm.businessName.trim(),
+        taxId: receiptEditorForm.taxId.trim(),
+        invoiceNumber: receiptEditorForm.invoiceNumber.trim(),
+        cufe,
+        description: receiptEditorForm.description.trim(),
+        status,
+        reviewedAt: now,
+        reviewedBy: currentUser?.uid || null,
+        reviewedByName: getCurrentUserName(currentUser),
+        reviewComment: reviewComment.trim(),
+        approvalChanges: changes,
+        dianVerificationStatus: documentType === 'cash_receipt' ? 'not_applicable' : receiptEditorForm.dianVerificationStatus,
+        dianLookupOpenedAt: receiptEditorForm.dianLookupOpenedAt || '',
+        dianVerifiedAt: receiptEditorForm.dianVerifiedAt || '',
+        dianVerifiedBy: receiptEditorForm.dianVerifiedAt ? currentUser?.uid || null : null,
+        dianVerifiedByName: receiptEditorForm.dianVerifiedAt ? getCurrentUserName(currentUser) : '',
+        dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : '',
+        billingPaymentId,
+        revisions: [
+          ...(latestReceipt.revisions || []),
+          {
+            type: status,
+            actorId: currentUser?.uid || null,
+            actorName: getCurrentUserName(currentUser),
+            at: now,
+            comment: reviewComment.trim(),
+            changes,
+          },
+        ],
+      };
+
+      const nextReceipts = (latestAdvance.receipts || []).map((item) =>
+        item.id === latestReceipt.id ? approvedReceipt : item
+      );
+      const amountLegalized = nextReceipts
+        .filter(isApprovedReceipt)
+        .reduce((sum, item) => sum + asNumber(item.amount), 0);
+      const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
+      const difference = amountApproved - amountLegalized;
+      const isClosed = amountApproved > 0 && amountLegalized >= amountApproved;
+
+      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
+        receipts: nextReceipts,
+        amountLegalized,
+        balance: difference,
+        status: isClosed ? 'closed' : 'approved',
+        nextAction: isClosed ? 'closed' : 'justify_advance',
+        inboxTargetUserId: isClosed ? null : latestAdvance.requesterId,
+        closedAt: isClosed ? serverTimestamp() : null,
+        updatedAt: serverTimestamp(),
+      });
+      await logAdministrativeEvent(latestAdvance.id, status === 'approved_modified' ? 'receipt_approved_modified' : 'receipt_approved', {
+        receiptId: latestReceipt.id,
+        documentType,
+        amount,
+        billingPaymentId,
+        comment: reviewComment.trim(),
+        changes,
+        cufeVerified: receiptEditorForm.dianVerificationStatus === 'confirmed',
+        dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : null,
+      });
+
+      toast.success(status === 'approved_modified' ? 'Soporte aprobado con modificación y auditoría guardada.' : 'Soporte aprobado y costo real registrado.');
+      setReviewComment('');
+      closeReceiptEditor();
+    } catch (error: any) {
+      console.error('Error approving receipt:', error);
+      toast.error(error?.message || 'No se pudo aprobar el soporte.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleResubmitReceipt = async () => {
+    if (!receiptEditor || !receiptEditorForm || receiptEditor.mode !== 'correction') return;
+    const latestAdvance = advances.find((advance) => advance.id === receiptEditor.advance.id) || receiptEditor.advance;
+    const latestReceipt = (latestAdvance.receipts || []).find((receipt) => receipt.id === receiptEditor.receipt.id) || receiptEditor.receipt;
+    if (!canCorrectAdvanceReceipt(latestAdvance)) {
+      toast.error('Solo el solicitante o el área administrativa pueden subsanar este soporte.');
+      return;
+    }
+    if (!receiptEditorForm.correctionNote.trim()) {
+      toast.error('Describe qué corregiste antes de reenviar.');
+      return;
+    }
+
+    const category = categoryOptions.find((item) => item.id === receiptEditorForm.categoryId);
+    const amount = asNumber(receiptEditorForm.amount);
+    const documentType = getReceiptDocumentType(receiptEditorForm.documentType);
+    const cufe = normalizeCufe(receiptEditorForm.cufe);
+    if (!category || amount <= 0 || !receiptEditorForm.businessName.trim() || !receiptEditorForm.date) {
+      toast.error('Completa tipo de gasto, valor, fecha y razón social.');
+      return;
+    }
+    if (documentType === 'invoice' && category.requiresCufe && !cufe) {
+      toast.error('Este tipo de gasto requiere CUFE para reenviar la factura.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const changes = getReceiptEditorChanges(latestReceipt, receiptEditorForm);
+      let replacementFile = {
+        fileName: latestReceipt.fileName,
+        fileSize: latestReceipt.fileSize,
+        fileUrl: latestReceipt.fileUrl,
+        storagePath: latestReceipt.storagePath,
+      };
+      if (receiptCorrectionFile) {
+        const uploaded = await uploadReceiptDocument(
+          latestAdvance,
+          category,
+          receiptCorrectionFile,
+          receiptEditorForm.businessName || category.name,
+          documentType
+        );
+        replacementFile = {
+          fileName: receiptCorrectionFile.name,
+          fileSize: receiptCorrectionFile.size,
+          fileUrl: uploaded.fileUrl,
+          storagePath: uploaded.storagePath,
+        };
+        changes.push({
+          field: 'file',
+          label: 'Archivo de soporte',
+          previousValue: latestReceipt.fileName || null,
+          nextValue: receiptCorrectionFile.name,
+        });
+      }
+
+      const now = new Date().toISOString();
+      const nextReceipt: AdvanceReceipt = {
+        ...latestReceipt,
+        ...replacementFile,
+        documentType,
+        categoryId: category.id,
+        categoryName: category.name,
+        amount,
+        date: receiptEditorForm.date,
+        businessName: receiptEditorForm.businessName.trim(),
+        taxId: receiptEditorForm.taxId.trim(),
+        invoiceNumber: receiptEditorForm.invoiceNumber.trim(),
+        cufe,
+        description: receiptEditorForm.description.trim(),
+        status: 'submitted',
+        correctionNote: receiptEditorForm.correctionNote.trim(),
+        resubmittedAt: now,
+        resubmittedBy: currentUser?.uid || null,
+        resubmittedByName: getCurrentUserName(currentUser),
+        revisionCount: asNumber(latestReceipt.revisionCount) + 1,
+        dianVerificationStatus: documentType === 'cash_receipt' ? 'not_applicable' : cufe ? 'pending' : 'not_applicable',
+        dianLookupOpenedAt: '',
+        dianVerifiedAt: '',
+        dianVerifiedBy: null,
+        dianVerifiedByName: '',
+        dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : '',
+        revisions: [
+          ...(latestReceipt.revisions || []),
+          {
+            type: 'resubmitted',
+            actorId: currentUser?.uid || null,
+            actorName: getCurrentUserName(currentUser),
+            at: now,
+            comment: receiptEditorForm.correctionNote.trim(),
+            changes,
+          },
+        ],
+      };
+      const nextReceipts = (latestAdvance.receipts || []).map((item) =>
+        item.id === latestReceipt.id ? nextReceipt : item
+      );
+      const amountLegalized = nextReceipts
+        .filter(isApprovedReceipt)
+        .reduce((sum, item) => sum + asNumber(item.amount), 0);
+      const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
+
+      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
+        receipts: nextReceipts,
+        amountLegalized,
+        balance: amountApproved - amountLegalized,
+        status: amountApproved > 0 ? 'approved' : latestAdvance.status,
+        nextAction: 'validate_receipt',
+        pendingRole: 'administrative_validation',
+        inboxTargetUserId: null,
+        updatedAt: serverTimestamp(),
+      });
+      await logAdministrativeEvent(latestAdvance.id, 'receipt_resubmitted', {
+        receiptId: latestReceipt.id,
+        amount,
+        comment: receiptEditorForm.correctionNote.trim(),
+        changes,
+      });
+      toast.success('Soporte subsanado y reenviado al área administrativa.');
+      closeReceiptEditor();
+    } catch (error: any) {
+      console.error('Error resubmitting receipt:', error);
+      toast.error(error?.message || 'No se pudo reenviar el soporte.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const applyReviewAction = async () => {
     if (!reviewAction) return;
     if (!canValidate) {
       toast.error('No tienes permisos para validar este proceso.');
+      return;
+    }
+    if (reviewAction.type === 'returnReceipt' && !reviewComment.trim()) {
+      toast.error('Explica qué debe corregirse antes de devolver el soporte.');
       return;
     }
 
@@ -671,84 +1204,29 @@ export function ProjectAdministration({
         toast.success(nextStatus === 'returned' ? 'Anticipo devuelto para corrección.' : 'Anticipo rechazado.');
       }
 
-      if (reviewAction.type === 'approveReceipt') {
-        const advance = reviewAction.advance;
-        const receipt = reviewAction.receipt;
-        const receiptDocumentType = getReceiptDocumentType(receipt.documentType);
-        const receiptDocumentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
-        const paymentRef = await addDoc(collection(db, 'projects', projectId, 'billingPayments'), {
-          projectId,
-          description: `Legalización anticipo: ${receipt.categoryName}`,
-          vendor: receipt.businessName || 'Proveedor sin nombre',
-          amount: asNumber(receipt.amount),
-          date: new Date(`${receipt.date || todayInputValue()}T00:00:00`),
-          status: 'paid',
-          budgetLineId: null,
-          budgetPieceId: null,
-          notes: [
-            receiptDocumentMeta.label,
-            receipt.invoiceNumber ? `${receiptDocumentMeta.numberLabel}: ${receipt.invoiceNumber}` : null,
-            receipt.description,
-            receipt.cufe ? `CUFE: ${receipt.cufe}` : null,
-          ].filter(Boolean).join(' · '),
-          source: 'advance_receipt',
-          advanceId: advance.id,
-          receiptId: receipt.id,
-          documentType: receiptDocumentType,
-          documentTypeLabel: receiptDocumentMeta.label,
-          expenseCategoryId: receipt.categoryId,
-          createdAt: serverTimestamp(),
-          createdBy: currentUser?.uid || null,
-        });
-
-        const nextReceipts = (advance.receipts || []).map((item) =>
-          item.id === receipt.id
-            ? {
-                ...item,
-                status: 'approved' as const,
-                reviewedAt: new Date().toISOString(),
-                reviewedBy: currentUser?.uid || null,
-                reviewComment: reviewComment.trim(),
-                billingPaymentId: paymentRef.id,
-              }
-            : item
-        );
-        const amountLegalized = nextReceipts
-          .filter((item) => item.status === 'approved')
-          .reduce((sum, item) => sum + asNumber(item.amount), 0);
-        const amountApproved = asNumber(advance.amountApproved);
-        const isClosed = amountApproved > 0 && amountLegalized >= amountApproved;
-
-        await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', advance.id), {
-          receipts: nextReceipts,
-          amountLegalized,
-          balance: Math.max(0, amountApproved - amountLegalized),
-          status: isClosed ? 'closed' : advance.status === 'returned' ? 'approved' : advance.status,
-          nextAction: isClosed ? 'closed' : 'justify_advance',
-          closedAt: isClosed ? serverTimestamp() : null,
-          updatedAt: serverTimestamp(),
-        });
-        await logAdministrativeEvent(advance.id, 'receipt_approved', {
-          receiptId: receipt.id,
-          documentType: receiptDocumentType,
-          amount: receipt.amount,
-          billingPaymentId: paymentRef.id,
-          comment: reviewComment.trim(),
-        });
-        toast.success('Soporte aprobado y costo real registrado.');
-      }
-
       if (reviewAction.type === 'returnReceipt') {
         const advance = reviewAction.advance;
         const receipt = reviewAction.receipt;
+        const now = new Date().toISOString();
         const nextReceipts = (advance.receipts || []).map((item) =>
           item.id === receipt.id
             ? {
                 ...item,
                 status: 'returned' as const,
-                reviewedAt: new Date().toISOString(),
+                reviewedAt: now,
                 reviewedBy: currentUser?.uid || null,
+                reviewedByName: getCurrentUserName(currentUser),
                 reviewComment: reviewComment.trim(),
+                revisions: [
+                  ...(item.revisions || []),
+                  {
+                    type: 'returned' as const,
+                    actorId: currentUser?.uid || null,
+                    actorName: getCurrentUserName(currentUser),
+                    at: now,
+                    comment: reviewComment.trim(),
+                  },
+                ],
               }
             : item
         );
@@ -1306,57 +1784,125 @@ export function ProjectAdministration({
           )}
 
           {view === 'receipts' && (
-            <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
-              <div className="border-b border-slate-100 p-4">
-                <h3 className="text-lg font-black text-slate-950">Legalizaciones y soportes</h3>
-                <p className="text-sm font-medium text-slate-500">Cada soporte conserva tipo de documento, foto, datos fiscales y trazabilidad de validación.</p>
+            <div className="space-y-4">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <h3 className="text-lg font-black text-slate-950">Legalizaciones agrupadas por anticipo</h3>
+                <p className="text-sm font-medium text-slate-500">Revisa el saldo de cada solicitud, sus soportes, devoluciones y subsanaciones en un solo lugar.</p>
               </div>
-              {receipts.length === 0 ? (
+              {receiptGroups.length === 0 ? (
                 <EmptyState title="Sin soportes cargados" body="Los comprobantes de campo aparecerán aquí cuando se legalice un anticipo." />
               ) : (
-                <div className="divide-y divide-slate-100">
-                  {receipts.map((receipt: any) => {
-                    const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
-                    return (
-                      <div key={`${receipt.advanceId}-${receipt.id}`} className="grid gap-3 p-4 lg:grid-cols-[1fr_auto] lg:items-center">
+                receiptGroups.map((group) => (
+                  <section key={group.advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                    <div className="border-b border-slate-200 bg-slate-50 p-4">
+                      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_repeat(4,minmax(120px,auto))] xl:items-center">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-black text-slate-950">{receipt.categoryName}</span>
-                            <span className={`rounded-md px-2 py-1 text-[11px] font-black ring-1 ${documentMeta.className}`}>
-                              {documentMeta.shortLabel}
-                            </span>
-                            <span className={`rounded-md px-2 py-1 text-[11px] font-black ring-1 ${getReceiptStatusMeta(receipt.status).className}`}>
-                              {getReceiptStatusMeta(receipt.status).label}
-                            </span>
-                            <span className="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-500">{formatMoney(receipt.amount)}</span>
+                            <span className="rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">Anticipo</span>
+                            <span className="text-xs font-black text-slate-400">{group.advance.id}</span>
                           </div>
-                          <p className="mt-1 text-sm font-semibold text-slate-600">{receipt.businessName || 'Sin razón social'} · {formatDate(receipt.date)}</p>
-                          <p className="mt-1 text-xs font-semibold text-slate-400">
-                            {receipt.advanceTitle} · {receipt.requesterName}
-                            {receipt.invoiceNumber ? ` · ${documentMeta.numberLabel} ${receipt.invoiceNumber}` : ''}
-                            {receipt.cufe ? ` · CUFE ${receipt.cufe}` : ''}
-                          </p>
-                          {receipt.fileUrl && (
-                            <a href={receipt.fileUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-black text-indigo-600 hover:text-indigo-800">
-                              <FileImage size={14} />
-                              Ver soporte
-                            </a>
-                          )}
+                          <h4 className="mt-2 truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</h4>
+                          <p className="mt-1 text-xs font-bold text-slate-500">{group.advance.requesterName} · {group.advance.destination} · {group.receipts.length} soportes</p>
                         </div>
-                        {canValidate && receipt.status === 'submitted' && (
-                          <div className="flex gap-2">
-                            <Button type="button" size="sm" onClick={() => setReviewAction({ type: 'approveReceipt', advance: receipt.advance, receipt })} className="bg-emerald-600 text-white hover:bg-emerald-700">
-                              Aprobar
-                            </Button>
-                            <Button type="button" size="sm" variant="outline" onClick={() => setReviewAction({ type: 'returnReceipt', advance: receipt.advance, receipt })} className="border-orange-200 text-orange-700 hover:bg-orange-50">
-                              Devolver
-                            </Button>
-                          </div>
+                        <ReceiptGroupMetric label="Aprobado" value={formatMoney(group.approved)} tone="slate" />
+                        <ReceiptGroupMetric label="Legalizado" value={formatMoney(group.legalized)} tone="emerald" />
+                        <ReceiptGroupMetric label="En revisión" value={formatMoney(group.pending)} tone="amber" />
+                        <ReceiptGroupMetric
+                          label={group.difference < 0 ? 'Dinero a reintegrar' : group.difference > 0 ? 'Falta legalizar' : 'Saldo'}
+                          value={formatMoney(Math.abs(group.difference))}
+                          tone={group.difference < 0 ? 'rose' : group.difference > 0 ? 'amber' : 'emerald'}
+                        />
+                      </div>
+                      <div className="mt-3 flex items-center gap-3">
+                        <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
+                          <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${group.progress}%` }} />
+                        </div>
+                        <span className="text-xs font-black text-slate-500">{group.progress}% legalizado</span>
+                        {group.returned > 0 && (
+                          <span className="rounded-md bg-rose-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-200">
+                            {formatMoney(group.returned)} devuelto
+                          </span>
                         )}
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
+
+                    <div className="divide-y divide-slate-100">
+                      {group.receipts.map((receipt) => {
+                        const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
+                        const statusMeta = getReceiptStatusMeta(receipt.status);
+                        const isReturned = receipt.status === 'returned';
+                        return (
+                          <div
+                            key={receipt.id}
+                            className={`grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center ${isReturned ? 'border-l-4 border-rose-500 bg-rose-50/80' : ''}`}
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-black text-slate-950">{receipt.categoryName}</span>
+                                <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${documentMeta.className}`}>
+                                  {documentMeta.shortLabel}
+                                </span>
+                                <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${statusMeta.className}`}>
+                                  {statusMeta.label}
+                                </span>
+                                <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-black text-slate-700">{formatMoney(receipt.amount)}</span>
+                                {receipt.dianVerificationStatus === 'confirmed' && (
+                                  <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-700 ring-1 ring-emerald-200">
+                                    <ShieldCheck size={12} /> CUFE confirmado
+                                  </span>
+                                )}
+                              </div>
+                              <p className="mt-1 text-sm font-semibold text-slate-600">{receipt.businessName || 'Sin razón social'} · {formatDate(receipt.date)}</p>
+                              <p className="mt-1 break-words text-xs font-semibold text-slate-400">
+                                {receipt.invoiceNumber ? `${documentMeta.numberLabel} ${receipt.invoiceNumber}` : documentMeta.label}
+                                {receipt.cufe ? ` · CUFE ${receipt.cufe}` : ''}
+                                {receipt.revisionCount ? ` · ${receipt.revisionCount} subsanación${receipt.revisionCount === 1 ? '' : 'es'}` : ''}
+                              </p>
+                              {isReturned && receipt.reviewComment && (
+                                <div className="mt-3 rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-700">
+                                  <span className="font-black">Corrección solicitada:</span> {receipt.reviewComment}
+                                </div>
+                              )}
+                              {receipt.status === 'approved_modified' && (receipt.approvalChanges || []).length > 0 && (
+                                <p className="mt-2 text-xs font-bold text-indigo-600">Aprobado con {(receipt.approvalChanges || []).length} ajuste(s) administrativo(s) registrados.</p>
+                              )}
+                              <div className="mt-3 flex flex-wrap gap-3">
+                                {receipt.fileUrl && (
+                                  <a href={receipt.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-black text-indigo-600 hover:text-indigo-800">
+                                    <FileImage size={14} /> Ver soporte
+                                  </a>
+                                )}
+                                {receipt.dianDocumentUrl && (
+                                  <a href={receipt.dianDocumentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-black text-sky-700 hover:text-sky-900">
+                                    <ExternalLink size={14} /> Consultar en DIAN
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap justify-end gap-2">
+                              {canValidate && receipt.status === 'submitted' && (
+                                <>
+                                  <Button type="button" size="sm" onClick={() => openReceiptEditor('review', group.advance, receipt)} className="bg-emerald-600 text-white hover:bg-emerald-700">
+                                    <PencilLine size={14} className="mr-1" /> Revisar y aprobar
+                                  </Button>
+                                  <Button type="button" size="sm" variant="outline" onClick={() => setReviewAction({ type: 'returnReceipt', advance: group.advance, receipt })} className="border-rose-200 text-rose-700 hover:bg-rose-50">
+                                    Devolver
+                                  </Button>
+                                </>
+                              )}
+                              {isReturned && canCorrectAdvanceReceipt(group.advance) && (
+                                <Button type="button" size="sm" onClick={() => openReceiptEditor('correction', group.advance, receipt)} className="bg-rose-600 text-white hover:bg-rose-700">
+                                  <RotateCcw size={14} className="mr-1" /> Subsanar y reenviar
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))
               )}
             </div>
           )}
@@ -1960,11 +2506,204 @@ export function ProjectAdministration({
         </ModalShell>
       )}
 
+      {receiptEditor && receiptEditorForm && (() => {
+        const isReview = receiptEditor.mode === 'review';
+        const documentMeta = getReceiptDocumentTypeMeta(receiptEditorForm.documentType);
+        const selectedCategory = categoryOptions.find((category) => category.id === receiptEditorForm.categoryId);
+        const changes = getReceiptEditorChanges(receiptEditor.receipt, receiptEditorForm);
+        const requiresCufe = receiptEditorForm.documentType === 'invoice' && Boolean(selectedCategory?.requiresCufe);
+        return (
+          <ModalShell
+            title={isReview ? 'Revisar y aprobar soporte' : 'Subsanar legalización devuelta'}
+            subtitle={`${receiptEditor.advance.purpose || receiptEditor.advance.destination} · ${receiptEditor.receipt.categoryName}`}
+            onClose={closeReceiptEditor}
+            wide
+          >
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+              <div className="space-y-5">
+                {receiptEditor.receipt.status === 'returned' && receiptEditor.receipt.reviewComment && (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-800">
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-rose-600">Motivo de devolución</p>
+                    <p className="mt-2">{receiptEditor.receipt.reviewComment}</p>
+                  </div>
+                )}
+
+                <div className="grid gap-4 rounded-xl border border-slate-200 bg-white p-4 md:grid-cols-2">
+                  <Field label="Tipo de documento">
+                    <select
+                      className={inputClass}
+                      value={receiptEditorForm.documentType}
+                      onChange={(event) => {
+                        const documentType = getReceiptDocumentType(event.target.value);
+                        updateReceiptEditorForm({
+                          documentType,
+                          dianVerificationStatus: documentType === 'cash_receipt' ? 'not_applicable' : receiptEditorForm.cufe ? 'pending' : 'not_applicable',
+                          dianLookupOpenedAt: '',
+                          dianVerifiedAt: '',
+                        });
+                      }}
+                    >
+                      <option value="invoice">Factura electrónica</option>
+                      <option value="cash_receipt">Recibo de caja</option>
+                    </select>
+                  </Field>
+                  <Field label="Tipo de gasto">
+                    <select className={inputClass} value={receiptEditorForm.categoryId} onChange={(event) => updateReceiptEditorForm({ categoryId: event.target.value })}>
+                      {categoryOptions.map((category) => (
+                        <option key={category.id} value={category.id}>{category.name}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Valor">
+                    <input className={inputClass} type="number" min="0" step="0.01" value={receiptEditorForm.amount} onChange={(event) => updateReceiptEditorForm({ amount: event.target.value })} />
+                  </Field>
+                  <Field label="Fecha del soporte">
+                    <input className={inputClass} type="date" value={receiptEditorForm.date} onChange={(event) => updateReceiptEditorForm({ date: event.target.value })} />
+                  </Field>
+                  <Field label="Razón social">
+                    <input className={inputClass} value={receiptEditorForm.businessName} onChange={(event) => updateReceiptEditorForm({ businessName: event.target.value })} />
+                  </Field>
+                  <Field label="NIT o documento">
+                    <input className={inputClass} value={receiptEditorForm.taxId} onChange={(event) => updateReceiptEditorForm({ taxId: event.target.value })} />
+                  </Field>
+                  <Field label={documentMeta.numberLabel}>
+                    <input className={inputClass} value={receiptEditorForm.invoiceNumber} onChange={(event) => updateReceiptEditorForm({ invoiceNumber: event.target.value })} />
+                  </Field>
+                  {receiptEditorForm.documentType === 'invoice' && (
+                    <Field label={requiresCufe ? 'CUFE obligatorio' : 'CUFE'}>
+                      <input
+                        className={inputClass}
+                        value={receiptEditorForm.cufe}
+                        onChange={(event) => {
+                          const cufe = event.target.value;
+                          updateReceiptEditorForm({
+                            cufe,
+                            dianVerificationStatus: cufe.trim() ? 'pending' : 'not_applicable',
+                            dianLookupOpenedAt: '',
+                            dianVerifiedAt: '',
+                            dianDocumentUrl: cufe.trim() ? buildDianDocumentUrl(cufe) : '',
+                          });
+                        }}
+                      />
+                    </Field>
+                  )}
+                  <div className="md:col-span-2">
+                    <Field label="Descripción">
+                      <textarea className={textareaClass} value={receiptEditorForm.description} onChange={(event) => updateReceiptEditorForm({ description: event.target.value })} />
+                    </Field>
+                  </div>
+                </div>
+
+                {receiptEditorForm.documentType === 'invoice' ? (
+                  <div className={`rounded-xl border p-4 ${receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'border-emerald-200 bg-emerald-50' : 'border-sky-200 bg-sky-50'}`}>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="flex items-center gap-2 text-sm font-black text-slate-950">
+                          <ShieldCheck size={17} className={receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'text-emerald-600' : 'text-sky-600'} />
+                          Verificación oficial de CUFE
+                        </p>
+                        <p className="mt-1 text-xs font-semibold text-slate-600">
+                          {receiptEditorForm.dianVerificationStatus === 'confirmed'
+                            ? 'Consulta confirmada y URL oficial vinculada a la legalización.'
+                            : 'Consulta el documento en el portal oficial y confirma el resultado para dejar trazabilidad.'}
+                        </p>
+                      </div>
+                      <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'bg-emerald-600 text-white' : 'bg-white text-sky-700 ring-1 ring-sky-200'}`}>
+                        {receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'CUFE confirmado' : 'Pendiente'}
+                      </span>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <Button type="button" size="sm" variant="outline" onClick={openDianLookup} className="border-sky-200 bg-white text-sky-700 hover:bg-sky-100">
+                        <ExternalLink size={14} className="mr-1" /> Consultar en DIAN
+                      </Button>
+                      <Button type="button" size="sm" onClick={confirmDianLookup} disabled={!receiptEditorForm.dianLookupOpenedAt} className="bg-emerald-600 text-white hover:bg-emerald-700">
+                        <CheckCircle2 size={14} className="mr-1" /> Confirmar consulta
+                      </Button>
+                      {receiptEditorForm.dianDocumentUrl && (
+                        <a href={receiptEditorForm.dianDocumentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md px-3 py-2 text-xs font-black text-slate-600 hover:bg-white">
+                          Abrir documento oficial <ExternalLink size={13} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-800">
+                    El recibo de caja no requiere verificación CUFE. Su archivo y datos quedan sujetos a revisión administrativa.
+                  </div>
+                )}
+
+                {isReview ? (
+                  <Field label="Comentario administrativo">
+                    <textarea className={textareaClass} value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} placeholder="Observaciones de la revisión o explicación de los ajustes realizados." />
+                  </Field>
+                ) : (
+                  <div className="space-y-4 rounded-xl border border-rose-200 bg-rose-50/60 p-4">
+                    <Field label="Detalle de la subsanación">
+                      <textarea className={textareaClass} value={receiptEditorForm.correctionNote} onChange={(event) => updateReceiptEditorForm({ correctionNote: event.target.value })} placeholder="Explica qué corregiste y cómo atiendes la devolución." />
+                    </Field>
+                    <Field label="Reemplazar archivo de soporte (opcional)">
+                      <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => setReceiptCorrectionFile(event.target.files?.[0] || null)} />
+                    </Field>
+                  </div>
+                )}
+              </div>
+
+              <aside className="space-y-4">
+                <div className="rounded-xl bg-slate-950 p-4 text-white">
+                  <p className="text-[10px] font-black uppercase tracking-[0.22em] text-indigo-300">Resumen del soporte</p>
+                  <p className="mt-3 text-lg font-black">{receiptEditor.receipt.categoryName}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-300">{receiptEditor.advance.requesterName}</p>
+                  <div className="mt-4 space-y-2">
+                    <SummaryLine label="Valor" value={formatMoney(asNumber(receiptEditorForm.amount))} strong />
+                    <SummaryLine label="Documento" value={documentMeta.shortLabel} />
+                    <SummaryLine label="Cambios" value={`${changes.length}`} />
+                    <SummaryLine label="Revisiones" value={`${asNumber(receiptEditor.receipt.revisionCount)}`} />
+                  </div>
+                </div>
+
+                {changes.length > 0 && (
+                  <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-indigo-700">Cambios que quedarán auditados</p>
+                    <div className="mt-3 space-y-2">
+                      {changes.map((change) => (
+                        <div key={change.field} className="rounded-lg bg-white p-3 ring-1 ring-indigo-100">
+                          <p className="text-xs font-black text-slate-900">{change.label}</p>
+                          <p className="mt-1 break-words text-[11px] font-semibold text-slate-500">{String(change.previousValue || 'Vacío')} → {String(change.nextValue || 'Vacío')}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {receiptEditor.receipt.fileUrl && (
+                  <a href={receiptEditor.receipt.fileUrl} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-indigo-700 shadow-sm hover:bg-indigo-50">
+                    <FileImage size={16} /> Ver soporte original
+                  </a>
+                )}
+              </aside>
+            </div>
+
+            <ModalFooter>
+              <Button type="button" variant="outline" onClick={closeReceiptEditor} disabled={submitting}>Cancelar</Button>
+              <Button
+                type="button"
+                onClick={isReview ? handleApproveReceipt : handleResubmitReceipt}
+                disabled={submitting}
+                className={isReview ? 'bg-emerald-600 font-bold text-white hover:bg-emerald-700' : 'bg-rose-600 font-bold text-white hover:bg-rose-700'}
+              >
+                {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
+                {isReview ? (changes.length > 0 ? 'Aprobar con modificación' : 'Aprobar soporte') : 'Reenviar subsanación'}
+              </Button>
+            </ModalFooter>
+          </ModalShell>
+        );
+      })()}
+
       {reviewAction && (
         <ModalShell
           title={
             reviewAction.type.includes('Receipt')
-              ? 'Validar soporte'
+              ? 'Devolver soporte'
               : reviewAction.type === 'approveAdvance'
                 ? 'Aprobar anticipo'
                 : reviewAction.type === 'rejectAdvance'
@@ -2019,6 +2758,30 @@ function Metric({ label, value, icon, tone }: { label: string; value: string; ic
         <span className={`rounded-lg p-2 ring-1 ${tones[tone]}`}>{icon}</span>
       </div>
       <p className="mt-4 text-2xl font-black tracking-tight text-white">{value}</p>
+    </div>
+  );
+}
+
+function ReceiptGroupMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: 'slate' | 'emerald' | 'amber' | 'rose';
+}) {
+  const tones = {
+    slate: 'border-slate-200 bg-white text-slate-950',
+    emerald: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+    amber: 'border-amber-200 bg-amber-50 text-amber-800',
+    rose: 'border-rose-200 bg-rose-50 text-rose-800',
+  };
+
+  return (
+    <div className={`min-w-0 rounded-lg border px-3 py-2 ${tones[tone]}`}>
+      <p className="truncate text-[9px] font-black uppercase tracking-[0.16em] opacity-70">{label}</p>
+      <p className="mt-1 truncate text-sm font-black" title={value}>{value}</p>
     </div>
   );
 }
