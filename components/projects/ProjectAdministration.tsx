@@ -29,6 +29,7 @@ import { addDoc, collection, doc, onSnapshot, orderBy, query, serverTimestamp, u
 import { db, storage } from '@/lib/backend';
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { buildDocumentStoragePath } from '@/lib/document-storage';
+import { COLOMBIA_DEPARTMENTS, getMunicipalitiesByDepartment } from '@/lib/colombia-municipalities';
 
 type ExpenseCategory = {
   id: string;
@@ -84,11 +85,15 @@ type TravelAdvance = {
   requesterName: string;
   requesterEmail?: string;
   destination: string;
+  department?: string;
+  municipality?: string;
   purpose: string;
   travelStart: string;
   travelEnd: string;
   taskId?: string;
   taskTitle?: string;
+  taskIds?: string[];
+  taskTitles?: string[];
   status: 'submitted' | 'approved' | 'returned' | 'rejected' | 'closed';
   items: AdvanceItem[];
   receipts?: AdvanceReceipt[];
@@ -218,6 +223,9 @@ const getMemberLabel = (member: any) =>
 const getCurrentUserName = (user: any) =>
   user?.displayName || user?.name || user?.email?.split('@')[0] || 'Usuario';
 
+const getTaskTitle = (task: any) =>
+  task?.title || task?.name || task?.displayName || task?.externalWorkflowId || task?.id || 'Tarea sin nombre';
+
 const statusConfig: Record<TravelAdvance['status'], { label: string; className: string }> = {
   submitted: { label: 'Por validar', className: 'bg-amber-50 text-amber-700 ring-amber-100' },
   approved: { label: 'Aprobado', className: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
@@ -248,10 +256,12 @@ const buildEmptyAdvanceForm = (currentUser: any, teamMembers: any[]) => {
   return {
     requesterId: currentMember?.id || currentUser?.uid || '',
     destination: '',
+    department: '',
+    municipality: '',
     purpose: '',
     travelStart: todayInputValue(),
     travelEnd: todayInputValue(),
-    taskId: '',
+    taskIds: [] as string[],
     items: [] as AdvanceItem[],
   };
 };
@@ -348,6 +358,14 @@ export function ProjectAdministration({
   }, [categories]);
 
   const selectedReceiptCategory = categoryOptions.find((category) => category.id === receiptForm.categoryId);
+  const municipalityOptions = useMemo(
+    () => getMunicipalitiesByDepartment(advanceForm.department),
+    [advanceForm.department]
+  );
+  const selectedAdvanceTasks = useMemo(
+    () => tasks.filter((task) => advanceForm.taskIds.includes(task.id)),
+    [advanceForm.taskIds, tasks]
+  );
 
   useEffect(() => {
     if (!advanceDraftItem && categoryOptions.length > 0) {
@@ -461,8 +479,9 @@ export function ProjectAdministration({
       toast.error('No tienes permisos para crear anticipos.');
       return;
     }
-    if (!advanceForm.requesterId || !advanceForm.destination.trim() || !advanceForm.purpose.trim()) {
-      toast.error('Completa solicitante, destino y justificación.');
+    const destination = [advanceForm.municipality, advanceForm.department].filter(Boolean).join(', ');
+    if (!advanceForm.requesterId || !destination || !advanceForm.purpose.trim()) {
+      toast.error('Completa solicitante, departamento, municipio y justificación.');
       return;
     }
     if (advanceForm.items.length === 0) {
@@ -471,7 +490,8 @@ export function ProjectAdministration({
     }
 
     const requester = teamMembers.find((member) => member.id === advanceForm.requesterId);
-    const selectedTask = tasks.find((task) => task.id === advanceForm.taskId);
+    const selectedTaskIds = Array.from(new Set(advanceForm.taskIds.filter(Boolean)));
+    const selectedTasks = tasks.filter((task) => selectedTaskIds.includes(task.id));
     const amountRequested = advanceForm.items.reduce((sum, item) => sum + asNumber(item.amount), 0);
 
     setSubmitting(true);
@@ -481,12 +501,16 @@ export function ProjectAdministration({
         requesterId: advanceForm.requesterId,
         requesterName: requester ? getMemberLabel(requester) : getCurrentUserName(currentUser),
         requesterEmail: requester?.email || currentUser?.email || '',
-        destination: advanceForm.destination.trim(),
+        destination,
+        department: advanceForm.department || null,
+        municipality: advanceForm.municipality || null,
         purpose: advanceForm.purpose.trim(),
         travelStart: advanceForm.travelStart,
         travelEnd: advanceForm.travelEnd,
-        taskId: selectedTask?.id || null,
-        taskTitle: selectedTask?.title || selectedTask?.name || null,
+        taskIds: selectedTaskIds,
+        taskTitles: selectedTasks.map((task) => getTaskTitle(task)),
+        taskId: selectedTasks[0]?.id || null,
+        taskTitle: selectedTasks[0] ? getTaskTitle(selectedTasks[0]) : null,
         status: 'submitted',
         items: advanceForm.items,
         receipts: [],
@@ -1144,18 +1168,89 @@ export function ProjectAdministration({
                     {!teamMembers.length && currentUser && <option value={currentUser.uid}>{getCurrentUserName(currentUser)}</option>}
                   </select>
                 </Field>
-                <Field label="Tarea relacionada">
-                  <select className={inputClass} value={advanceForm.taskId} onChange={(event) => setAdvanceForm((current) => ({ ...current, taskId: event.target.value }))}>
-                    <option value="">Sin tarea asociada</option>
-                    {tasks.map((task) => (
-                      <option key={task.id} value={task.id}>
-                        {task.title || task.name || task.id}
+                <Field label="Tareas relacionadas">
+                  <div className="space-y-2">
+                    <select
+                      className={inputClass}
+                      value=""
+                      onChange={(event) => {
+                        const taskId = event.target.value;
+                        if (!taskId) return;
+                        setAdvanceForm((current) => ({
+                          ...current,
+                          taskIds: current.taskIds.includes(taskId) ? current.taskIds : [...current.taskIds, taskId],
+                        }));
+                      }}
+                    >
+                      <option value="">Agregar tarea asociada...</option>
+                      {tasks.map((task) => (
+                        <option key={task.id} value={task.id} disabled={advanceForm.taskIds.includes(task.id)}>
+                          {getTaskTitle(task)}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="flex min-h-9 flex-wrap gap-2">
+                      {selectedAdvanceTasks.length === 0 ? (
+                        <span className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-bold text-slate-400 ring-1 ring-slate-200">
+                          Sin tareas asociadas
+                        </span>
+                      ) : (
+                        selectedAdvanceTasks.map((task) => (
+                          <span key={task.id} className="inline-flex max-w-full items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700 ring-1 ring-indigo-100">
+                            <span className="truncate">{getTaskTitle(task)}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setAdvanceForm((current) => ({
+                                  ...current,
+                                  taskIds: current.taskIds.filter((id) => id !== task.id),
+                                }))
+                              }
+                              className="rounded-md p-0.5 text-indigo-400 hover:bg-indigo-100 hover:text-indigo-700"
+                              aria-label={`Quitar ${getTaskTitle(task)}`}
+                            >
+                              <X size={13} />
+                            </button>
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </Field>
+                <Field label="Departamento">
+                  <select
+                    className={inputClass}
+                    value={advanceForm.department}
+                    onChange={(event) =>
+                      setAdvanceForm((current) => ({
+                        ...current,
+                        department: event.target.value,
+                        municipality: '',
+                      }))
+                    }
+                  >
+                    <option value="">Selecciona departamento</option>
+                    {COLOMBIA_DEPARTMENTS.map((department) => (
+                      <option key={department.department} value={department.department}>
+                        {department.department}
                       </option>
                     ))}
                   </select>
                 </Field>
-                <Field label="Destino / municipio">
-                  <input className={inputClass} value={advanceForm.destination} onChange={(event) => setAdvanceForm((current) => ({ ...current, destination: event.target.value }))} placeholder="Ej: Sahagún" />
+                <Field label="Municipio">
+                  <select
+                    className={inputClass}
+                    value={advanceForm.municipality}
+                    disabled={!advanceForm.department}
+                    onChange={(event) => setAdvanceForm((current) => ({ ...current, municipality: event.target.value }))}
+                  >
+                    <option value="">{advanceForm.department ? 'Selecciona municipio' : 'Primero elige departamento'}</option>
+                    {municipalityOptions.map((municipality) => (
+                      <option key={municipality} value={municipality}>
+                        {municipality}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Inicio">
@@ -1234,6 +1329,8 @@ export function ProjectAdministration({
             <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-4">
               <p className="text-[11px] font-black uppercase tracking-[0.28em] text-indigo-600">Resumen</p>
               <div className="mt-4 space-y-3">
+                <SummaryLine label="Destino" value={[advanceForm.municipality, advanceForm.department].filter(Boolean).join(', ') || 'Sin destino'} />
+                <SummaryLine label="Tareas asociadas" value={`${selectedAdvanceTasks.length}`} />
                 <SummaryLine label="Periodo" value={`${formatDate(advanceForm.travelStart)} - ${formatDate(advanceForm.travelEnd)}`} />
                 <SummaryLine label="Días calendario" value={`${inclusiveDays(advanceForm.travelStart, advanceForm.travelEnd)} días`} />
                 <SummaryLine label="Ítems" value={`${advanceForm.items.length}`} />
@@ -1458,6 +1555,12 @@ function AdvanceCard({
   onReject: () => void;
 }) {
   const status = statusConfig[advance.status] || statusConfig.submitted;
+  const linkedTaskTitles =
+    Array.isArray(advance.taskTitles) && advance.taskTitles.length > 0
+      ? advance.taskTitles
+      : advance.taskTitle
+        ? [advance.taskTitle]
+        : [];
   const progress =
     asNumber(advance.amountApproved) > 0
       ? Math.min(100, Math.round((asNumber(advance.amountLegalized) / asNumber(advance.amountApproved)) * 100))
@@ -1470,7 +1573,16 @@ function AdvanceCard({
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded-md px-2 py-1 text-[11px] font-black ring-1 ${status.className}`}>{status.label}</span>
             <span className="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-500">{advance.requesterName}</span>
-            {advance.taskTitle && <span className="rounded-md bg-indigo-50 px-2 py-1 text-[11px] font-black text-indigo-700">{advance.taskTitle}</span>}
+            {linkedTaskTitles.slice(0, 2).map((taskTitle) => (
+              <span key={taskTitle} className="max-w-[220px] truncate rounded-md bg-indigo-50 px-2 py-1 text-[11px] font-black text-indigo-700 ring-1 ring-indigo-100">
+                {taskTitle}
+              </span>
+            ))}
+            {linkedTaskTitles.length > 2 && (
+              <span className="rounded-md bg-indigo-100 px-2 py-1 text-[11px] font-black text-indigo-700 ring-1 ring-indigo-100">
+                +{linkedTaskTitles.length - 2} tareas
+              </span>
+            )}
           </div>
           <h3 className="mt-3 text-xl font-black tracking-tight text-slate-950">{advance.destination}</h3>
           <p className="mt-1 line-clamp-2 text-sm font-semibold leading-6 text-slate-600">{advance.purpose}</p>
