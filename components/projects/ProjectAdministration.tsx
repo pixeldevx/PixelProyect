@@ -21,6 +21,7 @@ import {
   ReceiptText,
   RefreshCw,
   RotateCcw,
+  Search,
   Send,
   Settings2,
   ShieldCheck,
@@ -151,6 +152,8 @@ type AiReceiptDraft = {
 
 type TravelAdvance = {
   id: string;
+  customId?: string | null;
+  customIdNormalized?: string | null;
   projectId: string;
   requesterId: string;
   requesterName: string;
@@ -476,6 +479,7 @@ const buildEmptyAdvanceForm = (currentUser: any, teamMembers: any[]) => {
   });
 
   return {
+    customId: '',
     requesterId: currentMember?.id || currentUser?.uid || '',
     destination: '',
     department: '',
@@ -507,6 +511,7 @@ export function ProjectAdministration({
   const [locationsLoaded, setLocationsLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'requests' | 'receipts' | 'payments' | 'settings'>('requests');
+  const [advanceSearch, setAdvanceSearch] = useState('');
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [advanceForm, setAdvanceForm] = useState(() => buildEmptyAdvanceForm(currentUser, teamMembers));
   const [advanceDraftItem, setAdvanceDraftItem] = useState<AdvanceItem | null>(null);
@@ -652,6 +657,38 @@ export function ProjectAdministration({
       realAdminPayments,
     };
   }, [advances, payments]);
+
+  const filteredAdvances = useMemo(() => {
+    const search = advanceSearch.trim().toLowerCase();
+    if (!search) return advances;
+
+    return advances.filter((advance) => {
+      const linkedTaskTitles =
+        Array.isArray(advance.taskTitles) && advance.taskTitles.length > 0
+          ? advance.taskTitles
+          : advance.taskTitle
+            ? [advance.taskTitle]
+            : [];
+      const haystack = [
+        advance.customId,
+        advance.id,
+        advance.requesterName,
+        advance.requesterEmail,
+        advance.destination,
+        advance.department,
+        advance.municipality,
+        advance.purpose,
+        advance.status,
+        ...linkedTaskTitles,
+        ...(advance.items || []).map((item) => item.categoryName),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+
+      return haystack.includes(search);
+    });
+  }, [advanceSearch, advances]);
 
   const receipts = useMemo(
     () =>
@@ -938,6 +975,15 @@ export function ProjectAdministration({
       return;
     }
 
+    const customId = advanceForm.customId.trim();
+    if (
+      customId &&
+      advances.some((advance) => String(advance.customId || '').trim().toLowerCase() === customId.toLowerCase())
+    ) {
+      toast.error('Ya existe un anticipo con ese ID en este proyecto.');
+      return;
+    }
+
     const requester = teamMembers.find((member) => member.id === advanceForm.requesterId);
     const selectedTaskIds = Array.from(new Set(advanceForm.taskIds.filter(Boolean)));
     const selectedTasks = tasks.filter((task) => selectedTaskIds.includes(task.id));
@@ -947,6 +993,8 @@ export function ProjectAdministration({
     try {
       const docRef = await addDoc(collection(db, 'projects', projectId, 'advanceRequests'), {
         projectId,
+        customId: customId || null,
+        customIdNormalized: customId ? customId.toLowerCase() : null,
         requesterId: advanceForm.requesterId,
         requesterName: requester ? getMemberLabel(requester) : getCurrentUserName(currentUser),
         requesterEmail: requester?.email || currentUser?.email || '',
@@ -2061,10 +2109,26 @@ export function ProjectAdministration({
         <>
           {view === 'requests' && (
             <div className="grid gap-4">
+              <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:flex-row md:items-center md:justify-between">
+                <div className="relative min-w-0 flex-1">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    className={`${inputClass} pl-10`}
+                    value={advanceSearch}
+                    onChange={(event) => setAdvanceSearch(event.target.value)}
+                    placeholder="Buscar por ID, solicitante, municipio, tarea o justificación..."
+                  />
+                </div>
+                <span className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-500 ring-1 ring-slate-200">
+                  {filteredAdvances.length} de {advances.length}
+                </span>
+              </div>
               {advances.length === 0 ? (
                 <EmptyState title="No hay anticipos registrados" body="Crea el primer anticipo de viaje para iniciar el control administrativo del proyecto." />
+              ) : filteredAdvances.length === 0 ? (
+                <EmptyState title="Sin anticipos encontrados" body="Ajusta la búsqueda o revisa el ID ingresado para consultar la solicitud." />
               ) : (
-                advances.map((advance) => (
+                filteredAdvances.map((advance) => (
                   <AdvanceCard
                     key={advance.id}
                     advance={advance}
@@ -2132,7 +2196,13 @@ export function ProjectAdministration({
                               <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${advanceStatus.className}`}>
                                 {advanceStatus.label}
                               </span>
-                              <span className="text-xs font-black text-slate-400">{group.advance.id}</span>
+                              {group.advance.customId ? (
+                                <span className="rounded-md bg-violet-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-violet-700 ring-1 ring-violet-100">
+                                  ID {group.advance.customId}
+                                </span>
+                              ) : (
+                                <span className="text-xs font-black text-slate-400">{group.advance.id}</span>
+                              )}
                               {group.pendingCount > 0 && (
                                 <span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-amber-700 ring-1 ring-amber-100">
                                   {group.pendingCount} por revisar
@@ -2398,6 +2468,15 @@ export function ProjectAdministration({
           <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
             <div className="space-y-4">
               <div className="grid gap-3 md:grid-cols-2">
+                <Field label="ID del anticipo (opcional)">
+                  <input
+                    className={inputClass}
+                    value={advanceForm.customId}
+                    maxLength={80}
+                    onChange={(event) => setAdvanceForm((current) => ({ ...current, customId: event.target.value }))}
+                    placeholder="Ej: ANT-VIAJE-001"
+                  />
+                </Field>
                 <Field label="Solicitante">
                   <select className={inputClass} value={advanceForm.requesterId} onChange={(event) => setAdvanceForm((current) => ({ ...current, requesterId: event.target.value }))}>
                     {teamMembers.map((member) => (
@@ -2582,6 +2661,7 @@ export function ProjectAdministration({
             <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-4">
               <p className="text-[11px] font-black uppercase tracking-[0.28em] text-indigo-600">Resumen</p>
               <div className="mt-4 space-y-3">
+                <SummaryLine label="ID del anticipo" value={advanceForm.customId.trim() || 'Sin ID personalizado'} />
                 <SummaryLine label="Destino" value={[advanceForm.municipality, advanceForm.department].filter(Boolean).join(', ') || 'Sin destino'} />
                 <SummaryLine label="Tareas asociadas" value={`${selectedAdvanceTasks.length}`} />
                 <SummaryLine label="Periodo" value={`${formatDate(advanceForm.travelStart)} - ${formatDate(advanceForm.travelEnd)}`} />
@@ -3271,6 +3351,11 @@ function AdvanceCard({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded-md px-2 py-1 text-[11px] font-black ring-1 ${status.className}`}>{status.label}</span>
+            {advance.customId && (
+              <span className="rounded-md bg-violet-50 px-2 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-violet-700 ring-1 ring-violet-100">
+                ID {advance.customId}
+              </span>
+            )}
             <span className="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-500">{advance.requesterName}</span>
             {linkedTaskTitles.slice(0, 2).map((taskTitle) => (
               <span key={taskTitle} className="max-w-[220px] truncate rounded-md bg-indigo-50 px-2 py-1 text-[11px] font-black text-indigo-700 ring-1 ring-indigo-100">
