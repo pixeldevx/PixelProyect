@@ -184,6 +184,18 @@ type TravelAdvance = {
   completedBy?: string | null;
   completedByName?: string;
   closedAt?: any;
+  administrativeEditedAt?: any;
+  administrativeEditedBy?: string | null;
+  administrativeEditedByName?: string;
+};
+
+type AdvanceEditForm = {
+  customId: string;
+  department: string;
+  municipality: string;
+  purpose: string;
+  travelStart: string;
+  travelEnd: string;
 };
 
 type BillingPayment = {
@@ -516,6 +528,15 @@ export function ProjectAdministration({
   const [advanceForm, setAdvanceForm] = useState(() => buildEmptyAdvanceForm(currentUser, teamMembers));
   const [advanceDraftItem, setAdvanceDraftItem] = useState<AdvanceItem | null>(null);
   const [selectedAdvance, setSelectedAdvance] = useState<TravelAdvance | null>(null);
+  const [editingAdvance, setEditingAdvance] = useState<TravelAdvance | null>(null);
+  const [advanceEditForm, setAdvanceEditForm] = useState<AdvanceEditForm>({
+    customId: '',
+    department: '',
+    municipality: '',
+    purpose: '',
+    travelStart: todayInputValue(),
+    travelEnd: todayInputValue(),
+  });
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptMode, setReceiptMode] = useState<'manual' | 'ai'>('manual');
   const [aiReceiptDrafts, setAiReceiptDrafts] = useState<AiReceiptDraft[]>([]);
@@ -606,6 +627,10 @@ export function ProjectAdministration({
   const municipalityOptions = useMemo(
     () => locationOptions.find((item) => item.department === advanceForm.department)?.municipalities || [],
     [advanceForm.department, locationOptions]
+  );
+  const editMunicipalityOptions = useMemo(
+    () => locationOptions.find((item) => item.department === advanceEditForm.department)?.municipalities || [],
+    [advanceEditForm.department, locationOptions]
   );
   const selectedAdvanceTasks = useMemo(
     () => tasks.filter((task) => advanceForm.taskIds.includes(task.id)),
@@ -835,6 +860,19 @@ export function ProjectAdministration({
     setIsAdvanceModalOpen(true);
   };
 
+  const openAdvanceEditor = (advance: TravelAdvance) => {
+    setEditingAdvance(advance);
+    setAdvanceEditForm({
+      customId: advance.customId || '',
+      department: advance.department || '',
+      municipality: advance.municipality || '',
+      purpose: advance.purpose || '',
+      travelStart: advance.travelStart || todayInputValue(),
+      travelEnd: advance.travelEnd || todayInputValue(),
+    });
+    void loadLocationOptions();
+  };
+
   const updateDraftItem = (updates: Partial<AdvanceItem>) => {
     setAdvanceDraftItem((current) => {
       if (!current) return current;
@@ -1030,6 +1068,72 @@ export function ProjectAdministration({
     } catch (error: any) {
       console.error('Error creating advance:', error);
       toast.error(error?.message || 'No se pudo crear el anticipo.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleUpdateAdvanceFromLegalizations = async () => {
+    if (!editingAdvance) return;
+    if (!canManage && !canValidate) {
+      toast.error('No tienes permisos para editar anticipos.');
+      return;
+    }
+
+    const customId = advanceEditForm.customId.trim();
+    if (
+      customId &&
+      advances.some(
+        (advance) =>
+          advance.id !== editingAdvance.id &&
+          String(advance.customId || '').trim().toLowerCase() === customId.toLowerCase()
+      )
+    ) {
+      toast.error('Ya existe otro anticipo con ese ID contable en este proyecto.');
+      return;
+    }
+    if (!advanceEditForm.department || !advanceEditForm.municipality || !advanceEditForm.purpose.trim()) {
+      toast.error('Completa departamento, municipio y justificación.');
+      return;
+    }
+    if (
+      advanceEditForm.travelStart &&
+      advanceEditForm.travelEnd &&
+      new Date(`${advanceEditForm.travelEnd}T00:00:00`) < new Date(`${advanceEditForm.travelStart}T00:00:00`)
+    ) {
+      toast.error('La fecha final no puede ser anterior a la fecha inicial.');
+      return;
+    }
+
+    const destination = [advanceEditForm.municipality, advanceEditForm.department].filter(Boolean).join(', ');
+    setSubmitting(true);
+    try {
+      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', editingAdvance.id), {
+        customId: customId || null,
+        customIdNormalized: customId ? customId.toLowerCase() : null,
+        destination,
+        department: advanceEditForm.department || null,
+        municipality: advanceEditForm.municipality || null,
+        purpose: advanceEditForm.purpose.trim(),
+        travelStart: advanceEditForm.travelStart,
+        travelEnd: advanceEditForm.travelEnd,
+        updatedAt: serverTimestamp(),
+        administrativeEditedAt: serverTimestamp(),
+        administrativeEditedBy: currentUser?.uid || null,
+        administrativeEditedByName: getCurrentUserName(currentUser),
+      });
+
+      await logAdministrativeEvent(editingAdvance.id, 'advance_administrative_updated', {
+        customId: customId || null,
+        destination,
+        travelStart: advanceEditForm.travelStart,
+        travelEnd: advanceEditForm.travelEnd,
+      });
+      toast.success('Anticipo actualizado desde legalizaciones.');
+      setEditingAdvance(null);
+    } catch (error: any) {
+      console.error('Error updating advance from legalizations:', error);
+      toast.error(error?.message || 'No se pudo actualizar el anticipo.');
     } finally {
       setSubmitting(false);
     }
@@ -2176,75 +2280,94 @@ export function ProjectAdministration({
                               : 'border-slate-200'
                       }`}
                     >
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setExpandedReceiptGroups((current) => ({
-                            ...current,
-                            [group.advance.id]: !isExpanded,
-                          }))
-                        }
-                        className="block w-full border-b border-slate-200 bg-slate-50 p-4 text-left transition hover:bg-slate-100"
-                      >
-                        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_repeat(4,minmax(120px,auto))] xl:items-center">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-white text-slate-500 ring-1 ring-slate-200">
-                                {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                              </span>
-                              <span className="rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">Anticipo</span>
-                              <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${advanceStatus.className}`}>
-                                {advanceStatus.label}
-                              </span>
-                              {group.advance.customId ? (
-                                <span className="rounded-md bg-violet-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-violet-700 ring-1 ring-violet-100">
-                                  ID {group.advance.customId}
+                      <div className="border-b border-slate-200 bg-slate-50 p-4 transition hover:bg-slate-100">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedReceiptGroups((current) => ({
+                              ...current,
+                              [group.advance.id]: !isExpanded,
+                            }))
+                          }
+                          className="block w-full text-left"
+                        >
+                          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_repeat(4,minmax(120px,auto))] xl:items-center">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-white text-slate-500 ring-1 ring-slate-200">
+                                  {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                                 </span>
-                              ) : (
-                                <span className="text-xs font-black text-slate-400">{group.advance.id}</span>
-                              )}
-                              {group.pendingCount > 0 && (
-                                <span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-amber-700 ring-1 ring-amber-100">
-                                  {group.pendingCount} por revisar
+                                <span className="rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">Anticipo</span>
+                                <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${advanceStatus.className}`}>
+                                  {advanceStatus.label}
                                 </span>
-                              )}
-                              {hasReturned && (
-                                <span className="rounded-md bg-rose-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-200">
-                                  {group.returnedCount} devuelto{group.returnedCount === 1 ? '' : 's'}
-                                </span>
-                              )}
-                              {hasDuplicates && (
-                                <span className="rounded-md bg-red-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-red-700 ring-1 ring-red-200">
-                                  {group.duplicateCount} duplicado{group.duplicateCount === 1 ? '' : 's'}
-                                </span>
-                              )}
+                                {group.advance.customId ? (
+                                  <span className="rounded-md bg-violet-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-violet-700 ring-1 ring-violet-100">
+                                    ID {group.advance.customId}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs font-black text-slate-400">{group.advance.id}</span>
+                                )}
+                                {group.pendingCount > 0 && (
+                                  <span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-amber-700 ring-1 ring-amber-100">
+                                    {group.pendingCount} por revisar
+                                  </span>
+                                )}
+                                {hasReturned && (
+                                  <span className="rounded-md bg-rose-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-200">
+                                    {group.returnedCount} devuelto{group.returnedCount === 1 ? '' : 's'}
+                                  </span>
+                                )}
+                                {hasDuplicates && (
+                                  <span className="rounded-md bg-red-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-red-700 ring-1 ring-red-200">
+                                    {group.duplicateCount} duplicado{group.duplicateCount === 1 ? '' : 's'}
+                                  </span>
+                                )}
+                              </div>
+                              <h4 className="mt-2 truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</h4>
+                              <p className="mt-1 text-xs font-bold text-slate-500">
+                                {group.advance.requesterName} · {group.advance.destination} · {group.receipts.length} soportes
+                              </p>
                             </div>
-                            <h4 className="mt-2 truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</h4>
-                            <p className="mt-1 text-xs font-bold text-slate-500">
-                              {group.advance.requesterName} · {group.advance.destination} · {group.receipts.length} soportes
+                            <ReceiptGroupMetric label="Aprobado" value={formatMoney(group.approved)} tone="slate" />
+                            <ReceiptGroupMetric label="Legalizado" value={formatMoney(group.legalized)} tone="emerald" />
+                            <ReceiptGroupMetric label="En revisión" value={formatMoney(group.pending)} tone="amber" />
+                            <ReceiptGroupMetric
+                              label={group.difference < 0 ? 'Dinero a reintegrar' : group.difference > 0 ? 'Falta legalizar' : 'Saldo'}
+                              value={formatMoney(Math.abs(group.difference))}
+                              tone={group.difference < 0 ? 'rose' : group.difference > 0 ? 'amber' : 'emerald'}
+                            />
+                          </div>
+                          <div className="mt-3 flex items-center gap-3">
+                            <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
+                              <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${group.progress}%` }} />
+                            </div>
+                            <span className="text-xs font-black text-slate-500">{group.progress}% legalizado</span>
+                            {group.returned > 0 && (
+                              <span className="rounded-md bg-rose-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-200">
+                                {formatMoney(group.returned)} devuelto
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                        {(canManage || canValidate) && (
+                          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200/70 pt-3">
+                            <p className="text-xs font-bold text-slate-500">
+                              Edición administrativa disponible sin alterar soportes ni legalizaciones.
                             </p>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openAdvanceEditor(group.advance)}
+                              className="border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                            >
+                              <PencilLine size={14} className="mr-2" />
+                              Editar anticipo
+                            </Button>
                           </div>
-                          <ReceiptGroupMetric label="Aprobado" value={formatMoney(group.approved)} tone="slate" />
-                          <ReceiptGroupMetric label="Legalizado" value={formatMoney(group.legalized)} tone="emerald" />
-                          <ReceiptGroupMetric label="En revisión" value={formatMoney(group.pending)} tone="amber" />
-                          <ReceiptGroupMetric
-                            label={group.difference < 0 ? 'Dinero a reintegrar' : group.difference > 0 ? 'Falta legalizar' : 'Saldo'}
-                            value={formatMoney(Math.abs(group.difference))}
-                            tone={group.difference < 0 ? 'rose' : group.difference > 0 ? 'amber' : 'emerald'}
-                          />
-                        </div>
-                        <div className="mt-3 flex items-center gap-3">
-                          <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
-                            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${group.progress}%` }} />
-                          </div>
-                          <span className="text-xs font-black text-slate-500">{group.progress}% legalizado</span>
-                          {group.returned > 0 && (
-                            <span className="rounded-md bg-rose-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-rose-700 ring-1 ring-rose-200">
-                              {formatMoney(group.returned)} devuelto
-                            </span>
-                          )}
-                        </div>
-                      </button>
+                        )}
+                      </div>
 
                       {isExpanded && (
                         <div className="divide-y divide-slate-100">
@@ -2680,6 +2803,155 @@ export function ProjectAdministration({
             <Button type="button" onClick={handleCreateAdvance} disabled={submitting} className="bg-indigo-600 font-bold text-white hover:bg-indigo-700">
               {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
               Enviar anticipo
+            </Button>
+          </ModalFooter>
+        </ModalShell>
+      )}
+
+      {editingAdvance && (
+        <ModalShell
+          title="Editar anticipo administrativo"
+          subtitle="Corrige datos del anticipo desde legalizaciones sin alterar soportes ni aprobaciones."
+          onClose={() => setEditingAdvance(null)}
+          wide
+        >
+          <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+                <p className="text-[11px] font-black uppercase tracking-[0.28em] text-indigo-600">
+                  Ajuste administrativo
+                </p>
+                <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
+                  Usa esta edición para corregir el ID contable, destino, fechas o descripción del anticipo cuando ya fue aprobado
+                  y la legalización necesita quedar alineada con el sistema administrativo.
+                </p>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="ID contable / sistema">
+                  <input
+                    className={inputClass}
+                    value={advanceEditForm.customId}
+                    maxLength={80}
+                    onChange={(event) => setAdvanceEditForm((current) => ({ ...current, customId: event.target.value }))}
+                    placeholder="Ej: 676, ANT-2026-001"
+                  />
+                </Field>
+                <Field label="Estado actual">
+                  <input
+                    className={`${inputClass} bg-slate-50 text-slate-500`}
+                    value={(statusConfig[editingAdvance.status] || statusConfig.submitted).label}
+                    readOnly
+                  />
+                </Field>
+                <Field label="Departamento">
+                  <select
+                    className={inputClass}
+                    value={advanceEditForm.department}
+                    disabled={locationsLoading || locationOptions.length === 0}
+                    onChange={(event) =>
+                      setAdvanceEditForm((current) => ({
+                        ...current,
+                        department: event.target.value,
+                        municipality: '',
+                      }))
+                    }
+                  >
+                    <option value="">
+                      {locationsLoading
+                        ? 'Cargando departamentos...'
+                        : locationOptions.length > 0
+                          ? 'Selecciona departamento'
+                          : 'Departamentos no disponibles'}
+                    </option>
+                    {locationOptions.map((department) => (
+                      <option key={department.department} value={department.department}>
+                        {department.department}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Municipio">
+                  <select
+                    className={inputClass}
+                    value={advanceEditForm.municipality}
+                    disabled={locationsLoading || !advanceEditForm.department}
+                    onChange={(event) => setAdvanceEditForm((current) => ({ ...current, municipality: event.target.value }))}
+                  >
+                    <option value="">
+                      {locationsLoading
+                        ? 'Cargando municipios...'
+                        : advanceEditForm.department
+                          ? 'Selecciona municipio'
+                          : 'Primero elige departamento'}
+                    </option>
+                    {editMunicipalityOptions.map((municipality) => (
+                      <option key={municipality} value={municipality}>
+                        {municipality}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Inicio">
+                  <input
+                    className={inputClass}
+                    type="date"
+                    value={advanceEditForm.travelStart}
+                    onChange={(event) => setAdvanceEditForm((current) => ({ ...current, travelStart: event.target.value }))}
+                  />
+                </Field>
+                <Field label="Fin">
+                  <input
+                    className={inputClass}
+                    type="date"
+                    value={advanceEditForm.travelEnd}
+                    onChange={(event) => setAdvanceEditForm((current) => ({ ...current, travelEnd: event.target.value }))}
+                  />
+                </Field>
+              </div>
+              <Field label="Justificación / descripción">
+                <textarea
+                  className={textareaClass}
+                  value={advanceEditForm.purpose}
+                  onChange={(event) => setAdvanceEditForm((current) => ({ ...current, purpose: event.target.value }))}
+                  placeholder="Describe o corrige el alcance administrativo del anticipo."
+                />
+              </Field>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-500">Resumen del anticipo</p>
+              <div className="mt-4 space-y-3">
+                <SummaryLine label="Solicitante" value={editingAdvance.requesterName || 'Sin solicitante'} />
+                <SummaryLine label="ID actual" value={editingAdvance.customId || editingAdvance.id} />
+                <SummaryLine label="Nuevo ID" value={advanceEditForm.customId.trim() || 'Sin ID personalizado'} />
+                <SummaryLine label="Destino" value={[advanceEditForm.municipality, advanceEditForm.department].filter(Boolean).join(', ') || 'Sin destino'} />
+                <SummaryLine label="Periodo" value={`${formatDate(advanceEditForm.travelStart)} - ${formatDate(advanceEditForm.travelEnd)}`} />
+                <SummaryLine label="Días calendario" value={`${inclusiveDays(advanceEditForm.travelStart, advanceEditForm.travelEnd)} días`} />
+                <SummaryLine label="Tareas vinculadas" value={`${(editingAdvance.taskIds || []).length || (editingAdvance.taskId ? 1 : 0)}`} />
+                <SummaryLine label="Aprobado" value={formatMoney(editingAdvance.amountApproved || editingAdvance.amountRequested)} />
+                <SummaryLine label="Legalizado" value={formatMoney(editingAdvance.amountLegalized)} />
+                <SummaryLine label="Saldo" value={formatMoney(editingAdvance.balance)} strong />
+              </div>
+              {editingAdvance.administrativeEditedAt && (
+                <p className="mt-4 rounded-xl border border-slate-200 bg-white p-3 text-xs font-bold leading-5 text-slate-500">
+                  Último ajuste administrativo: {formatDate(editingAdvance.administrativeEditedAt)} por{' '}
+                  {editingAdvance.administrativeEditedByName || 'Usuario administrativo'}.
+                </p>
+              )}
+            </div>
+          </div>
+          <ModalFooter>
+            <Button type="button" variant="outline" onClick={() => setEditingAdvance(null)}>
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              onClick={handleUpdateAdvanceFromLegalizations}
+              disabled={submitting}
+              className="bg-indigo-600 font-bold text-white hover:bg-indigo-700"
+            >
+              {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
+              Guardar cambios
             </Button>
           </ModalFooter>
         </ModalShell>
