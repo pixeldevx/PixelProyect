@@ -86,7 +86,7 @@ type ReceiptFieldChange = {
 };
 
 type ReceiptRevision = {
-  type: 'returned' | 'resubmitted' | 'approved' | 'approved_modified';
+  type: 'returned' | 'resubmitted' | 'approved' | 'approved_modified' | 'support_replaced';
   actorId?: string | null;
   actorName?: string;
   at: string;
@@ -322,6 +322,13 @@ const asNumber = (value: any) => {
 };
 
 const formatMoney = (value: any) => money.format(asNumber(value));
+
+const formatSupportFileSize = (size?: number) => {
+  const bytes = asNumber(size);
+  if (!bytes) return '0 KB';
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+};
 
 const safeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
@@ -674,6 +681,8 @@ export function ProjectAdministration({
   const [receiptEditor, setReceiptEditor] = useState<ReceiptEditorState | null>(null);
   const [receiptEditorForm, setReceiptEditorForm] = useState<ReceiptEditorForm | null>(null);
   const [receiptCorrectionFile, setReceiptCorrectionFile] = useState<File | null>(null);
+  const [receiptReplacementFile, setReceiptReplacementFile] = useState<File | null>(null);
+  const [receiptSupportAction, setReceiptSupportAction] = useState<'replace' | 'reanalyze' | null>(null);
   const [expandedReceiptGroups, setExpandedReceiptGroups] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
 
@@ -1279,6 +1288,8 @@ export function ProjectAdministration({
     setReceiptEditor({ mode, advance, receipt });
     setReceiptEditorForm(buildReceiptEditorForm(receipt));
     setReceiptCorrectionFile(null);
+    setReceiptReplacementFile(null);
+    setReceiptSupportAction(null);
   };
 
   const updateReceiptEditorForm = (patch: Partial<ReceiptEditorForm>) => {
@@ -1289,6 +1300,8 @@ export function ProjectAdministration({
     setReceiptEditor(null);
     setReceiptEditorForm(null);
     setReceiptCorrectionFile(null);
+    setReceiptReplacementFile(null);
+    setReceiptSupportAction(null);
   };
 
   const getReceiptEditorChanges = (
@@ -2251,6 +2264,78 @@ export function ProjectAdministration({
     }
   };
 
+  const analyzeReceiptFilesForAdvance = async (advance: TravelAdvance, files: File[]): Promise<AiReceiptDraft[]> => {
+    const body = new FormData();
+    files.forEach((file) => body.append('files', file));
+    body.append(
+      'categories',
+      JSON.stringify(
+        categoryOptions.map((category) => ({
+          id: category.id,
+          name: category.name,
+          requiresCufe: category.requiresCufe,
+          defaultDailyAmount: category.defaultDailyAmount,
+          description: category.description,
+        }))
+      )
+    );
+    body.append(
+      'advanceContext',
+      JSON.stringify({
+        id: advance.id,
+        destination: advance.destination,
+        purpose: advance.purpose,
+        items: advance.items,
+        travelStart: advance.travelStart,
+        travelEnd: advance.travelEnd,
+      })
+    );
+
+    const response = await fetch('/api/administration/receipts/analyze', {
+      method: 'POST',
+      body,
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(data?.error || 'No se pudo analizar el soporte.');
+    }
+
+    return ((data?.receipts || []) as any[])
+      .map((item, fallbackIndex) => {
+        const fileIndex = Number.isInteger(item?.index) ? item.index : fallbackIndex;
+        const file = files[fileIndex];
+        if (!file) return null;
+        const categoryById = categoryOptions.find((category) => category.id === item?.categoryId);
+        const categoryByName = categoryOptions.find(
+          (category) => category.name.toLowerCase() === String(item?.categoryName || '').toLowerCase()
+        );
+        const category = categoryById || categoryByName || categoryOptions[0];
+
+        return {
+          id: safeId(),
+          file,
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type || 'application/octet-stream',
+          documentType: getReceiptDocumentType(item?.documentType),
+          categoryId: category?.id || item?.categoryId || '',
+          categoryName: item?.categoryName || category?.name || '',
+          amount: item?.amount ? String(item.amount) : '',
+          date: item?.date || todayInputValue(),
+          businessName: item?.businessName || '',
+          taxId: item?.taxId || '',
+          invoiceNumber: item?.invoiceNumber || '',
+          cufe: normalizeCufe(item?.cufe || ''),
+          description: item?.description || '',
+          confidence: typeof item?.confidence === 'number' ? item.confidence : undefined,
+          warnings: Array.isArray(item?.warnings) ? item.warnings : [],
+          status: item?.status === 'error' ? 'error' : 'ready',
+          error: item?.error || '',
+        } as AiReceiptDraft;
+      })
+      .filter(Boolean) as AiReceiptDraft[];
+  };
+
   const handleAnalyzeReceiptFiles = async (fileList: FileList | null) => {
     if (!selectedAdvance) return;
     const files = Array.from(fileList || []);
@@ -2259,76 +2344,7 @@ export function ProjectAdministration({
     setReceiptMode('ai');
     setAiAnalyzingReceipts(true);
     try {
-      const body = new FormData();
-      files.forEach((file) => body.append('files', file));
-      body.append(
-        'categories',
-        JSON.stringify(
-          categoryOptions.map((category) => ({
-            id: category.id,
-            name: category.name,
-            requiresCufe: category.requiresCufe,
-            defaultDailyAmount: category.defaultDailyAmount,
-            description: category.description,
-          }))
-        )
-      );
-      body.append(
-        'advanceContext',
-        JSON.stringify({
-          id: selectedAdvance.id,
-          destination: selectedAdvance.destination,
-          purpose: selectedAdvance.purpose,
-          items: selectedAdvance.items,
-          travelStart: selectedAdvance.travelStart,
-          travelEnd: selectedAdvance.travelEnd,
-        })
-      );
-
-      const response = await fetch('/api/administration/receipts/analyze', {
-        method: 'POST',
-        body,
-      });
-      const data = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(data?.error || 'No se pudo analizar el lote.');
-      }
-
-      const drafts = ((data?.receipts || []) as any[])
-        .map((item, fallbackIndex) => {
-          const fileIndex = Number.isInteger(item?.index) ? item.index : fallbackIndex;
-          const file = files[fileIndex];
-          if (!file) return null;
-          const categoryById = categoryOptions.find((category) => category.id === item?.categoryId);
-          const categoryByName = categoryOptions.find(
-            (category) => category.name.toLowerCase() === String(item?.categoryName || '').toLowerCase()
-          );
-          const category = categoryById || categoryByName || categoryOptions[0];
-
-          return {
-            id: safeId(),
-            file,
-            fileName: file.name,
-            fileSize: file.size,
-            fileType: file.type || 'application/octet-stream',
-            documentType: getReceiptDocumentType(item?.documentType),
-            categoryId: category?.id || item?.categoryId || '',
-            categoryName: item?.categoryName || category?.name || '',
-            amount: item?.amount ? String(item.amount) : '',
-            date: item?.date || todayInputValue(),
-            businessName: item?.businessName || '',
-            taxId: item?.taxId || '',
-            invoiceNumber: item?.invoiceNumber || '',
-            cufe: item?.cufe || '',
-            description: item?.description || '',
-            confidence: typeof item?.confidence === 'number' ? item.confidence : undefined,
-            warnings: Array.isArray(item?.warnings) ? item.warnings : [],
-            status: item?.status === 'error' ? 'error' : 'ready',
-            error: item?.error || '',
-          } as AiReceiptDraft;
-        })
-        .filter(Boolean) as AiReceiptDraft[];
-
+      const drafts = await analyzeReceiptFilesForAdvance(selectedAdvance, files);
       setAiReceiptDrafts((current) => [...current, ...drafts]);
       const errors = drafts.filter((draft) => draft.status === 'error').length;
       toast.success(
@@ -2341,6 +2357,150 @@ export function ProjectAdministration({
       toast.error(error?.message || 'No se pudo analizar el lote.');
     } finally {
       setAiAnalyzingReceipts(false);
+    }
+  };
+
+  const applyAiDraftToReceiptEditor = (draft: AiReceiptDraft) => {
+    setReceiptEditorForm((current) => {
+      if (!current) return current;
+
+      const documentType = getReceiptDocumentType(draft.documentType);
+      const cufe = normalizeCufe(draft.cufe);
+
+      return {
+        ...current,
+        documentType,
+        categoryId: draft.categoryId || current.categoryId,
+        amount: draft.amount || current.amount,
+        date: draft.date || current.date,
+        businessName: draft.businessName || current.businessName,
+        taxId: draft.taxId || current.taxId,
+        invoiceNumber: draft.invoiceNumber || current.invoiceNumber,
+        cufe,
+        description: draft.description || current.description,
+        dianVerificationStatus: documentType === 'cash_receipt' ? 'not_applicable' : cufe ? 'pending' : 'not_applicable',
+        dianLookupOpenedAt: '',
+        dianVerifiedAt: '',
+        dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : '',
+      };
+    });
+  };
+
+  const handleReplaceReceiptSupport = async (reanalyze = false) => {
+    if (!receiptEditor || !receiptEditorForm || receiptEditor.mode !== 'review') return;
+    if (!canValidate) {
+      toast.error('No tienes permisos para cambiar el soporte desde revisión.');
+      return;
+    }
+    if (!receiptReplacementFile) {
+      toast.error('Selecciona el nuevo soporte antes de guardar.');
+      return;
+    }
+
+    const latestAdvance = advances.find((advance) => advance.id === receiptEditor.advance.id) || receiptEditor.advance;
+    const latestReceipt = (latestAdvance.receipts || []).find((receipt) => receipt.id === receiptEditor.receipt.id) || receiptEditor.receipt;
+    const currentCategory = categoryOptions.find((item) => item.id === receiptEditorForm.categoryId);
+    const fallbackCategory = categoryOptions.find((item) => item.id === latestReceipt.categoryId);
+    const category = currentCategory || fallbackCategory;
+    if (!category) {
+      toast.error('Selecciona un tipo de gasto antes de reemplazar el soporte.');
+      return;
+    }
+
+    const documentType = getReceiptDocumentType(receiptEditorForm.documentType);
+    setReceiptSupportAction(reanalyze ? 'reanalyze' : 'replace');
+    try {
+      const uploaded = await uploadReceiptDocument(
+        latestAdvance,
+        category,
+        receiptReplacementFile,
+        receiptEditorForm.businessName || latestReceipt.businessName || category.name,
+        documentType
+      );
+
+      let analyzedDraft: AiReceiptDraft | null = null;
+      let aiWarning = '';
+      if (reanalyze) {
+        try {
+          const drafts = await analyzeReceiptFilesForAdvance(latestAdvance, [receiptReplacementFile]);
+          analyzedDraft = drafts[0] || null;
+          if (!analyzedDraft) {
+            aiWarning = 'La IA no devolvió datos para este soporte.';
+          } else if (analyzedDraft.status === 'error') {
+            aiWarning = analyzedDraft.error || 'La IA no pudo leer el soporte reemplazado.';
+          }
+        } catch (error: any) {
+          aiWarning = error?.message || 'La IA no pudo leer el soporte reemplazado.';
+        }
+      }
+
+      const now = new Date().toISOString();
+      const fileChange: ReceiptFieldChange = {
+        field: 'file',
+        label: 'Archivo de soporte',
+        previousValue: latestReceipt.fileName || null,
+        nextValue: receiptReplacementFile.name,
+      };
+      const nextReceipt: AdvanceReceipt = {
+        ...latestReceipt,
+        fileName: receiptReplacementFile.name,
+        fileSize: receiptReplacementFile.size,
+        fileUrl: uploaded.fileUrl,
+        storagePath: uploaded.storagePath,
+        aiExtracted: reanalyze ? Boolean(analyzedDraft && analyzedDraft.status !== 'error') : latestReceipt.aiExtracted,
+        aiConfidence: analyzedDraft?.confidence ?? latestReceipt.aiConfidence,
+        aiWarnings: analyzedDraft?.warnings || latestReceipt.aiWarnings,
+        revisionCount: asNumber(latestReceipt.revisionCount) + 1,
+        revisions: [
+          ...(latestReceipt.revisions || []),
+          {
+            type: 'support_replaced',
+            actorId: currentUser?.uid || null,
+            actorName: getCurrentUserName(currentUser),
+            at: now,
+            comment: reanalyze
+              ? aiWarning
+                ? `Soporte reemplazado. ${aiWarning}`
+                : 'Soporte reemplazado y leído nuevamente con IA.'
+              : 'Soporte original reemplazado.',
+            changes: [fileChange],
+          },
+        ],
+      };
+      const nextReceipts = (latestAdvance.receipts || []).map((item) =>
+        item.id === latestReceipt.id ? nextReceipt : item
+      );
+      const nextAdvance = { ...latestAdvance, receipts: nextReceipts };
+
+      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
+        receipts: nextReceipts,
+        updatedAt: serverTimestamp(),
+      });
+      await logAdministrativeEvent(latestAdvance.id, reanalyze ? 'receipt_support_reanalyzed' : 'receipt_support_replaced', {
+        receiptId: latestReceipt.id,
+        fileName: receiptReplacementFile.name,
+        storagePath: uploaded.storagePath,
+        aiWarnings: aiWarning ? [aiWarning] : analyzedDraft?.warnings || [],
+      });
+
+      setAdvances((current) => current.map((advance) => (advance.id === nextAdvance.id ? nextAdvance : advance)));
+      setReceiptEditor((current) => (current ? { ...current, advance: nextAdvance, receipt: nextReceipt } : current));
+      if (analyzedDraft && analyzedDraft.status !== 'error') {
+        applyAiDraftToReceiptEditor(analyzedDraft);
+      }
+      setReceiptReplacementFile(null);
+      toast.success(
+        aiWarning
+          ? 'Soporte reemplazado. La IA no pudo completar la lectura; ajusta los campos manualmente.'
+          : reanalyze
+            ? 'Soporte reemplazado y campos actualizados con IA.'
+            : 'Soporte reemplazado correctamente.'
+      );
+    } catch (error: any) {
+      console.error('Error replacing receipt support:', error);
+      toast.error(error?.message || 'No se pudo reemplazar el soporte.');
+    } finally {
+      setReceiptSupportAction(null);
     }
   };
 
@@ -4008,7 +4168,7 @@ export function ProjectAdministration({
               <aside className="space-y-4">
                 <div className="rounded-xl bg-slate-950 p-4 text-white">
                   <p className="text-[10px] font-black uppercase tracking-[0.22em] text-indigo-300">Resumen del soporte</p>
-                  <p className="mt-3 text-lg font-black">{receiptEditor.receipt.categoryName}</p>
+                  <p className="mt-3 text-lg font-black">{selectedCategory?.name || receiptEditor.receipt.categoryName}</p>
                   <p className="mt-1 text-sm font-semibold text-slate-300">{receiptEditor.advance.requesterName}</p>
                   <div className="mt-4 space-y-2">
                     <SummaryLine label="Valor" value={formatMoney(asNumber(receiptEditorForm.amount))} strong />
@@ -4037,18 +4197,72 @@ export function ProjectAdministration({
                     <FileImage size={16} /> Ver soporte original
                   </a>
                 )}
+
+                {isReview && (
+                  <div className="rounded-xl border border-indigo-100 bg-white p-4 shadow-sm">
+                    <div className="flex items-start gap-3">
+                      <span className="rounded-lg bg-indigo-50 p-2 text-indigo-600">
+                        <Upload size={16} />
+                      </span>
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.16em] text-indigo-700">Cambiar soporte</p>
+                        <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                          Sube el archivo correcto y, si quieres, Pixel vuelve a leerlo con IA para llenar los campos.
+                        </p>
+                      </div>
+                    </div>
+                    <input
+                      id={`receipt-support-replacement-${receiptEditor.receipt.id}`}
+                      type="file"
+                      accept="image/*,application/pdf"
+                      className="hidden"
+                      onChange={(event) => setReceiptReplacementFile(event.target.files?.[0] || null)}
+                    />
+                    <label
+                      htmlFor={`receipt-support-replacement-${receiptEditor.receipt.id}`}
+                      className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-indigo-200 bg-indigo-50/60 px-3 py-4 text-center text-xs font-black text-indigo-700 transition hover:bg-indigo-50"
+                    >
+                      <FileImage size={18} className="mb-2" />
+                      {receiptReplacementFile ? receiptReplacementFile.name : 'Seleccionar nuevo soporte'}
+                      {receiptReplacementFile && (
+                        <span className="mt-1 text-[10px] font-bold text-slate-500">{formatSupportFileSize(receiptReplacementFile.size)}</span>
+                      )}
+                    </label>
+                    <div className="mt-3 grid gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void handleReplaceReceiptSupport(false)}
+                        disabled={!receiptReplacementFile || Boolean(receiptSupportAction) || submitting}
+                        className="justify-center"
+                      >
+                        {receiptSupportAction === 'replace' ? <Loader2 size={15} className="mr-2 animate-spin" /> : <Upload size={15} className="mr-2" />}
+                        Guardar nuevo soporte
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={() => void handleReplaceReceiptSupport(true)}
+                        disabled={!receiptReplacementFile || Boolean(receiptSupportAction) || submitting}
+                        className="justify-center bg-indigo-600 text-white hover:bg-indigo-700"
+                      >
+                        {receiptSupportAction === 'reanalyze' ? <Loader2 size={15} className="mr-2 animate-spin" /> : <Sparkles size={15} className="mr-2" />}
+                        Releer con IA y llenar campos
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </aside>
             </div>
 
             <ModalFooter>
-              <Button type="button" variant="outline" onClick={closeReceiptEditor} disabled={submitting}>Cancelar</Button>
+              <Button type="button" variant="outline" onClick={closeReceiptEditor} disabled={submitting || Boolean(receiptSupportAction)}>Cancelar</Button>
               <Button
                 type="button"
                 onClick={isReview ? handleApproveReceipt : handleResubmitReceipt}
-                disabled={submitting}
+                disabled={submitting || Boolean(receiptSupportAction)}
                 className={isReview ? 'bg-emerald-600 font-bold text-white hover:bg-emerald-700' : 'bg-rose-600 font-bold text-white hover:bg-rose-700'}
               >
-                {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
+                {(submitting || receiptSupportAction) && <Loader2 size={16} className="mr-2 animate-spin" />}
                 {isReview ? (changes.length > 0 ? 'Aprobar con modificación' : 'Aprobar soporte') : 'Reenviar subsanación'}
               </Button>
             </ModalFooter>
