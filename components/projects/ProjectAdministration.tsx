@@ -10,6 +10,7 @@ import {
   ChevronRight,
   CheckCircle2,
   ClipboardCheck,
+  Download,
   FileImage,
   FileText,
   FolderKanban,
@@ -63,6 +64,14 @@ type AdvanceItem = {
   amount: number;
   note?: string;
   customAmount?: boolean;
+};
+
+type CostCenterAllocation = {
+  id: string;
+  name: string;
+  percentage: number;
+  amount: number;
+  note?: string;
 };
 
 type ReceiptDocumentType = 'invoice' | 'cash_receipt';
@@ -175,6 +184,12 @@ type TravelAdvance = {
   amountApproved: number;
   amountLegalized: number;
   balance: number;
+  amountReturned?: number;
+  returnComment?: string;
+  returnedAt?: any;
+  returnedBy?: string | null;
+  returnedByName?: string;
+  costCenters?: CostCenterAllocation[];
   adminComment?: string;
   createdAt?: any;
   updatedAt?: any;
@@ -196,6 +211,9 @@ type AdvanceEditForm = {
   purpose: string;
   travelStart: string;
   travelEnd: string;
+  amountReturned: string;
+  returnComment: string;
+  costCenters: CostCenterAllocation[];
 };
 
 type BillingPayment = {
@@ -306,6 +324,93 @@ const asNumber = (value: any) => {
 const formatMoney = (value: any) => money.format(asNumber(value));
 
 const safeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+const roundCurrency = (value: any) => Math.round(asNumber(value) * 100) / 100;
+
+const buildDefaultCostCenter = (amount = 0): CostCenterAllocation => ({
+  id: safeId(),
+  name: 'Centro de costos principal',
+  percentage: 100,
+  amount: roundCurrency(amount),
+  note: '',
+});
+
+const normalizeCostCenters = (centers: CostCenterAllocation[] | undefined, totalAmount = 0) => {
+  const base = centers && centers.length > 0 ? centers : [buildDefaultCostCenter(totalAmount)];
+  const normalized = base.map((center, index) => {
+    const percentage = Math.max(0, asNumber(center.percentage));
+    return {
+      id: center.id || safeId(),
+      name: String(center.name || `Centro de costos ${index + 1}`).trim() || `Centro de costos ${index + 1}`,
+      percentage,
+      amount: roundCurrency(totalAmount > 0 ? (totalAmount * percentage) / 100 : center.amount),
+      note: center.note || '',
+    };
+  });
+
+  if (normalized.length === 1 && totalAmount > 0) {
+    normalized[0].percentage = 100;
+    normalized[0].amount = roundCurrency(totalAmount);
+  }
+
+  return normalized;
+};
+
+const getCostCenterPercentTotal = (centers?: CostCenterAllocation[]) =>
+  roundCurrency((centers || []).reduce((sum, center) => sum + asNumber(center.percentage), 0));
+
+const costCentersAreBalanced = (centers?: CostCenterAllocation[]) =>
+  Math.abs(getCostCenterPercentTotal(centers) - 100) < 0.01;
+
+const getAdvanceFinancialCoverage = (advance: Partial<TravelAdvance>) => {
+  const approved = asNumber(advance.amountApproved || advance.amountRequested);
+  const legalized = asNumber(advance.amountLegalized);
+  const returnedCash = asNumber(advance.amountReturned);
+  const covered = roundCurrency(legalized + returnedCash);
+  const balance = roundCurrency(approved - covered);
+
+  return {
+    approved,
+    legalized,
+    returnedCash,
+    covered,
+    balance,
+    overage: Math.max(0, roundCurrency(covered - approved)),
+    progress: approved > 0 ? Math.min(100, Math.round((covered / approved) * 100)) : 0,
+    isFullyCovered: approved > 0 && covered >= approved,
+  };
+};
+
+const escapeHtml = (value: any) =>
+  String(value ?? '').replace(/[&<>"']/g, (char) => (
+    {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[char] || char
+  ));
+
+const getSafeFileToken = (value: any) =>
+  String(value || 'anticipo')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9-_]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'anticipo';
+
+const downloadFile = (fileName: string, content: string, type: string) => {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+};
 
 const getDateValue = (value: any): Date | null => {
   if (!value) return null;
@@ -536,6 +641,9 @@ export function ProjectAdministration({
     purpose: '',
     travelStart: todayInputValue(),
     travelEnd: todayInputValue(),
+    amountReturned: '',
+    returnComment: '',
+    costCenters: [],
   });
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptMode, setReceiptMode] = useState<'manual' | 'ai'>('manual');
@@ -663,6 +771,7 @@ export function ProjectAdministration({
     const requested = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountRequested), 0);
     const approved = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountApproved), 0);
     const legalized = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountLegalized), 0);
+    const returnedCash = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountReturned), 0);
     const pendingValidation = advances.filter((advance) => advance.status === 'submitted').length;
     const returned = advances.filter(
       (advance) =>
@@ -676,7 +785,8 @@ export function ProjectAdministration({
       requested,
       approved,
       legalized,
-      balance: Math.max(0, approved - legalized),
+      returnedCash,
+      balance: Math.max(0, approved - legalized - returnedCash),
       pendingValidation,
       returned,
       realAdminPayments,
@@ -786,23 +896,202 @@ export function ProjectAdministration({
           const returnedCount = advanceReceipts.filter((receipt) => receipt.status === 'returned').length;
           const duplicateCount = advanceReceipts.filter((receipt) => findDuplicateReceiptUsage(receipt, advance.id)).length;
           const approved = asNumber(advance.amountApproved || advance.amountRequested);
-          const difference = approved - legalized;
+          const coverage = getAdvanceFinancialCoverage({ ...advance, amountApproved: approved, amountLegalized: legalized });
+          const difference = coverage.balance;
 
           return {
             advance,
             receipts: advanceReceipts,
             approved,
             legalized,
+            returnedCash: coverage.returnedCash,
             pending,
             returned,
             pendingCount,
             returnedCount,
             duplicateCount,
             difference,
-            progress: approved > 0 ? Math.min(100, Math.round((legalized / approved) * 100)) : 0,
+            coverage,
+            progress: coverage.progress,
           };
         }),
     [advances, findDuplicateReceiptUsage]
+  );
+
+  const realCostAdvanceGroups = useMemo(
+    () =>
+      filteredAdvances
+        .filter((advance) => advance.status === 'closed')
+        .map((advance) => {
+          const approvedReceipts = (advance.receipts || []).filter(isApprovedReceipt);
+          const legalizationsTotal = approvedReceipts.reduce((sum, receipt) => sum + asNumber(receipt.amount), 0);
+          const advancePayments = payments.filter(
+            (payment) =>
+              payment.source === 'advance_receipt' &&
+              payment.status !== 'cancelled' &&
+              payment.advanceId === advance.id
+          );
+          const paymentTotal = advancePayments.reduce((sum, payment) => sum + asNumber(payment.amount), 0);
+          const realCost = paymentTotal > 0 ? paymentTotal : legalizationsTotal;
+          const coverage = getAdvanceFinancialCoverage({ ...advance, amountLegalized: legalizationsTotal });
+
+          return {
+            advance,
+            receipts: approvedReceipts,
+            payments: advancePayments,
+            legalizationsTotal,
+            paymentTotal,
+            realCost,
+            coverage,
+            costCenters: normalizeCostCenters(advance.costCenters, coverage.approved),
+          };
+        })
+        .sort((left, right) => {
+          const leftDate = getDateValue(left.advance.closedAt || left.advance.updatedAt || left.advance.createdAt)?.getTime() || 0;
+          const rightDate = getDateValue(right.advance.closedAt || right.advance.updatedAt || right.advance.createdAt)?.getTime() || 0;
+          return rightDate - leftDate;
+        }),
+    [filteredAdvances, payments]
+  );
+
+  const downloadAdvanceReport = useCallback(
+    (group: (typeof realCostAdvanceGroups)[number]) => {
+      const { advance, receipts: approvedReceipts, payments: advancePayments, realCost, coverage, costCenters } = group;
+      const projectName = project?.name || project?.title || projectId;
+      const reportDate = formatDate(new Date());
+      const advanceTitle = advance.customId ? `${advance.customId} · ${advance.purpose || advance.destination}` : advance.purpose || advance.destination;
+      const supportRows = approvedReceipts
+        .map((receipt, index) => {
+          const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
+          return `
+            <tr>
+              <td>${index + 1}</td>
+              <td><strong>${escapeHtml(receipt.categoryName)}</strong><br/><span>${escapeHtml(documentMeta.label)}</span></td>
+              <td>${escapeHtml(receipt.businessName || 'Sin razon social')}<br/><span>${escapeHtml(receipt.taxId || '')}</span></td>
+              <td>${escapeHtml(formatDate(receipt.date))}</td>
+              <td>${escapeHtml(receipt.invoiceNumber || receipt.cufe || 'Sin numero')}</td>
+              <td class="money">${escapeHtml(formatMoney(receipt.amount))}</td>
+              <td>${receipt.fileUrl ? `<a href="${escapeHtml(receipt.fileUrl)}">Ver soporte</a>` : 'Sin soporte'}</td>
+            </tr>
+          `;
+        })
+        .join('');
+      const costCenterRows = costCenters
+        .map(
+          (center) => `
+            <tr>
+              <td>${escapeHtml(center.name)}</td>
+              <td>${escapeHtml(String(center.percentage))}%</td>
+              <td class="money">${escapeHtml(formatMoney(center.amount))}</td>
+              <td>${escapeHtml(center.note || '')}</td>
+            </tr>
+          `
+        )
+        .join('');
+      const paymentRows = advancePayments
+        .map(
+          (payment, index) => `
+            <tr>
+              <td>${index + 1}</td>
+              <td>${escapeHtml(formatDate(payment.date))}</td>
+              <td class="money">${escapeHtml(formatMoney(payment.amount))}</td>
+              <td>${escapeHtml(payment.status || 'paid')}</td>
+            </tr>
+          `
+        )
+        .join('');
+      const html = `<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>Informe anticipo ${escapeHtml(advance.customId || advance.id)}</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #f6f8fb; color: #0f172a; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      main { max-width: 1120px; margin: 32px auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 20px; overflow: hidden; box-shadow: 0 20px 60px rgba(15, 23, 42, .10); }
+      header { padding: 32px; background: linear-gradient(135deg, #070b1d, #312e81 58%, #0f766e); color: white; }
+      .eyebrow { margin: 0 0 10px; color: #8ff7df; font-size: 11px; font-weight: 900; letter-spacing: .28em; text-transform: uppercase; }
+      h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+      .subtitle { margin: 12px 0 0; color: #cbd5e1; font-size: 14px; font-weight: 700; }
+      section { padding: 24px 32px; border-top: 1px solid #e2e8f0; }
+      h2 { margin: 0 0 14px; font-size: 18px; }
+      .grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .card { border: 1px solid #e2e8f0; border-radius: 14px; padding: 14px; background: #f8fafc; }
+      .label { color: #64748b; font-size: 10px; font-weight: 900; letter-spacing: .22em; text-transform: uppercase; }
+      .value { margin-top: 6px; font-size: 18px; font-weight: 950; }
+      table { width: 100%; border-collapse: collapse; overflow: hidden; border: 1px solid #e2e8f0; border-radius: 14px; }
+      th, td { padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; font-size: 12px; }
+      th { background: #f1f5f9; color: #64748b; font-size: 10px; font-weight: 900; letter-spacing: .18em; text-transform: uppercase; }
+      td span { color: #64748b; font-weight: 700; }
+      .money { white-space: nowrap; font-weight: 900; }
+      a { color: #4f46e5; font-weight: 900; text-decoration: none; }
+      .footnote { color: #64748b; font-size: 12px; font-weight: 700; line-height: 1.6; }
+      @media print {
+        body { background: white; }
+        main { margin: 0; border: 0; box-shadow: none; border-radius: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Pixel Project · Informe de anticipo</p>
+        <h1>${escapeHtml(advanceTitle)}</h1>
+        <p class="subtitle">${escapeHtml(projectName)} · ${escapeHtml(advance.requesterName)} · generado ${escapeHtml(reportDate)}</p>
+      </header>
+      <section>
+        <div class="grid">
+          <div class="card"><div class="label">Aprobado</div><div class="value">${escapeHtml(formatMoney(coverage.approved))}</div></div>
+          <div class="card"><div class="label">Legalizado</div><div class="value">${escapeHtml(formatMoney(coverage.legalized))}</div></div>
+          <div class="card"><div class="label">Devuelto</div><div class="value">${escapeHtml(formatMoney(coverage.returnedCash))}</div></div>
+          <div class="card"><div class="label">Costo real</div><div class="value">${escapeHtml(formatMoney(realCost))}</div></div>
+        </div>
+      </section>
+      <section>
+        <h2>Ficha tecnica del anticipo</h2>
+        <table>
+          <tbody>
+            <tr><th>ID contable</th><td>${escapeHtml(advance.customId || advance.id)}</td><th>Destino</th><td>${escapeHtml(advance.destination)}</td></tr>
+            <tr><th>Periodo</th><td>${escapeHtml(formatDate(advance.travelStart))} - ${escapeHtml(formatDate(advance.travelEnd))}</td><th>Estado</th><td>${escapeHtml((statusConfig[advance.status] || statusConfig.closed).label)}</td></tr>
+            <tr><th>Solicitante</th><td>${escapeHtml(advance.requesterName)}</td><th>Saldo</th><td>${escapeHtml(formatMoney(Math.max(0, coverage.balance)))}</td></tr>
+            <tr><th>Justificacion</th><td colspan="3">${escapeHtml(advance.purpose || '')}</td></tr>
+            <tr><th>Observacion devolucion</th><td colspan="3">${escapeHtml(advance.returnComment || '')}</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section>
+        <h2>Centros de costo</h2>
+        <table>
+          <thead><tr><th>Centro</th><th>Porcentaje</th><th>Monto</th><th>Nota</th></tr></thead>
+          <tbody>${costCenterRows || '<tr><td colspan="4">Sin centros de costo configurados.</td></tr>'}</tbody>
+        </table>
+      </section>
+      <section>
+        <h2>Ficha tecnica de legalizaciones</h2>
+        <table>
+          <thead><tr><th>#</th><th>Tipo</th><th>Proveedor</th><th>Fecha</th><th>Documento</th><th>Valor</th><th>Soporte</th></tr></thead>
+          <tbody>${supportRows || '<tr><td colspan="7">Sin legalizaciones aprobadas.</td></tr>'}</tbody>
+        </table>
+      </section>
+      <section>
+        <h2>Pagos reales asociados</h2>
+        <table>
+          <thead><tr><th>#</th><th>Fecha</th><th>Valor</th><th>Estado</th></tr></thead>
+          <tbody>${paymentRows || '<tr><td colspan="4">Sin pagos reales independientes. El costo real se toma de los soportes aprobados.</td></tr>'}</tbody>
+        </table>
+        <p class="footnote">Este archivo consolida la trazabilidad disponible en Pixel Project. Los enlaces de soporte abren el archivo cargado al gestor documental configurado.</p>
+      </section>
+    </main>
+  </body>
+</html>`;
+
+      downloadFile(
+        `informe-anticipo-${getSafeFileToken(advance.customId || advance.id)}.html`,
+        html,
+        'text/html;charset=utf-8'
+      );
+    },
+    [project?.name, project?.title, projectId]
   );
 
   const currentActorIds = useMemo(() => {
@@ -861,6 +1150,7 @@ export function ProjectAdministration({
   };
 
   const openAdvanceEditor = (advance: TravelAdvance) => {
+    const coverage = getAdvanceFinancialCoverage(advance);
     setEditingAdvance(advance);
     setAdvanceEditForm({
       customId: advance.customId || '',
@@ -869,8 +1159,75 @@ export function ProjectAdministration({
       purpose: advance.purpose || '',
       travelStart: advance.travelStart || todayInputValue(),
       travelEnd: advance.travelEnd || todayInputValue(),
+      amountReturned: advance.amountReturned ? String(advance.amountReturned) : '',
+      returnComment: advance.returnComment || '',
+      costCenters: normalizeCostCenters(advance.costCenters, coverage.approved || asNumber(advance.amountRequested)),
     });
     void loadLocationOptions();
+  };
+
+  const editingAdvanceApprovedAmount = useMemo(
+    () => (editingAdvance ? getAdvanceFinancialCoverage(editingAdvance).approved : 0),
+    [editingAdvance]
+  );
+
+  const editingAdvanceCoverage = useMemo(
+    () =>
+      editingAdvance
+        ? getAdvanceFinancialCoverage({
+            ...editingAdvance,
+            amountReturned: asNumber(advanceEditForm.amountReturned),
+          })
+        : null,
+    [advanceEditForm.amountReturned, editingAdvance]
+  );
+
+  const editingCostCenterTotal = useMemo(
+    () => getCostCenterPercentTotal(advanceEditForm.costCenters),
+    [advanceEditForm.costCenters]
+  );
+
+  const updateAdvanceCostCenter = (id: string, updates: Partial<CostCenterAllocation>) => {
+    setAdvanceEditForm((current) => ({
+      ...current,
+      costCenters: normalizeCostCenters(
+        current.costCenters.map((center) => (center.id === id ? { ...center, ...updates } : center)),
+        editingAdvanceApprovedAmount
+      ),
+    }));
+  };
+
+  const addAdvanceCostCenter = () => {
+    setAdvanceEditForm((current) => ({
+      ...current,
+      costCenters: normalizeCostCenters(
+        [
+          ...current.costCenters,
+          {
+            id: safeId(),
+            name: `Centro de costos ${current.costCenters.length + 1}`,
+            percentage: 0,
+            amount: 0,
+            note: '',
+          },
+        ],
+        editingAdvanceApprovedAmount
+      ),
+    }));
+  };
+
+  const removeAdvanceCostCenter = (id: string) => {
+    if (advanceEditForm.costCenters.length <= 1) {
+      toast.error('El anticipo debe conservar al menos un centro de costos.');
+      return;
+    }
+    setAdvanceEditForm((current) => ({
+      ...current,
+      costCenters: normalizeCostCenters(
+        current.costCenters.filter((center) => center.id !== id),
+        editingAdvanceApprovedAmount
+      ),
+    }));
   };
 
   const updateDraftItem = (updates: Partial<AdvanceItem>) => {
@@ -1052,6 +1409,9 @@ export function ProjectAdministration({
         amountRequested,
         amountApproved: 0,
         amountLegalized: 0,
+        amountReturned: 0,
+        returnComment: '',
+        costCenters: normalizeCostCenters(undefined, amountRequested),
         balance: amountRequested,
         pendingRole: 'administrative_validation',
         nextAction: 'validate_advance',
@@ -1105,10 +1465,35 @@ export function ProjectAdministration({
       return;
     }
 
+    const amountReturned = roundCurrency(advanceEditForm.amountReturned);
+    const approvedAmount = asNumber(editingAdvance.amountApproved || editingAdvance.amountRequested);
+    const legalizedAmount = asNumber(editingAdvance.amountLegalized);
+    const maxReturnable = Math.max(0, approvedAmount - legalizedAmount);
+    if (amountReturned < 0) {
+      toast.error('El valor devuelto no puede ser negativo.');
+      return;
+    }
+    if (amountReturned > maxReturnable + 0.01) {
+      toast.error(`La devolución no puede superar el saldo pendiente: ${formatMoney(maxReturnable)}.`);
+      return;
+    }
+    const costCenters = normalizeCostCenters(advanceEditForm.costCenters, approvedAmount || asNumber(editingAdvance.amountRequested));
+    if (!costCentersAreBalanced(costCenters)) {
+      toast.error(`Los centros de costo deben sumar 100%. Ahora suman ${editingCostCenterTotal}%.`);
+      return;
+    }
+    const coverage = getAdvanceFinancialCoverage({
+      ...editingAdvance,
+      amountApproved: approvedAmount,
+      amountLegalized: legalizedAmount,
+      amountReturned,
+    });
+    const hasOpenReceipts = (editingAdvance.receipts || []).some((receipt) => receipt.status === 'submitted' || receipt.status === 'returned');
+    const shouldClose = coverage.isFullyCovered && !hasOpenReceipts && editingAdvance.status !== 'rejected';
     const destination = [advanceEditForm.municipality, advanceEditForm.department].filter(Boolean).join(', ');
     setSubmitting(true);
     try {
-      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', editingAdvance.id), {
+      const updatePayload: any = {
         customId: customId || null,
         customIdNormalized: customId ? customId.toLowerCase() : null,
         destination,
@@ -1117,19 +1502,43 @@ export function ProjectAdministration({
         purpose: advanceEditForm.purpose.trim(),
         travelStart: advanceEditForm.travelStart,
         travelEnd: advanceEditForm.travelEnd,
+        amountReturned,
+        returnComment: advanceEditForm.returnComment.trim(),
+        costCenters,
+        balance: Math.max(0, coverage.balance),
         updatedAt: serverTimestamp(),
         administrativeEditedAt: serverTimestamp(),
         administrativeEditedBy: currentUser?.uid || null,
         administrativeEditedByName: getCurrentUserName(currentUser),
-      });
+      };
+
+      if (amountReturned !== asNumber(editingAdvance.amountReturned)) {
+        updatePayload.returnedAt = amountReturned > 0 ? serverTimestamp() : null;
+        updatePayload.returnedBy = amountReturned > 0 ? currentUser?.uid || null : null;
+        updatePayload.returnedByName = amountReturned > 0 ? getCurrentUserName(currentUser) : '';
+      }
+      if (shouldClose) {
+        updatePayload.status = 'closed';
+        updatePayload.nextAction = 'closed';
+        updatePayload.pendingRole = null;
+        updatePayload.inboxTargetUserId = null;
+        updatePayload.closedAt = editingAdvance.closedAt || serverTimestamp();
+      }
+
+      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', editingAdvance.id), updatePayload);
 
       await logAdministrativeEvent(editingAdvance.id, 'advance_administrative_updated', {
         customId: customId || null,
         destination,
         travelStart: advanceEditForm.travelStart,
         travelEnd: advanceEditForm.travelEnd,
+        amountReturned,
+        returnComment: advanceEditForm.returnComment.trim(),
+        costCenters,
+        balance: Math.max(0, coverage.balance),
+        closed: shouldClose,
       });
-      toast.success('Anticipo actualizado desde legalizaciones.');
+      toast.success(shouldClose ? 'Anticipo actualizado y cerrado con saldo cubierto.' : 'Anticipo actualizado desde legalizaciones.');
       setEditingAdvance(null);
     } catch (error: any) {
       console.error('Error updating advance from legalizations:', error);
@@ -1270,8 +1679,13 @@ export function ProjectAdministration({
         .filter(isApprovedReceipt)
         .reduce((sum, item) => sum + asNumber(item.amount), 0);
       const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
-      const difference = amountApproved - amountLegalized;
-      const isClosed = amountApproved > 0 && amountLegalized >= amountApproved;
+      const coverage = getAdvanceFinancialCoverage({
+        ...latestAdvance,
+        amountApproved,
+        amountLegalized,
+      });
+      const difference = coverage.balance;
+      const isClosed = coverage.isFullyCovered;
       const shouldStayCompleted = latestAdvance.status === 'completed';
       const nextAdvanceStatus: TravelAdvance['status'] = isClosed
         ? 'closed'
@@ -1430,11 +1844,16 @@ export function ProjectAdministration({
         .filter(isApprovedReceipt)
         .reduce((sum, item) => sum + asNumber(item.amount), 0);
       const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
+      const coverage = getAdvanceFinancialCoverage({
+        ...latestAdvance,
+        amountApproved,
+        amountLegalized,
+      });
 
       await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
         receipts: nextReceipts,
         amountLegalized,
-        balance: amountApproved - amountLegalized,
+        balance: Math.max(0, coverage.balance),
         status: 'approved',
         nextAction: 'validate_receipt',
         pendingRole: 'administrative_validation',
@@ -1498,10 +1917,16 @@ export function ProjectAdministration({
 
       if (reviewAction.type === 'approveAdvance') {
         const approvedAmount = asNumber(reviewAction.advance.amountRequested);
+        const coverage = getAdvanceFinancialCoverage({
+          ...reviewAction.advance,
+          amountApproved: approvedAmount,
+        });
         await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', reviewAction.advance.id), {
           status: 'approved',
           amountApproved: approvedAmount,
-          balance: Math.max(0, approvedAmount - asNumber(reviewAction.advance.amountLegalized)),
+          amountReturned: coverage.returnedCash,
+          balance: Math.max(0, coverage.balance),
+          costCenters: normalizeCostCenters(reviewAction.advance.costCenters, approvedAmount),
           adminComment: reviewComment.trim() || null,
           nextAction: 'justify_advance',
           inboxTargetUserId: reviewAction.advance.requesterId,
@@ -1560,10 +1985,15 @@ export function ProjectAdministration({
           .filter(isApprovedReceipt)
           .reduce((sum, item) => sum + asNumber(item.amount), 0);
         const amountApproved = asNumber(advance.amountApproved || advance.amountRequested);
+        const coverage = getAdvanceFinancialCoverage({
+          ...advance,
+          amountApproved,
+          amountLegalized,
+        });
         await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', advance.id), {
           receipts: nextReceipts,
           amountLegalized,
-          balance: amountApproved - amountLegalized,
+          balance: Math.max(0, coverage.balance),
           status: 'approved',
           nextAction: 'correct_receipt',
           pendingRole: null,
@@ -1609,8 +2039,13 @@ export function ProjectAdministration({
 
     const amountLegalized = nextReceipts.filter(isApprovedReceipt).reduce((sum, item) => sum + asNumber(item.amount), 0);
     const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
-    const balance = amountApproved - amountLegalized;
-    const isClosed = amountApproved > 0 && amountLegalized >= amountApproved && nextReceipts.every(isApprovedReceipt);
+    const coverage = getAdvanceFinancialCoverage({
+      ...latestAdvance,
+      amountApproved,
+      amountLegalized,
+    });
+    const balance = coverage.balance;
+    const isClosed = coverage.isFullyCovered && nextReceipts.every(isApprovedReceipt);
 
     setSubmitting(true);
     try {
@@ -1630,6 +2065,7 @@ export function ProjectAdministration({
       await logAdministrativeEvent(latestAdvance.id, isClosed ? 'advance_closed_by_requester' : 'advance_completed_by_requester', {
         amountApproved,
         amountLegalized,
+        amountReturned: coverage.returnedCash,
         balance,
       });
       toast.success(isClosed ? 'Anticipo legalizado completamente.' : 'Anticipo marcado como completado para revisión administrativa.');
@@ -2180,7 +2616,7 @@ export function ProjectAdministration({
           {[
             ['requests', 'Anticipos', advances.length],
             ['receipts', 'Legalizaciones', receipts.length],
-            ['payments', 'Costos reales', payments.filter((payment) => payment.source === 'advance_receipt').length],
+            ['payments', 'Costos reales', realCostAdvanceGroups.length],
             ['settings', 'Dominios', categoryOptions.length],
           ].map(([id, label, count]) => (
             <button
@@ -2467,30 +2903,135 @@ export function ProjectAdministration({
           )}
 
           {view === 'payments' && (
-            <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
-              <div className="border-b border-slate-100 p-4">
-                <h3 className="text-lg font-black text-slate-950">Costos reales administrativos</h3>
-                <p className="text-sm font-medium text-slate-500">Pagos reales generados al aprobar legalizaciones de anticipos.</p>
+            <div className="space-y-4">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <h3 className="text-lg font-black text-slate-950">Costos reales por anticipo finalizado</h3>
+                <p className="text-sm font-medium text-slate-500">
+                  Cada anticipo cerrado agrupa sus soportes aprobados, dinero devuelto, centros de costo y un informe descargable.
+                </p>
               </div>
-              <div className="divide-y divide-slate-100">
-                {payments.filter((payment) => payment.source === 'advance_receipt').length === 0 ? (
-                  <EmptyState title="Sin costos reales administrativos" body="Cuando un soporte sea aprobado se creará un pago real para facturación y análisis financiero." />
-                ) : (
-                  payments
-                    .filter((payment) => payment.source === 'advance_receipt')
-                    .map((payment) => (
-                      <div key={payment.id} className="grid gap-2 p-4 sm:grid-cols-[1fr_auto] sm:items-center">
-                        <div>
-                          <p className="font-black text-slate-950">{formatMoney(payment.amount)}</p>
-                          <p className="text-xs font-bold text-slate-500">Registrado {formatDate(payment.date)} · Anticipo {payment.advanceId}</p>
+              {realCostAdvanceGroups.length === 0 ? (
+                <EmptyState
+                  title="Sin anticipos finalizados"
+                  body="Los costos reales aparecerán cuando un anticipo quede completamente legalizado o cubierto con devolución."
+                />
+              ) : (
+                realCostAdvanceGroups.map((group) => {
+                  const statusMeta = statusConfig[group.advance.status] || statusConfig.closed;
+                  return (
+                    <section key={group.advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                      <div className="grid gap-4 border-b border-slate-100 bg-slate-50 p-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-md bg-slate-900 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">
+                              Costo real
+                            </span>
+                            <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${statusMeta.className}`}>
+                              {statusMeta.label}
+                            </span>
+                            {group.advance.customId && (
+                              <span className="rounded-md bg-violet-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-violet-700 ring-1 ring-violet-100">
+                                ID {group.advance.customId}
+                              </span>
+                            )}
+                            <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-600 ring-1 ring-slate-200">
+                              {group.receipts.length} soporte{group.receipts.length === 1 ? '' : 's'} aprobado{group.receipts.length === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                          <h4 className="mt-2 truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</h4>
+                          <p className="mt-1 text-xs font-bold text-slate-500">
+                            {group.advance.requesterName} · {group.advance.destination} · cerrado {formatDate(group.advance.closedAt || group.advance.updatedAt)}
+                          </p>
                         </div>
-                        <span className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-black text-emerald-700 ring-1 ring-emerald-100">
-                          Pago real
-                        </span>
+                        <Button
+                          type="button"
+                          onClick={() => downloadAdvanceReport(group)}
+                          className="bg-slate-950 font-bold text-white hover:bg-slate-800"
+                        >
+                          <Download size={16} className="mr-2" />
+                          Descargar informe
+                        </Button>
                       </div>
-                    ))
-                )}
-              </div>
+
+                      <div className="grid gap-3 p-4 md:grid-cols-5">
+                        <ReceiptGroupMetric label="Aprobado" value={formatMoney(group.coverage.approved)} tone="slate" />
+                        <ReceiptGroupMetric label="Legalizado" value={formatMoney(group.coverage.legalized)} tone="emerald" />
+                        <ReceiptGroupMetric label="Devuelto" value={formatMoney(group.coverage.returnedCash)} tone="amber" />
+                        <ReceiptGroupMetric label="Costo real" value={formatMoney(group.realCost)} tone="slate" />
+                        <ReceiptGroupMetric label="Soportes" value={`${group.receipts.length}`} tone="slate" />
+                      </div>
+
+                      <div className="grid gap-4 border-t border-slate-100 p-4 lg:grid-cols-[0.9fr_1.4fr]">
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                          <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Centros de costo</p>
+                          <div className="mt-3 space-y-2">
+                            {group.costCenters.map((center) => (
+                              <div key={center.id} className="rounded-lg bg-white px-3 py-2 ring-1 ring-slate-200">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="truncate text-sm font-black text-slate-900">{center.name}</span>
+                                  <span className="text-xs font-black text-indigo-600">{center.percentage}%</span>
+                                </div>
+                                <p className="mt-1 text-xs font-bold text-slate-500">
+                                  {formatMoney(center.amount)}
+                                  {center.note ? ` · ${center.note}` : ''}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-slate-200 bg-white">
+                          <div className="border-b border-slate-100 px-3 py-2">
+                            <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Ficha técnica de legalizaciones</p>
+                          </div>
+                          <div className="divide-y divide-slate-100">
+                            {group.receipts.length === 0 ? (
+                              <div className="p-3 text-sm font-bold text-slate-500">Sin soportes aprobados.</div>
+                            ) : (
+                              group.receipts.map((receipt) => {
+                                const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
+                                return (
+                                  <div key={receipt.id} className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                                    <div className="min-w-0">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="text-sm font-black text-slate-950">{receipt.categoryName}</span>
+                                        <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${documentMeta.className}`}>
+                                          {documentMeta.shortLabel}
+                                        </span>
+                                        <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-black text-slate-700">
+                                          {formatMoney(receipt.amount)}
+                                        </span>
+                                      </div>
+                                      <p className="mt-1 truncate text-xs font-bold text-slate-500">
+                                        {receipt.businessName || 'Sin razón social'} · {formatDate(receipt.date)}
+                                      </p>
+                                      <p className="mt-1 break-words text-[11px] font-semibold text-slate-400">
+                                        {receipt.invoiceNumber ? `${documentMeta.numberLabel} ${receipt.invoiceNumber}` : documentMeta.label}
+                                        {receipt.cufe ? ` · CUFE ${receipt.cufe}` : ''}
+                                      </p>
+                                    </div>
+                                    {receipt.fileUrl && (
+                                      <a
+                                        href={receipt.fileUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-indigo-100 px-3 py-2 text-xs font-black text-indigo-600 hover:bg-indigo-50"
+                                      >
+                                        <FileImage size={14} />
+                                        Soporte
+                                      </a>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  );
+                })
+              )}
             </div>
           )}
 
@@ -2916,6 +3457,98 @@ export function ProjectAdministration({
                   placeholder="Describe o corrige el alcance administrativo del anticipo."
                 />
               </Field>
+              <div className="grid gap-3 md:grid-cols-[220px_1fr]">
+                <Field label="Dinero devuelto">
+                  <input
+                    className={inputClass}
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={advanceEditForm.amountReturned}
+                    onChange={(event) => setAdvanceEditForm((current) => ({ ...current, amountReturned: event.target.value }))}
+                    placeholder="0"
+                  />
+                </Field>
+                <Field label="Comentario de devolución">
+                  <input
+                    className={inputClass}
+                    value={advanceEditForm.returnComment}
+                    onChange={(event) => setAdvanceEditForm((current) => ({ ...current, returnComment: event.target.value }))}
+                    placeholder="Ej: reintegro caja menor, transferencia o saldo no usado."
+                  />
+                </Field>
+              </div>
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/40 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] font-black uppercase tracking-[0.28em] text-emerald-700">Centros de costo</p>
+                    <p className="mt-1 text-xs font-bold text-slate-500">Distribuye el dinero aprobado. La suma de porcentajes debe ser 100%.</p>
+                  </div>
+                  <span
+                    className={`rounded-md px-2 py-1 text-xs font-black ${
+                      costCentersAreBalanced(advanceEditForm.costCenters)
+                        ? 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200'
+                        : 'bg-amber-100 text-amber-700 ring-1 ring-amber-200'
+                    }`}
+                  >
+                    {editingCostCenterTotal}% asignado
+                  </span>
+                </div>
+                <div className="mt-3 space-y-3">
+                  {advanceEditForm.costCenters.map((center) => (
+                    <div key={center.id} className="rounded-xl border border-white/70 bg-white p-3 shadow-sm">
+                      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_120px_auto] lg:items-end">
+                        <Field label="Centro">
+                          <input
+                            className={inputClass}
+                            value={center.name}
+                            onChange={(event) => updateAdvanceCostCenter(center.id, { name: event.target.value })}
+                            placeholder="Ej: Campo, oficina, interventoría..."
+                          />
+                        </Field>
+                        <Field label="%">
+                          <input
+                            className={inputClass}
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="0.01"
+                            value={center.percentage}
+                            onChange={(event) => updateAdvanceCostCenter(center.id, { percentage: asNumber(event.target.value) })}
+                          />
+                        </Field>
+                        <button
+                          type="button"
+                          onClick={() => removeAdvanceCostCenter(center.id)}
+                          disabled={advanceEditForm.costCenters.length <= 1}
+                          className="inline-flex h-11 items-center justify-center rounded-lg border border-rose-100 px-3 text-rose-500 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label={`Eliminar ${center.name}`}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                      <div className="mt-3 grid gap-3 md:grid-cols-[180px_1fr]">
+                        <div className="rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-100">
+                          <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Monto calculado</p>
+                          <p className="mt-1 text-sm font-black text-slate-950">{formatMoney(center.amount)}</p>
+                        </div>
+                        <Field label="Nota">
+                          <input
+                            className={inputClass}
+                            value={center.note || ''}
+                            onChange={(event) => updateAdvanceCostCenter(center.id, { note: event.target.value })}
+                            placeholder="Opcional"
+                          />
+                        </Field>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <Button type="button" variant="outline" onClick={addAdvanceCostCenter} className="mt-3 border-emerald-200 text-emerald-700 hover:bg-emerald-50">
+                  <Plus size={14} className="mr-2" />
+                  Agregar centro de costo
+                </Button>
+              </div>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -2928,9 +3561,15 @@ export function ProjectAdministration({
                 <SummaryLine label="Periodo" value={`${formatDate(advanceEditForm.travelStart)} - ${formatDate(advanceEditForm.travelEnd)}`} />
                 <SummaryLine label="Días calendario" value={`${inclusiveDays(advanceEditForm.travelStart, advanceEditForm.travelEnd)} días`} />
                 <SummaryLine label="Tareas vinculadas" value={`${(editingAdvance.taskIds || []).length || (editingAdvance.taskId ? 1 : 0)}`} />
-                <SummaryLine label="Aprobado" value={formatMoney(editingAdvance.amountApproved || editingAdvance.amountRequested)} />
-                <SummaryLine label="Legalizado" value={formatMoney(editingAdvance.amountLegalized)} />
-                <SummaryLine label="Saldo" value={formatMoney(editingAdvance.balance)} strong />
+                <SummaryLine label="Aprobado" value={formatMoney(editingAdvanceCoverage?.approved || editingAdvance.amountApproved || editingAdvance.amountRequested)} />
+                <SummaryLine label="Legalizado" value={formatMoney(editingAdvanceCoverage?.legalized || editingAdvance.amountLegalized)} />
+                <SummaryLine label="Devuelto" value={formatMoney(editingAdvanceCoverage?.returnedCash || 0)} />
+                <SummaryLine label="Cubierto" value={`${formatMoney(editingAdvanceCoverage?.covered || 0)} · ${editingAdvanceCoverage?.progress || 0}%`} />
+                <SummaryLine
+                  label={(editingAdvanceCoverage?.balance || 0) < 0 ? 'Sobra' : 'Saldo'}
+                  value={formatMoney(Math.abs(editingAdvanceCoverage?.balance || 0))}
+                  strong
+                />
               </div>
               {editingAdvance.administrativeEditedAt && (
                 <p className="mt-4 rounded-xl border border-slate-200 bg-white p-3 text-xs font-bold leading-5 text-slate-500">
