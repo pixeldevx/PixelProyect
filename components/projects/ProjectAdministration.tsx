@@ -40,6 +40,7 @@ import { db, storage } from '@/lib/backend';
 import { ref, uploadBytes, getDownloadURL, getAuthorizedDownloadURL } from '@/lib/supabase/storage-shim';
 import { buildDocumentStoragePath, getDocumentFolderStorageSegments } from '@/lib/document-storage';
 import { ensureManagedDocumentFolderPath } from '@/lib/document-folders';
+import { isCompletedTaskStatus } from '@/lib/taskProgress';
 
 type ColombiaDepartment = {
   department: string;
@@ -282,6 +283,37 @@ type ProjectAdministrationProps = {
   canManage: boolean;
   canValidate: boolean;
   canConfigure: boolean;
+};
+
+type AdvanceTaskStatusFilter = 'active' | 'all' | 'pending' | 'in_progress' | 'blocked' | 'completed';
+
+const UNGROUPED_TASK_GROUP_ID = '__ungrouped__';
+
+const normalizeTaskSearchText = (value: unknown) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+
+const getTaskStatusMeta = (task: any) => {
+  const status = String(task?.status || '').toLowerCase();
+  if (isCompletedTaskStatus(status)) {
+    return { key: 'completed', label: 'Finalizada', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' };
+  }
+  if (['cancelled', 'canceled', 'deleted'].includes(status)) {
+    return { key: 'cancelled', label: 'Cancelada', className: 'bg-slate-100 text-slate-500 ring-slate-200' };
+  }
+  if (status === 'stuck') {
+    return { key: 'blocked', label: 'Bloqueada', className: 'bg-rose-50 text-rose-700 ring-rose-100' };
+  }
+  if (status === 'paused') {
+    return { key: 'blocked', label: 'Pausada', className: 'bg-amber-50 text-amber-700 ring-amber-100' };
+  }
+  if (['in_progress', 'started'].includes(status)) {
+    return { key: 'in_progress', label: 'En curso', className: 'bg-sky-50 text-sky-700 ring-sky-100' };
+  }
+  return { key: 'pending', label: 'Pendiente', className: 'bg-slate-50 text-slate-600 ring-slate-200' };
 };
 
 const DEFAULT_CATEGORIES: Array<Omit<ExpenseCategory, 'id'>> = [
@@ -668,6 +700,9 @@ export function ProjectAdministration({
   const [advanceSearch, setAdvanceSearch] = useState('');
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [advanceForm, setAdvanceForm] = useState(() => buildEmptyAdvanceForm(currentUser, teamMembers));
+  const [advanceTaskSearch, setAdvanceTaskSearch] = useState('');
+  const [advanceTaskStatusFilter, setAdvanceTaskStatusFilter] = useState<AdvanceTaskStatusFilter>('active');
+  const [advanceTaskGroupFilter, setAdvanceTaskGroupFilter] = useState('all');
   const [advanceDraftItem, setAdvanceDraftItem] = useState<AdvanceItem | null>(null);
   const [selectedAdvance, setSelectedAdvance] = useState<TravelAdvance | null>(null);
   const [editingAdvance, setEditingAdvance] = useState<TravelAdvance | null>(null);
@@ -804,6 +839,89 @@ export function ProjectAdministration({
     () => tasks.filter((task) => advanceForm.taskIds.includes(task.id)),
     [advanceForm.taskIds, tasks]
   );
+  const taskById = useMemo(
+    () => new Map(tasks.filter((task) => task?.id).map((task) => [task.id as string, task])),
+    [tasks]
+  );
+  const getAdvanceTaskGroupId = useCallback((task: any) => {
+    const visited = new Set<string>();
+    let current = task;
+
+    while (current && !visited.has(String(current.id || ''))) {
+      if (current.groupId) return String(current.groupId);
+      if (!current.id || !current.parentTaskId) break;
+      visited.add(String(current.id));
+      current = taskById.get(current.parentTaskId);
+    }
+
+    return UNGROUPED_TASK_GROUP_ID;
+  }, [taskById]);
+  const advanceTaskGroups = useMemo(() => {
+    const groups = new Map<string, { id: string; name: string; color?: string; order: number }>();
+    (Array.isArray(project?.taskGroups) ? project.taskGroups : []).forEach((group: any, index: number) => {
+      if (!group?.id) return;
+      groups.set(group.id, {
+        id: group.id,
+        name: group.name || 'Grupo sin nombre',
+        color: group.color,
+        order: Number(group.order ?? index),
+      });
+    });
+    tasks.forEach((task) => {
+      const groupId = getAdvanceTaskGroupId(task);
+      if (groupId === UNGROUPED_TASK_GROUP_ID || groups.has(groupId)) return;
+      groups.set(groupId, {
+        id: groupId,
+        name: task.groupName || 'Grupo sin nombre',
+        color: task.groupColor,
+        order: groups.size,
+      });
+    });
+
+    return [
+      ...[...groups.values()].sort((left, right) => left.order - right.order || left.name.localeCompare(right.name)),
+      { id: UNGROUPED_TASK_GROUP_ID, name: 'Sin grupo', color: '#94a3b8', order: Number.MAX_SAFE_INTEGER },
+    ];
+  }, [getAdvanceTaskGroupId, project?.taskGroups, tasks]);
+  const advanceTaskGroupById = useMemo(
+    () => new Map(advanceTaskGroups.map((group) => [group.id, group])),
+    [advanceTaskGroups]
+  );
+  const filteredAdvanceTasks = useMemo(() => {
+    const search = normalizeTaskSearchText(advanceTaskSearch);
+
+    return [...tasks]
+      .filter((task) => {
+        const statusMeta = getTaskStatusMeta(task);
+        const isActive = !['completed', 'cancelled'].includes(statusMeta.key);
+        if (advanceTaskStatusFilter === 'active' && !isActive) return false;
+        if (advanceTaskStatusFilter !== 'active' && advanceTaskStatusFilter !== 'all' && statusMeta.key !== advanceTaskStatusFilter) {
+          return false;
+        }
+
+        const groupId = getAdvanceTaskGroupId(task);
+        if (advanceTaskGroupFilter !== 'all' && groupId !== advanceTaskGroupFilter) return false;
+        if (!search) return true;
+
+        const parentTask = task.parentTaskId ? taskById.get(task.parentTaskId) : null;
+        const groupName = advanceTaskGroupById.get(groupId)?.name || 'Sin grupo';
+        return normalizeTaskSearchText([
+          getTaskTitle(task),
+          task.externalWorkflowId,
+          task.description,
+          task.id,
+          groupName,
+          parentTask ? getTaskTitle(parentTask) : '',
+        ].filter(Boolean).join(' ')).includes(search);
+      })
+      .sort((left, right) => {
+        const leftGroup = advanceTaskGroupById.get(getAdvanceTaskGroupId(left));
+        const rightGroup = advanceTaskGroupById.get(getAdvanceTaskGroupId(right));
+        const groupOrder = Number(leftGroup?.order ?? Number.MAX_SAFE_INTEGER) - Number(rightGroup?.order ?? Number.MAX_SAFE_INTEGER);
+        if (groupOrder !== 0) return groupOrder;
+        return getTaskTitle(left).localeCompare(getTaskTitle(right), 'es', { sensitivity: 'base' });
+      });
+  }, [advanceTaskGroupById, advanceTaskGroupFilter, advanceTaskSearch, advanceTaskStatusFilter, getAdvanceTaskGroupId, taskById, tasks]);
 
   useEffect(() => {
     if (!advanceDraftItem && categoryOptions.length > 0) {
@@ -1221,8 +1339,28 @@ export function ProjectAdministration({
 
   const openNewAdvance = () => {
     setAdvanceForm(buildEmptyAdvanceForm(currentUser, teamMembers));
+    setAdvanceTaskSearch('');
+    setAdvanceTaskStatusFilter('active');
+    setAdvanceTaskGroupFilter('all');
     void loadLocationOptions();
     setIsAdvanceModalOpen(true);
+  };
+
+  const toggleAdvanceTask = (taskId: string) => {
+    setAdvanceForm((current) => ({
+      ...current,
+      taskIds: current.taskIds.includes(taskId)
+        ? current.taskIds.filter((id) => id !== taskId)
+        : [...current.taskIds, taskId],
+    }));
+  };
+
+  const selectVisibleAdvanceTasks = () => {
+    const visibleIds = filteredAdvanceTasks.map((task) => task.id).filter(Boolean);
+    setAdvanceForm((current) => ({
+      ...current,
+      taskIds: Array.from(new Set([...current.taskIds, ...visibleIds])),
+    }));
   };
 
   const openAdvanceEditor = (advance: TravelAdvance) => {
@@ -3609,69 +3747,177 @@ export function ProjectAdministration({
                     {!teamMembers.length && currentUser && <option value={currentUser.uid}>{getCurrentUserName(currentUser)}</option>}
                   </select>
                 </Field>
-                <Field label="Centro de costos">
-                  <select
-                    className={inputClass}
-                    value={advanceForm.costCenterId}
-                    onChange={(event) => setAdvanceForm((current) => ({ ...current, costCenterId: event.target.value }))}
-                  >
-                    <option value="">Selecciona centro de costos</option>
-                    {costCenterOptions.map((center) => (
-                      <option key={center.id} value={center.id}>
-                        {center.code ? `${center.code} · ` : ''}{center.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Tareas relacionadas">
-                  <div className="space-y-2">
+                <div className="md:col-span-2">
+                  <Field label="Centro de costos">
                     <select
                       className={inputClass}
-                      value=""
-                      onChange={(event) => {
-                        const taskId = event.target.value;
-                        if (!taskId) return;
-                        setAdvanceForm((current) => ({
-                          ...current,
-                          taskIds: current.taskIds.includes(taskId) ? current.taskIds : [...current.taskIds, taskId],
-                        }));
-                      }}
+                      value={advanceForm.costCenterId}
+                      onChange={(event) => setAdvanceForm((current) => ({ ...current, costCenterId: event.target.value }))}
                     >
-                      <option value="">Agregar tarea asociada...</option>
-                      {tasks.map((task) => (
-                        <option key={task.id} value={task.id} disabled={advanceForm.taskIds.includes(task.id)}>
-                          {getTaskTitle(task)}
+                      <option value="">Selecciona centro de costos</option>
+                      {costCenterOptions.map((center) => (
+                        <option key={center.id} value={center.id}>
+                          {center.code ? `${center.code} · ` : ''}{center.name}
                         </option>
                       ))}
                     </select>
-                    <div className="flex min-h-9 flex-wrap gap-2">
-                      {selectedAdvanceTasks.length === 0 ? (
-                        <span className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-bold text-slate-400 ring-1 ring-slate-200">
-                          Sin tareas asociadas
-                        </span>
+                  </Field>
+                </div>
+                <div className="md:col-span-2">
+                  <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">Tareas relacionadas</span>
+                    <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-black text-indigo-700 ring-1 ring-indigo-100">
+                      {selectedAdvanceTasks.length} seleccionada{selectedAdvanceTasks.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50/70 shadow-sm">
+                    <div className="grid gap-2 border-b border-slate-200 bg-white p-3 lg:grid-cols-[minmax(0,1fr)_180px_210px]">
+                      <div className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 transition focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-500/10">
+                        <Search size={16} className="shrink-0 text-slate-400" />
+                        <input
+                          type="search"
+                          value={advanceTaskSearch}
+                          onChange={(event) => setAdvanceTaskSearch(event.target.value)}
+                          placeholder="Buscar por tarea, código o descripción..."
+                          className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-800 outline-none placeholder:text-slate-400"
+                        />
+                        {advanceTaskSearch && (
+                          <button
+                            type="button"
+                            onClick={() => setAdvanceTaskSearch('')}
+                            className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                            aria-label="Limpiar búsqueda de tareas"
+                          >
+                            <X size={14} />
+                          </button>
+                        )}
+                      </div>
+                      <select
+                        value={advanceTaskStatusFilter}
+                        onChange={(event) => setAdvanceTaskStatusFilter(event.target.value as AdvanceTaskStatusFilter)}
+                        className={inputClass}
+                        aria-label="Filtrar tareas por estado"
+                      >
+                        <option value="active">Tareas activas</option>
+                        <option value="pending">Pendientes</option>
+                        <option value="in_progress">En curso</option>
+                        <option value="blocked">Pausadas o bloqueadas</option>
+                        <option value="completed">Finalizadas</option>
+                        <option value="all">Todos los estados</option>
+                      </select>
+                      <select
+                        value={advanceTaskGroupFilter}
+                        onChange={(event) => setAdvanceTaskGroupFilter(event.target.value)}
+                        className={inputClass}
+                        aria-label="Filtrar tareas por grupo"
+                      >
+                        <option value="all">Todos los grupos</option>
+                        {advanceTaskGroups.map((group) => (
+                          <option key={group.id} value={group.id}>{group.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
+                      <p className="text-[11px] font-bold text-slate-500">
+                        {filteredAdvanceTasks.length} resultado{filteredAdvanceTasks.length === 1 ? '' : 's'}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        {filteredAdvanceTasks.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={selectVisibleAdvanceTasks}
+                            className="text-[11px] font-black text-indigo-600 hover:text-indigo-800"
+                          >
+                            Seleccionar resultados
+                          </button>
+                        )}
+                        {selectedAdvanceTasks.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setAdvanceForm((current) => ({ ...current, taskIds: [] }))}
+                            className="text-[11px] font-black text-rose-600 hover:text-rose-800"
+                          >
+                            Quitar todas
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="max-h-64 overflow-y-auto bg-white p-2">
+                      {filteredAdvanceTasks.length === 0 ? (
+                        <div className="px-4 py-8 text-center">
+                          <Search className="mx-auto h-7 w-7 text-slate-300" />
+                          <p className="mt-2 text-sm font-black text-slate-600">No encontramos tareas</p>
+                          <p className="mt-1 text-xs font-medium text-slate-400">Prueba otro término, estado o grupo.</p>
+                        </div>
                       ) : (
-                        selectedAdvanceTasks.map((task) => (
-                          <span key={task.id} className="inline-flex max-w-full items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700 ring-1 ring-indigo-100">
-                            <span className="truncate">{getTaskTitle(task)}</span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setAdvanceForm((current) => ({
-                                  ...current,
-                                  taskIds: current.taskIds.filter((id) => id !== task.id),
-                                }))
-                              }
-                              className="rounded-md p-0.5 text-indigo-400 hover:bg-indigo-100 hover:text-indigo-700"
-                              aria-label={`Quitar ${getTaskTitle(task)}`}
-                            >
-                              <X size={13} />
-                            </button>
-                          </span>
-                        ))
+                        <div className="space-y-1">
+                          {filteredAdvanceTasks.map((task) => {
+                            const selected = advanceForm.taskIds.includes(task.id);
+                            const group = advanceTaskGroupById.get(getAdvanceTaskGroupId(task));
+                            const status = getTaskStatusMeta(task);
+                            const parentTask = task.parentTaskId ? taskById.get(task.parentTaskId) : null;
+
+                            return (
+                              <label
+                                key={task.id}
+                                className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition ${
+                                  selected
+                                    ? 'border-indigo-200 bg-indigo-50/70 ring-1 ring-indigo-100'
+                                    : 'border-transparent bg-white hover:border-slate-200 hover:bg-slate-50'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selected}
+                                  onChange={() => toggleAdvanceTask(task.id)}
+                                  className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-sm font-black text-slate-800">{getTaskTitle(task)}</span>
+                                  <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-semibold text-slate-400">
+                                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                                      <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: group?.color || '#94a3b8' }} />
+                                      <span className="truncate">{group?.name || 'Sin grupo'}</span>
+                                    </span>
+                                    {parentTask && <span className="truncate">Subtarea de {getTaskTitle(parentTask)}</span>}
+                                    {task.externalWorkflowId && <span className="truncate">{task.externalWorkflowId}</span>}
+                                  </span>
+                                </span>
+                                <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-black ring-1 ${status.className}`}>
+                                  {status.label}
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="border-t border-slate-200 bg-slate-50 p-3">
+                      {selectedAdvanceTasks.length === 0 ? (
+                        <p className="text-xs font-bold text-slate-400">No hay tareas asociadas. Este campo es opcional.</p>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {selectedAdvanceTasks.map((task) => (
+                            <span key={task.id} className="inline-flex max-w-full items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs font-black text-indigo-700 ring-1 ring-indigo-100">
+                              <span className="max-w-64 truncate">{getTaskTitle(task)}</span>
+                              <button
+                                type="button"
+                                onClick={() => toggleAdvanceTask(task.id)}
+                                className="rounded-md p-0.5 text-indigo-400 hover:bg-indigo-100 hover:text-indigo-700"
+                                aria-label={`Quitar ${getTaskTitle(task)}`}
+                              >
+                                <X size={13} />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </div>
                   </div>
-                </Field>
+                </div>
                 <Field label="Departamento">
                   <select
                     className={inputClass}
