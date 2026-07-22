@@ -1407,6 +1407,8 @@ export function EditTaskStructureModal({
                     steps={workflowSteps}
                     rateCards={rateCards}
                     teamMembers={teamMembers}
+                    projectId={projectId}
+                    project={project}
                     allowAnyTarget={isVariableWorkflow}
                     onChange={(nextSteps) => setWorkflowSteps(nextSteps)}
                   />
@@ -2143,6 +2145,8 @@ export function EditTaskStructureModal({
           initialForm={workflowSteps[currentStepIndexForForm]?.form}
           rateCards={rateCards}
           teamMembers={teamMembers}
+          projectId={projectId}
+          project={project}
           onSave={(form) => {
             if (currentStepIndexForForm === null) return;
             updateStep(currentStepIndexForForm, { form });
@@ -2169,6 +2173,8 @@ export function EditTaskStructureModal({
           }
           rateCards={rateCards}
           teamMembers={teamMembers}
+          projectId={projectId}
+          project={project}
           onSave={handleSaveSubtaskCompletionForm}
         />
       )}

@@ -47,6 +47,8 @@ type WorkflowRoutingBuilderProps = {
   rateCards?: any[];
   teamMembers?: any[];
   allowAnyTarget?: boolean;
+  projectId?: string;
+  project?: any;
 };
 
 const COMPLETE_NODE_ID = "workflow-complete";
@@ -188,6 +190,8 @@ export function WorkflowRoutingBuilder({
   rateCards = [],
   teamMembers = [],
   allowAnyTarget = false,
+  projectId = '',
+  project,
 }: WorkflowRoutingBuilderProps) {
   const [isVisualEditorOpen, setIsVisualEditorOpen] = useState(false);
 
@@ -260,6 +264,8 @@ export function WorkflowRoutingBuilder({
           rateCards={rateCards}
           teamMembers={teamMembers}
           allowAnyTarget={allowAnyTarget}
+          projectId={projectId}
+          project={project}
         />
       )}
     </>
@@ -273,6 +279,8 @@ function WorkflowVisualEditorModal({
   rateCards,
   teamMembers,
   allowAnyTarget,
+  projectId,
+  project,
 }: {
   steps: any[];
   onChange: (steps: any[]) => void;
@@ -280,6 +288,8 @@ function WorkflowVisualEditorModal({
   rateCards: any[];
   teamMembers: any[];
   allowAnyTarget: boolean;
+  projectId: string;
+  project?: any;
 }) {
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [formStepIndex, setFormStepIndex] = useState<number | null>(null);
@@ -798,6 +808,8 @@ function WorkflowVisualEditorModal({
           initialForm={steps[formStepIndex]?.form}
           rateCards={rateCards}
           teamMembers={teamMembers}
+          projectId={projectId}
+          project={project}
           onSave={(form) => {
             if (formStepIndex === null) return;
             saveStepForm(formStepIndex, form);

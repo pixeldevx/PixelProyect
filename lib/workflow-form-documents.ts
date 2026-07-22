@@ -1,7 +1,14 @@
 import { addDoc, collection, doc, getDoc, serverTimestamp, setDoc, updateDoc } from '@/lib/supabase/document-store';
 import { getDownloadURL, ref, uploadBytes } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
-import { buildDocumentStoragePath, getTaskStorageFolderSegments, slugifyStorageSegment } from '@/lib/document-storage';
+import {
+  buildDocumentStoragePath,
+  getDocumentFolderStorageSegments,
+  getTaskStorageFolderSegments,
+  slugifyStorageSegment,
+} from '@/lib/document-storage';
+import { loadProjectDocumentFolders } from '@/lib/document-folders';
+import { getOrganizationIds } from '@/lib/organizations';
 import { getTaskDisplayTitle } from '@/lib/task-title';
 
 export const WORKFLOW_DOCUMENT_VALUE_KIND = 'workflow-document';
@@ -45,6 +52,13 @@ export type WorkflowDocumentValue = {
   documentVersioning?: boolean;
   documentFolderPath?: string | null;
   documentFolderSegments?: string[];
+  projectId?: string | null;
+  sourceProjectId?: string | null;
+  destinationProjectId?: string | null;
+  destinationProjectName?: string | null;
+  destinationFolderId?: string | null;
+  destinationFolderPath?: string | null;
+  documentDestinationMode?: 'task' | 'repository';
   version?: number;
   versionCount?: number;
 };
@@ -105,6 +119,74 @@ const getExistingVersions = (documentData: any): WorkflowDocumentVersion[] => {
   }];
 };
 
+const getProjectName = (project: any, fallback: string) =>
+  String(project?.name || project?.projectName || project?.title || fallback);
+
+const getFolderChain = (folderId: string | null, folders: any[]) => {
+  if (!folderId) return [];
+  const byId = new Map(folders.map((folder) => [String(folder.id), folder]));
+  const chain: any[] = [];
+  const visited = new Set<string>();
+  let current = byId.get(folderId);
+
+  while (current?.id && !visited.has(String(current.id))) {
+    visited.add(String(current.id));
+    chain.unshift(current);
+    current = current.parentFolderId ? byId.get(String(current.parentFolderId)) : null;
+  }
+
+  return chain;
+};
+
+const resolveRepositoryDestination = async ({
+  sourceProjectId,
+  field,
+}: {
+  sourceProjectId: string;
+  field: any;
+}) => {
+  const destinationProjectId = String(field?.documentDestinationProjectId || '').trim();
+  if (!destinationProjectId) {
+    throw new Error('Este documento no tiene un repositorio de destino configurado.');
+  }
+
+  const sourceSnapshot = await getDoc(doc(db, 'projects', sourceProjectId));
+  const destinationSnapshot = destinationProjectId === sourceProjectId
+    ? sourceSnapshot
+    : await getDoc(doc(db, 'projects', destinationProjectId));
+  if (!sourceSnapshot.exists() || !destinationSnapshot.exists()) {
+    throw new Error('No tienes acceso al proyecto de origen o al repositorio de destino.');
+  }
+
+  const sourceProject = { id: sourceSnapshot.id, ...sourceSnapshot.data() };
+  const destinationProject = { id: destinationSnapshot.id, ...destinationSnapshot.data() };
+  if (destinationProjectId !== sourceProjectId) {
+    const sourceOrganizationIds = getOrganizationIds(sourceProject);
+    const destinationOrganizationIds = getOrganizationIds(destinationProject);
+    const sharesOrganization = sourceOrganizationIds.some((id) => destinationOrganizationIds.includes(id));
+    if (!sharesOrganization) {
+      throw new Error('El repositorio de destino debe pertenecer a la misma organización del proyecto.');
+    }
+  }
+
+  const folders = await loadProjectDocumentFolders(destinationProjectId);
+  const destinationFolderId = field?.documentDestinationFolderId
+    ? String(field.documentDestinationFolderId)
+    : null;
+  const folderChain = getFolderChain(destinationFolderId, folders);
+  if (destinationFolderId && folderChain.at(-1)?.id !== destinationFolderId) {
+    throw new Error('La carpeta configurada ya no existe o no tienes permiso para acceder a ella.');
+  }
+
+  return {
+    projectId: destinationProjectId,
+    projectName: getProjectName(destinationProject, destinationProjectId),
+    folderId: destinationFolderId,
+    folderNames: folderChain.map((folder) => String(folder.name || 'Carpeta')),
+    storageFolderSegments: getDocumentFolderStorageSegments(destinationFolderId, folders),
+  };
+};
+
 export async function uploadWorkflowFormDocument({
   file,
   projectId,
@@ -139,12 +221,21 @@ export async function uploadWorkflowFormDocument({
 
   const userId = getUserId(user);
   const uploadedAt = new Date().toISOString();
-  const folderSegments = getDocumentFolderSegments(field?.documentFolderPath);
-  const documentsCollection = collection(db, 'projects', projectId, 'documents');
+  const documentDestinationMode = field?.documentDestinationMode === 'repository' ? 'repository' : 'task';
+  const repositoryDestination = documentDestinationMode === 'repository'
+    ? await resolveRepositoryDestination({ sourceProjectId: projectId, field })
+    : null;
+  const destinationProjectId = repositoryDestination?.projectId || projectId;
+  const destinationProjectName = repositoryDestination?.projectName || projectName || task?.projectName || 'Proyecto';
+  const taskFolderSegments = getDocumentFolderSegments(field?.documentFolderPath);
+  const repositoryFolderSegments = repositoryDestination?.storageFolderSegments || [];
+  const documentsCollection = collection(db, 'projects', destinationProjectId, 'documents');
   const versionedDocumentRef = documentVersioning
     ? doc(
         documentsCollection,
-        `workflow-${slugifyStorageSegment(task?.id || 'tarea', 'tarea')}-${documentKey}`,
+        documentDestinationMode === 'repository'
+          ? `workflow-${slugifyStorageSegment(projectId, 'proyecto')}-${slugifyStorageSegment(task?.id || 'tarea', 'tarea')}-${documentKey}`
+          : `workflow-${slugifyStorageSegment(task?.id || 'tarea', 'tarea')}-${documentKey}`,
       )
     : null;
   const existingSnapshot = versionedDocumentRef ? await getDoc(versionedDocumentRef) : null;
@@ -156,13 +247,13 @@ export async function uploadWorkflowFormDocument({
   );
   const nextVersion = documentVersioning ? currentVersion + 1 : 1;
   const storagePath = buildDocumentStoragePath({
-    projectId,
-    projectName: projectName || task?.projectName || 'Proyecto',
-    task,
-    tasks,
+    projectId: destinationProjectId,
+    projectName: destinationProjectName,
+    task: documentDestinationMode === 'task' ? task : null,
+    tasks: documentDestinationMode === 'task' ? tasks : [],
     fileName: file.name,
     documentName: documentVersioning ? `${documentName}-v${nextVersion}` : `${documentName}-${file.name}`,
-    folderSegments,
+    folderSegments: documentDestinationMode === 'repository' ? repositoryFolderSegments : taskFolderSegments,
   });
   const storageFolder = storagePath.split('/').slice(0, -1).join('/');
   const storageRef = ref(storage, storagePath);
@@ -188,11 +279,16 @@ export async function uploadWorkflowFormDocument({
   };
   const versions = [...existingVersions, version];
   const latestDocumentData = {
-    projectId,
-    taskId: task?.id || null,
-    taskTitle: getTaskDisplayTitle(task),
-    taskFolderSegments: getTaskStorageFolderSegments(task, tasks),
-    scope: 'task',
+    projectId: destinationProjectId,
+    sourceProjectId: projectId,
+    sourceTaskId: task?.id || null,
+    sourceTaskTitle: getTaskDisplayTitle(task),
+    taskId: documentDestinationMode === 'task' ? task?.id || null : null,
+    taskTitle: documentDestinationMode === 'task' ? getTaskDisplayTitle(task) : null,
+    taskFolderSegments: documentDestinationMode === 'task' ? getTaskStorageFolderSegments(task, tasks) : [],
+    scope: documentDestinationMode === 'repository' ? 'project' : 'task',
+    parentFolderId: documentDestinationMode === 'repository' ? repositoryDestination?.folderId || null : null,
+    projectFolderSegments: documentDestinationMode === 'repository' ? repositoryFolderSegments : [],
     name: documentName,
     type: 'workflow_form_document',
     documentSource: 'workflow_form',
@@ -202,8 +298,20 @@ export async function uploadWorkflowFormDocument({
     formFieldLabel: fieldLabel,
     workflowDocumentKey: documentKey || null,
     workflowDocumentVersioning: documentVersioning,
-    workflowDocumentFolderPath: folderSegments.join('/'),
-    documentFolderSegments: folderSegments,
+    workflowDocumentFolderPath: documentDestinationMode === 'repository'
+      ? (repositoryDestination?.folderNames || []).join('/')
+      : taskFolderSegments.join('/'),
+    documentFolderSegments: documentDestinationMode === 'repository'
+      ? repositoryDestination?.folderNames || []
+      : taskFolderSegments,
+    documentDestinationMode,
+    documentDestinationProjectId: destinationProjectId,
+    documentDestinationProjectName: destinationProjectName,
+    documentDestinationFolderId: repositoryDestination?.folderId || null,
+    documentDestinationFolderPath: (repositoryDestination?.folderNames || []).join('/'),
+    accessMode: documentDestinationMode === 'repository' && repositoryDestination?.folderId ? 'inherit' : 'all',
+    allowedMemberIds: [],
+    accessPolicyVersion: documentDestinationMode === 'repository' ? 'folder-inheritance-v1' : null,
     url,
     storagePath: storageRef.fullPath,
     storageFolder,
@@ -226,16 +334,12 @@ export async function uploadWorkflowFormDocument({
     } else {
       await setDoc(versionedDocumentRef, {
         ...latestDocumentData,
-        accessMode: 'all',
-        allowedMemberIds: [],
         createdAt: serverTimestamp(),
       });
     }
   } else {
     documentRef = await addDoc(documentsCollection, {
       ...latestDocumentData,
-      accessMode: 'all',
-      allowedMemberIds: [],
       createdAt: serverTimestamp(),
     });
   }
@@ -260,10 +364,21 @@ export async function uploadWorkflowFormDocument({
     fieldLabel,
     taskId: task?.id || null,
     taskTitle: getTaskDisplayTitle(task),
+    projectId: destinationProjectId,
+    sourceProjectId: projectId,
+    destinationProjectId,
+    destinationProjectName,
+    destinationFolderId: repositoryDestination?.folderId || null,
+    destinationFolderPath: (repositoryDestination?.folderNames || []).join('/'),
+    documentDestinationMode,
     documentKey: documentKey || null,
     documentVersioning,
-    documentFolderPath: folderSegments.join('/'),
-    documentFolderSegments: folderSegments,
+    documentFolderPath: documentDestinationMode === 'repository'
+      ? (repositoryDestination?.folderNames || []).join('/')
+      : taskFolderSegments.join('/'),
+    documentFolderSegments: documentDestinationMode === 'repository'
+      ? repositoryDestination?.folderNames || []
+      : taskFolderSegments,
     version: nextVersion,
     versionCount: versions.length,
   };

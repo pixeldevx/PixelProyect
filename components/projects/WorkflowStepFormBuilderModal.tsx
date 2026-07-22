@@ -1,8 +1,12 @@
 import React, { useState } from 'react';
-import { X, Plus, Trash2, GripVertical, Settings } from 'lucide-react';
+import { X, Plus, Trash2, GripVertical, Settings, FolderTree, MapPin } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { getStaticRateCardAssignmentKey, isInvalidRateCardUnits, normalizeRateCardUnits } from '@/lib/rate-card-config';
+import {
+  DocumentDestinationExplorer,
+  type DocumentRepositoryDestination,
+} from '@/components/projects/DocumentDestinationExplorer';
 
 export interface FormField {
   id: string;
@@ -15,6 +19,12 @@ export interface FormField {
   documentName?: string;
   documentVersioning?: boolean;
   documentKey?: string;
+  documentDestinationMode?: 'task' | 'repository';
+  documentDestinationProjectId?: string;
+  documentDestinationProjectName?: string;
+  documentDestinationFolderId?: string | null;
+  documentDestinationFolderPath?: string;
+  documentDestinationFolderNames?: string[];
 }
 
 const normalizeDocumentKey = (value: string) =>
@@ -65,6 +75,8 @@ interface WorkflowStepFormBuilderModalProps {
   teamMembers?: any[];
   allowDynamicRateCard?: boolean;
   overlayClassName?: string;
+  projectId?: string;
+  project?: any;
   onSave: (form: CustomForm | undefined) => void;
 }
 
@@ -77,6 +89,8 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
   teamMembers = [],
   allowDynamicRateCard = true,
   overlayClassName = 'z-50',
+  projectId = '',
+  project,
   onSave
 }) => {
   const [title, setTitle] = useState(initialForm?.title || `Formulario para ${stepName}`);
@@ -123,6 +137,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
   const [formRateCards, setFormRateCards] = useState<FormRateCardItem[]>(() => getInitialStaticRateCards(initialForm));
   const [formUnitsToAdd, setFormUnitsToAdd] = useState<number>(normalizeRateCardUnits(initialForm?.unitsToAdd ?? initialForm?.dynamicRateCardConfig?.defaultUnits));
   const [formAutoAddUnits, setFormAutoAddUnits] = useState(initialForm?.autoAddUnits !== false);
+  const [destinationFieldIndex, setDestinationFieldIndex] = useState<number | null>(null);
 
   React.useEffect(() => {
     if (!isOpen) return;
@@ -139,6 +154,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
       setFormRateCards(getInitialStaticRateCards(initialForm));
       setFormUnitsToAdd(normalizeRateCardUnits(initialForm?.unitsToAdd ?? initialForm?.dynamicRateCardConfig?.defaultUnits));
       setFormAutoAddUnits(initialForm?.autoAddUnits !== false);
+      setDestinationFieldIndex(null);
     });
   }, [allowDynamicRateCard, getInitialStaticRateCards, initialForm, isOpen, stepName]);
 
@@ -237,6 +253,22 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
           documentKey: field.documentVersioning
             ? normalizeDocumentKey(field.documentKey || '')
             : undefined,
+          documentDestinationMode: field.documentDestinationMode === 'repository' ? 'repository' : 'task',
+          documentDestinationProjectId: field.documentDestinationMode === 'repository'
+            ? String(field.documentDestinationProjectId || '').trim()
+            : undefined,
+          documentDestinationProjectName: field.documentDestinationMode === 'repository'
+            ? String(field.documentDestinationProjectName || '').trim()
+            : undefined,
+          documentDestinationFolderId: field.documentDestinationMode === 'repository'
+            ? field.documentDestinationFolderId || null
+            : undefined,
+          documentDestinationFolderPath: field.documentDestinationMode === 'repository'
+            ? String(field.documentDestinationFolderPath || '').trim()
+            : undefined,
+          documentDestinationFolderNames: field.documentDestinationMode === 'repository'
+            ? (field.documentDestinationFolderNames || []).map((name) => String(name).trim()).filter(Boolean)
+            : undefined,
         };
       }
 
@@ -250,6 +282,12 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
           documentName: undefined,
           documentVersioning: undefined,
           documentKey: undefined,
+          documentDestinationMode: undefined,
+          documentDestinationProjectId: undefined,
+          documentDestinationProjectName: undefined,
+          documentDestinationFolderId: undefined,
+          documentDestinationFolderPath: undefined,
+          documentDestinationFolderNames: undefined,
         };
       }
 
@@ -262,6 +300,12 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
         documentName: undefined,
         documentVersioning: undefined,
         documentKey: undefined,
+        documentDestinationMode: undefined,
+        documentDestinationProjectId: undefined,
+        documentDestinationProjectName: undefined,
+        documentDestinationFolderId: undefined,
+        documentDestinationFolderPath: undefined,
+        documentDestinationFolderNames: undefined,
       };
     });
 
@@ -292,6 +336,17 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
     );
     if (versionedDocumentsWithoutKey) {
       toast.warning('Cada documento con versiones debe tener una clave documental.');
+      return;
+    }
+
+    const repositoryDocumentsWithoutDestination = cleanedFields.some(
+      (field) =>
+        field.type === 'document' &&
+        field.documentDestinationMode === 'repository' &&
+        !field.documentDestinationProjectId
+    );
+    if (repositoryDocumentsWithoutDestination) {
+      toast.warning('Selecciona el repositorio de destino para cada documento configurado fuera de la tarea.');
       return;
     }
 
@@ -650,6 +705,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                                       documentName: field.documentName || field.label,
                                       documentVersioning: Boolean(field.documentVersioning),
                                       documentKey: field.documentKey || '',
+                                      documentDestinationMode: field.documentDestinationMode || 'task',
                                     }
                                   : {}),
                               });
@@ -725,20 +781,86 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                       {field.type === 'document' && (
                         <div className="space-y-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
                           <div>
-                            <label className="mb-1 block text-xs font-bold text-slate-700">
-                              Ruta dentro de la tarea
+                            <label className="mb-2 block text-xs font-bold text-slate-700">
+                              Ubicación en el gestor documental
                             </label>
-                            <input
-                              type="text"
-                              value={field.documentFolderPath || ''}
-                              onChange={(event) => updateField(index, { documentFolderPath: event.target.value })}
-                              placeholder="Ej. Entregables/Informes técnicos"
-                              className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500"
-                            />
-                            <p className="mt-1 text-[11px] leading-4 text-slate-500">
-                              Se creará bajo la carpeta de esta tarea. Usa / para definir subcarpetas.
-                            </p>
+                            <div className="grid grid-cols-2 gap-2 rounded-lg bg-white p-1 shadow-sm ring-1 ring-indigo-100">
+                              <button
+                                type="button"
+                                onClick={() => updateField(index, { documentDestinationMode: 'task' })}
+                                className={`rounded-md px-3 py-2 text-xs font-bold transition ${field.documentDestinationMode !== 'repository' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}
+                              >
+                                Dentro de la tarea
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateField(index, { documentDestinationMode: 'repository' });
+                                  setDestinationFieldIndex(index);
+                                }}
+                                className={`rounded-md px-3 py-2 text-xs font-bold transition ${field.documentDestinationMode === 'repository' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}
+                              >
+                                Elegir repositorio
+                              </button>
+                            </div>
                           </div>
+
+                          {field.documentDestinationMode === 'repository' ? (
+                            <div className="rounded-lg border border-indigo-100 bg-white p-3">
+                              <div className="flex items-start gap-3">
+                                <div className="rounded-lg bg-indigo-50 p-2 text-indigo-600">
+                                  <FolderTree size={18} />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Destino seleccionado</p>
+                                  {field.documentDestinationProjectId ? (
+                                    <>
+                                      <p className="mt-1 truncate text-sm font-black text-slate-800">
+                                        {field.documentDestinationProjectName || 'Proyecto seleccionado'}
+                                      </p>
+                                      <p className="mt-0.5 flex items-start gap-1 text-[11px] leading-4 text-slate-500">
+                                        <MapPin size={12} className="mt-0.5 shrink-0" />
+                                        <span>Documentación del proyecto{field.documentDestinationFolderPath ? ` / ${field.documentDestinationFolderPath}` : ''}</span>
+                                      </p>
+                                    </>
+                                  ) : (
+                                    <p className="mt-1 text-xs text-amber-700">Aún no has elegido una ubicación.</p>
+                                  )}
+                                </div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setDestinationFieldIndex(index)}
+                                  disabled={!projectId}
+                                  className="h-8 shrink-0 border-indigo-200 text-xs text-indigo-700"
+                                >
+                                  Explorar
+                                </Button>
+                              </div>
+                              {!projectId && (
+                                <p className="mt-2 text-[11px] text-amber-700">
+                                  Guarda este formulario desde un proyecto para habilitar el explorador.
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <div>
+                              <label className="mb-1 block text-xs font-bold text-slate-700">
+                                Ruta dentro de la tarea
+                              </label>
+                              <input
+                                type="text"
+                                value={field.documentFolderPath || ''}
+                                onChange={(event) => updateField(index, { documentFolderPath: event.target.value })}
+                                placeholder="Ej. Entregables/Informes técnicos"
+                                className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500"
+                              />
+                              <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                                Se creará bajo la carpeta de esta tarea. Usa / para definir subcarpetas.
+                              </p>
+                            </div>
+                          )}
 
                           <div>
                             <label className="mb-1 block text-xs font-bold text-slate-700">
@@ -833,6 +955,31 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
           </Button>
         </div>
       </div>
+      {destinationFieldIndex !== null && fields[destinationFieldIndex] && (
+        <DocumentDestinationExplorer
+          isOpen={destinationFieldIndex !== null}
+          onClose={() => setDestinationFieldIndex(null)}
+          sourceProjectId={projectId}
+          sourceProject={project}
+          initialDestination={{
+            projectId: fields[destinationFieldIndex].documentDestinationProjectId,
+            projectName: fields[destinationFieldIndex].documentDestinationProjectName,
+            folderId: fields[destinationFieldIndex].documentDestinationFolderId,
+            folderPath: fields[destinationFieldIndex].documentDestinationFolderPath,
+            folderNames: fields[destinationFieldIndex].documentDestinationFolderNames,
+          }}
+          onSelect={(destination: DocumentRepositoryDestination) =>
+            updateField(destinationFieldIndex, {
+              documentDestinationMode: 'repository',
+              documentDestinationProjectId: destination.projectId,
+              documentDestinationProjectName: destination.projectName,
+              documentDestinationFolderId: destination.folderId,
+              documentDestinationFolderPath: destination.folderPath,
+              documentDestinationFolderNames: destination.folderNames,
+            })
+          }
+        />
+      )}
     </div>
   );
 };

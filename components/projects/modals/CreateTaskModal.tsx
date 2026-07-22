@@ -1514,6 +1514,8 @@ export function CreateTaskModal({
                     steps={workflowSteps}
                     rateCards={rateCards}
                     teamMembers={teamMembers}
+                    projectId={projectId}
+                    project={project}
                     allowAnyTarget={isVariableWorkflowSelected}
                     onChange={(nextSteps) => setWorkflowSteps(nextSteps)}
                   />
@@ -2608,6 +2610,8 @@ export function CreateTaskModal({
           initialForm={workflowSteps[currentStepIndexForForm]?.form}
           rateCards={rateCards}
           teamMembers={teamMembers}
+          projectId={projectId}
+          project={project}
           onSave={(form) => {
             const newSteps = [...workflowSteps];
             newSteps[currentStepIndexForForm].form = form;
@@ -2624,6 +2628,8 @@ export function CreateTaskModal({
           initialForm={incrementForm}
           rateCards={rateCards}
           teamMembers={teamMembers}
+          projectId={projectId}
+          project={project}
           allowDynamicRateCard={false}
           onSave={(form) => setIncrementForm(form)}
         />
@@ -2643,6 +2649,8 @@ export function CreateTaskModal({
           initialForm={draftSubtasks[currentSubtaskIndexForForm]?.completionForm}
           rateCards={rateCards}
           teamMembers={teamMembers}
+          projectId={projectId}
+          project={project}
           onSave={(form) => {
             if (currentSubtaskIndexForForm === null) return;
             const next = [...draftSubtasks];

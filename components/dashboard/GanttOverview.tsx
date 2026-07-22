@@ -1093,6 +1093,8 @@ export const GanttOverview: React.FC = () => {
           initialForm={incrementForm}
           rateCards={rateCards}
           teamMembers={teamMembers}
+          projectId={selectedProjectId}
+          project={projectData}
           allowDynamicRateCard={false}
           onSave={(form) => setIncrementForm(form)}
         />
