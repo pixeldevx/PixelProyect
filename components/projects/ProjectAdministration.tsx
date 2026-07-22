@@ -4635,9 +4635,8 @@ export function ProjectAdministration({
             wide
           >
             <div className="space-y-5">
-              <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-3">
                 <SummaryLine label="ID administrativo" value={advance.customId || 'Pendiente de asignar'} strong />
-                <SummaryLine label="ID interno Pixel" value={advance.id} />
                 <SummaryLine label="Estado" value={status.label} />
                 <SummaryLine label="Total aprobado" value={formatMoney(advance.amountApproved || advance.amountRequested)} strong />
               </div>
