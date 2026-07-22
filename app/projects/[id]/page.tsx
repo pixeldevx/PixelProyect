@@ -273,7 +273,7 @@ export default function ProjectDetailsPage() {
   const [documentSearchQuery, setDocumentSearchQuery] = useState('');
   const [previewDocument, setPreviewDocument] = useState<any | null>(null);
 
-  const [documentToDelete, setDocumentToDelete] = useState<{id: string, storagePath: string, name: string} | null>(null);
+  const [documentToDelete, setDocumentToDelete] = useState<{id: string, storagePath: string, name: string, versionStoragePaths: string[]} | null>(null);
   const [taskToDelete, setTaskToDelete] = useState<TaskDeleteRequest | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deletionProgress, setDeletionProgress] = useState<DeletionProgress | null>(null);
@@ -588,8 +588,8 @@ export default function ProjectDetailsPage() {
     };
   }, [user, projectId, router, userRole]);
 
-  const confirmDeleteDocument = (docId: string, storagePath: string, name: string) => {
-    setDocumentToDelete({ id: docId, storagePath, name });
+  const confirmDeleteDocument = (docId: string, storagePath: string, name: string, versionStoragePaths: string[] = []) => {
+    setDocumentToDelete({ id: docId, storagePath, name, versionStoragePaths });
   };
 
   const executeDeleteDocument = async () => {
@@ -603,10 +603,11 @@ export default function ProjectDetailsPage() {
     setIsDeleting(true);
     try {
       // Delete from Storage
-      if (documentToDelete.storagePath) {
-        const fileRef = ref(storage, documentToDelete.storagePath);
-        await deleteObject(fileRef);
-      }
+      const storagePaths = [...new Set([
+        documentToDelete.storagePath,
+        ...documentToDelete.versionStoragePaths,
+      ].filter(Boolean))];
+      await Promise.all(storagePaths.map((storagePath) => deleteObject(ref(storage, storagePath))));
 
       // Delete from Supabase
       await deleteDoc(doc(db, 'projects', projectId, 'documents', documentToDelete.id));
@@ -1850,13 +1851,19 @@ export default function ProjectDetailsPage() {
         commentsSnapshot.docs.forEach((docSnap) => batchToUse.delete(docSnap.ref));
         documentsSnapshot.docs.forEach((docSnap) => {
           const data = docSnap.data();
-          if (data?.storagePath) {
+          const storagePaths = [...new Set([
+            data?.storagePath,
+            ...(Array.isArray(data?.versions)
+              ? data.versions.map((version: any) => version?.storagePath)
+              : []),
+          ].filter(Boolean))];
+          storagePaths.forEach((storagePath) => {
             storageDeletionPromises.push(
-              deleteObject(ref(storage, data.storagePath)).catch((storageError) => {
+              deleteObject(ref(storage, storagePath)).catch((storageError) => {
                 console.warn('No se pudo eliminar el archivo asociado a la tarea:', storageError);
               })
             );
-          }
+          });
           batchToUse.delete(docSnap.ref);
         });
       };

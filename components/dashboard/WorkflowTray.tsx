@@ -61,6 +61,7 @@ import {
   isWorkflowDocumentValue,
   uploadWorkflowFormDocument,
 } from '@/lib/workflow-form-documents';
+import { SecureDocumentLink } from '@/components/projects/SecureDocumentLink';
 
 const hasRequiredFormValue = (value: any) => {
   if (isWorkflowDocumentValue(value)) return true;
@@ -103,16 +104,15 @@ const formatDateTimeFormValue = (value: any) => {
 const renderHistoryFormValue = (value: any, field?: any) => {
   if (isWorkflowDocumentValue(value)) {
     return (
-      <a
-        href={value.url}
-        target="_blank"
-        rel="noreferrer"
+      <SecureDocumentLink
+        storagePath={value.storagePath}
+        fallbackUrl={value.url}
         className="flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs font-bold text-indigo-700 shadow-sm hover:border-indigo-200 hover:text-indigo-900"
       >
         <FileText size={14} className="shrink-0" />
         <span className="min-w-0 truncate">{getWorkflowDocumentDisplayName(value)}</span>
         <ExternalLink size={12} className="ml-auto shrink-0" />
-      </a>
+      </SecureDocumentLink>
     );
   }
 
@@ -3389,19 +3389,23 @@ export default function WorkflowTray() {
                             />
                           </label>
                           {isWorkflowDocumentValue(formData[field.id]) && (
-                            <a
-                              href={formData[field.id].url}
-                              target="_blank"
-                              rel="noreferrer"
+                            <SecureDocumentLink
+                              storagePath={formData[field.id].storagePath}
+                              fallbackUrl={formData[field.id].url}
                               className="mt-2 flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white/80 px-3 py-2 text-xs font-bold text-indigo-700 hover:text-indigo-900"
                             >
                               <FileText size={14} className="shrink-0" />
                               <span className="truncate">{getWorkflowDocumentDisplayName(formData[field.id])}</span>
                               <ExternalLink size={12} className="ml-auto shrink-0" />
-                            </a>
+                            </SecureDocumentLink>
                           )}
                           <p className="mt-2 text-[11px] leading-5 text-slate-500">
-                            El archivo se guardará en la carpeta documental de esta tarea y quedará como evidencia del paso.
+                            {field.documentFolderPath
+                              ? `Ruta: ${field.documentFolderPath}. `
+                              : 'Ruta: carpeta principal de la tarea. '}
+                            {field.documentVersioning
+                              ? `Se publicará como una nueva versión de ${field.documentName || field.label}.`
+                              : 'Quedará como evidencia independiente del paso.'}
                           </p>
                         </div>
                       )}
@@ -3646,11 +3650,10 @@ export default function WorkflowTray() {
                         {evidenceDocs.length > 0 ? (
                           <div className="space-y-2">
                             {evidenceDocs.slice(0, 6).map((docValue: any, index: number) => (
-                              <a
+                              <SecureDocumentLink
                                 key={`${docValue.documentId || docValue.storagePath || docValue.url}-${index}`}
-                                href={docValue.url}
-                                target="_blank"
-                                rel="noreferrer"
+                                storagePath={docValue.storagePath}
+                                fallbackUrl={docValue.url}
                                 className="flex min-w-0 items-start gap-2 rounded-lg border border-white bg-white px-3 py-2 text-xs shadow-sm hover:border-indigo-100"
                               >
                                 <FileText size={14} className="mt-0.5 shrink-0 text-indigo-600" />
@@ -3660,10 +3663,11 @@ export default function WorkflowTray() {
                                   </span>
                                   <span className="mt-0.5 block truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">
                                     {docValue.stepLabel || 'Paso'} · {docValue.fieldLabel || 'Documento'}
+                                    {docValue.version ? ` · v${docValue.version}` : ''}
                                   </span>
                                 </span>
                                 <ExternalLink size={12} className="ml-auto mt-0.5 shrink-0 text-slate-400" />
-                              </a>
+                              </SecureDocumentLink>
                             ))}
                           </div>
                         ) : (

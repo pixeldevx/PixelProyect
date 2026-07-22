@@ -111,7 +111,11 @@ export const buildDocumentStoragePath = ({
   const projectFolder = `${slugifyStorageSegment(projectName || projectId, 'proyecto')}--${shortId(projectId)}`;
   const fileSegment = getDocumentFileName(fileName, documentName, date);
   const storageFolderSegments = task?.id
-    ? ['tareas', ...getTaskStorageFolderSegments(task, tasks)]
+    ? [
+        'tareas',
+        ...getTaskStorageFolderSegments(task, tasks),
+        ...folderSegments.map((segment) => slugifyStorageSegment(segment, 'carpeta')),
+      ]
     : [
         slugifyStorageSegment(folderName || 'documentacion-del-proyecto', 'documentacion-del-proyecto'),
         ...folderSegments.map((segment) => slugifyStorageSegment(segment, 'carpeta')),

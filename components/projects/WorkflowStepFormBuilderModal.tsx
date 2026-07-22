@@ -11,7 +11,20 @@ export interface FormField {
   required: boolean;
   options?: string[];
   selectionMode?: 'single' | 'multiple';
+  documentFolderPath?: string;
+  documentName?: string;
+  documentVersioning?: boolean;
+  documentKey?: string;
 }
+
+const normalizeDocumentKey = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
 
 export interface FormRateCardItem {
   id: string;
@@ -113,19 +126,20 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
 
   React.useEffect(() => {
     if (!isOpen) return;
-
-    setTitle(initialForm?.title || `Formulario para ${stepName}`);
-    setFields(initialForm?.fields || []);
-    setFormRateCardMode(
-      allowDynamicRateCard && (initialForm?.dynamicRateCard || initialForm?.rateCardMode === 'dynamic')
-        ? 'dynamic'
-        : (initialForm?.rateCards?.length || initialForm?.rateCardId)
-          ? 'static'
-          : 'none'
-    );
-    setFormRateCards(getInitialStaticRateCards(initialForm));
-    setFormUnitsToAdd(normalizeRateCardUnits(initialForm?.unitsToAdd ?? initialForm?.dynamicRateCardConfig?.defaultUnits));
-    setFormAutoAddUnits(initialForm?.autoAddUnits !== false);
+    Promise.resolve().then(() => {
+      setTitle(initialForm?.title || `Formulario para ${stepName}`);
+      setFields(initialForm?.fields || []);
+      setFormRateCardMode(
+        allowDynamicRateCard && (initialForm?.dynamicRateCard || initialForm?.rateCardMode === 'dynamic')
+          ? 'dynamic'
+          : (initialForm?.rateCards?.length || initialForm?.rateCardId)
+            ? 'static'
+            : 'none'
+      );
+      setFormRateCards(getInitialStaticRateCards(initialForm));
+      setFormUnitsToAdd(normalizeRateCardUnits(initialForm?.unitsToAdd ?? initialForm?.dynamicRateCardConfig?.defaultUnits));
+      setFormAutoAddUnits(initialForm?.autoAddUnits !== false);
+    });
   }, [allowDynamicRateCard, getInitialStaticRateCards, initialForm, isOpen, stepName]);
 
   if (!isOpen) return null;
@@ -207,12 +221,35 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
 
     const cleanedFields: FormField[] = fields.map((field) => {
       const cleanLabel = field.label.trim();
+      if (field.type === 'document') {
+        return {
+          ...field,
+          label: cleanLabel,
+          options: undefined,
+          selectionMode: undefined,
+          documentFolderPath: String(field.documentFolderPath || '')
+            .split(/[\\/]+/)
+            .map((segment) => segment.trim())
+            .filter((segment) => segment && segment !== '.' && segment !== '..')
+            .join('/'),
+          documentName: String(field.documentName || '').trim(),
+          documentVersioning: Boolean(field.documentVersioning),
+          documentKey: field.documentVersioning
+            ? normalizeDocumentKey(field.documentKey || '')
+            : undefined,
+        };
+      }
+
       if (field.type !== 'select') {
         return {
           ...field,
           label: cleanLabel,
           options: undefined,
           selectionMode: undefined,
+          documentFolderPath: undefined,
+          documentName: undefined,
+          documentVersioning: undefined,
+          documentKey: undefined,
         };
       }
 
@@ -221,6 +258,10 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
         label: cleanLabel,
         selectionMode: field.selectionMode || 'multiple',
         options: (field.options || []).map((option) => option.trim()).filter(Boolean),
+        documentFolderPath: undefined,
+        documentName: undefined,
+        documentVersioning: undefined,
+        documentKey: undefined,
       };
     });
 
@@ -243,6 +284,22 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
     });
     if (hasDuplicateOptions) {
       toast.warning('Las opciones de selección no pueden estar repetidas.');
+      return;
+    }
+
+    const versionedDocumentsWithoutKey = cleanedFields.some(
+      (field) => field.type === 'document' && field.documentVersioning && !field.documentKey
+    );
+    if (versionedDocumentsWithoutKey) {
+      toast.warning('Cada documento con versiones debe tener una clave documental.');
+      return;
+    }
+
+    const versionedDocumentKeys = cleanedFields
+      .filter((field) => field.type === 'document' && field.documentVersioning)
+      .map((field) => field.documentKey);
+    if (new Set(versionedDocumentKeys).size !== versionedDocumentKeys.length) {
+      toast.warning('No repitas la misma clave documental dentro de un formulario.');
       return;
     }
 
@@ -587,6 +644,14 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                                       options: field.options?.length ? field.options : ['Opción 1'],
                                     }
                                   : {}),
+                                ...(type === 'document'
+                                  ? {
+                                      documentFolderPath: field.documentFolderPath || '',
+                                      documentName: field.documentName || field.label,
+                                      documentVersioning: Boolean(field.documentVersioning),
+                                      documentKey: field.documentKey || '',
+                                    }
+                                  : {}),
                               });
                             }}
                             className="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500"
@@ -654,6 +719,81 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                             <Plus size={14} className="mr-1" />
                             Agregar opción
                           </Button>
+                        </div>
+                      )}
+
+                      {field.type === 'document' && (
+                        <div className="space-y-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
+                          <div>
+                            <label className="mb-1 block text-xs font-bold text-slate-700">
+                              Ruta dentro de la tarea
+                            </label>
+                            <input
+                              type="text"
+                              value={field.documentFolderPath || ''}
+                              onChange={(event) => updateField(index, { documentFolderPath: event.target.value })}
+                              placeholder="Ej. Entregables/Informes técnicos"
+                              className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500"
+                            />
+                            <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                              Se creará bajo la carpeta de esta tarea. Usa / para definir subcarpetas.
+                            </p>
+                          </div>
+
+                          <div>
+                            <label className="mb-1 block text-xs font-bold text-slate-700">
+                              Nombre del documento en el repositorio
+                            </label>
+                            <input
+                              type="text"
+                              value={field.documentName || ''}
+                              onChange={(event) => updateField(index, { documentName: event.target.value })}
+                              placeholder={field.label || 'Informe técnico'}
+                              className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500"
+                            />
+                          </div>
+
+                          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-white bg-white p-3 shadow-sm">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(field.documentVersioning)}
+                              onChange={(event) =>
+                                updateField(index, {
+                                  documentVersioning: event.target.checked,
+                                  documentKey: event.target.checked
+                                    ? field.documentKey || normalizeDocumentKey(field.documentName || field.label)
+                                    : '',
+                                })
+                              }
+                              className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            />
+                            <span>
+                              <span className="block text-xs font-black text-slate-800">
+                                Mantener un único documento con versiones
+                              </span>
+                              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                                Las cargas posteriores reemplazan la versión visible, pero Pixel conserva el historial completo.
+                              </span>
+                            </span>
+                          </label>
+
+                          {field.documentVersioning && (
+                            <div>
+                              <label className="mb-1 block text-xs font-bold text-slate-700">
+                                Clave documental compartida
+                              </label>
+                              <input
+                                type="text"
+                                value={field.documentKey || ''}
+                                onChange={(event) => updateField(index, { documentKey: normalizeDocumentKey(event.target.value) })}
+                                placeholder="informe-tecnico"
+                                className="w-full rounded-lg border border-indigo-100 bg-white px-3 py-2 font-mono text-sm text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500"
+                              />
+                              <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                                Usa exactamente esta misma clave en otros pasos para publicar una nueva versión del mismo documento.
+                              </p>
+                            </div>
+                          )}
                         </div>
                       )}
 

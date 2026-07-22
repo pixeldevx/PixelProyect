@@ -11,6 +11,7 @@ import {
   ReactFlow,
   type Edge,
   type Node,
+  type OnNodeDrag,
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -378,7 +379,7 @@ function WorkflowVisualEditorModal({
     });
   };
 
-  const handleNodeDragStop = (_event: React.MouseEvent, node: Node) => {
+  const handleNodeDragStop: OnNodeDrag<Node> = (_event, node) => {
     const nodeId = String(node.id || "");
     if (!nodeId.startsWith("workflow-step-")) return;
 

@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element */
 
 import React, { useEffect, useState } from "react";
-import { Download, ExternalLink, FileArchive, FileImage, FileText, FileVideo, Loader2, X } from "lucide-react";
+import { Download, ExternalLink, FileArchive, FileImage, FileText, FileVideo, History, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { storage } from '@/lib/backend';
 import { getAuthorizedDownloadURL, ref } from '@/lib/supabase/storage-shim';
@@ -62,6 +62,13 @@ const formatFileSize = (bytes?: number) => {
   return `${(value / Math.pow(1024, index)).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 };
 
+const formatVersionDate = (value: any) => {
+  if (!value) return '';
+  const date = value?.toDate ? value.toDate() : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' });
+};
+
 const PreviewFallback = ({ documentUrl, kind }: { documentUrl: string; kind: string }) => {
   return (
     <div className="flex h-full min-h-[420px] items-center justify-center bg-slate-50 p-8 text-center">
@@ -100,6 +107,24 @@ const PreviewFallback = ({ documentUrl, kind }: { documentUrl: string; kind: str
 export function ProjectDocumentViewer({ document, isOpen, onClose }: ProjectDocumentViewerProps) {
   const [authorizedUrl, setAuthorizedUrl] = useState('');
   const [accessError, setAccessError] = useState('');
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
+  const versions = Array.isArray(document?.versions)
+    ? [...document.versions]
+        .filter((version: any) => version?.storagePath || version?.url)
+        .sort((left: any, right: any) => Number(right.version || 0) - Number(left.version || 0))
+    : [];
+  const currentVersion = Number(document?.currentVersion) || Number(versions[0]?.version) || 1;
+  const selectedVersionDocument = selectedVersion === null
+    ? null
+    : versions.find((version: any) => Number(version.version) === selectedVersion) || null;
+  const activeDocument = selectedVersionDocument || document;
+  const activeStoragePath = String(activeDocument?.storagePath || '');
+  const activeFallbackUrl = getDocumentUrl(activeDocument);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    Promise.resolve().then(() => setSelectedVersion(null));
+  }, [document?.id, isOpen]);
 
   useEffect(() => {
     let active = true;
@@ -107,8 +132,8 @@ export function ProjectDocumentViewer({ document, isOpen, onClose }: ProjectDocu
       return () => { active = false; };
     }
 
-    const fallbackUrl = getDocumentUrl(document);
-    if (!document.storagePath) {
+    const fallbackUrl = activeFallbackUrl;
+    if (!activeStoragePath) {
       Promise.resolve().then(() => {
         if (!active) return;
         setAuthorizedUrl(fallbackUrl);
@@ -122,19 +147,19 @@ export function ProjectDocumentViewer({ document, isOpen, onClose }: ProjectDocu
       setAuthorizedUrl('');
       setAccessError('');
     });
-    getAuthorizedDownloadURL(ref(storage, document.storagePath))
+    getAuthorizedDownloadURL(ref(storage, activeStoragePath))
       .then((url) => { if (active) setAuthorizedUrl(url); })
       .catch((error) => { if (active) setAccessError(error?.message || 'No se pudo autorizar el documento.'); });
     return () => { active = false; };
-  }, [document, isOpen]);
+  }, [activeFallbackUrl, activeStoragePath, document, isOpen]);
 
   if (!isOpen || !document) return null;
 
   const documentUrl = authorizedUrl;
   const documentName = getDocumentName(document);
-  const fileName = getDocumentFileName(document);
-  const extension = getExtension(document);
-  const previewKind = getPreviewKind(document);
+  const fileName = getDocumentFileName(activeDocument);
+  const extension = getExtension(activeDocument);
+  const previewKind = getPreviewKind(activeDocument);
   const officeViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(documentUrl)}`;
 
   const renderPreview = () => {
@@ -229,11 +254,33 @@ export function ProjectDocumentViewer({ document, isOpen, onClose }: ProjectDocu
               <p className="truncate text-xs font-semibold text-slate-500">
                 {fileName || "Archivo del proyecto"}
                 {extension ? ` · ${extension.toUpperCase()}` : ""}
-                {document?.fileSize ? ` · ${formatFileSize(document.fileSize)}` : ""}
+                {activeDocument?.fileSize ? ` · ${formatFileSize(activeDocument.fileSize)}` : ""}
               </p>
+              {versions.length > 1 && (
+                <p className="mt-1 text-[11px] font-black text-indigo-600">
+                  {selectedVersion === null ? `Versión actual v${currentVersion}` : `Versión histórica v${selectedVersion}`}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {versions.length > 1 && (
+              <select
+                value={selectedVersion ?? currentVersion}
+                onChange={(event) => {
+                  const versionNumber = Number(event.target.value);
+                  setSelectedVersion(versionNumber === currentVersion ? null : versionNumber);
+                }}
+                className="h-10 max-w-32 rounded-xl border border-slate-200 bg-white px-2 text-xs font-black text-slate-700 lg:hidden"
+                aria-label="Seleccionar versión del documento"
+              >
+                {versions.map((version: any) => (
+                  <option key={version.version} value={Number(version.version) || 1}>
+                    v{Number(version.version) || 1}{Number(version.version) === currentVersion ? ' actual' : ''}
+                  </option>
+                ))}
+              </select>
+            )}
             {documentUrl && (
               <>
                 <a
@@ -261,8 +308,57 @@ export function ProjectDocumentViewer({ document, isOpen, onClose }: ProjectDocu
             </Button>
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-hidden bg-slate-100">
-          {renderPreview()}
+        <div className="flex min-h-0 flex-1 overflow-hidden bg-slate-100">
+          <div className="min-w-0 flex-1 overflow-hidden">
+            {renderPreview()}
+          </div>
+          {versions.length > 1 && (
+            <aside className="hidden w-80 shrink-0 overflow-y-auto border-l border-slate-200 bg-white p-4 lg:block">
+              <div className="mb-3 flex items-center gap-2">
+                <History size={16} className="text-indigo-600" />
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-800">Historial de versiones</p>
+                  <p className="mt-0.5 text-[11px] font-semibold text-slate-400">{versions.length} archivos conservados</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {versions.map((version: any) => {
+                  const versionNumber = Number(version.version) || 1;
+                  const isCurrent = versionNumber === currentVersion;
+                  const isSelected = selectedVersion === null ? isCurrent : selectedVersion === versionNumber;
+                  return (
+                    <button
+                      type="button"
+                      key={`${versionNumber}-${version.storagePath || version.url}`}
+                      onClick={() => setSelectedVersion(isCurrent ? null : versionNumber)}
+                      className={`w-full rounded-xl border p-3 text-left transition ${
+                        isSelected
+                          ? 'border-indigo-200 bg-indigo-50 ring-2 ring-indigo-500/10'
+                          : 'border-slate-200 bg-white hover:border-indigo-100 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-black text-slate-800">Versión {versionNumber}</span>
+                        {isCurrent && (
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black uppercase text-emerald-700">
+                            Actual
+                          </span>
+                        )}
+                      </span>
+                      <span className="mt-1 block truncate text-xs font-semibold text-slate-500">
+                        {version.fileName || version.name || 'Documento'}
+                      </span>
+                      {(version.stepLabel || formatVersionDate(version.uploadedAt)) && (
+                        <span className="mt-1 block text-[10px] font-semibold leading-4 text-slate-400">
+                          {[version.stepLabel, formatVersionDate(version.uploadedAt)].filter(Boolean).join(' · ')}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </aside>
+          )}
         </div>
       </div>
     </div>

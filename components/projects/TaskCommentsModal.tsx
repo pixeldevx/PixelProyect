@@ -18,6 +18,7 @@ import {
   isMeetingTask,
 } from '@/lib/calendar-utils';
 import { getWorkflowDocumentDisplayName, isWorkflowDocumentValue } from '@/lib/workflow-form-documents';
+import { SecureDocumentLink } from '@/components/projects/SecureDocumentLink';
 
 interface TaskCommentsModalProps {
   isOpen: boolean;
@@ -283,16 +284,15 @@ const formatHistoryFormValue = (value: any) => {
 const renderHistoryFormValue = (value: any) => {
   if (isWorkflowDocumentValue(value)) {
     return (
-      <a
-        href={value.url}
-        target="_blank"
-        rel="noreferrer"
+      <SecureDocumentLink
+        storagePath={value.storagePath}
+        fallbackUrl={value.url}
         className="flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs font-bold text-indigo-700 shadow-sm hover:border-indigo-200 hover:text-indigo-900"
       >
         <FileText size={14} className="shrink-0" />
         <span className="min-w-0 truncate">{getWorkflowDocumentDisplayName(value)}</span>
         <ExternalLink size={12} className="ml-auto shrink-0" />
-      </a>
+      </SecureDocumentLink>
     );
   }
 

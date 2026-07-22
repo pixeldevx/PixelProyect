@@ -17,6 +17,7 @@ import {
   uploadWorkflowFormDocument,
 } from "@/lib/workflow-form-documents";
 import { toast } from "sonner";
+import { SecureDocumentLink } from "@/components/projects/SecureDocumentLink";
 
 export type SubtaskCompletionSubmission = {
   formData: Record<string, any>;
@@ -369,18 +370,22 @@ export function CompleteSubtaskFormModal({
             />
           </label>
           {isWorkflowDocumentValue(formData[field.id]) && (
-            <a
-              href={formData[field.id].url}
-              target="_blank"
-              rel="noreferrer"
+            <SecureDocumentLink
+              storagePath={formData[field.id].storagePath}
+              fallbackUrl={formData[field.id].url}
               className="mt-2 flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white/80 px-3 py-2 text-xs font-bold text-indigo-700 hover:text-indigo-900"
             >
               <ExternalLink size={14} />
               <span className="truncate">{getWorkflowDocumentDisplayName(formData[field.id])}</span>
-            </a>
+            </SecureDocumentLink>
           )}
           <p className="mt-2 text-[11px] leading-5 text-slate-500">
-            El archivo quedará guardado en la carpeta documental de esta tarea y visible en la trazabilidad del workflow.
+            {field.documentFolderPath
+              ? `Ruta: ${field.documentFolderPath}. `
+              : "Ruta: carpeta principal de la tarea. "}
+            {field.documentVersioning
+              ? `Se publicará como una nueva versión de ${field.documentName || field.label}.`
+              : "Quedará como evidencia independiente del cierre."}
           </p>
         </div>
       )}

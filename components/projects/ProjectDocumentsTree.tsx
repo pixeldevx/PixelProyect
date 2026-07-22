@@ -5,7 +5,7 @@ import { canUserAccessDocument, getDocumentAccessMode, isDocumentFolder } from '
 interface ProjectDocumentsTreeProps {
   documents: any[];
   tasks: any[];
-  onDeleteDocument: (docId: string, storagePath: string, name: string) => void;
+  onDeleteDocument: (docId: string, storagePath: string, name: string, versionStoragePaths?: string[]) => void;
   onViewDocument?: (doc: any) => void;
   onCreateFolder?: (name: string, parentFolderId: string | null) => Promise<void> | void;
   onUploadToFolder?: (folderId: string | null) => void;
@@ -75,6 +75,11 @@ const DocumentItem = ({
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="truncate text-sm font-bold text-slate-700">{doc.name}</span>
             {getDocTypeBadge(doc.type)}
+            {Number(doc.versionCount) > 1 && (
+              <span className="rounded-full bg-indigo-100 px-2 py-1 text-xs font-black text-indigo-700">
+                v{Number(doc.currentVersion) || Number(doc.versionCount)} · {Number(doc.versionCount)} versiones
+              </span>
+            )}
             {restricted && (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">
                 <Lock size={12} />
@@ -121,7 +126,14 @@ const DocumentItem = ({
         {canDeleteDocuments && (
           <button
             type="button"
-            onClick={() => onDeleteDocument(doc.id, doc.storagePath, doc.name)}
+            onClick={() => onDeleteDocument(
+              doc.id,
+              doc.storagePath,
+              doc.name,
+              Array.isArray(doc.versions)
+                ? doc.versions.map((version: any) => version?.storagePath).filter(Boolean)
+                : [],
+            )}
             className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600"
             title="Eliminar"
           >
@@ -579,6 +591,69 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
     return getSubtasks(taskId).some((subtask) => hasDocumentsInSubtree(subtask.id));
   };
 
+  const renderTaskDocuments = (documentsForTask: any[]) => {
+    type DocumentFolderNode = {
+      name: string;
+      path: string;
+      documents: any[];
+      children: Map<string, DocumentFolderNode>;
+    };
+
+    const root: DocumentFolderNode = { name: '', path: '', documents: [], children: new Map() };
+    documentsForTask.forEach((document) => {
+      const segments = Array.isArray(document.documentFolderSegments)
+        ? document.documentFolderSegments.filter(Boolean)
+        : String(document.workflowDocumentFolderPath || '')
+            .split('/')
+            .map((segment) => segment.trim())
+            .filter(Boolean);
+      let current = root;
+      segments.forEach((segment: string) => {
+        const childPath = current.path ? `${current.path}/${segment}` : segment;
+        if (!current.children.has(segment)) {
+          current.children.set(segment, {
+            name: segment,
+            path: childPath,
+            documents: [],
+            children: new Map(),
+          });
+        }
+        current = current.children.get(segment)!;
+      });
+      current.documents.push(document);
+    });
+
+    const renderNode = (node: DocumentFolderNode): React.ReactNode => (
+      <FolderNode key={node.path} title={node.name} defaultOpen={Boolean(searchQuery)}>
+        {node.documents.map((document) => (
+          <DocumentItem
+            key={document.id}
+            doc={document}
+            onDeleteDocument={onDeleteDocument}
+            onViewDocument={onViewDocument}
+            canDeleteDocuments={canDeleteDocuments}
+          />
+        ))}
+        {[...node.children.values()].map(renderNode)}
+      </FolderNode>
+    );
+
+    return (
+      <>
+        {root.documents.map((document) => (
+          <DocumentItem
+            key={document.id}
+            doc={document}
+            onDeleteDocument={onDeleteDocument}
+            onViewDocument={onViewDocument}
+            canDeleteDocuments={canDeleteDocuments}
+          />
+        ))}
+        {[...root.children.values()].map(renderNode)}
+      </>
+    );
+  };
+
   const renderTaskNode = (task: any) => {
     const taskTitle = getTaskTitle(task);
     const matchesSearch = searchQuery.trim() && (
@@ -595,15 +670,7 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
       <FolderNode key={task.id} title={taskTitle} defaultOpen={!!searchQuery}>
         {docs.length > 0 && (
           <div className="py-1">
-            {docs.map((document) => (
-              <DocumentItem
-                key={document.id}
-                doc={document}
-                onDeleteDocument={onDeleteDocument}
-                onViewDocument={onViewDocument}
-                canDeleteDocuments={canDeleteDocuments}
-              />
-            ))}
+            {renderTaskDocuments(docs)}
           </div>
         )}
         {subtasks.length > 0 && (

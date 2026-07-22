@@ -206,7 +206,19 @@ const getDocumentStorageRecord = async (storagePath: string) => {
     .like('collection_path', 'projects/%/documents')
     .eq('data->>storagePath', storagePath)
     .maybeSingle();
-  return data || null;
+  if (data) return data;
+
+  const projectId = await getProjectIdFromStorageKey(storagePath);
+  if (!projectId) return null;
+  const { data: projectDocuments } = await supabase
+    .from(DOCUMENTS_TABLE)
+    .select('collection_path,doc_id,data')
+    .eq('collection_path', `projects/${projectId}/documents`);
+
+  return (projectDocuments || []).find((row: any) =>
+    Array.isArray(row.data?.versions) &&
+    row.data.versions.some((version: any) => String(version?.storagePath || '') === storagePath)
+  ) || null;
 };
 
 export const isDocumentStoragePathRestricted = async (storagePath: string) => {

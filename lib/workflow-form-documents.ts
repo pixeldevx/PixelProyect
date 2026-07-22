@@ -1,10 +1,27 @@
-import { addDoc, collection, serverTimestamp } from '@/lib/supabase/document-store';
+import { addDoc, collection, doc, getDoc, serverTimestamp, setDoc, updateDoc } from '@/lib/supabase/document-store';
 import { getDownloadURL, ref, uploadBytes } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
-import { buildDocumentStoragePath, getTaskStorageFolderSegments } from '@/lib/document-storage';
+import { buildDocumentStoragePath, getTaskStorageFolderSegments, slugifyStorageSegment } from '@/lib/document-storage';
 import { getTaskDisplayTitle } from '@/lib/task-title';
 
 export const WORKFLOW_DOCUMENT_VALUE_KIND = 'workflow-document';
+
+export type WorkflowDocumentVersion = {
+  version: number;
+  name: string;
+  fileName: string;
+  url: string;
+  storagePath: string;
+  storageFolder?: string;
+  fileSize?: number;
+  contentType?: string | null;
+  uploadedAt: string;
+  uploadedBy?: string | null;
+  stepIndex?: number | null;
+  stepLabel?: string | null;
+  fieldId?: string | null;
+  fieldLabel?: string | null;
+};
 
 export type WorkflowDocumentValue = {
   kind: typeof WORKFLOW_DOCUMENT_VALUE_KIND;
@@ -24,6 +41,12 @@ export type WorkflowDocumentValue = {
   fieldLabel?: string | null;
   taskId?: string | null;
   taskTitle?: string | null;
+  documentKey?: string | null;
+  documentVersioning?: boolean;
+  documentFolderPath?: string | null;
+  documentFolderSegments?: string[];
+  version?: number;
+  versionCount?: number;
 };
 
 const getUserId = (user: any) => user?.uid || user?.id || user?.memberId || null;
@@ -46,6 +69,41 @@ export const isWorkflowDocumentValue = (value: any): value is WorkflowDocumentVa
 
 export const getWorkflowDocumentDisplayName = (value: any) =>
   value?.name || value?.fileName || 'Documento adjunto';
+
+const normalizeDocumentKey = (value: unknown) =>
+  slugifyStorageSegment(value, '').slice(0, 80);
+
+const getDocumentFolderSegments = (value: unknown) =>
+  String(value || '')
+    .split(/[\\/]+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment && segment !== '.' && segment !== '..')
+    .slice(0, 12);
+
+const getExistingVersions = (documentData: any): WorkflowDocumentVersion[] => {
+  const versions = Array.isArray(documentData?.versions)
+    ? documentData.versions.filter((version: any) => version?.storagePath || version?.url)
+    : [];
+  if (versions.length > 0) return versions;
+  if (!documentData?.storagePath && !documentData?.url) return [];
+
+  return [{
+    version: Number(documentData?.currentVersion) || 1,
+    name: documentData?.name || documentData?.fileName || 'Documento',
+    fileName: documentData?.fileName || documentData?.name || 'Documento',
+    url: documentData?.url || '',
+    storagePath: documentData?.storagePath || '',
+    storageFolder: documentData?.storageFolder || undefined,
+    fileSize: documentData?.fileSize,
+    contentType: documentData?.contentType || null,
+    uploadedAt: documentData?.uploadedAt || documentData?.createdAt || new Date().toISOString(),
+    uploadedBy: documentData?.uploadedBy || null,
+    stepIndex: documentData?.workflowStepIndex ?? null,
+    stepLabel: documentData?.workflowStepLabel ?? null,
+    fieldId: documentData?.formFieldId ?? null,
+    fieldLabel: documentData?.formFieldLabel ?? null,
+  }];
+};
 
 export async function uploadWorkflowFormDocument({
   file,
@@ -72,14 +130,39 @@ export async function uploadWorkflowFormDocument({
   if (!projectId) throw new Error('No se encontró el proyecto para guardar el documento.');
 
   const fieldLabel = field?.label || 'Documento';
-  const documentName = `${fieldLabel} - ${file.name}`;
+  const documentName = String(field?.documentName || fieldLabel).trim() || fieldLabel;
+  const documentVersioning = Boolean(field?.documentVersioning);
+  const documentKey = documentVersioning ? normalizeDocumentKey(field?.documentKey || documentName) : '';
+  if (documentVersioning && !documentKey) {
+    throw new Error('Este campo necesita una clave documental para crear versiones.');
+  }
+
+  const userId = getUserId(user);
+  const uploadedAt = new Date().toISOString();
+  const folderSegments = getDocumentFolderSegments(field?.documentFolderPath);
+  const documentsCollection = collection(db, 'projects', projectId, 'documents');
+  const versionedDocumentRef = documentVersioning
+    ? doc(
+        documentsCollection,
+        `workflow-${slugifyStorageSegment(task?.id || 'tarea', 'tarea')}-${documentKey}`,
+      )
+    : null;
+  const existingSnapshot = versionedDocumentRef ? await getDoc(versionedDocumentRef) : null;
+  const existingData = existingSnapshot?.exists() ? existingSnapshot.data() : null;
+  const existingVersions = getExistingVersions(existingData);
+  const currentVersion = existingVersions.reduce(
+    (highest, version) => Math.max(highest, Number(version.version) || 0),
+    Number(existingData?.currentVersion) || 0,
+  );
+  const nextVersion = documentVersioning ? currentVersion + 1 : 1;
   const storagePath = buildDocumentStoragePath({
     projectId,
     projectName: projectName || task?.projectName || 'Proyecto',
     task,
     tasks,
     fileName: file.name,
-    documentName,
+    documentName: documentVersioning ? `${documentName}-v${nextVersion}` : `${documentName}-${file.name}`,
+    folderSegments,
   });
   const storageFolder = storagePath.split('/').slice(0, -1).join('/');
   const storageRef = ref(storage, storagePath);
@@ -87,8 +170,24 @@ export async function uploadWorkflowFormDocument({
   await uploadBytes(storageRef, file);
   const url = await getDownloadURL(storageRef);
 
-  const userId = getUserId(user);
-  const documentRef = await addDoc(collection(db, 'projects', projectId, 'documents'), {
+  const version: WorkflowDocumentVersion = {
+    version: nextVersion,
+    name: documentName,
+    fileName: file.name,
+    url,
+    storagePath: storageRef.fullPath,
+    storageFolder,
+    fileSize: file.size,
+    contentType: file.type || null,
+    uploadedAt,
+    uploadedBy: userId,
+    stepIndex: stepIndex ?? null,
+    stepLabel: stepLabel ?? null,
+    fieldId: field?.id ?? null,
+    fieldLabel,
+  };
+  const versions = [...existingVersions, version];
+  const latestDocumentData = {
     projectId,
     taskId: task?.id || null,
     taskTitle: getTaskDisplayTitle(task),
@@ -101,6 +200,10 @@ export async function uploadWorkflowFormDocument({
     workflowStepLabel: stepLabel ?? null,
     formFieldId: field?.id ?? null,
     formFieldLabel: fieldLabel,
+    workflowDocumentKey: documentKey || null,
+    workflowDocumentVersioning: documentVersioning,
+    workflowDocumentFolderPath: folderSegments.join('/'),
+    documentFolderSegments: folderSegments,
     url,
     storagePath: storageRef.fullPath,
     storageFolder,
@@ -109,10 +212,35 @@ export async function uploadWorkflowFormDocument({
     fileName: file.name,
     fileSize: file.size,
     contentType: file.type || null,
-    accessMode: 'all',
-    allowedMemberIds: [],
-    providerPathVersion: 'structured-v1',
-  });
+    currentVersion: nextVersion,
+    versionCount: versions.length,
+    versions,
+    providerPathVersion: 'structured-v2',
+    updatedAt: serverTimestamp(),
+  };
+
+  let documentRef = versionedDocumentRef;
+  if (versionedDocumentRef) {
+    if (existingSnapshot?.exists()) {
+      await updateDoc(versionedDocumentRef, latestDocumentData);
+    } else {
+      await setDoc(versionedDocumentRef, {
+        ...latestDocumentData,
+        accessMode: 'all',
+        allowedMemberIds: [],
+        createdAt: serverTimestamp(),
+      });
+    }
+  } else {
+    documentRef = await addDoc(documentsCollection, {
+      ...latestDocumentData,
+      accessMode: 'all',
+      allowedMemberIds: [],
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  if (!documentRef) throw new Error('No se pudo crear el registro documental.');
 
   return {
     kind: WORKFLOW_DOCUMENT_VALUE_KIND,
@@ -124,7 +252,7 @@ export async function uploadWorkflowFormDocument({
     storageFolder,
     fileSize: file.size,
     contentType: file.type || null,
-    uploadedAt: new Date().toISOString(),
+    uploadedAt,
     uploadedBy: userId,
     stepIndex: stepIndex ?? null,
     stepLabel: stepLabel ?? null,
@@ -132,6 +260,12 @@ export async function uploadWorkflowFormDocument({
     fieldLabel,
     taskId: task?.id || null,
     taskTitle: getTaskDisplayTitle(task),
+    documentKey: documentKey || null,
+    documentVersioning,
+    documentFolderPath: folderSegments.join('/'),
+    documentFolderSegments: folderSegments,
+    version: nextVersion,
+    versionCount: versions.length,
   };
 }
 
@@ -166,5 +300,14 @@ export const collectWorkflowDocumentsFromHistory = (task: any) => {
     });
   });
 
-  return docs.sort((a, b) => getTimeValue(b.timestamp) - getTimeValue(a.timestamp));
+  const sortedDocs = docs.sort((a, b) => getTimeValue(b.timestamp) - getTimeValue(a.timestamp));
+  const seenVersionedDocuments = new Set<string>();
+
+  return sortedDocs.filter((document) => {
+    if (!document.documentVersioning && !document.documentKey) return true;
+    const logicalId = String(document.documentId || `${document.taskId || ''}:${document.documentKey || ''}`);
+    if (seenVersionedDocuments.has(logicalId)) return false;
+    seenVersionedDocuments.add(logicalId);
+    return true;
+  });
 };
