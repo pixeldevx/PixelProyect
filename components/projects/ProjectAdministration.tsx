@@ -748,9 +748,11 @@ export function ProjectAdministration({
   const [advanceTaskGroupFilter, setAdvanceTaskGroupFilter] = useState('all');
   const [advanceDraftItem, setAdvanceDraftItem] = useState<AdvanceItem | null>(null);
   const [selectedAdvance, setSelectedAdvance] = useState<TravelAdvance | null>(null);
+  const [viewingAdvance, setViewingAdvance] = useState<TravelAdvance | null>(null);
   const [paymentAdvance, setPaymentAdvance] = useState<TravelAdvance | null>(null);
   const [paymentFile, setPaymentFile] = useState<File | null>(null);
   const [paymentForm, setPaymentForm] = useState({
+    customId: '',
     amount: '',
     date: todayInputValue(),
     reference: '',
@@ -1122,7 +1124,7 @@ export function ProjectAdministration({
 
   const receiptGroups = useMemo(
     () =>
-      advances
+      filteredAdvances
         .filter((advance) => (advance.receipts || []).length > 0)
         .map((advance) => {
           const advanceReceipts = advance.receipts || [];
@@ -1158,7 +1160,7 @@ export function ProjectAdministration({
             progress: coverage.progress,
           };
         }),
-    [advances, findDuplicateReceiptUsage]
+    [filteredAdvances, findDuplicateReceiptUsage]
   );
 
   const realCostAdvanceGroups = useMemo(
@@ -2611,6 +2613,7 @@ export function ProjectAdministration({
     setPaymentAdvance(advance);
     setPaymentFile(null);
     setPaymentForm({
+      customId: advance.customId || '',
       amount: String(asNumber(advance.amountApproved || advance.amountRequested) || ''),
       date: todayInputValue(),
       reference: '',
@@ -2694,6 +2697,19 @@ export function ProjectAdministration({
     }
     const amount = roundCurrency(paymentForm.amount);
     const approvedAmount = roundCurrency(latestAdvance.amountApproved || latestAdvance.amountRequested);
+    const customId = paymentForm.customId.trim();
+    if (!customId) {
+      toast.error('Asigna el ID administrativo del anticipo antes de registrar el pago.');
+      return;
+    }
+    if (
+      advances.some(
+        (advance) => advance.id !== latestAdvance.id && String(advance.customId || '').trim().toLowerCase() === customId.toLowerCase()
+      )
+    ) {
+      toast.error('Ya existe otro anticipo con ese ID administrativo.');
+      return;
+    }
     if (amount <= 0 || Math.abs(amount - approvedAmount) > 0.01) {
       toast.error(`El pago debe coincidir con el valor aprobado: ${formatMoney(approvedAmount)}.`);
       return;
@@ -2705,10 +2721,11 @@ export function ProjectAdministration({
 
     setSubmitting(true);
     try {
-      const uploaded = await uploadAdvancePaymentSupport(latestAdvance, paymentFile);
+      const identifiedAdvance = { ...latestAdvance, customId };
+      const uploaded = await uploadAdvancePaymentSupport(identifiedAdvance, paymentFile);
       const paymentRef = await addDoc(collection(db, 'projects', projectId, 'billingPayments'), {
         projectId,
-        description: `Pago de anticipo ${latestAdvance.customId || latestAdvance.id}`,
+        description: `Pago de anticipo ${customId}`,
         vendor: latestAdvance.requesterName,
         recipientId: latestAdvance.requesterId,
         recipientEmail: latestAdvance.requesterEmail || '',
@@ -2741,6 +2758,8 @@ export function ProjectAdministration({
         paidByName: getCurrentUserName(currentUser),
       };
       await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
+        customId,
+        customIdNormalized: customId.toLowerCase(),
         status: 'paid',
         paymentSupport,
         paidAt: serverTimestamp(),
@@ -2751,6 +2770,7 @@ export function ProjectAdministration({
       });
       await logAdministrativeEvent(latestAdvance.id, 'advance_paid', {
         amount,
+        customId,
         date: paymentForm.date,
         reference: paymentForm.reference.trim(),
         documentId: uploaded.documentId,
@@ -3642,7 +3662,7 @@ export function ProjectAdministration({
                   </div>
                   <div className="relative min-w-0 lg:w-96">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                    <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder="Buscar anticipo, persona o destino..." />
+                    <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder="Buscar por ID del anticipo, persona o destino..." />
                   </div>
                 </div>
               </div>
@@ -3663,7 +3683,11 @@ export function ProjectAdministration({
                         <p className="mt-1 text-sm font-semibold text-slate-500">{advance.requesterName} · {advance.requesterEmail || 'Sin correo'} · {advance.destination}</p>
                       </div>
                       <div className="flex flex-wrap gap-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => setViewingAdvance(advance)}><FileText size={14} className="mr-2" />Ver anticipo</Button>
                         <Button type="button" size="sm" variant="outline" onClick={() => void downloadAdvancePaymentSheet(advance)}><Download size={14} className="mr-2" />Descargar ficha</Button>
+                        {(canManage || canValidate) && ['submitted', 'pending_payment', 'paid'].includes(advance.status) && (
+                          <Button type="button" size="sm" variant="outline" onClick={() => openAdvanceEditor(advance)} className="border-indigo-200 text-indigo-700 hover:bg-indigo-50"><PencilLine size={14} className="mr-2" />Editar</Button>
+                        )}
                         {advance.status === 'submitted' && canValidate && <>
                           <Button type="button" size="sm" onClick={() => openReviewAction({ type: 'approveAdvance', advance })} className="bg-emerald-600 text-white hover:bg-emerald-700"><CheckCircle2 size={14} className="mr-2" />Aprobar y firmar</Button>
                           <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>
@@ -3700,11 +3724,19 @@ export function ProjectAdministration({
           {view === 'receipts' && (
             <div className="space-y-4">
               <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                <h3 className="text-lg font-black text-slate-950">Legalizaciones agrupadas por anticipo</h3>
-                <p className="text-sm font-medium text-slate-500">Revisa el saldo de cada solicitud, sus soportes, devoluciones y subsanaciones en un solo lugar.</p>
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div><h3 className="text-lg font-black text-slate-950">Legalizaciones agrupadas por anticipo</h3><p className="text-sm font-medium text-slate-500">Revisa el saldo de cada solicitud, sus soportes, devoluciones y subsanaciones en un solo lugar.</p></div>
+                  <div className="relative min-w-0 lg:w-96">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder="Buscar legalización por ID del anticipo..." />
+                  </div>
+                </div>
               </div>
               {receiptGroups.length === 0 ? (
-                <EmptyState title="Sin soportes cargados" body="Los comprobantes de campo aparecerán aquí cuando se legalice un anticipo." />
+                <EmptyState
+                  title={advanceSearch.trim() ? 'No se encontró ese ID de anticipo' : 'Sin soportes cargados'}
+                  body={advanceSearch.trim() ? 'Verifica el ID administrativo o el identificador interno e intenta nuevamente.' : 'Los comprobantes de campo aparecerán aquí cuando se legalice un anticipo.'}
+                />
               ) : (
                 receiptGroups.map((group) => {
                   const isExpanded = expandedReceiptGroups[group.advance.id] ?? false;
@@ -3915,15 +3947,18 @@ export function ProjectAdministration({
           {view === 'payments' && (
             <div className="space-y-4">
               <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                <h3 className="text-lg font-black text-slate-950">Costos reales por anticipo finalizado</h3>
-                <p className="text-sm font-medium text-slate-500">
-                  Cada anticipo cerrado agrupa sus soportes aprobados, dinero devuelto, centros de costo y un informe descargable.
-                </p>
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div><h3 className="text-lg font-black text-slate-950">Costos reales por anticipo finalizado</h3><p className="text-sm font-medium text-slate-500">Cada anticipo cerrado agrupa sus soportes aprobados, dinero devuelto, centros de costo y un informe descargable.</p></div>
+                  <div className="relative min-w-0 lg:w-96">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder="Buscar costo real por ID del anticipo..." />
+                  </div>
+                </div>
               </div>
               {realCostAdvanceGroups.length === 0 ? (
                 <EmptyState
-                  title="Sin anticipos finalizados"
-                  body="Los costos reales aparecerán cuando un anticipo quede completamente legalizado o cubierto con devolución."
+                  title={advanceSearch.trim() ? 'No se encontró ese ID de anticipo' : 'Sin anticipos finalizados'}
+                  body={advanceSearch.trim() ? 'Verifica el ID administrativo o el identificador interno e intenta nuevamente.' : 'Los costos reales aparecerán cuando un anticipo quede completamente legalizado o cubierto con devolución.'}
                 />
               ) : (
                 realCostAdvanceGroups.map((group) => {
@@ -4585,6 +4620,83 @@ export function ProjectAdministration({
         </ModalShell>
       )}
 
+      {viewingAdvance && (() => {
+        const advance = advances.find((item) => item.id === viewingAdvance.id) || viewingAdvance;
+        const status = statusConfig[advance.status] || statusConfig.submitted;
+        const costCenters = normalizeCostCenters(
+          advance.costCenters,
+          asNumber(advance.amountApproved || advance.amountRequested)
+        );
+        return (
+          <ModalShell
+            title={`Vista del anticipo ${advance.customId || advance.id.slice(0, 8)}`}
+            subtitle="Consulta completa de la solicitud, sus ítems, asignación administrativa, firmas y pago."
+            onClose={() => setViewingAdvance(null)}
+            wide
+          >
+            <div className="space-y-5">
+              <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2 xl:grid-cols-4">
+                <SummaryLine label="ID administrativo" value={advance.customId || 'Pendiente de asignar'} strong />
+                <SummaryLine label="ID interno Pixel" value={advance.id} />
+                <SummaryLine label="Estado" value={status.label} />
+                <SummaryLine label="Total aprobado" value={formatMoney(advance.amountApproved || advance.amountRequested)} strong />
+              </div>
+
+              <div className="grid gap-5 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,.7fr)]">
+                <div className="space-y-5">
+                  <section className="rounded-xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-sm font-black uppercase tracking-[0.16em] text-slate-500">Información general</h3>
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      <SummaryLine label="Solicitante" value={advance.requesterName} />
+                      <SummaryLine label="Correo" value={advance.requesterEmail || 'Sin correo'} />
+                      <SummaryLine label="Destino" value={advance.destination} />
+                      <SummaryLine label="Periodo" value={`${formatDate(advance.travelStart)} - ${formatDate(advance.travelEnd)}`} />
+                    </div>
+                    <div className="mt-3 rounded-lg bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Justificación</p><p className="mt-1 text-sm font-semibold leading-6 text-slate-700">{advance.purpose}</p></div>
+                    {advance.adminComment && <div className="mt-3 rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm font-semibold text-orange-800"><span className="font-black">Observación administrativa:</span> {advance.adminComment}</div>}
+                  </section>
+
+                  <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                    <div className="border-b border-slate-200 px-4 py-3"><h3 className="text-sm font-black uppercase tracking-[0.16em] text-slate-500">Ítems del anticipo</h3></div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[680px] text-left text-xs">
+                        <thead className="bg-slate-100 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500"><tr><th className="px-3 py-2">Concepto</th><th className="px-3 py-2">Días / unidades</th><th className="px-3 py-2">Unitario</th><th className="px-3 py-2">Nota</th><th className="px-3 py-2 text-right">Total</th></tr></thead>
+                        <tbody className="divide-y divide-slate-100">{(advance.items || []).map((item) => <tr key={item.id}><td className="px-3 py-3 font-black text-slate-900">{item.categoryName}</td><td className="px-3 py-3 text-slate-600">{item.days}</td><td className="px-3 py-3 text-slate-600">{formatMoney(item.unitAmount)}</td><td className="px-3 py-3 text-slate-500">{item.note || '—'}</td><td className="px-3 py-3 text-right font-black">{formatMoney(item.amount)}</td></tr>)}</tbody>
+                        <tfoot className="border-t-2 border-slate-200 bg-slate-50"><tr><td colSpan={4} className="px-3 py-3 text-right font-black uppercase text-slate-500">Total solicitado</td><td className="px-3 py-3 text-right text-sm font-black text-indigo-700">{formatMoney(advance.amountRequested)}</td></tr></tfoot>
+                      </table>
+                    </div>
+                  </section>
+
+                  <section className="rounded-xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-sm font-black uppercase tracking-[0.16em] text-slate-500">Asignación y trazabilidad</h3>
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      <SummaryLine label="Tareas vinculadas" value={(advance.taskTitles || []).join(', ') || advance.taskTitle || 'Sin tareas'} />
+                      <SummaryLine label="Centro principal" value={advance.costCenterName || costCenters[0]?.name || 'Sin asignar'} />
+                    </div>
+                    {costCenters.length > 0 && <div className="mt-3 grid gap-2 sm:grid-cols-2">{costCenters.map((center) => <div key={center.id} className="rounded-lg bg-emerald-50 px-3 py-2 ring-1 ring-emerald-100"><p className="text-xs font-black text-emerald-900">{center.name}</p><p className="mt-1 text-xs font-semibold text-emerald-700">{center.percentage}% · {formatMoney(center.amount)}</p></div>)}</div>}
+                  </section>
+                </div>
+
+                <aside className="space-y-3">
+                  <SignatureSummary title="Firma solicitante" signature={advance.requesterSignature} />
+                  <SignatureSummary title="Firma aprobador" signature={advance.approvalSignature} />
+                  <div className={`rounded-xl border p-4 ${advance.paymentSupport ? 'border-emerald-200 bg-emerald-50' : 'border-violet-200 bg-violet-50'}`}>
+                    <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Pago</p>
+                    {advance.paymentSupport ? <><p className="mt-2 text-lg font-black text-emerald-900">{formatMoney(advance.paymentSupport.amount)}</p><p className="mt-1 text-xs font-semibold text-emerald-700">{formatDate(advance.paymentSupport.date)}{advance.paymentSupport.reference ? ` · Ref. ${advance.paymentSupport.reference}` : ''}</p><div className="mt-3"><SecureDocumentLink storagePath={advance.paymentSupport.storagePath} fallbackUrl={advance.paymentSupport.fileUrl} className="inline-flex items-center gap-2 text-xs font-black text-emerald-800"><FileText size={14} />Ver soporte de pago</SecureDocumentLink></div></> : <p className="mt-2 text-sm font-bold text-violet-800">Pendiente de registrar el desembolso.</p>}
+                  </div>
+                </aside>
+              </div>
+            </div>
+            <ModalFooter>
+              <Button type="button" variant="outline" onClick={() => void downloadAdvancePaymentSheet(advance)}><Download size={15} className="mr-2" />Descargar ficha</Button>
+              {(canManage || canValidate) && ['submitted', 'pending_payment', 'paid'].includes(advance.status) && <Button type="button" variant="outline" onClick={() => { setViewingAdvance(null); openAdvanceEditor(advance); }} className="border-indigo-200 text-indigo-700"><PencilLine size={15} className="mr-2" />Editar anticipo</Button>}
+              {canValidate && advance.status === 'pending_payment' && <Button type="button" onClick={() => { setViewingAdvance(null); openAdvancePayment(advance); }} className="bg-violet-600 font-bold text-white hover:bg-violet-700"><CreditCard size={15} className="mr-2" />Registrar pago</Button>}
+              <Button type="button" variant="outline" onClick={() => setViewingAdvance(null)}>Cerrar</Button>
+            </ModalFooter>
+          </ModalShell>
+        );
+      })()}
+
       {paymentAdvance && (
         <ModalShell
           title="Registrar pago del anticipo"
@@ -4595,6 +4707,12 @@ export function ProjectAdministration({
           <div className="grid gap-4 lg:grid-cols-[1fr_330px]">
             <div className="space-y-4">
               <div className="grid gap-3 md:grid-cols-2">
+                <div className="md:col-span-2 rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
+                  <Field label="ID administrativo del anticipo · obligatorio">
+                    <input className={`${inputClass} bg-white font-black uppercase tracking-wide`} value={paymentForm.customId} maxLength={80} onChange={(event) => setPaymentForm((current) => ({ ...current, customId: event.target.value }))} placeholder="Ej: ANT-2026-001 o ID contable" />
+                  </Field>
+                  <p className="mt-2 text-xs font-semibold text-indigo-700">La administrativa asigna o confirma este ID antes del desembolso. Se usará en búsquedas, ficha e indexación documental.</p>
+                </div>
                 <Field label="Valor pagado">
                   <input className={inputClass} type="number" min="0" step="0.01" value={paymentForm.amount} onChange={(event) => setPaymentForm((current) => ({ ...current, amount: event.target.value }))} />
                 </Field>
@@ -4619,16 +4737,18 @@ export function ProjectAdministration({
               </div>
             </div>
             <aside className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <SummaryLine label="Anticipo" value={paymentAdvance.customId || paymentAdvance.id} />
+              <SummaryLine label="ID administrativo" value={paymentForm.customId.trim() || 'Pendiente de asignar'} />
+              <SummaryLine label="ID interno Pixel" value={paymentAdvance.id} />
               <SummaryLine label="Beneficiario" value={paymentAdvance.requesterName} />
               <SummaryLine label="Valor aprobado" value={formatMoney(paymentAdvance.amountApproved || paymentAdvance.amountRequested)} strong />
               <SignatureSummary title="Firma solicitante" signature={paymentAdvance.requesterSignature} />
               <SignatureSummary title="Firma aprobador" signature={paymentAdvance.approvalSignature} />
+              <Button type="button" variant="outline" onClick={() => { const advance = paymentAdvance; setPaymentAdvance(null); openAdvanceEditor(advance); }} className="w-full border-indigo-200 text-indigo-700 hover:bg-indigo-50"><PencilLine size={15} className="mr-2" />Editar anticipo completo</Button>
             </aside>
           </div>
           <ModalFooter>
             <Button type="button" variant="outline" onClick={() => setPaymentAdvance(null)}>Cancelar</Button>
-            <Button type="button" onClick={handleRegisterAdvancePayment} disabled={submitting || !paymentFile} className="bg-violet-600 font-bold text-white hover:bg-violet-700">
+            <Button type="button" onClick={handleRegisterAdvancePayment} disabled={submitting || !paymentFile || !paymentForm.customId.trim()} className="bg-violet-600 font-bold text-white hover:bg-violet-700">
               {submitting ? <Loader2 size={16} className="mr-2 animate-spin" /> : <CreditCard size={16} className="mr-2" />}
               Confirmar pago y habilitar legalización
             </Button>
