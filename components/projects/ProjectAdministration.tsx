@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import Image from 'next/image';
 import {
   AlertCircle,
   ArrowRight,
@@ -10,6 +11,7 @@ import {
   ChevronRight,
   CheckCircle2,
   ClipboardCheck,
+  CreditCard,
   Download,
   FileImage,
   FileText,
@@ -29,6 +31,7 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  WalletCards,
   X,
   XCircle,
 } from 'lucide-react';
@@ -150,6 +153,33 @@ type AdvanceReceipt = {
   aiWarnings?: string[];
 };
 
+type AdvancePaymentSupport = {
+  documentId: string;
+  fileName: string;
+  fileSize: number;
+  fileUrl: string;
+  storagePath: string;
+  amount: number;
+  date: string;
+  reference?: string;
+  note?: string;
+  billingPaymentId?: string;
+  paidAt: string;
+  paidBy?: string | null;
+  paidByName?: string;
+};
+
+type AdvanceSignatureSnapshot = {
+  signatureUrl: string;
+  signatureStoragePath?: string;
+  signerUserId: string;
+  signerMemberId?: string;
+  name: string;
+  email: string;
+  jobTitle: string;
+  signedAt: string;
+};
+
 type AiReceiptDraft = {
   id: string;
   file: File;
@@ -190,7 +220,7 @@ type TravelAdvance = {
   taskTitle?: string;
   taskIds?: string[];
   taskTitles?: string[];
-  status: 'submitted' | 'approved' | 'completed' | 'returned' | 'rejected' | 'closed';
+  status: 'submitted' | 'pending_payment' | 'paid' | 'approved' | 'completed' | 'returned' | 'rejected' | 'closed';
   items: AdvanceItem[];
   receipts?: AdvanceReceipt[];
   amountRequested: number;
@@ -206,6 +236,13 @@ type TravelAdvance = {
   costCenterId?: string | null;
   costCenterName?: string | null;
   adminComment?: string;
+  requesterSignature?: AdvanceSignatureSnapshot;
+  approvalSignature?: AdvanceSignatureSnapshot;
+  paymentSupport?: AdvancePaymentSupport;
+  paymentApprovedAt?: any;
+  paymentApprovedBy?: string | null;
+  paymentApprovedByName?: string;
+  paidAt?: any;
   createdAt?: any;
   updatedAt?: any;
   submittedAt?: any;
@@ -229,6 +266,7 @@ type AdvanceEditForm = {
   amountReturned: string;
   returnComment: string;
   costCenters: CostCenterAllocation[];
+  items: AdvanceItem[];
 };
 
 type BillingPayment = {
@@ -514,7 +552,9 @@ const getTaskTitle = (task: any) =>
 
 const statusConfig: Record<TravelAdvance['status'], { label: string; className: string }> = {
   submitted: { label: 'Por validar', className: 'bg-amber-50 text-amber-700 ring-amber-100' },
-  approved: { label: 'En elaboración', className: 'bg-sky-50 text-sky-700 ring-sky-100' },
+  pending_payment: { label: 'Aprobado por pagar', className: 'bg-violet-50 text-violet-700 ring-violet-100' },
+  paid: { label: 'Pagado · por legalizar', className: 'bg-sky-50 text-sky-700 ring-sky-100' },
+  approved: { label: 'En legalización (legado)', className: 'bg-sky-50 text-sky-700 ring-sky-100' },
   completed: { label: 'Completado', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
   returned: { label: 'Devuelto', className: 'bg-orange-50 text-orange-700 ring-orange-100' },
   rejected: { label: 'Rechazado', className: 'bg-rose-50 text-rose-700 ring-rose-100' },
@@ -562,6 +602,9 @@ const APPROVED_RECEIPT_STATUSES: ReceiptStatus[] = ['approved', 'approved_modifi
 
 const isApprovedReceipt = (receipt: Pick<AdvanceReceipt, 'status'>) =>
   APPROVED_RECEIPT_STATUSES.includes(receipt.status);
+
+const isAdvanceReadyForLegalization = (advance: Pick<TravelAdvance, 'status'>) =>
+  advance.status === 'paid' || advance.status === 'approved';
 
 const normalizeCufe = (value: string) => value.replace(/\s+/g, '').trim();
 
@@ -696,7 +739,7 @@ export function ProjectAdministration({
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [locationsLoaded, setLocationsLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'requests' | 'receipts' | 'payments' | 'settings'>('requests');
+  const [view, setView] = useState<'requests' | 'payables' | 'receipts' | 'payments' | 'settings'>('requests');
   const [advanceSearch, setAdvanceSearch] = useState('');
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [advanceForm, setAdvanceForm] = useState(() => buildEmptyAdvanceForm(currentUser, teamMembers));
@@ -705,6 +748,14 @@ export function ProjectAdministration({
   const [advanceTaskGroupFilter, setAdvanceTaskGroupFilter] = useState('all');
   const [advanceDraftItem, setAdvanceDraftItem] = useState<AdvanceItem | null>(null);
   const [selectedAdvance, setSelectedAdvance] = useState<TravelAdvance | null>(null);
+  const [paymentAdvance, setPaymentAdvance] = useState<TravelAdvance | null>(null);
+  const [paymentFile, setPaymentFile] = useState<File | null>(null);
+  const [paymentForm, setPaymentForm] = useState({
+    amount: '',
+    date: todayInputValue(),
+    reference: '',
+    note: '',
+  });
   const [editingAdvance, setEditingAdvance] = useState<TravelAdvance | null>(null);
   const [advanceEditForm, setAdvanceEditForm] = useState<AdvanceEditForm>({
     customId: '',
@@ -716,6 +767,7 @@ export function ProjectAdministration({
     amountReturned: '',
     returnComment: '',
     costCenters: [],
+    items: [],
   });
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptMode, setReceiptMode] = useState<'manual' | 'ai'>('manual');
@@ -957,6 +1009,7 @@ export function ProjectAdministration({
     const legalized = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountLegalized), 0);
     const returnedCash = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountReturned), 0);
     const pendingValidation = advances.filter((advance) => advance.status === 'submitted').length;
+    const pendingPayment = advances.filter((advance) => advance.status === 'pending_payment').length;
     const returned = advances.filter(
       (advance) =>
         advance.status === 'returned' || (advance.receipts || []).some((receipt) => receipt.status === 'returned')
@@ -972,6 +1025,7 @@ export function ProjectAdministration({
       returnedCash,
       balance: Math.max(0, approved - legalized - returnedCash),
       pendingValidation,
+      pendingPayment,
       returned,
       realAdminPayments,
     };
@@ -1008,6 +1062,11 @@ export function ProjectAdministration({
       return haystack.includes(search);
     });
   }, [advanceSearch, advances]);
+
+  const payableAdvances = useMemo(
+    () => filteredAdvances.filter((advance) => ['submitted', 'pending_payment', 'paid', 'returned'].includes(advance.status)),
+    [filteredAdvances]
+  );
 
   const receipts = useMemo(
     () =>
@@ -1154,6 +1213,19 @@ export function ProjectAdministration({
           }
         })
       );
+      const resolveProtectedAsset = async (path?: string, fallback?: string) => {
+        if (!path) return fallback || '';
+        try {
+          return await getAuthorizedDownloadURL(ref(storage, path));
+        } catch {
+          return fallback || '';
+        }
+      };
+      const [requesterSignatureUrl, approvalSignatureUrl, paymentSupportUrl] = await Promise.all([
+        resolveProtectedAsset(advance.requesterSignature?.signatureStoragePath, advance.requesterSignature?.signatureUrl),
+        resolveProtectedAsset(advance.approvalSignature?.signatureStoragePath, advance.approvalSignature?.signatureUrl),
+        resolveProtectedAsset(advance.paymentSupport?.storagePath, advance.paymentSupport?.fileUrl),
+      ]);
       const supportRows = approvedReceipts
         .map((receipt, index) => {
           const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
@@ -1261,6 +1333,15 @@ export function ProjectAdministration({
         </table>
       </section>
       <section>
+        <h2>Pago y firmas verificadas</h2>
+        <table>
+          <tbody>
+            <tr><th>Pago al solicitante</th><td colspan="3">${advance.paymentSupport ? `${escapeHtml(formatMoney(advance.paymentSupport.amount))} · ${escapeHtml(formatDate(advance.paymentSupport.date))}${paymentSupportUrl ? ` · <a href="${escapeHtml(paymentSupportUrl)}">Ver soporte</a>` : ''}` : 'Sin soporte de pago registrado'}</td></tr>
+            <tr><th>Firma solicitante</th><td>${requesterSignatureUrl ? `<img src="${escapeHtml(requesterSignatureUrl)}" alt="Firma solicitante" style="width:180px;height:64px;object-fit:contain"/><br/>` : ''}${escapeHtml(advance.requesterSignature?.name || 'Pendiente')}<br/><span>${escapeHtml(advance.requesterSignature?.jobTitle || '')} · ${escapeHtml(advance.requesterSignature?.email || '')}</span></td><th>Firma aprobador</th><td>${approvalSignatureUrl ? `<img src="${escapeHtml(approvalSignatureUrl)}" alt="Firma aprobador" style="width:180px;height:64px;object-fit:contain"/><br/>` : ''}${escapeHtml(advance.approvalSignature?.name || 'Pendiente')}<br/><span>${escapeHtml(advance.approvalSignature?.jobTitle || '')} · ${escapeHtml(advance.approvalSignature?.email || '')}</span></td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section>
         <h2>Ficha tecnica de legalizaciones</h2>
         <table>
           <thead><tr><th>#</th><th>Tipo</th><th>Proveedor</th><th>Fecha</th><th>Documento</th><th>Valor</th><th>Soporte</th></tr></thead>
@@ -1288,6 +1369,60 @@ export function ProjectAdministration({
     [project?.name, project?.title, projectId]
   );
 
+  const downloadAdvancePaymentSheet = useCallback(
+    async (advance: TravelAdvance) => {
+      const authorizeAsset = async (path?: string, fallback?: string) => {
+        if (!path) return fallback || '';
+        try {
+          return await getAuthorizedDownloadURL(ref(storage, path));
+        } catch {
+          return fallback || '';
+        }
+      };
+      const [requesterSignatureUrl, approvalSignatureUrl, paymentSupportUrl] = await Promise.all([
+        authorizeAsset(advance.requesterSignature?.signatureStoragePath, advance.requesterSignature?.signatureUrl),
+        authorizeAsset(advance.approvalSignature?.signatureStoragePath, advance.approvalSignature?.signatureUrl),
+        authorizeAsset(advance.paymentSupport?.storagePath, advance.paymentSupport?.fileUrl),
+      ]);
+      const itemRows = (advance.items || []).map((item, index) => `
+        <tr>
+          <td>${index + 1}</td><td>${escapeHtml(item.categoryName)}</td><td>${escapeHtml(String(item.days))}</td>
+          <td class="money">${escapeHtml(formatMoney(item.unitAmount))}</td><td>${escapeHtml(item.note || '')}</td>
+          <td class="money">${escapeHtml(formatMoney(item.amount))}</td>
+        </tr>`).join('');
+      const centerRows = normalizeCostCenters(
+        advance.costCenters,
+        asNumber(advance.amountApproved || advance.amountRequested)
+      ).map((center) => `
+        <tr><td>${escapeHtml(center.name)}</td><td>${escapeHtml(String(center.percentage))}%</td><td class="money">${escapeHtml(formatMoney(center.amount))}</td><td>${escapeHtml(center.note || '')}</td></tr>`).join('');
+      const signatureBlock = (title: string, signature?: AdvanceSignatureSnapshot, imageUrl?: string) => `
+        <div class="signature">
+          <div class="signature-title">${escapeHtml(title)}</div>
+          ${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(title)}" />` : '<div class="signature-empty">Pendiente de firma</div>'}
+          <strong>${escapeHtml(signature?.name || 'Pendiente')}</strong>
+          <span>${escapeHtml(signature?.jobTitle || 'Sin cargo')}</span>
+          <span>${escapeHtml(signature?.email || '')}</span>
+          <small>${signature?.signedAt ? `Firmado ${escapeHtml(formatDate(signature.signedAt))}` : ''}</small>
+        </div>`;
+      const projectName = project?.name || project?.title || projectId;
+      const html = `<!doctype html><html lang="es"><head><meta charset="utf-8" />
+        <title>Ficha anticipo ${escapeHtml(advance.customId || advance.id)}</title>
+        <style>
+          *{box-sizing:border-box}body{margin:0;background:#eef2ff;color:#0f172a;font-family:Inter,Arial,sans-serif}main{max-width:1050px;margin:24px auto;background:white;border:1px solid #dbe3ef;border-radius:18px;overflow:hidden;box-shadow:0 18px 55px rgba(15,23,42,.12)}header{padding:28px 32px;color:white;background:linear-gradient(135deg,#111827,#3730a3 60%,#0f766e)}h1{margin:5px 0 0;font-size:28px}.eyebrow{margin:0;color:#a7f3d0;font-size:11px;font-weight:900;letter-spacing:.22em;text-transform:uppercase}.subtitle{color:#cbd5e1;font-size:13px;font-weight:700}section{padding:22px 32px;border-top:1px solid #e2e8f0}h2{font-size:17px;margin:0 0 13px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.card{padding:12px;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc}.label{font-size:9px;text-transform:uppercase;letter-spacing:.16em;font-weight:900;color:#64748b}.value{font-size:15px;font-weight:900;margin-top:5px}table{width:100%;border-collapse:collapse;border:1px solid #e2e8f0}th,td{padding:10px;border-bottom:1px solid #e2e8f0;text-align:left;font-size:11px;vertical-align:top}th{background:#f1f5f9;color:#64748b;text-transform:uppercase;letter-spacing:.12em;font-size:9px}.money{white-space:nowrap;font-weight:900}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:18px}.signature{text-align:center;padding:18px;border:1px solid #dbe3ef;border-radius:14px;display:flex;flex-direction:column;align-items:center}.signature-title{text-transform:uppercase;letter-spacing:.14em;font-size:9px;font-weight:900;color:#64748b}.signature img{width:220px;height:88px;object-fit:contain;margin:10px}.signature-empty{height:88px;display:flex;align-items:center;color:#94a3b8;font-size:12px}.signature span,.signature small{color:#64748b;font-size:11px;margin-top:3px}.payment{padding:15px;border:1px solid #a7f3d0;background:#ecfdf5;border-radius:13px}.payment.pending{border-color:#ddd6fe;background:#f5f3ff}a{color:#4338ca;font-weight:800}.print{position:fixed;right:20px;bottom:20px;padding:11px 16px;border:0;border-radius:10px;background:#111827;color:white;font-weight:800;cursor:pointer}@media print{body{background:white}main{margin:0;max-width:none;border:0;box-shadow:none}.print{display:none}}
+        </style></head><body><main>
+        <header><p class="eyebrow">Pixel Project · Ficha de anticipo</p><h1>${escapeHtml(advance.customId || `Anticipo ${advance.id.slice(0, 8)}`)}</h1><p class="subtitle">${escapeHtml(projectName)} · ${escapeHtml((statusConfig[advance.status] || statusConfig.submitted).label)}</p></header>
+        <section><div class="grid"><div class="card"><div class="label">Solicitante</div><div class="value">${escapeHtml(advance.requesterName)}</div></div><div class="card"><div class="label">Solicitado</div><div class="value">${escapeHtml(formatMoney(advance.amountRequested))}</div></div><div class="card"><div class="label">Aprobado</div><div class="value">${escapeHtml(formatMoney(advance.amountApproved))}</div></div><div class="card"><div class="label">Destino</div><div class="value">${escapeHtml(advance.destination)}</div></div></div></section>
+        <section><h2>Información del anticipo</h2><table><tbody><tr><th>Correo</th><td>${escapeHtml(advance.requesterEmail || '')}</td><th>Periodo</th><td>${escapeHtml(formatDate(advance.travelStart))} – ${escapeHtml(formatDate(advance.travelEnd))}</td></tr><tr><th>Justificación</th><td colspan="3">${escapeHtml(advance.purpose)}</td></tr><tr><th>Tareas</th><td colspan="3">${escapeHtml((advance.taskTitles || []).join(', ') || advance.taskTitle || 'Sin tareas vinculadas')}</td></tr><tr><th>Observación administrativa</th><td colspan="3">${escapeHtml(advance.adminComment || '')}</td></tr></tbody></table></section>
+        <section><h2>Ítems solicitados</h2><table><thead><tr><th>#</th><th>Concepto</th><th>Días/unidades</th><th>Valor unitario</th><th>Nota</th><th>Total</th></tr></thead><tbody>${itemRows || '<tr><td colspan="6">Sin ítems registrados.</td></tr>'}</tbody></table></section>
+        <section><h2>Centros de costos</h2><table><thead><tr><th>Centro</th><th>Porcentaje</th><th>Valor</th><th>Nota</th></tr></thead><tbody>${centerRows || '<tr><td colspan="4">Sin centro de costos.</td></tr>'}</tbody></table></section>
+        <section><h2>Pago al solicitante</h2>${advance.paymentSupport ? `<div class="payment"><strong>Pago registrado por ${escapeHtml(formatMoney(advance.paymentSupport.amount))}</strong><p>Fecha: ${escapeHtml(formatDate(advance.paymentSupport.date))}${advance.paymentSupport.reference ? ` · Referencia: ${escapeHtml(advance.paymentSupport.reference)}` : ''}</p>${paymentSupportUrl ? `<a href="${escapeHtml(paymentSupportUrl)}">Abrir soporte de pago</a>` : ''}</div>` : '<div class="payment pending"><strong>Pendiente de pago</strong><p>La ficha se actualizará cuando tesorería cargue el soporte.</p></div>'}</section>
+        <section><h2>Firmas verificadas</h2><div class="signatures">${signatureBlock('Solicitante', advance.requesterSignature, requesterSignatureUrl)}${signatureBlock('Aprobador', advance.approvalSignature, approvalSignatureUrl)}</div></section>
+        </main><button class="print" onclick="window.print()">Imprimir / guardar PDF</button></body></html>`;
+      downloadFile(`ficha-anticipo-${getSafeFileToken(advance.customId || advance.id)}.html`, html, 'text/html;charset=utf-8');
+    },
+    [project?.name, project?.title, projectId]
+  );
+
   const currentActorIds = useMemo(() => {
     const ids = new Set<string>();
     if (currentUser?.uid) ids.add(String(currentUser.uid));
@@ -1305,6 +1440,50 @@ export function ProjectAdministration({
     });
     return ids;
   }, [currentUser?.email, currentUser?.uid, teamMembers]);
+
+  const currentSignerMember = useMemo(() => {
+    const currentEmail = String(currentUser?.email || '').trim().toLowerCase();
+    return teamMembers.find((member) => {
+      const memberEmail = String(member?.email || '').trim().toLowerCase();
+      return (
+        member?.id === currentUser?.uid ||
+        member?.authUserId === currentUser?.uid ||
+        Boolean(currentEmail && memberEmail === currentEmail)
+      );
+    }) || null;
+  }, [currentUser?.email, currentUser?.uid, teamMembers]);
+
+  const buildCurrentSignatureSnapshot = useCallback((): AdvanceSignatureSnapshot | null => {
+    if (!currentUser?.uid || !currentSignerMember?.signatureUrl) return null;
+    return {
+      signatureUrl: currentSignerMember.signatureUrl,
+      signatureStoragePath: currentSignerMember.signatureStoragePath || undefined,
+      signerUserId: String(currentUser.uid),
+      signerMemberId: currentSignerMember.id ? String(currentSignerMember.id) : undefined,
+      name: getMemberLabel(currentSignerMember) || getCurrentUserName(currentUser),
+      email: String(currentSignerMember.email || currentUser.email || ''),
+      jobTitle: String(
+        currentSignerMember.roleName ||
+        currentSignerMember.position ||
+        currentSignerMember.jobTitle ||
+        currentSignerMember.profileRole ||
+        currentSignerMember.systemRole ||
+        'Sin cargo configurado'
+      ),
+      signedAt: new Date().toISOString(),
+    };
+  }, [currentSignerMember, currentUser]);
+
+  const requesterMatchesCurrentActor = useCallback(
+    (requesterId: string, requesterEmail?: string) => {
+      const emailMatches =
+        requesterEmail &&
+        currentUser?.email &&
+        String(requesterEmail).trim().toLowerCase() === String(currentUser.email).trim().toLowerCase();
+      return currentActorIds.has(String(requesterId)) || Boolean(emailMatches);
+    },
+    [currentActorIds, currentUser?.email]
+  );
 
   const canCorrectAdvanceReceipt = useCallback(
     (advance: TravelAdvance) => {
@@ -1376,13 +1555,18 @@ export function ProjectAdministration({
       amountReturned: advance.amountReturned ? String(advance.amountReturned) : '',
       returnComment: advance.returnComment || '',
       costCenters: normalizeCostCenters(advance.costCenters, coverage.approved || asNumber(advance.amountRequested)),
+      items: (advance.items || []).map((item) => ({ ...item })),
     });
     void loadLocationOptions();
   };
 
   const editingAdvanceApprovedAmount = useMemo(
-    () => (editingAdvance ? getAdvanceFinancialCoverage(editingAdvance).approved : 0),
-    [editingAdvance]
+    () => editingAdvance
+      ? editingAdvance.status === 'returned'
+        ? advanceEditForm.items.reduce((sum, item) => sum + asNumber(item.amount), 0)
+        : getAdvanceFinancialCoverage(editingAdvance).approved
+      : 0,
+    [advanceEditForm.items, editingAdvance]
   );
 
   const editingAdvanceCoverage = useMemo(
@@ -1450,6 +1634,18 @@ export function ProjectAdministration({
         editingAdvanceApprovedAmount
       ),
     }));
+  };
+
+  const updateAdvanceEditItem = (id: string, updates: Partial<AdvanceItem>) => {
+    setAdvanceEditForm((current) => {
+      const items = current.items.map((item) => {
+        if (item.id !== id) return item;
+        const next = { ...item, ...updates };
+        return { ...next, amount: roundCurrency(asNumber(next.days) * asNumber(next.unitAmount)) };
+      });
+      const requestedAmount = items.reduce((sum, item) => sum + asNumber(item.amount), 0);
+      return { ...current, items, costCenters: normalizeCostCenters(current.costCenters, requestedAmount) };
+    });
   };
 
   const updateDraftItem = (updates: Partial<AdvanceItem>) => {
@@ -1606,6 +1802,16 @@ export function ProjectAdministration({
     }
 
     const requester = teamMembers.find((member) => member.id === advanceForm.requesterId);
+    const requesterEmail = requester?.email || currentUser?.email || '';
+    if (!requesterMatchesCurrentActor(advanceForm.requesterId, requesterEmail)) {
+      toast.error('El solicitante debe coincidir con la persona que inició sesión y firma el anticipo.');
+      return;
+    }
+    const requesterSignature = buildCurrentSignatureSnapshot();
+    if (!requesterSignature) {
+      toast.error('Antes de solicitar el anticipo debes cargar tu firma en Mi perfil.');
+      return;
+    }
     const selectedCostCenter = costCenterOptions.find((center) => center.id === advanceForm.costCenterId);
     if (!selectedCostCenter) {
       toast.error('Selecciona un centro de costos para el anticipo.');
@@ -1633,7 +1839,8 @@ export function ProjectAdministration({
         customIdNormalized: customId ? customId.toLowerCase() : null,
         requesterId: advanceForm.requesterId,
         requesterName: requester ? getMemberLabel(requester) : getCurrentUserName(currentUser),
-        requesterEmail: requester?.email || currentUser?.email || '',
+        requesterEmail,
+        requesterSignature,
         destination,
         department: advanceForm.department || null,
         municipality: advanceForm.municipality || null,
@@ -1666,7 +1873,7 @@ export function ProjectAdministration({
       });
 
       await logAdministrativeEvent(docRef.id, 'advance_submitted', { amount: amountRequested });
-      toast.success('Anticipo enviado al área administrativa.');
+      toast.success('Anticipo firmado y enviado al área administrativa.');
       setIsAdvanceModalOpen(false);
     } catch (error: any) {
       console.error('Error creating advance:', error);
@@ -1678,9 +1885,26 @@ export function ProjectAdministration({
 
   const handleUpdateAdvanceFromLegalizations = async () => {
     if (!editingAdvance) return;
-    if (!canManage && !canValidate) {
+    const isReturnedCorrection = editingAdvance.status === 'returned';
+    if (!canManage && !canValidate && !isReturnedCorrection) {
       toast.error('No tienes permisos para editar anticipos.');
       return;
+    }
+    let correctedRequesterSignature: AdvanceSignatureSnapshot | null = null;
+    if (isReturnedCorrection) {
+      if (!requesterMatchesCurrentActor(editingAdvance.requesterId, editingAdvance.requesterEmail)) {
+        toast.error('Solo el solicitante original puede corregir, firmar y reenviar este anticipo.');
+        return;
+      }
+      correctedRequesterSignature = buildCurrentSignatureSnapshot();
+      if (!correctedRequesterSignature) {
+        toast.error('Carga tu firma en Mi perfil antes de reenviar la corrección.');
+        return;
+      }
+      if (advanceEditForm.items.length === 0 || advanceEditForm.items.some((item) => asNumber(item.days) <= 0 || asNumber(item.unitAmount) < 0)) {
+        toast.error('Revisa los días, unidades y valores de los ítems del anticipo.');
+        return;
+      }
     }
 
     const customId = advanceEditForm.customId.trim();
@@ -1709,7 +1933,12 @@ export function ProjectAdministration({
     }
 
     const amountReturned = roundCurrency(advanceEditForm.amountReturned);
-    const approvedAmount = asNumber(editingAdvance.amountApproved || editingAdvance.amountRequested);
+    const correctedRequestedAmount = roundCurrency(
+      advanceEditForm.items.reduce((sum, item) => sum + asNumber(item.amount), 0)
+    );
+    const approvedAmount = isReturnedCorrection
+      ? correctedRequestedAmount
+      : asNumber(editingAdvance.amountApproved || editingAdvance.amountRequested);
     const legalizedAmount = asNumber(editingAdvance.amountLegalized);
     const maxReturnable = Math.max(0, approvedAmount - legalizedAmount);
     if (amountReturned < 0) {
@@ -1769,6 +1998,24 @@ export function ProjectAdministration({
         updatePayload.inboxTargetUserId = null;
         updatePayload.closedAt = editingAdvance.closedAt || serverTimestamp();
       }
+      if (isReturnedCorrection) {
+        updatePayload.status = 'submitted';
+        updatePayload.items = advanceEditForm.items;
+        updatePayload.amountRequested = correctedRequestedAmount;
+        updatePayload.amountApproved = 0;
+        updatePayload.amountLegalized = 0;
+        updatePayload.amountReturned = 0;
+        updatePayload.balance = correctedRequestedAmount;
+        updatePayload.requesterSignature = correctedRequesterSignature;
+        updatePayload.approvalSignature = null;
+        updatePayload.paymentApprovedAt = null;
+        updatePayload.paymentApprovedBy = null;
+        updatePayload.paymentApprovedByName = '';
+        updatePayload.nextAction = 'validate_advance';
+        updatePayload.pendingRole = 'administrative_validation';
+        updatePayload.inboxTargetUserId = null;
+        updatePayload.submittedAt = serverTimestamp();
+      }
 
       await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', editingAdvance.id), updatePayload);
 
@@ -1782,8 +2029,20 @@ export function ProjectAdministration({
         costCenters,
         balance: Math.max(0, coverage.balance),
         closed: shouldClose,
+        resubmitted: isReturnedCorrection,
       });
-      toast.success(shouldClose ? 'Anticipo actualizado y cerrado con saldo cubierto.' : 'Anticipo actualizado desde legalizaciones.');
+      if (isReturnedCorrection) {
+        await logAdministrativeEvent(editingAdvance.id, 'advance_resubmitted', {
+          comment: advanceEditForm.returnComment.trim(),
+        });
+      }
+      toast.success(
+        isReturnedCorrection
+          ? 'Anticipo corregido y reenviado para aprobación.'
+          : shouldClose
+            ? 'Anticipo actualizado y cerrado con saldo cubierto.'
+            : 'Anticipo actualizado desde legalizaciones.'
+      );
       setEditingAdvance(null);
     } catch (error: any) {
       console.error('Error updating advance from legalizations:', error);
@@ -2101,7 +2360,7 @@ export function ProjectAdministration({
         receipts: nextReceipts,
         amountLegalized,
         balance: Math.max(0, coverage.balance),
-        status: 'approved',
+        status: latestAdvance.status === 'approved' ? 'approved' : 'paid',
         nextAction: 'validate_receipt',
         pendingRole: 'administrative_validation',
         inboxTargetUserId: null,
@@ -2133,8 +2392,17 @@ export function ProjectAdministration({
       toast.error(isDeleteAction ? 'Solo administradores o coordinadores pueden eliminar anticipos.' : 'No tienes permisos para validar este proceso.');
       return;
     }
-    if (reviewAction.type === 'returnReceipt' && !reviewComment.trim()) {
+    if ((reviewAction.type === 'returnReceipt' || reviewAction.type === 'returnAdvance') && !reviewComment.trim()) {
       toast.error('Explica qué debe corregirse antes de devolver el soporte.');
+      return;
+    }
+    const approvalSignature = reviewAction.type === 'approveAdvance' ? buildCurrentSignatureSnapshot() : null;
+    if (reviewAction.type === 'approveAdvance' && !reviewAction.advance.requesterSignature) {
+      toast.error('El anticipo no tiene la firma verificable del solicitante. Devuélvelo para corrección.');
+      return;
+    }
+    if (reviewAction.type === 'approveAdvance' && !approvalSignature) {
+      toast.error('Antes de aprobar debes cargar tu firma en Mi perfil.');
       return;
     }
 
@@ -2169,14 +2437,19 @@ export function ProjectAdministration({
           amountApproved: approvedAmount,
         });
         await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', reviewAction.advance.id), {
-          status: 'approved',
+          status: 'pending_payment',
           amountApproved: approvedAmount,
           amountReturned: coverage.returnedCash,
           balance: Math.max(0, coverage.balance),
           costCenters: normalizeCostCenters(reviewAction.advance.costCenters, approvedAmount),
           adminComment: reviewComment.trim() || null,
-          nextAction: 'justify_advance',
-          inboxTargetUserId: reviewAction.advance.requesterId,
+          approvalSignature,
+          paymentApprovedAt: serverTimestamp(),
+          paymentApprovedBy: currentUser?.uid || null,
+          paymentApprovedByName: getCurrentUserName(currentUser),
+          nextAction: 'pay_advance',
+          pendingRole: 'administrative_payment',
+          inboxTargetUserId: null,
           approvedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -2184,7 +2457,7 @@ export function ProjectAdministration({
           amount: approvedAmount,
           comment: reviewComment.trim(),
         });
-        toast.success('Anticipo aprobado. Queda listo para legalización.');
+        toast.success('Anticipo firmado y aprobado. Queda pendiente de registrar el pago.');
       }
 
       if (reviewAction.type === 'returnAdvance' || reviewAction.type === 'rejectAdvance') {
@@ -2192,7 +2465,13 @@ export function ProjectAdministration({
         await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', reviewAction.advance.id), {
           status: nextStatus,
           adminComment: reviewComment.trim(),
+          amountApproved: nextStatus === 'returned' ? 0 : reviewAction.advance.amountApproved,
+          approvalSignature: nextStatus === 'returned' ? null : reviewAction.advance.approvalSignature || null,
+          paymentApprovedAt: nextStatus === 'returned' ? null : reviewAction.advance.paymentApprovedAt || null,
+          paymentApprovedBy: nextStatus === 'returned' ? null : reviewAction.advance.paymentApprovedBy || null,
+          paymentApprovedByName: nextStatus === 'returned' ? '' : reviewAction.advance.paymentApprovedByName || '',
           nextAction: nextStatus === 'returned' ? 'correct_advance' : 'closed',
+          pendingRole: null,
           inboxTargetUserId: reviewAction.advance.requesterId,
           updatedAt: serverTimestamp(),
         });
@@ -2241,7 +2520,7 @@ export function ProjectAdministration({
           receipts: nextReceipts,
           amountLegalized,
           balance: Math.max(0, coverage.balance),
-          status: 'approved',
+          status: advance.status === 'approved' ? 'approved' : 'paid',
           nextAction: 'correct_receipt',
           pendingRole: null,
           inboxTargetUserId: advance.requesterId,
@@ -2274,6 +2553,10 @@ export function ProjectAdministration({
     }
 
     const latestAdvance = advances.find((item) => item.id === advance.id) || advance;
+    if (!isAdvanceReadyForLegalization(latestAdvance) && !['completed', 'closed'].includes(latestAdvance.status)) {
+      toast.error('El anticipo debe tener su pago registrado antes de legalizarse.');
+      return;
+    }
     const nextReceipts = latestAdvance.receipts || [];
     if (nextReceipts.length === 0) {
       toast.error('Carga al menos un soporte antes de completar el anticipo.');
@@ -2319,6 +2602,165 @@ export function ProjectAdministration({
     } catch (error: any) {
       console.error('Error completing advance:', error);
       toast.error(error?.message || 'No se pudo completar el anticipo.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const openAdvancePayment = (advance: TravelAdvance) => {
+    setPaymentAdvance(advance);
+    setPaymentFile(null);
+    setPaymentForm({
+      amount: String(asNumber(advance.amountApproved || advance.amountRequested) || ''),
+      date: todayInputValue(),
+      reference: '',
+      note: '',
+    });
+  };
+
+  const uploadAdvancePaymentSupport = async (advance: TravelAdvance, file: File) => {
+    const uploadDate = new Date();
+    const advanceFolderName = advance.customId
+      ? `${advance.customId} - ${advance.destination || advance.purpose || 'Anticipo'}`
+      : `${advance.destination || advance.purpose || 'Anticipo'} - ${advance.id.slice(0, 8)}`;
+    const managedPrefix = `managed-advance-${advance.id}`;
+    const { folders: indexedFolders, leafFolderId } = await ensureManagedDocumentFolderPath({
+      projectId,
+      userId: currentUser?.uid || null,
+      segments: [
+        { id: 'managed-administrativo', name: 'Administrativo', accessMode: 'all', metadata: { documentContext: 'administration' } },
+        { id: 'managed-administrativo-anticipos', name: 'Anticipos', accessMode: 'inherit', metadata: { documentContext: 'advanceRepository' } },
+        { id: managedPrefix, name: advanceFolderName, accessMode: 'inherit', metadata: { administrativeRequestId: advance.id, documentContext: 'advanceRepository' } },
+        { id: `${managedPrefix}-pago`, name: 'Pago', accessMode: 'inherit', metadata: { administrativeRequestId: advance.id, documentContext: 'advancePayment' } },
+      ],
+    });
+    const projectFolderSegments = getDocumentFolderStorageSegments(leafFolderId, indexedFolders);
+    let storagePath = buildDocumentStoragePath({
+      projectId,
+      projectName: project?.name,
+      fileName: file.name,
+      documentName: `soporte-pago-${advance.customId || advance.id}`,
+      date: uploadDate,
+      folderName: 'administrativo',
+      folderSegments: ['anticipos', advance.id, 'pago'],
+    });
+    const storageRef = ref(storage, storagePath);
+    await uploadBytes(storageRef, file);
+    storagePath = storageRef.fullPath;
+    const fileUrl = await getDownloadURL(storageRef);
+    const documentRef = await addDoc(collection(db, 'projects', projectId, 'documents'), {
+      projectId,
+      name: file.name,
+      documentName: `Soporte de pago ${advance.customId || advance.id}`,
+      type: 'Soporte de pago de anticipo',
+      itemKind: 'file',
+      scope: 'project',
+      parentFolderId: leafFolderId,
+      projectFolderSegments,
+      administrativeRequestId: advance.id,
+      documentContext: 'advancePayment',
+      url: fileUrl,
+      downloadURL: fileUrl,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type || 'application/octet-stream',
+      storagePath,
+      storageFolder: storagePath.split('/').slice(0, -1).join('/'),
+      uploadedAt: serverTimestamp(),
+      uploadedBy: currentUser?.uid || null,
+      uploadedByName: getCurrentUserName(currentUser),
+      createdAt: serverTimestamp(),
+      accessMode: 'inherit',
+      allowedMemberIds: [],
+      accessPolicyVersion: 'folder-inheritance-v1',
+      providerPathVersion: 'structured-v2',
+    });
+    return { fileUrl, storagePath, documentId: documentRef.id };
+  };
+
+  const handleRegisterAdvancePayment = async () => {
+    if (!paymentAdvance || !canValidate) {
+      toast.error('No tienes permisos para registrar pagos de anticipos.');
+      return;
+    }
+    const latestAdvance = advances.find((advance) => advance.id === paymentAdvance.id) || paymentAdvance;
+    if (latestAdvance.status !== 'pending_payment') {
+      toast.error('Este anticipo ya no está pendiente de pago.');
+      return;
+    }
+    if (!paymentFile) {
+      toast.error('Carga el soporte del pago realizado.');
+      return;
+    }
+    const amount = roundCurrency(paymentForm.amount);
+    const approvedAmount = roundCurrency(latestAdvance.amountApproved || latestAdvance.amountRequested);
+    if (amount <= 0 || Math.abs(amount - approvedAmount) > 0.01) {
+      toast.error(`El pago debe coincidir con el valor aprobado: ${formatMoney(approvedAmount)}.`);
+      return;
+    }
+    if (!paymentForm.date) {
+      toast.error('Selecciona la fecha del pago.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const uploaded = await uploadAdvancePaymentSupport(latestAdvance, paymentFile);
+      const paymentRef = await addDoc(collection(db, 'projects', projectId, 'billingPayments'), {
+        projectId,
+        description: `Pago de anticipo ${latestAdvance.customId || latestAdvance.id}`,
+        vendor: latestAdvance.requesterName,
+        recipientId: latestAdvance.requesterId,
+        recipientEmail: latestAdvance.requesterEmail || '',
+        amount,
+        date: new Date(`${paymentForm.date}T00:00:00`),
+        status: 'paid',
+        source: 'advance_disbursement',
+        advanceId: latestAdvance.id,
+        reference: paymentForm.reference.trim() || null,
+        notes: paymentForm.note.trim() || null,
+        supportDocumentId: uploaded.documentId,
+        supportStoragePath: uploaded.storagePath,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: currentUser?.uid || null,
+      });
+      const paymentSupport: AdvancePaymentSupport = {
+        documentId: uploaded.documentId,
+        fileName: paymentFile.name,
+        fileSize: paymentFile.size,
+        fileUrl: uploaded.fileUrl,
+        storagePath: uploaded.storagePath,
+        amount,
+        date: paymentForm.date,
+        reference: paymentForm.reference.trim() || undefined,
+        note: paymentForm.note.trim() || undefined,
+        billingPaymentId: paymentRef.id,
+        paidAt: new Date().toISOString(),
+        paidBy: currentUser?.uid || null,
+        paidByName: getCurrentUserName(currentUser),
+      };
+      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
+        status: 'paid',
+        paymentSupport,
+        paidAt: serverTimestamp(),
+        nextAction: 'justify_advance',
+        pendingRole: null,
+        inboxTargetUserId: latestAdvance.requesterId,
+        updatedAt: serverTimestamp(),
+      });
+      await logAdministrativeEvent(latestAdvance.id, 'advance_paid', {
+        amount,
+        date: paymentForm.date,
+        reference: paymentForm.reference.trim(),
+        documentId: uploaded.documentId,
+      });
+      toast.success('Pago registrado. El anticipo ya está disponible para legalización.');
+      setPaymentAdvance(null);
+      setPaymentFile(null);
+    } catch (error: any) {
+      console.error('Error registering advance payment:', error);
+      toast.error(error?.message || 'No se pudo registrar el pago del anticipo.');
     } finally {
       setSubmitting(false);
     }
@@ -2442,6 +2884,10 @@ export function ProjectAdministration({
       return;
     }
     const latestAdvance = advances.find((advance) => advance.id === selectedAdvance.id) || selectedAdvance;
+    if (!isAdvanceReadyForLegalization(latestAdvance)) {
+      toast.error('El anticipo debe tener su pago registrado antes de cargar legalizaciones.');
+      return;
+    }
     const cufe = normalizeCufe(receiptForm.cufe);
     const duplicateUsage = findDuplicateReceiptUsage(
       {
@@ -2495,7 +2941,7 @@ export function ProjectAdministration({
 
       await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', selectedAdvance.id), {
         receipts: [...(latestAdvance.receipts || []), receipt],
-        status: 'approved',
+        status: latestAdvance.status === 'approved' ? 'approved' : 'paid',
         nextAction: 'validate_receipt',
         pendingRole: 'administrative_validation',
         inboxTargetUserId: null,
@@ -2779,6 +3225,10 @@ export function ProjectAdministration({
     }
 
     const latestAdvance = advances.find((advance) => advance.id === selectedAdvance.id) || selectedAdvance;
+    if (!isAdvanceReadyForLegalization(latestAdvance)) {
+      toast.error('El anticipo debe tener su pago registrado antes de cargar legalizaciones.');
+      return;
+    }
     const batchIdentities = new Map<string, string>();
     for (const draft of readyDrafts) {
       const category = categoryOptions.find((item) => item.id === draft.categoryId);
@@ -2871,7 +3321,7 @@ export function ProjectAdministration({
 
       await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', selectedAdvance.id), {
         receipts: [...(latestAdvance.receipts || []), ...createdReceipts],
-        status: 'approved',
+        status: latestAdvance.status === 'approved' ? 'approved' : 'paid',
         nextAction: 'validate_receipt',
         pendingRole: 'administrative_validation',
         inboxTargetUserId: null,
@@ -3108,6 +3558,7 @@ export function ProjectAdministration({
         <div className="flex flex-wrap gap-2">
           {[
             ['requests', 'Anticipos', advances.length],
+            ['payables', 'Anticipos por pagar', payableAdvances.length],
             ['receipts', 'Legalizaciones', receipts.length],
             ['payments', 'Costos reales', realCostAdvanceGroups.length],
             ['settings', 'Dominios', categoryOptions.length + costCenterOptions.length],
@@ -3129,6 +3580,7 @@ export function ProjectAdministration({
         </div>
         <div className="flex flex-wrap gap-2 text-xs font-bold">
           <span className="rounded-md bg-amber-50 px-2 py-1 text-amber-700">{metrics.pendingValidation} por validar</span>
+          <span className="rounded-md bg-violet-50 px-2 py-1 text-violet-700">{metrics.pendingPayment} por pagar</span>
           <span className="rounded-md bg-orange-50 px-2 py-1 text-orange-700">{metrics.returned} devueltos</span>
         </div>
       </div>
@@ -3165,7 +3617,7 @@ export function ProjectAdministration({
                   <AdvanceCard
                     key={advance.id}
                     advance={advance}
-                    canValidate={canValidate}
+                    canValidate={false}
                     canManage={canManage}
                     canCorrect={canCorrectAdvanceReceipt(advance)}
                     onOpenReceipt={() => setSelectedAdvance(advance)}
@@ -3177,6 +3629,71 @@ export function ProjectAdministration({
                   />
                 ))
               )}
+            </div>
+          )}
+
+          {view === 'payables' && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50 to-white p-4 shadow-sm">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 text-violet-700"><WalletCards size={20} /><h3 className="text-lg font-black">Anticipos por pagar</h3></div>
+                    <p className="mt-1 text-sm font-medium text-slate-600">Revisa la ficha y sus ítems, firma la aprobación, registra el soporte de pago o devuelve la solicitud para corrección.</p>
+                  </div>
+                  <div className="relative min-w-0 lg:w-96">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder="Buscar anticipo, persona o destino..." />
+                  </div>
+                </div>
+              </div>
+              {payableAdvances.length === 0 ? (
+                <EmptyState title="No hay anticipos en este proceso" body="Las solicitudes por validar, pagar, devueltas o recién pagadas aparecerán aquí." />
+              ) : payableAdvances.map((advance) => {
+                const status = statusConfig[advance.status] || statusConfig.submitted;
+                const canCorrect = canCorrectAdvanceReceipt(advance);
+                return (
+                  <section key={advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                    <div className="flex flex-col gap-4 border-b border-slate-200 bg-slate-50 p-4 xl:flex-row xl:items-start xl:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${status.className}`}>{status.label}</span>
+                          <span className="rounded-md bg-slate-900 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-white">{advance.customId || advance.id.slice(0, 8)}</span>
+                        </div>
+                        <h4 className="mt-2 text-lg font-black text-slate-950">{advance.purpose || advance.destination}</h4>
+                        <p className="mt-1 text-sm font-semibold text-slate-500">{advance.requesterName} · {advance.requesterEmail || 'Sin correo'} · {advance.destination}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => void downloadAdvancePaymentSheet(advance)}><Download size={14} className="mr-2" />Descargar ficha</Button>
+                        {advance.status === 'submitted' && canValidate && <>
+                          <Button type="button" size="sm" onClick={() => openReviewAction({ type: 'approveAdvance', advance })} className="bg-emerald-600 text-white hover:bg-emerald-700"><CheckCircle2 size={14} className="mr-2" />Aprobar y firmar</Button>
+                          <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>
+                          <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'rejectAdvance', advance })} className="border-rose-200 text-rose-700">Rechazar</Button>
+                        </>}
+                        {advance.status === 'pending_payment' && canValidate && <>
+                          <Button type="button" size="sm" onClick={() => openAdvancePayment(advance)} className="bg-violet-600 text-white hover:bg-violet-700"><CreditCard size={14} className="mr-2" />Registrar pago</Button>
+                          <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>
+                        </>}
+                        {advance.status === 'returned' && canCorrect && <Button type="button" size="sm" onClick={() => openAdvanceEditor(advance)} className="bg-orange-600 text-white hover:bg-orange-700"><PencilLine size={14} className="mr-2" />Corregir y reenviar</Button>}
+                        {advance.status === 'paid' && canManage && <Button type="button" size="sm" onClick={() => setSelectedAdvance(advance)} className="bg-sky-600 text-white hover:bg-sky-700"><ReceiptText size={14} className="mr-2" />Legalizar</Button>}
+                      </div>
+                    </div>
+                    <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,.8fr)]">
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[620px] text-left text-xs">
+                          <thead className="bg-slate-100 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500"><tr><th className="px-3 py-2">Ítem</th><th className="px-3 py-2">Días / unidades</th><th className="px-3 py-2">Unitario</th><th className="px-3 py-2">Nota</th><th className="px-3 py-2 text-right">Total</th></tr></thead>
+                          <tbody className="divide-y divide-slate-100">{(advance.items || []).map((item) => <tr key={item.id}><td className="px-3 py-2 font-bold text-slate-900">{item.categoryName}</td><td className="px-3 py-2 text-slate-600">{item.days}</td><td className="px-3 py-2 text-slate-600">{formatMoney(item.unitAmount)}</td><td className="px-3 py-2 text-slate-500">{item.note || '—'}</td><td className="px-3 py-2 text-right font-black">{formatMoney(item.amount)}</td></tr>)}</tbody>
+                          <tfoot className="border-t-2 border-slate-200"><tr><td colSpan={4} className="px-3 py-3 text-right text-xs font-black uppercase text-slate-500">Total solicitado</td><td className="px-3 py-3 text-right text-sm font-black text-indigo-700">{formatMoney(advance.amountRequested)}</td></tr></tfoot>
+                        </table>
+                      </div>
+                      <div className="space-y-3">
+                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1"><SignatureSummary title="Firma solicitante" signature={advance.requesterSignature} /><SignatureSummary title="Firma aprobador" signature={advance.approvalSignature} /></div>
+                        {advance.adminComment && <div className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-xs text-orange-800"><strong>Observación administrativa:</strong> {advance.adminComment}</div>}
+                        {advance.paymentSupport && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3"><p className="text-xs font-black text-emerald-800">Pago {formatMoney(advance.paymentSupport.amount)} · {formatDate(advance.paymentSupport.date)}</p><p className="mt-1 text-xs text-emerald-700">{advance.paymentSupport.reference ? `Ref. ${advance.paymentSupport.reference}` : 'Sin referencia bancaria'}</p><div className="mt-2"><SecureDocumentLink storagePath={advance.paymentSupport.storagePath} fallbackUrl={advance.paymentSupport.fileUrl} className="text-xs font-black text-emerald-800">Ver soporte de pago</SecureDocumentLink></div></div>}
+                      </div>
+                    </div>
+                  </section>
+                );
+              })}
             </div>
           )}
 
@@ -3738,13 +4255,8 @@ export function ProjectAdministration({
                   />
                 </Field>
                 <Field label="Solicitante">
-                  <select className={inputClass} value={advanceForm.requesterId} onChange={(event) => setAdvanceForm((current) => ({ ...current, requesterId: event.target.value }))}>
-                    {teamMembers.map((member) => (
-                      <option key={member.id} value={member.id}>
-                        {getMemberLabel(member)}
-                      </option>
-                    ))}
-                    {!teamMembers.length && currentUser && <option value={currentUser.uid}>{getCurrentUserName(currentUser)}</option>}
+                  <select className={`${inputClass} bg-slate-50`} value={advanceForm.requesterId} disabled>
+                    {currentSignerMember ? <option value={currentSignerMember.id}>{getMemberLabel(currentSignerMember)}</option> : currentUser ? <option value={currentUser.uid}>{getCurrentUserName(currentUser)}</option> : <option value="">Sin usuario</option>}
                   </select>
                 </Field>
                 <div className="md:col-span-2">
@@ -4055,9 +4567,11 @@ export function ProjectAdministration({
                 <SummaryLine label="Ítems" value={`${advanceForm.items.length}`} />
                 <SummaryLine label="Total solicitado" value={formatMoney(advanceForm.items.reduce((sum, item) => sum + item.amount, 0))} strong />
               </div>
+              <div className="mt-4">
+                <SignatureSummary title="Firma del solicitante" signature={buildCurrentSignatureSnapshot() || undefined} />
+              </div>
               <div className="mt-5 rounded-xl border border-indigo-200 bg-white p-3 text-xs font-semibold leading-5 text-slate-600">
-                Esta solicitud queda en estado <strong>por validar</strong>. Luego el área administrativa podrá aprobarla,
-                devolverla o rechazarla y el responsable recibirá la acción pendiente en la estructura del anticipo.
+                Al enviar confirmas esta solicitud con la firma registrada en tu perfil. Quedará <strong>por validar</strong> y, una vez aprobada, pasará a <strong>Anticipos por pagar</strong>.
               </div>
             </div>
           </div>
@@ -4071,10 +4585,61 @@ export function ProjectAdministration({
         </ModalShell>
       )}
 
+      {paymentAdvance && (
+        <ModalShell
+          title="Registrar pago del anticipo"
+          subtitle="El anticipo solo pasa a legalización cuando el soporte del desembolso queda cargado e indexado."
+          onClose={() => setPaymentAdvance(null)}
+          wide
+        >
+          <div className="grid gap-4 lg:grid-cols-[1fr_330px]">
+            <div className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="Valor pagado">
+                  <input className={inputClass} type="number" min="0" step="0.01" value={paymentForm.amount} onChange={(event) => setPaymentForm((current) => ({ ...current, amount: event.target.value }))} />
+                </Field>
+                <Field label="Fecha del pago">
+                  <input className={inputClass} type="date" value={paymentForm.date} onChange={(event) => setPaymentForm((current) => ({ ...current, date: event.target.value }))} />
+                </Field>
+                <Field label="Referencia bancaria (opcional)">
+                  <input className={inputClass} value={paymentForm.reference} onChange={(event) => setPaymentForm((current) => ({ ...current, reference: event.target.value }))} placeholder="Ej: TRANS-928374" />
+                </Field>
+                <Field label="Nota (opcional)">
+                  <input className={inputClass} value={paymentForm.note} onChange={(event) => setPaymentForm((current) => ({ ...current, note: event.target.value }))} placeholder="Cuenta, banco u observación" />
+                </Field>
+              </div>
+              <div>
+                <p className="mb-2 text-xs font-black uppercase tracking-[0.16em] text-slate-500">Soporte obligatorio</p>
+                <label className="flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-violet-300 bg-violet-50/60 p-5 text-center transition hover:bg-violet-50">
+                  <Upload size={24} className="text-violet-600" />
+                  <span className="mt-2 text-sm font-black text-violet-800">{paymentFile?.name || 'Seleccionar comprobante de pago'}</span>
+                  <span className="mt-1 text-xs font-semibold text-slate-500">PDF, imagen o comprobante exportado por el banco</span>
+                  <input type="file" accept="image/*,application/pdf" className="hidden" onChange={(event) => setPaymentFile(event.target.files?.[0] || null)} />
+                </label>
+              </div>
+            </div>
+            <aside className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <SummaryLine label="Anticipo" value={paymentAdvance.customId || paymentAdvance.id} />
+              <SummaryLine label="Beneficiario" value={paymentAdvance.requesterName} />
+              <SummaryLine label="Valor aprobado" value={formatMoney(paymentAdvance.amountApproved || paymentAdvance.amountRequested)} strong />
+              <SignatureSummary title="Firma solicitante" signature={paymentAdvance.requesterSignature} />
+              <SignatureSummary title="Firma aprobador" signature={paymentAdvance.approvalSignature} />
+            </aside>
+          </div>
+          <ModalFooter>
+            <Button type="button" variant="outline" onClick={() => setPaymentAdvance(null)}>Cancelar</Button>
+            <Button type="button" onClick={handleRegisterAdvancePayment} disabled={submitting || !paymentFile} className="bg-violet-600 font-bold text-white hover:bg-violet-700">
+              {submitting ? <Loader2 size={16} className="mr-2 animate-spin" /> : <CreditCard size={16} className="mr-2" />}
+              Confirmar pago y habilitar legalización
+            </Button>
+          </ModalFooter>
+        </ModalShell>
+      )}
+
       {editingAdvance && (
         <ModalShell
-          title="Editar anticipo administrativo"
-          subtitle="Corrige datos del anticipo desde legalizaciones sin alterar soportes ni aprobaciones."
+          title={editingAdvance.status === 'returned' ? 'Corregir anticipo devuelto' : 'Editar anticipo administrativo'}
+          subtitle={editingAdvance.status === 'returned' ? 'Ajusta la solicitud, vuelve a firmarla y reenvíala para aprobación.' : 'Corrige datos del anticipo desde legalizaciones sin alterar soportes ni aprobaciones.'}
           onClose={() => setEditingAdvance(null)}
           wide
         >
@@ -4179,7 +4744,26 @@ export function ProjectAdministration({
                   placeholder="Describe o corrige el alcance administrativo del anticipo."
                 />
               </Field>
-              <div className="grid gap-3 md:grid-cols-[220px_1fr]">
+              {editingAdvance.status === 'returned' && (
+                <div className="rounded-2xl border border-orange-200 bg-orange-50/50 p-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div><p className="text-[11px] font-black uppercase tracking-[0.24em] text-orange-700">Corregir ítems solicitados</p><p className="mt-1 text-xs font-semibold text-slate-500">Ajusta cantidades, valores o notas antes de volver a firmar y reenviar.</p></div>
+                    <span className="rounded-md bg-white px-3 py-1.5 text-sm font-black text-orange-800 ring-1 ring-orange-200">{formatMoney(editingAdvanceApprovedAmount)}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {advanceEditForm.items.map((item) => (
+                      <div key={item.id} className="grid gap-2 rounded-xl border border-white bg-white p-3 shadow-sm md:grid-cols-[minmax(150px,1fr)_100px_150px_minmax(160px,1fr)_120px] md:items-end">
+                        <Field label="Concepto"><input className={`${inputClass} bg-slate-50`} value={item.categoryName} readOnly /></Field>
+                        <Field label="Días / und."><input className={inputClass} type="number" min="0.01" step="0.01" value={item.days} onChange={(event) => updateAdvanceEditItem(item.id, { days: asNumber(event.target.value) })} /></Field>
+                        <Field label="Valor unitario"><input className={inputClass} type="number" min="0" step="0.01" value={item.unitAmount} onChange={(event) => updateAdvanceEditItem(item.id, { unitAmount: asNumber(event.target.value) })} /></Field>
+                        <Field label="Nota"><input className={inputClass} value={item.note || ''} onChange={(event) => updateAdvanceEditItem(item.id, { note: event.target.value })} /></Field>
+                        <div className="rounded-lg bg-orange-50 px-3 py-2 text-right"><p className="text-[9px] font-black uppercase text-orange-500">Total</p><p className="font-black text-orange-800">{formatMoney(item.amount)}</p></div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {editingAdvance.status !== 'returned' && <div className="grid gap-3 md:grid-cols-[220px_1fr]">
                 <Field label="Dinero devuelto">
                   <input
                     className={inputClass}
@@ -4199,7 +4783,7 @@ export function ProjectAdministration({
                     placeholder="Ej: reintegro caja menor, transferencia o saldo no usado."
                   />
                 </Field>
-              </div>
+              </div>}
               <div className="rounded-2xl border border-emerald-100 bg-emerald-50/40 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -4310,6 +4894,7 @@ export function ProjectAdministration({
                   strong
                 />
               </div>
+              {editingAdvance.status === 'returned' && <div className="mt-4"><SignatureSummary title="Firma para el reenvío" signature={buildCurrentSignatureSnapshot() || undefined} /></div>}
               {editingAdvance.administrativeEditedAt && (
                 <p className="mt-4 rounded-xl border border-slate-200 bg-white p-3 text-xs font-bold leading-5 text-slate-500">
                   Último ajuste administrativo: {formatDate(editingAdvance.administrativeEditedAt)} por{' '}
@@ -4329,7 +4914,7 @@ export function ProjectAdministration({
               className="bg-indigo-600 font-bold text-white hover:bg-indigo-700"
             >
               {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
-              Guardar cambios
+              {editingAdvance.status === 'returned' ? 'Firmar y reenviar' : 'Guardar cambios'}
             </Button>
           </ModalFooter>
         </ModalShell>
@@ -4580,6 +5165,10 @@ export function ProjectAdministration({
                 <SummaryLine label="Legalizado" value={formatMoney(selectedAdvance.amountLegalized)} />
                 <SummaryLine label="Saldo" value={formatMoney(selectedAdvance.balance)} strong />
                 {receiptMode === 'ai' && <SummaryLine label="Borradores IA" value={`${aiReceiptDrafts.length}`} />}
+              </div>
+              <div className="mt-4 grid gap-2">
+                <SignatureSummary title="Firma solicitante" signature={selectedAdvance.requesterSignature} />
+                <SignatureSummary title="Firma aprobador" signature={selectedAdvance.approvalSignature} />
               </div>
               <div className="mt-5 rounded-xl bg-slate-50 p-3 text-xs font-semibold leading-5 text-slate-500">
                 La validación DIAN por CUFE queda preparada para facturas electrónicas. Los recibos de caja quedan aceptados
@@ -4874,6 +5463,12 @@ export function ProjectAdministration({
               Esta acción borra el anticipo, sus pagos reales y la trazabilidad administrativa relacionada. No elimina otros documentos del proyecto.
             </div>
           )}
+          {reviewAction.type === 'approveAdvance' && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <SignatureSummary title="Firma del solicitante" signature={reviewAction.advance.requesterSignature} />
+              <SignatureSummary title="Tu firma de aprobación" signature={buildCurrentSignatureSnapshot() || undefined} />
+            </div>
+          )}
           <Field label={reviewAction.type === 'deleteAdvance' ? 'Comentario administrativo (opcional)' : 'Comentario administrativo'}>
             <textarea
               className={textareaClass}
@@ -4899,7 +5494,7 @@ export function ProjectAdministration({
               }
             >
               {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
-              {reviewAction.type === 'deleteAdvance' ? 'Eliminar anticipo' : 'Confirmar'}
+              {reviewAction.type === 'deleteAdvance' ? 'Eliminar anticipo' : reviewAction.type === 'approveAdvance' ? 'Firmar y aprobar' : 'Confirmar'}
             </Button>
           </ModalFooter>
         </ModalShell>
@@ -4914,6 +5509,42 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="mb-1.5 block text-xs font-black uppercase tracking-[0.16em] text-slate-500">{label}</span>
       {children}
     </label>
+  );
+}
+
+function SignatureSummary({ title, signature }: { title: string; signature?: AdvanceSignatureSnapshot }) {
+  const [authorizedImage, setAuthorizedImage] = useState({ path: '', url: '' });
+
+  useEffect(() => {
+    let active = true;
+    if (!signature?.signatureStoragePath) {
+      return () => { active = false; };
+    }
+    void getAuthorizedDownloadURL(ref(storage, signature.signatureStoragePath))
+      .then((url) => { if (active) setAuthorizedImage({ path: signature.signatureStoragePath || '', url }); })
+      .catch(() => { if (active) setAuthorizedImage({ path: signature.signatureStoragePath || '', url: signature.signatureUrl || '' }); });
+    return () => { active = false; };
+  }, [signature?.signatureStoragePath, signature?.signatureUrl]);
+  const authorizedImageUrl = signature?.signatureStoragePath && authorizedImage.path === signature.signatureStoragePath
+    ? authorizedImage.url
+    : signature?.signatureUrl || '';
+
+  return (
+    <div className={`rounded-lg border p-3 ${signature ? 'border-indigo-200 bg-indigo-50/50' : 'border-slate-200 bg-slate-50'}`}>
+      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">{title}</p>
+      {signature ? (
+        <>
+          <div className="mt-2 flex h-16 items-center justify-center rounded-md bg-white p-1 ring-1 ring-indigo-100">
+            {authorizedImageUrl ? <Image src={authorizedImageUrl} alt={title} width={220} height={64} className="max-h-14 w-auto object-contain" unoptimized /> : <PencilLine size={22} className="text-slate-300" />}
+          </div>
+          <p className="mt-2 truncate text-xs font-black text-slate-900">{signature.name}</p>
+          <p className="truncate text-[11px] font-semibold text-slate-500">{signature.jobTitle}</p>
+          <p className="truncate text-[11px] text-slate-500">{signature.email}</p>
+        </>
+      ) : (
+        <p className="mt-3 text-xs font-semibold text-slate-400">Pendiente de firma verificable</p>
+      )}
+    </div>
   );
 }
 
@@ -5103,6 +5734,10 @@ function AdvanceCard({
           <SummaryLine label="Solicitado" value={formatMoney(advance.amountRequested)} />
           <SummaryLine label="Aprobado" value={formatMoney(advance.amountApproved)} />
           <SummaryLine label="Legalizado" value={`${formatMoney(advance.amountLegalized)} · ${progress}%`} strong />
+          <div className="mt-1 grid grid-cols-2 gap-2">
+            <SignatureSummary title="Solicitante" signature={advance.requesterSignature} />
+            <SignatureSummary title="Aprobador" signature={advance.approvalSignature} />
+          </div>
         </div>
       </div>
 
@@ -5125,13 +5760,13 @@ function AdvanceCard({
           )}
         </div>
         <div className="flex flex-wrap gap-2">
-          {canManage && ['approved', 'returned'].includes(advance.status) && (
+          {canManage && isAdvanceReadyForLegalization(advance) && (
             <Button type="button" size="sm" onClick={onOpenReceipt} className="bg-emerald-600 text-white hover:bg-emerald-700">
               <ReceiptText size={15} className="mr-2" />
               Legalizar
             </Button>
           )}
-          {canCorrect && advance.status === 'approved' && (advance.receipts || []).length > 0 && (
+          {canCorrect && isAdvanceReadyForLegalization(advance) && (advance.receipts || []).length > 0 && (
             <Button type="button" size="sm" variant="outline" onClick={onComplete} className="border-emerald-200 text-emerald-700 hover:bg-emerald-50">
               <CheckCircle2 size={15} className="mr-2" />
               Marcar completado

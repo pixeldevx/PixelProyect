@@ -408,6 +408,9 @@ export default function ProjectDetailsPage() {
         organizationId: member.organizationId || profile.organizationId || null,
         organizationIds: memberOrganizationIds.length > 0 ? memberOrganizationIds : profileOrganizationIds,
         photoURL: member.photoURL || profile.photoURL || null,
+        signatureUrl: member.signatureUrl || profile.signatureUrl || null,
+        signatureStoragePath: member.signatureStoragePath || profile.signatureStoragePath || null,
+        roleName: member.roleName || profile.roleName || profile.position || profile.jobTitle || null,
       };
     });
 
@@ -432,6 +435,8 @@ export default function ProjectDetailsPage() {
         name: profile.displayName || profile.name || profile.email?.split('@')[0] || 'Administrador Global',
         displayName: profile.displayName || profile.name || profile.email?.split('@')[0] || 'Administrador Global',
         photoURL: profile.photoURL || null,
+        signatureUrl: profile.signatureUrl || null,
+        signatureStoragePath: profile.signatureStoragePath || null,
         roleName: 'Administrador Global',
         systemRole: 'admin',
         profileRole: 'admin',

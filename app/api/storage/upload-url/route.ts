@@ -55,8 +55,15 @@ export async function POST(request: Request) {
         permission: 'documentUpload',
       });
       if (!authorization.ok) return json({ error: authorization.error }, authorization.status);
-    } else if (!(await getAuthenticatedUser(request))) {
-      return json({ error: 'Debes iniciar sesión para subir archivos.' }, 401);
+    } else {
+      const user = await getAuthenticatedUser(request);
+      if (!user) return json({ error: 'Debes iniciar sesión para subir archivos.' }, 401);
+      if (cleanPath.startsWith('profile_signatures/')) {
+        const fileName = cleanPath.split('/').pop() || '';
+        if (!fileName.startsWith(`${user.id}_`)) {
+          return json({ error: 'Solo puedes cargar la firma asociada a tu propia cuenta.' }, 403);
+        }
+      }
     }
     const uploadUrl = createS3PresignedUrl({
       method: 'PUT',
