@@ -34,10 +34,12 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { SecureDocumentLink } from '@/components/projects/SecureDocumentLink';
 import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, updateDoc, where } from '@/lib/supabase/document-store';
 import { db, storage } from '@/lib/backend';
-import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
-import { buildDocumentStoragePath } from '@/lib/document-storage';
+import { ref, uploadBytes, getDownloadURL, getAuthorizedDownloadURL } from '@/lib/supabase/storage-shim';
+import { buildDocumentStoragePath, getDocumentFolderStorageSegments } from '@/lib/document-storage';
+import { ensureManagedDocumentFolderPath } from '@/lib/document-folders';
 
 type ColombiaDepartment = {
   department: string;
@@ -119,6 +121,7 @@ type AdvanceReceipt = {
   fileSize?: number;
   fileUrl?: string;
   storagePath?: string;
+  documentId?: string;
   status: ReceiptStatus;
   createdAt: string;
   createdBy?: string | null;
@@ -1018,11 +1021,21 @@ export function ProjectAdministration({
   );
 
   const downloadAdvanceReport = useCallback(
-    (group: (typeof realCostAdvanceGroups)[number]) => {
+    async (group: (typeof realCostAdvanceGroups)[number]) => {
       const { advance, receipts: approvedReceipts, payments: advancePayments, realCost, coverage, costCenters } = group;
       const projectName = project?.name || project?.title || projectId;
       const reportDate = formatDate(new Date());
       const advanceTitle = advance.customId ? `${advance.customId} · ${advance.purpose || advance.destination}` : advance.purpose || advance.destination;
+      const supportUrls = await Promise.all(
+        approvedReceipts.map(async (receipt) => {
+          if (!receipt.storagePath) return receipt.fileUrl || '';
+          try {
+            return await getAuthorizedDownloadURL(ref(storage, receipt.storagePath));
+          } catch {
+            return '';
+          }
+        })
+      );
       const supportRows = approvedReceipts
         .map((receipt, index) => {
           const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
@@ -1034,7 +1047,7 @@ export function ProjectAdministration({
               <td>${escapeHtml(formatDate(receipt.date))}</td>
               <td>${escapeHtml(receipt.invoiceNumber || receipt.cufe || 'Sin numero')}</td>
               <td class="money">${escapeHtml(formatMoney(receipt.amount))}</td>
-              <td>${receipt.fileUrl ? `<a href="${escapeHtml(receipt.fileUrl)}">Ver soporte</a>` : 'Sin soporte'}</td>
+              <td>${supportUrls[index] ? `<a href="${escapeHtml(supportUrls[index])}">Ver soporte</a>` : 'Sin soporte o acceso'}</td>
             </tr>
           `;
         })
@@ -1870,6 +1883,7 @@ export function ProjectAdministration({
         fileSize: latestReceipt.fileSize,
         fileUrl: latestReceipt.fileUrl,
         storagePath: latestReceipt.storagePath,
+        documentId: latestReceipt.documentId,
       };
       if (receiptCorrectionFile) {
         const uploaded = await uploadReceiptDocument(
@@ -1884,6 +1898,7 @@ export function ProjectAdministration({
           fileSize: receiptCorrectionFile.size,
           fileUrl: uploaded.fileUrl,
           storagePath: uploaded.storagePath,
+          documentId: uploaded.documentId,
         };
         changes.push({
           field: 'file',
@@ -2205,10 +2220,26 @@ export function ProjectAdministration({
     documentLabel?: string,
     documentType: ReceiptDocumentType = 'invoice'
   ) => {
-    if (!file) return { fileUrl: '', storagePath: '' };
+    if (!file) return { fileUrl: '', storagePath: '', documentId: '' };
 
     const uploadDate = new Date();
     const documentTypeMeta = getReceiptDocumentTypeMeta(documentType);
+    const advanceFolderName = advance.customId
+      ? `${advance.customId} - ${advance.destination || advance.purpose || 'Anticipo'}`
+      : `${advance.destination || advance.purpose || 'Anticipo'} - ${advance.id.slice(0, 8)}`;
+    const managedPrefix = `managed-advance-${advance.id}`;
+    const { folders: indexedFolders, leafFolderId } = await ensureManagedDocumentFolderPath({
+      projectId,
+      userId: currentUser?.uid || null,
+      segments: [
+        { id: 'managed-administrativo', name: 'Administrativo', accessMode: 'all', metadata: { documentContext: 'administration' } },
+        { id: 'managed-administrativo-anticipos', name: 'Anticipos', accessMode: 'inherit', metadata: { documentContext: 'advanceRepository' } },
+        { id: managedPrefix, name: advanceFolderName, accessMode: 'inherit', metadata: { administrativeRequestId: advance.id, documentContext: 'advanceRepository' } },
+        { id: `${managedPrefix}-${documentType}`, name: documentTypeMeta.label, accessMode: 'inherit', metadata: { administrativeRequestId: advance.id, documentType } },
+        { id: `${managedPrefix}-${documentType}-${category.id}`, name: category.name, accessMode: 'inherit', metadata: { administrativeRequestId: advance.id, documentType, categoryId: category.id } },
+      ],
+    });
+    const projectFolderSegments = getDocumentFolderStorageSegments(leafFolderId, indexedFolders);
     let storagePath = buildDocumentStoragePath({
       projectId,
       projectName: project?.name,
@@ -2222,14 +2253,17 @@ export function ProjectAdministration({
     await uploadBytes(storageRef, file);
     storagePath = storageRef.fullPath;
     const fileUrl = await getDownloadURL(storageRef);
+    const storageFolder = storagePath.split('/').slice(0, -1).join('/');
 
-    await addDoc(collection(db, 'projects', projectId, 'documents'), {
+    const documentRef = await addDoc(collection(db, 'projects', projectId, 'documents'), {
       projectId,
       name: file.name,
       documentName: `${documentTypeMeta.label} ${category.name}`,
       type: documentTypeMeta.label,
       itemKind: 'file',
       scope: 'project',
+      parentFolderId: leafFolderId,
+      projectFolderSegments,
       administrativeRequestId: advance.id,
       documentContext: 'advanceReceipt',
       documentType,
@@ -2241,15 +2275,18 @@ export function ProjectAdministration({
       fileSize: file.size,
       fileType: file.type || 'application/octet-stream',
       storagePath,
+      storageFolder,
       uploadedAt: serverTimestamp(),
       uploadedBy: currentUser?.uid || null,
       uploadedByName: getCurrentUserName(currentUser),
       createdAt: serverTimestamp(),
-      accessMode: 'all',
-      providerPathVersion: 'structured-v1',
+      accessMode: 'inherit',
+      allowedMemberIds: [],
+      accessPolicyVersion: 'folder-inheritance-v1',
+      providerPathVersion: 'structured-v2',
     });
 
-    return { fileUrl, storagePath };
+    return { fileUrl, storagePath, documentId: documentRef.id };
   };
 
   const handleCreateReceipt = async () => {
@@ -2287,7 +2324,7 @@ export function ProjectAdministration({
 
     setSubmitting(true);
     try {
-      const { fileUrl, storagePath } = await uploadReceiptDocument(
+      const { fileUrl, storagePath, documentId } = await uploadReceiptDocument(
         latestAdvance,
         category,
         receiptFile,
@@ -2311,6 +2348,7 @@ export function ProjectAdministration({
         fileSize: receiptFile?.size,
         fileUrl,
         storagePath,
+        documentId,
         status: 'submitted',
         createdAt: new Date().toISOString(),
         createdBy: currentUser?.uid || null,
@@ -2528,6 +2566,7 @@ export function ProjectAdministration({
         fileSize: receiptReplacementFile.size,
         fileUrl: uploaded.fileUrl,
         storagePath: uploaded.storagePath,
+        documentId: uploaded.documentId,
         aiExtracted: reanalyze ? Boolean(analyzedDraft && analyzedDraft.status !== 'error') : latestReceipt.aiExtracted,
         aiConfidence: analyzedDraft?.confidence ?? latestReceipt.aiConfidence,
         aiWarnings: analyzedDraft?.warnings || latestReceipt.aiWarnings,
@@ -2657,7 +2696,7 @@ export function ProjectAdministration({
       for (const draft of readyDrafts) {
         const category = categoryOptions.find((item) => item.id === draft.categoryId)!;
         const documentType = getReceiptDocumentType(draft.documentType);
-        const { fileUrl, storagePath } = await uploadReceiptDocument(
+        const { fileUrl, storagePath, documentId } = await uploadReceiptDocument(
           latestAdvance,
           category,
           draft.file,
@@ -2681,6 +2720,7 @@ export function ProjectAdministration({
           fileSize: draft.fileSize,
           fileUrl,
           storagePath,
+          documentId,
           status: 'submitted',
           createdAt: new Date().toISOString(),
           createdBy: currentUser?.uid || null,
@@ -3176,9 +3216,9 @@ export function ProjectAdministration({
                                   )}
                                   <div className="mt-3 flex flex-wrap gap-3">
                                     {receipt.fileUrl && (
-                                      <a href={receipt.fileUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-black text-indigo-600 hover:text-indigo-800">
+                                      <SecureDocumentLink storagePath={receipt.storagePath} fallbackUrl={receipt.fileUrl} className="inline-flex items-center gap-1 text-xs font-black text-indigo-600 hover:text-indigo-800">
                                         <FileImage size={14} /> Ver soporte
-                                      </a>
+                                      </SecureDocumentLink>
                                     )}
                                     {receipt.dianDocumentUrl && (
                                       <a href={receipt.dianDocumentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-black text-sky-700 hover:text-sky-900">
@@ -3326,15 +3366,14 @@ export function ProjectAdministration({
                                       </p>
                                     </div>
                                     {receipt.fileUrl && (
-                                      <a
-                                        href={receipt.fileUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
+                                      <SecureDocumentLink
+                                        storagePath={receipt.storagePath}
+                                        fallbackUrl={receipt.fileUrl}
                                         className="inline-flex items-center justify-center gap-1 rounded-lg border border-indigo-100 px-3 py-2 text-xs font-black text-indigo-600 hover:bg-indigo-50"
                                       >
                                         <FileImage size={14} />
                                         Soporte
-                                      </a>
+                                      </SecureDocumentLink>
                                     )}
                                   </div>
                                 );
@@ -4487,9 +4526,9 @@ export function ProjectAdministration({
                 )}
 
                 {receiptEditor.receipt.fileUrl && (
-                  <a href={receiptEditor.receipt.fileUrl} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-indigo-700 shadow-sm hover:bg-indigo-50">
+                  <SecureDocumentLink storagePath={receiptEditor.receipt.storagePath} fallbackUrl={receiptEditor.receipt.fileUrl} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-indigo-700 shadow-sm hover:bg-indigo-50">
                     <FileImage size={16} /> Ver soporte original
-                  </a>
+                  </SecureDocumentLink>
                 )}
 
                 {isReview && (

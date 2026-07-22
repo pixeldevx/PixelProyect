@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Download, ExternalLink, Eye, File, FileText, Folder, FolderPlus, Lock, Trash2, Upload } from 'lucide-react';
+import { ChevronDown, ChevronRight, Download, ExternalLink, Eye, File, FileText, Folder, FolderPlus, Lock, Save, Trash2, Upload, X } from 'lucide-react';
 import { canUserAccessDocument, getDocumentAccessMode, isDocumentFolder } from '@/lib/document-storage';
 
 interface ProjectDocumentsTreeProps {
@@ -9,6 +9,7 @@ interface ProjectDocumentsTreeProps {
   onViewDocument?: (doc: any) => void;
   onCreateFolder?: (name: string, parentFolderId: string | null) => Promise<void> | void;
   onUploadToFolder?: (folderId: string | null) => void;
+  onUpdateFolderAccess?: (folderId: string, accessMode: 'all' | 'restricted', allowedMemberIds: string[]) => Promise<void> | void;
   searchQuery?: string;
   currentUser?: any;
   teamMembers?: any[];
@@ -101,23 +102,22 @@ const DocumentItem = ({
         >
           <Eye size={16} />
         </button>
-        <a
-          href={doc.url}
-          target="_blank"
-          rel="noopener noreferrer"
+        <button
+          type="button"
+          onClick={() => onViewDocument?.(doc)}
           className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600"
-          title="Abrir"
+          title="Abrir con autorización"
         >
           <ExternalLink size={16} />
-        </a>
-        <a
-          href={doc.url}
-          download
+        </button>
+        <button
+          type="button"
+          onClick={() => onViewDocument?.(doc)}
           className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600"
-          title="Descargar"
+          title="Descargar desde el visor seguro"
         >
           <Download size={16} />
-        </a>
+        </button>
         {canDeleteDocuments && (
           <button
             type="button"
@@ -159,6 +159,9 @@ const ProjectFolderBrowser = ({
   onViewDocument,
   onCreateFolder,
   onUploadToFolder,
+  onUpdateFolderAccess,
+  teamMembers,
+  canManageAccess,
   canCreateFolders,
   canDeleteDocuments,
 }: {
@@ -168,6 +171,9 @@ const ProjectFolderBrowser = ({
   onViewDocument?: (doc: any) => void;
   onCreateFolder?: ProjectDocumentsTreeProps['onCreateFolder'];
   onUploadToFolder?: ProjectDocumentsTreeProps['onUploadToFolder'];
+  onUpdateFolderAccess?: ProjectDocumentsTreeProps['onUpdateFolderAccess'];
+  teamMembers: any[];
+  canManageAccess: boolean;
   canCreateFolders: boolean;
   canDeleteDocuments: boolean;
 }) => {
@@ -175,6 +181,10 @@ const ProjectFolderBrowser = ({
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [isSavingFolder, setIsSavingFolder] = useState(false);
+  const [securityFolder, setSecurityFolder] = useState<any | null>(null);
+  const [securityAccessMode, setSecurityAccessMode] = useState<'all' | 'restricted'>('all');
+  const [securityMemberIds, setSecurityMemberIds] = useState<string[]>([]);
+  const [isSavingSecurity, setIsSavingSecurity] = useState(false);
 
   const folders = useMemo(() => documents.filter((document) => isDocumentFolder(document)), [documents]);
   const files = useMemo(() => documents.filter((document) => !isDocumentFolder(document)), [documents]);
@@ -252,6 +262,34 @@ const ProjectFolderBrowser = ({
       setIsCreatingFolder(false);
     } finally {
       setIsSavingFolder(false);
+    }
+  };
+
+  const openFolderSecurity = (folder: any) => {
+    setSecurityFolder(folder);
+    setSecurityAccessMode(getDocumentAccessMode(folder) === 'restricted' ? 'restricted' : 'all');
+    setSecurityMemberIds(Array.isArray(folder.allowedMemberIds) ? folder.allowedMemberIds : []);
+  };
+
+  const toggleSecurityMember = (memberId: string) => {
+    setSecurityMemberIds((current) =>
+      current.includes(memberId) ? current.filter((id) => id !== memberId) : [...current, memberId]
+    );
+  };
+
+  const saveFolderSecurity = async () => {
+    if (!securityFolder || !onUpdateFolderAccess) return;
+    if (securityAccessMode === 'restricted' && securityMemberIds.length === 0) return;
+    setIsSavingSecurity(true);
+    try {
+      await onUpdateFolderAccess(
+        securityFolder.id,
+        securityAccessMode,
+        securityAccessMode === 'restricted' ? securityMemberIds : []
+      );
+      setSecurityFolder(null);
+    } finally {
+      setIsSavingSecurity(false);
     }
   };
 
@@ -369,23 +407,35 @@ const ProjectFolderBrowser = ({
                     <Folder size={18} />
                   </span>
                   <span className="min-w-0">
-                    <span className="block truncate text-sm font-black text-slate-800">{folder.name}</span>
+                    <span className="flex items-center gap-2">
+                      <span className="block truncate text-sm font-black text-slate-800">{folder.name}</span>
+                      {getDocumentAccessMode(folder) === 'restricted' && (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">
+                          <Lock size={10} /> Restringida
+                        </span>
+                      )}
+                    </span>
                     <span className="mt-0.5 block text-xs font-semibold text-slate-400">
                       {normalizedSearch ? getFolderPathLabel(folder.parentFolderId) : `${childCount} elemento${childCount === 1 ? '' : 's'}`}
                     </span>
                   </span>
                 </button>
-                {canDeleteDocuments && (
-                  <button
-                    type="button"
-                    onClick={() => canDeleteFolder && onDeleteDocument(folder.id, '', folder.name)}
-                    disabled={!canDeleteFolder}
-                    className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-400"
-                    title={canDeleteFolder ? 'Eliminar carpeta' : 'La carpeta debe estar vacía para eliminarla'}
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                )}
+                <div className="flex items-center gap-1">
+                  {canManageAccess && onUpdateFolderAccess && (
+                    <button type="button" onClick={() => openFolderSecurity(folder)} className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-amber-50 hover:text-amber-700" title="Gestionar seguridad"><Lock size={16} /></button>
+                  )}
+                  {canDeleteDocuments && (
+                    <button
+                      type="button"
+                      onClick={() => canDeleteFolder && onDeleteDocument(folder.id, '', folder.name)}
+                      disabled={!canDeleteFolder}
+                      className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-400"
+                      title={canDeleteFolder ? 'Eliminar carpeta' : 'La carpeta debe estar vacía para eliminarla'}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -411,6 +461,37 @@ const ProjectFolderBrowser = ({
           </p>
         </div>
       )}
+
+      {securityFolder && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="max-h-[88vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div><p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-600">Seguridad heredable</p><h3 className="mt-1 text-xl font-black text-slate-900">{securityFolder.name}</h3><p className="mt-2 text-sm font-medium leading-6 text-slate-500">Esta regla protege todos los archivos y subcarpetas. Una subcarpeta no puede ampliar el acceso bloqueado por su carpeta superior.</p></div>
+              <button type="button" onClick={() => setSecurityFolder(null)} className="rounded-full p-2 text-slate-400 hover:bg-slate-100"><X size={18} /></button>
+            </div>
+            <div className="mt-5 grid gap-2 sm:grid-cols-2">
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 p-3 text-sm font-bold"><input type="radio" checked={securityAccessMode === 'all'} onChange={() => { setSecurityAccessMode('all'); setSecurityMemberIds([]); }} />Todo el equipo autorizado</label>
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 p-3 text-sm font-bold"><input type="radio" checked={securityAccessMode === 'restricted'} onChange={() => setSecurityAccessMode('restricted')} />Personas seleccionadas</label>
+            </div>
+            {securityAccessMode === 'restricted' && (
+              <div className="mt-3 max-h-64 overflow-y-auto rounded-xl bg-slate-50 p-2">
+                {teamMembers.map((member) => (
+                  <label key={member.id} className="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-white">
+                    <input type="checkbox" checked={securityMemberIds.includes(member.id)} onChange={() => toggleSecurityMember(member.id)} />
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-xs font-black text-indigo-700">{(member.name || member.email || '?').charAt(0).toUpperCase()}</span>
+                    <span className="min-w-0 truncate">{member.name || member.email || 'Miembro'}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            {securityAccessMode === 'restricted' && securityMemberIds.length === 0 && <p className="mt-2 text-xs font-bold text-rose-600">Selecciona al menos una persona.</p>}
+            <div className="mt-5 flex justify-end gap-2 border-t border-slate-100 pt-4">
+              <button type="button" onClick={() => setSecurityFolder(null)} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600">Cancelar</button>
+              <button type="button" onClick={saveFolderSecurity} disabled={isSavingSecurity || (securityAccessMode === 'restricted' && securityMemberIds.length === 0)} className="inline-flex items-center rounded-xl bg-indigo-600 px-4 py-2 text-sm font-black text-white disabled:opacity-50"><Save size={15} className="mr-2" />{isSavingSecurity ? 'Guardando...' : 'Guardar seguridad'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -422,6 +503,7 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
   onViewDocument,
   onCreateFolder,
   onUploadToFolder,
+  onUpdateFolderAccess,
   searchQuery = '',
   currentUser,
   teamMembers = [],
@@ -434,6 +516,7 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
       documents.filter((document) =>
         canUserAccessDocument({
           document,
+          documents,
           currentUser,
           teamMembers,
           canManageAccess,
@@ -546,6 +629,9 @@ export const ProjectDocumentsTree: React.FC<ProjectDocumentsTreeProps> = ({
           onViewDocument={onViewDocument}
           onCreateFolder={onCreateFolder}
           onUploadToFolder={onUploadToFolder}
+          onUpdateFolderAccess={onUpdateFolderAccess}
+          teamMembers={teamMembers}
+          canManageAccess={canManageAccess}
           canCreateFolders={canCreateFolders}
           canDeleteDocuments={canDeleteDocuments}
         />

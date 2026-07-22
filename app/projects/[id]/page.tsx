@@ -693,11 +693,37 @@ export default function ProjectDetailsPage() {
       uploadedAt: serverTimestamp(),
       createdBy: user.uid,
       uploadedBy: user.uid,
-      accessMode: 'all',
-      providerPathVersion: 'structured-v1',
+      accessMode: parentFolderId ? 'inherit' : 'all',
+      allowedMemberIds: [],
+      providerPathVersion: 'structured-v2',
     });
 
     toast.success('Carpeta creada');
+  };
+
+  const handleUpdateDocumentFolderAccess = async (
+    folderId: string,
+    accessMode: 'all' | 'restricted',
+    allowedMemberIds: string[]
+  ) => {
+    if (!canManageDocumentAccess || !user) {
+      toast.error('No tienes permisos para gestionar la seguridad documental.');
+      return;
+    }
+
+    if (accessMode === 'restricted' && allowedMemberIds.length === 0) {
+      toast.warning('Selecciona al menos una persona autorizada.');
+      return;
+    }
+
+    await updateDoc(doc(db, 'projects', projectId, 'documents', folderId), {
+      accessMode,
+      allowedMemberIds: accessMode === 'restricted' ? allowedMemberIds : [],
+      accessUpdatedAt: serverTimestamp(),
+      accessUpdatedBy: user.uid,
+      accessPolicyVersion: 'folder-inheritance-v1',
+    });
+    toast.success(accessMode === 'restricted' ? 'Carpeta protegida.' : 'Seguridad de carpeta actualizada.');
   };
 
   const canViewProjectInventory = Boolean(rolePermissions.inventoryProjectView);
@@ -3319,6 +3345,7 @@ export default function ProjectDetailsPage() {
                     onViewDocument={setPreviewDocument}
                     onCreateFolder={handleCreateDocumentFolder}
                     onUploadToFolder={openUploadDocumentModal}
+                    onUpdateFolderAccess={handleUpdateDocumentFolderAccess}
                     searchQuery={documentSearchQuery}
                     currentUser={user}
                     teamMembers={projectAssignableTeamMembers}

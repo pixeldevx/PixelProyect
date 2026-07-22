@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createS3PresignedUrl } from '@/lib/storage/s3-presign';
 import {
   buildS3ObjectKey,
+  authorizeProjectStorageAction,
   getAuthenticatedUser,
   getDocumentStorageSettings,
   getS3RuntimeConfig,
@@ -28,11 +29,6 @@ export async function POST(request: Request) {
       return json({ provider: 'supabase' });
     }
 
-    const user = await getAuthenticatedUser(request);
-    if (!user) {
-      return json({ error: 'Debes iniciar sesión para subir documentos.' }, 401);
-    }
-
     const cleanPath = normalizeStorageKey(body.path || body.fileName || '');
     if (!cleanPath) {
       return json({ error: 'Ruta de archivo inválida.' }, 400);
@@ -52,6 +48,16 @@ export async function POST(request: Request) {
 
     const s3 = await getS3RuntimeConfig();
     const key = buildS3ObjectKey(s3.prefix, cleanPath);
+    if (cleanPath.split('/').includes('projects')) {
+      const authorization = await authorizeProjectStorageAction({
+        request,
+        storageKey: cleanPath,
+        permission: 'documentUpload',
+      });
+      if (!authorization.ok) return json({ error: authorization.error }, authorization.status);
+    } else if (!(await getAuthenticatedUser(request))) {
+      return json({ error: 'Debes iniciar sesión para subir archivos.' }, 401);
+    }
     const uploadUrl = createS3PresignedUrl({
       method: 'PUT',
       bucket: s3.bucket,

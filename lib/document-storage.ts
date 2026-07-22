@@ -120,8 +120,11 @@ export const buildDocumentStoragePath = ({
   return ['projects', projectFolder, ...storageFolderSegments, fileSegment].filter(Boolean).join('/');
 };
 
-export const getDocumentAccessMode = (document: any): 'all' | 'restricted' =>
-  document?.accessMode === 'restricted' ? 'restricted' : 'all';
+export const getDocumentAccessMode = (document: any): 'all' | 'restricted' | 'inherit' => {
+  if (document?.accessMode === 'restricted') return 'restricted';
+  if (document?.accessMode === 'inherit') return 'inherit';
+  return 'all';
+};
 
 export const getDocumentAllowedMemberIds = (document: any): string[] =>
   Array.isArray(document?.allowedMemberIds) ? document.allowedMemberIds.filter(Boolean) : [];
@@ -141,23 +144,21 @@ export const findMemberForUser = (teamMembers: any[] = [], user: any) => {
 
 export const canUserAccessDocument = ({
   document,
+  documents = [],
   currentUser,
   teamMembers = [],
   canManageAccess = false,
 }: {
   document: any;
+  documents?: any[];
   currentUser: any;
   teamMembers?: any[];
   canManageAccess?: boolean;
 }) => {
   if (!document) return false;
   if (canManageAccess) return true;
-  if (document.uploadedBy && currentUser?.uid && document.uploadedBy === currentUser.uid) return true;
-  if (getDocumentAccessMode(document) !== 'restricted') return true;
-
-  const allowedMemberIds = new Set(getDocumentAllowedMemberIds(document));
   const viewerMember = findMemberForUser(teamMembers, currentUser);
-  const candidates = [
+  const candidates = new Set([
     currentUser?.uid,
     currentUser?.id,
     currentUser?.email,
@@ -165,9 +166,32 @@ export const canUserAccessDocument = ({
     viewerMember?.uid,
     viewerMember?.authUserId,
     viewerMember?.email,
-  ].filter(Boolean);
+  ].filter(Boolean).map(String));
 
-  return candidates.some((value) => allowedMemberIds.has(String(value)));
+  const folderById = new Map(
+    documents
+      .filter((item) => isDocumentFolder(item) && item?.id)
+      .map((item) => [String(item.id), item])
+  );
+  const accessChain: any[] = [document];
+  const visited = new Set<string>();
+  let parentFolderId = document.parentFolderId ? String(document.parentFolderId) : '';
+
+  while (parentFolderId && !visited.has(parentFolderId)) {
+    visited.add(parentFolderId);
+    const parent = folderById.get(parentFolderId);
+    if (!parent) break;
+    accessChain.push(parent);
+    parentFolderId = parent.parentFolderId ? String(parent.parentFolderId) : '';
+  }
+
+  return accessChain.every((item, index) => {
+    if (getDocumentAccessMode(item) !== 'restricted') return true;
+    if (index === 0 && item.uploadedBy && candidates.has(String(item.uploadedBy))) return true;
+
+    const allowedMemberIds = new Set(getDocumentAllowedMemberIds(item).map(String));
+    return Array.from(candidates).some((value) => allowedMemberIds.has(value));
+  });
 };
 
 export const getProjectTeamMembers = (project: any, teamMembers: any[] = []) => {

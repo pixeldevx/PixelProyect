@@ -113,6 +113,32 @@ export const getDownloadURL = async (storageRef: StorageRef) => {
   return data.publicUrl;
 };
 
+export const getAuthorizedDownloadURL = async (storageRef: StorageRef) => {
+  const s3Path = getS3DownloadPath(storageRef);
+  if (s3Path) {
+    const headers = await getAuthHeaders();
+    const response = await fetch('/api/storage/download', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: JSON.stringify({ path: s3Path }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.url) {
+      throw new Error(payload?.error || 'No se pudo autorizar la apertura del documento.');
+    }
+    return String(payload.url);
+  }
+
+  const { data, error } = await supabase.storage
+    .from(storageRef.bucket)
+    .createSignedUrl(storageRef.fullPath, 300);
+  if (error || !data?.signedUrl) throw error || new Error('No se pudo firmar el documento.');
+  return data.signedUrl;
+};
+
 export const deleteObject = async (storageRef: StorageRef) => {
   const s3Path = getS3DownloadPath(storageRef);
   if (s3Path) {

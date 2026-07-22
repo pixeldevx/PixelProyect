@@ -2,9 +2,11 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Download, ExternalLink, FileArchive, FileImage, FileText, FileVideo, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { storage } from '@/lib/backend';
+import { getAuthorizedDownloadURL, ref } from '@/lib/supabase/storage-shim';
 
 type ProjectDocumentViewerProps = {
   document: any | null;
@@ -96,9 +98,39 @@ const PreviewFallback = ({ documentUrl, kind }: { documentUrl: string; kind: str
 };
 
 export function ProjectDocumentViewer({ document, isOpen, onClose }: ProjectDocumentViewerProps) {
+  const [authorizedUrl, setAuthorizedUrl] = useState('');
+  const [accessError, setAccessError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    if (!isOpen || !document) {
+      return () => { active = false; };
+    }
+
+    const fallbackUrl = getDocumentUrl(document);
+    if (!document.storagePath) {
+      Promise.resolve().then(() => {
+        if (!active) return;
+        setAuthorizedUrl(fallbackUrl);
+        setAccessError('');
+      });
+      return () => { active = false; };
+    }
+
+    Promise.resolve().then(() => {
+      if (!active) return;
+      setAuthorizedUrl('');
+      setAccessError('');
+    });
+    getAuthorizedDownloadURL(ref(storage, document.storagePath))
+      .then((url) => { if (active) setAuthorizedUrl(url); })
+      .catch((error) => { if (active) setAccessError(error?.message || 'No se pudo autorizar el documento.'); });
+    return () => { active = false; };
+  }, [document, isOpen]);
+
   if (!isOpen || !document) return null;
 
-  const documentUrl = getDocumentUrl(document);
+  const documentUrl = authorizedUrl;
   const documentName = getDocumentName(document);
   const fileName = getDocumentFileName(document);
   const extension = getExtension(document);
@@ -106,6 +138,14 @@ export function ProjectDocumentViewer({ document, isOpen, onClose }: ProjectDocu
   const officeViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(documentUrl)}`;
 
   const renderPreview = () => {
+    if (accessError) {
+      return (
+        <div className="flex h-full min-h-[420px] items-center justify-center bg-slate-50 p-8 text-center">
+          <div><FileText className="mx-auto h-10 w-10 text-rose-400" /><p className="mt-3 text-sm font-black text-rose-700">Acceso no disponible</p><p className="mt-1 text-sm font-medium text-slate-500">{accessError}</p></div>
+        </div>
+      );
+    }
+
     if (!documentUrl) {
       return (
         <div className="flex h-full min-h-[420px] items-center justify-center bg-slate-50 p-8 text-center">
