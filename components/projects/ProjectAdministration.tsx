@@ -55,6 +55,14 @@ type ExpenseCategory = {
   description?: string;
 };
 
+type CostCenterDomain = {
+  id: string;
+  name: string;
+  code?: string;
+  active?: boolean;
+  description?: string;
+};
+
 type AdvanceItem = {
   id: string;
   categoryId: string;
@@ -68,6 +76,7 @@ type AdvanceItem = {
 
 type CostCenterAllocation = {
   id: string;
+  domainId?: string;
   name: string;
   percentage: number;
   amount: number;
@@ -190,6 +199,8 @@ type TravelAdvance = {
   returnedBy?: string | null;
   returnedByName?: string;
   costCenters?: CostCenterAllocation[];
+  costCenterId?: string | null;
+  costCenterName?: string | null;
   adminComment?: string;
   createdAt?: any;
   updatedAt?: any;
@@ -305,6 +316,15 @@ const DEFAULT_CATEGORIES: Array<Omit<ExpenseCategory, 'id'>> = [
   },
 ];
 
+const DEFAULT_COST_CENTERS: Array<Omit<CostCenterDomain, 'id'>> = [
+  {
+    name: 'Centro de costos principal',
+    code: 'PRINCIPAL',
+    active: true,
+    description: 'Centro de costos general del proyecto.',
+  },
+];
+
 const inputClass =
   'h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15';
 const textareaClass =
@@ -334,9 +354,13 @@ const safeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
 const roundCurrency = (value: any) => Math.round(asNumber(value) * 100) / 100;
 
-const buildDefaultCostCenter = (amount = 0): CostCenterAllocation => ({
+const buildDefaultCostCenter = (
+  amount = 0,
+  domain?: Pick<CostCenterDomain, 'id' | 'name'>
+): CostCenterAllocation => ({
   id: safeId(),
-  name: 'Centro de costos principal',
+  domainId: domain?.id,
+  name: domain?.name || 'Centro de costos principal',
   percentage: 100,
   amount: roundCurrency(amount),
   note: '',
@@ -348,6 +372,7 @@ const normalizeCostCenters = (centers: CostCenterAllocation[] | undefined, total
     const percentage = Math.max(0, asNumber(center.percentage));
     return {
       id: center.id || safeId(),
+      domainId: center.domainId,
       name: String(center.name || `Centro de costos ${index + 1}`).trim() || `Centro de costos ${index + 1}`,
       percentage,
       amount: roundCurrency(totalAmount > 0 ? (totalAmount * percentage) / 100 : center.amount),
@@ -612,6 +637,7 @@ const buildEmptyAdvanceForm = (currentUser: any, teamMembers: any[]) => {
     travelStart: todayInputValue(),
     travelEnd: todayInputValue(),
     taskIds: [] as string[],
+    costCenterId: '',
     items: [] as AdvanceItem[],
   };
 };
@@ -629,6 +655,7 @@ export function ProjectAdministration({
 }: ProjectAdministrationProps) {
   const [advances, setAdvances] = useState<TravelAdvance[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
+  const [costCenterDomains, setCostCenterDomains] = useState<CostCenterDomain[]>([]);
   const [payments, setPayments] = useState<BillingPayment[]>([]);
   const [locationOptions, setLocationOptions] = useState<ColombiaDepartment[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
@@ -676,6 +703,12 @@ export function ProjectAdministration({
     requiresCufe: false,
     description: '',
   });
+  const [costCenterForm, setCostCenterForm] = useState({
+    id: '',
+    name: '',
+    code: '',
+    description: '',
+  });
   const [reviewAction, setReviewAction] = useState<ReviewAction>(null);
   const [reviewComment, setReviewComment] = useState('');
   const [receiptEditor, setReceiptEditor] = useState<ReceiptEditorState | null>(null);
@@ -717,6 +750,15 @@ export function ProjectAdministration({
         }
       ),
       onSnapshot(
+        query(collection(db, 'projects', projectId, 'costCenters'), orderBy('name', 'asc')),
+        (snapshot) => {
+          setCostCenterDomains(snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() } as CostCenterDomain)));
+        },
+        (error) => {
+          console.error('Error loading cost center domains:', error);
+        }
+      ),
+      onSnapshot(
         query(collection(db, 'projects', projectId, 'billingPayments'), orderBy('date', 'desc')),
         (snapshot) => {
           setPayments(snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() } as BillingPayment)));
@@ -737,6 +779,12 @@ export function ProjectAdministration({
     if (liveCategories.length > 0) return liveCategories;
     return DEFAULT_CATEGORIES.map((category, index) => ({ id: `default-${index}`, ...category }));
   }, [categories]);
+
+  const costCenterOptions = useMemo(() => {
+    const liveCostCenters = costCenterDomains.filter((center) => center.active !== false);
+    if (liveCostCenters.length > 0) return liveCostCenters;
+    return DEFAULT_COST_CENTERS.map((center, index) => ({ id: `default-cost-center-${index}`, ...center }));
+  }, [costCenterDomains]);
 
   const selectedReceiptCategory = categoryOptions.find((category) => category.id === receiptForm.categoryId);
   const selectedReceiptDocumentType = getReceiptDocumentType(receiptForm.documentType);
@@ -774,6 +822,12 @@ export function ProjectAdministration({
       setReceiptForm((current) => ({ ...current, categoryId: categoryOptions[0].id }));
     }
   }, [categoryOptions, receiptForm.categoryId]);
+
+  useEffect(() => {
+    if (!advanceForm.costCenterId && costCenterOptions.length > 0) {
+      setAdvanceForm((current) => ({ ...current, costCenterId: costCenterOptions[0].id }));
+    }
+  }, [advanceForm.costCenterId, costCenterOptions]);
 
   const metrics = useMemo(() => {
     const activeAdvances = advances.filter((advance) => advance.status !== 'rejected');
@@ -1207,6 +1261,13 @@ export function ProjectAdministration({
   };
 
   const addAdvanceCostCenter = () => {
+    const availableDomain = costCenterOptions.find(
+      (domain) => !advanceEditForm.costCenters.some((center) => center.domainId === domain.id)
+    );
+    if (!availableDomain) {
+      toast.error('No hay más centros de costos activos disponibles. Configura otro dominio para agregarlo.');
+      return;
+    }
     setAdvanceEditForm((current) => ({
       ...current,
       costCenters: normalizeCostCenters(
@@ -1214,7 +1275,8 @@ export function ProjectAdministration({
           ...current.costCenters,
           {
             id: safeId(),
-            name: `Centro de costos ${current.costCenters.length + 1}`,
+            domainId: availableDomain.id.startsWith('default-cost-center-') ? undefined : availableDomain.id,
+            name: availableDomain.name,
             percentage: 0,
             amount: 0,
             note: '',
@@ -1393,9 +1455,24 @@ export function ProjectAdministration({
     }
 
     const requester = teamMembers.find((member) => member.id === advanceForm.requesterId);
+    const selectedCostCenter = costCenterOptions.find((center) => center.id === advanceForm.costCenterId);
+    if (!selectedCostCenter) {
+      toast.error('Selecciona un centro de costos para el anticipo.');
+      return;
+    }
     const selectedTaskIds = Array.from(new Set(advanceForm.taskIds.filter(Boolean)));
     const selectedTasks = tasks.filter((task) => selectedTaskIds.includes(task.id));
     const amountRequested = advanceForm.items.reduce((sum, item) => sum + asNumber(item.amount), 0);
+    const selectedCostCenterId = selectedCostCenter.id.startsWith('default-cost-center-')
+      ? null
+      : selectedCostCenter.id;
+    const selectedCostCenterAllocation: CostCenterAllocation = {
+      ...buildDefaultCostCenter(amountRequested, {
+        id: selectedCostCenter.id,
+        name: selectedCostCenter.name,
+      }),
+      domainId: selectedCostCenterId || undefined,
+    };
 
     setSubmitting(true);
     try {
@@ -1424,7 +1501,9 @@ export function ProjectAdministration({
         amountLegalized: 0,
         amountReturned: 0,
         returnComment: '',
-        costCenters: normalizeCostCenters(undefined, amountRequested),
+        costCenterId: selectedCostCenterId,
+        costCenterName: selectedCostCenter.name,
+        costCenters: normalizeCostCenters([selectedCostCenterAllocation], amountRequested),
         balance: amountRequested,
         pendingRole: 'administrative_validation',
         nextAction: 'validate_advance',
@@ -1517,6 +1596,8 @@ export function ProjectAdministration({
         travelEnd: advanceEditForm.travelEnd,
         amountReturned,
         returnComment: advanceEditForm.returnComment.trim(),
+        costCenterId: costCenters[0]?.domainId || null,
+        costCenterName: costCenters[0]?.name || null,
         costCenters,
         balance: Math.max(0, coverage.balance),
         updatedAt: serverTimestamp(),
@@ -2642,18 +2723,39 @@ export function ProjectAdministration({
     try {
       const existingNames = new Set(categories.map((category) => category.name.trim().toLowerCase()));
       const missing = DEFAULT_CATEGORIES.filter((category) => !existingNames.has(category.name.trim().toLowerCase()));
-      await Promise.all(
-        missing.map((category) =>
-          addDoc(collection(db, 'projects', projectId, 'expenseCategories'), {
-            ...category,
-            projectId,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-            createdBy: currentUser?.uid || null,
-          })
-        )
+      const existingCostCenterNames = new Set(
+        costCenterDomains.map((center) => center.name.trim().toLowerCase())
       );
-      toast.success(missing.length > 0 ? 'Dominios base creados.' : 'Los dominios base ya existían.');
+      const missingCostCenters = DEFAULT_COST_CENTERS.filter(
+        (center) => !existingCostCenterNames.has(center.name.trim().toLowerCase())
+      );
+      await Promise.all(
+        [
+          ...missing.map((category) =>
+            addDoc(collection(db, 'projects', projectId, 'expenseCategories'), {
+              ...category,
+              projectId,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+              createdBy: currentUser?.uid || null,
+            })
+          ),
+          ...missingCostCenters.map((center) =>
+            addDoc(collection(db, 'projects', projectId, 'costCenters'), {
+              ...center,
+              projectId,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+              createdBy: currentUser?.uid || null,
+            })
+          ),
+        ]
+      );
+      toast.success(
+        missing.length + missingCostCenters.length > 0
+          ? 'Dominios base creados.'
+          : 'Los dominios base ya existían.'
+      );
     } catch (error: any) {
       console.error('Error seeding categories:', error);
       toast.error(error?.message || 'No se pudieron crear los dominios.');
@@ -2713,6 +2815,59 @@ export function ProjectAdministration({
     if (!canConfigure || category.id.startsWith('default-')) return;
     await updateDoc(doc(db, 'projects', projectId, 'expenseCategories', category.id), {
       active: category.active === false,
+      updatedAt: serverTimestamp(),
+    });
+  };
+
+  const saveCostCenter = async () => {
+    if (!canConfigure) return;
+    const name = costCenterForm.name.trim();
+    if (!name) {
+      toast.error('Escribe el nombre del centro de costos.');
+      return;
+    }
+    const duplicate = costCenterDomains.some(
+      (center) => center.id !== costCenterForm.id && center.name.trim().toLowerCase() === name.toLowerCase()
+    );
+    if (duplicate) {
+      toast.error('Ya existe un centro de costos con ese nombre.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const payload = {
+        projectId,
+        name,
+        code: costCenterForm.code.trim().toUpperCase(),
+        description: costCenterForm.description.trim(),
+        active: true,
+        updatedAt: serverTimestamp(),
+      };
+      if (costCenterForm.id) {
+        await updateDoc(doc(db, 'projects', projectId, 'costCenters', costCenterForm.id), payload);
+        toast.success('Centro de costos actualizado.');
+      } else {
+        await addDoc(collection(db, 'projects', projectId, 'costCenters'), {
+          ...payload,
+          createdAt: serverTimestamp(),
+          createdBy: currentUser?.uid || null,
+        });
+        toast.success('Centro de costos creado.');
+      }
+      setCostCenterForm({ id: '', name: '', code: '', description: '' });
+    } catch (error: any) {
+      console.error('Error saving cost center domain:', error);
+      toast.error(error?.message || 'No se pudo guardar el centro de costos.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const toggleCostCenter = async (center: CostCenterDomain) => {
+    if (!canConfigure || center.id.startsWith('default-cost-center-')) return;
+    await updateDoc(doc(db, 'projects', projectId, 'costCenters', center.id), {
+      active: center.active === false,
       updatedAt: serverTimestamp(),
     });
   };
@@ -2777,7 +2932,7 @@ export function ProjectAdministration({
             ['requests', 'Anticipos', advances.length],
             ['receipts', 'Legalizaciones', receipts.length],
             ['payments', 'Costos reales', realCostAdvanceGroups.length],
-            ['settings', 'Dominios', categoryOptions.length],
+            ['settings', 'Dominios', categoryOptions.length + costCenterOptions.length],
           ].map(([id, label, count]) => (
             <button
               key={String(id)}
@@ -3282,6 +3437,110 @@ export function ProjectAdministration({
                   </Button>
                 </div>
               </div>
+              <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="border-b border-slate-100 p-4">
+                  <h3 className="flex items-center gap-2 text-lg font-black text-slate-950">
+                    <FolderKanban size={18} className="text-emerald-600" />
+                    Centros de costos
+                  </h3>
+                  <p className="text-sm font-medium text-slate-500">
+                    Catálogo configurable para clasificar y distribuir los anticipos del proyecto.
+                  </p>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {(costCenterDomains.length > 0 ? costCenterDomains : costCenterOptions).map((center) => (
+                    <div key={center.id} className="grid gap-3 p-4 sm:grid-cols-[1fr_auto] sm:items-center">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-black text-slate-950">{center.name}</p>
+                          {center.code && (
+                            <span className="rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-emerald-700 ring-1 ring-emerald-100">
+                              {center.code}
+                            </span>
+                          )}
+                          {center.active === false && (
+                            <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">
+                              Inactivo
+                            </span>
+                          )}
+                        </div>
+                        {center.description && (
+                          <p className="mt-1 text-xs font-medium text-slate-400">{center.description}</p>
+                        )}
+                      </div>
+                      {canConfigure && !center.id.startsWith('default-cost-center-') && (
+                        <div className="flex gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setCostCenterForm({
+                                id: center.id,
+                                name: center.name,
+                                code: center.code || '',
+                                description: center.description || '',
+                              })
+                            }
+                          >
+                            Editar
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => toggleCostCenter(center)}
+                            className={center.active === false ? 'border-emerald-200 text-emerald-700' : 'border-rose-200 text-rose-700'}
+                          >
+                            {center.active === false ? 'Activar' : 'Desactivar'}
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <h3 className="text-base font-black text-slate-950">
+                  {costCenterForm.id ? 'Editar centro de costos' : 'Nuevo centro de costos'}
+                </h3>
+                <div className="mt-4 space-y-3">
+                  <Field label="Nombre">
+                    <input
+                      className={inputClass}
+                      value={costCenterForm.name}
+                      onChange={(event) => setCostCenterForm((current) => ({ ...current, name: event.target.value }))}
+                      placeholder="Ej: Operación de campo"
+                    />
+                  </Field>
+                  <Field label="Código (opcional)">
+                    <input
+                      className={inputClass}
+                      value={costCenterForm.code}
+                      maxLength={30}
+                      onChange={(event) => setCostCenterForm((current) => ({ ...current, code: event.target.value }))}
+                      placeholder="Ej: CC-001"
+                    />
+                  </Field>
+                  <Field label="Descripción">
+                    <textarea
+                      className={textareaClass}
+                      value={costCenterForm.description}
+                      onChange={(event) => setCostCenterForm((current) => ({ ...current, description: event.target.value }))}
+                      placeholder="Uso previsto de este centro de costos."
+                    />
+                  </Field>
+                  <Button
+                    type="button"
+                    onClick={saveCostCenter}
+                    disabled={submitting || !canConfigure}
+                    className="w-full bg-emerald-600 font-bold text-white hover:bg-emerald-700"
+                  >
+                    {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
+                    Guardar centro de costos
+                  </Button>
+                </div>
+              </div>
             </div>
           )}
         </>
@@ -3309,6 +3568,20 @@ export function ProjectAdministration({
                       </option>
                     ))}
                     {!teamMembers.length && currentUser && <option value={currentUser.uid}>{getCurrentUserName(currentUser)}</option>}
+                  </select>
+                </Field>
+                <Field label="Centro de costos">
+                  <select
+                    className={inputClass}
+                    value={advanceForm.costCenterId}
+                    onChange={(event) => setAdvanceForm((current) => ({ ...current, costCenterId: event.target.value }))}
+                  >
+                    <option value="">Selecciona centro de costos</option>
+                    {costCenterOptions.map((center) => (
+                      <option key={center.id} value={center.id}>
+                        {center.code ? `${center.code} · ` : ''}{center.name}
+                      </option>
+                    ))}
                   </select>
                 </Field>
                 <Field label="Tareas relacionadas">
@@ -3486,6 +3759,10 @@ export function ProjectAdministration({
               <p className="text-[11px] font-black uppercase tracking-[0.28em] text-indigo-600">Resumen</p>
               <div className="mt-4 space-y-3">
                 <SummaryLine label="ID del anticipo" value={advanceForm.customId.trim() || 'Sin ID personalizado'} />
+                <SummaryLine
+                  label="Centro de costos"
+                  value={costCenterOptions.find((center) => center.id === advanceForm.costCenterId)?.name || 'Sin seleccionar'}
+                />
                 <SummaryLine label="Destino" value={[advanceForm.municipality, advanceForm.department].filter(Boolean).join(', ') || 'Sin destino'} />
                 <SummaryLine label="Tareas asociadas" value={`${selectedAdvanceTasks.length}`} />
                 <SummaryLine label="Periodo" value={`${formatDate(advanceForm.travelStart)} - ${formatDate(advanceForm.travelEnd)}`} />
@@ -3659,12 +3936,29 @@ export function ProjectAdministration({
                     <div key={center.id} className="rounded-xl border border-white/70 bg-white p-3 shadow-sm">
                       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_120px_auto] lg:items-end">
                         <Field label="Centro">
-                          <input
+                          <select
                             className={inputClass}
-                            value={center.name}
-                            onChange={(event) => updateAdvanceCostCenter(center.id, { name: event.target.value })}
-                            placeholder="Ej: Campo, oficina, interventoría..."
-                          />
+                            value={center.domainId || ''}
+                            onChange={(event) => {
+                              const domain = costCenterOptions.find((option) => option.id === event.target.value);
+                              if (!domain) return;
+                              updateAdvanceCostCenter(center.id, {
+                                domainId: domain.id.startsWith('default-cost-center-') ? undefined : domain.id,
+                                name: domain.name,
+                              });
+                            }}
+                          >
+                            <option value={center.domainId || ''}>
+                              {center.name}{center.domainId ? '' : ' · registro anterior'}
+                            </option>
+                            {costCenterOptions
+                              .filter((domain) => domain.id !== center.domainId)
+                              .map((domain) => (
+                                <option key={domain.id} value={domain.id}>
+                                  {domain.code ? `${domain.code} · ` : ''}{domain.name}
+                                </option>
+                              ))}
+                          </select>
                         </Field>
                         <Field label="%">
                           <input
@@ -4465,6 +4759,14 @@ function AdvanceCard({
       : advance.taskTitle
         ? [advance.taskTitle]
         : [];
+  const costCenterNames = Array.from(
+    new Set(
+      (advance.costCenters || [])
+        .map((center) => center.name)
+        .concat(advance.costCenterName || [])
+        .filter(Boolean)
+    )
+  );
   const progress =
     asNumber(advance.amountApproved) > 0
       ? Math.min(100, Math.round((asNumber(advance.amountLegalized) / asNumber(advance.amountApproved)) * 100))
@@ -4504,6 +4806,12 @@ function AdvanceCard({
               <MapPin size={13} />
               {advance.items?.length || 0} ítems
             </span>
+            {costCenterNames.length > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-emerald-700 ring-1 ring-emerald-100">
+                <FolderKanban size={13} />
+                {costCenterNames[0]}{costCenterNames.length > 1 ? ` +${costCenterNames.length - 1}` : ''}
+              </span>
+            )}
           </div>
         </div>
         <div className="grid min-w-[280px] gap-2">
