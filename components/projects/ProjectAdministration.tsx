@@ -46,6 +46,10 @@ import { ref, uploadBytes, getDownloadURL, getAuthorizedDownloadURL } from '@/li
 import { buildDocumentStoragePath, getDocumentFolderStorageSegments } from '@/lib/document-storage';
 import { ensureManagedDocumentFolderPath } from '@/lib/document-folders';
 import { isCompletedTaskStatus } from '@/lib/taskProgress';
+import {
+  AdvanceDossierReport,
+  generateAdvanceDossierPdf,
+} from '@/lib/advance-dossier-pdf';
 
 type ColombiaDepartment = {
   department: string;
@@ -537,34 +541,6 @@ const getAdvanceReconciliation = (advance: Partial<TravelAdvance>) => {
   };
 };
 
-const escapeHtml = (value: any) =>
-  String(value ?? '').replace(/[&<>"']/g, (char) => (
-    {
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    }[char] || char
-  ));
-
-const buildSupportDocumentReference = (
-  label: string,
-  fileName: string | undefined,
-  url: string,
-  fallbackName: string
-) => {
-  const resolvedName = String(fileName || fallbackName).trim() || fallbackName;
-  const content = `
-    <span class="document-label">${escapeHtml(label)}</span>
-    <span class="document-name">${escapeHtml(resolvedName)}</span>
-  `;
-
-  return url
-    ? `<a class="document-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${content}</a>`
-    : `<div class="document-link document-missing">${content}<span class="document-status">Archivo sin acceso disponible</span></div>`;
-};
-
 const getSafeFileToken = (value: any) =>
   String(value || 'anticipo')
     .normalize('NFD')
@@ -573,8 +549,7 @@ const getSafeFileToken = (value: any) =>
     .replace(/^-+|-+$/g, '')
     .slice(0, 80) || 'anticipo';
 
-const downloadFile = (fileName: string, content: string, type: string) => {
-  const blob = new Blob([content], { type });
+const downloadBlob = (fileName: string, blob: Blob) => {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
@@ -1312,522 +1287,277 @@ export function ProjectAdministration({
     [filteredAdvances, payments]
   );
 
-  const downloadAdvanceReport = useCallback(
-    async (group: (typeof realCostAdvanceGroups)[number]) => {
-      const { advance, receipts: approvedReceipts, payments: advancePayments, realCost, coverage, costCenters } = group;
-      const projectName = project?.name || project?.title || projectId;
-      const reportDate = formatDate(new Date());
-      const advanceTitle = advance.customId ? `${advance.customId} · ${advance.purpose || advance.destination}` : advance.purpose || advance.destination;
-      const supportUrls = await Promise.all(
-        approvedReceipts.map(async (receipt) => {
-          if (!receipt.storagePath) return receipt.fileUrl || '';
+  const downloadAdvanceDossier = useCallback(
+    async ({
+      advance,
+      reportReceipts,
+      title,
+      filePrefix,
+      realCost,
+    }: {
+      advance: TravelAdvance;
+      reportReceipts: AdvanceReceipt[];
+      title: string;
+      filePrefix: string;
+      realCost?: number;
+    }) => {
+      const toastId = toast.loading('Preparando el expediente y anexando los soportes...');
+      try {
+        const resolveProtectedAsset = async (path?: string, fallback?: string) => {
+          if (!path) return fallback || '';
           try {
-            return await getAuthorizedDownloadURL(ref(storage, receipt.storagePath));
+            return await getAuthorizedDownloadURL(ref(storage, path));
           } catch {
-            return '';
+            return fallback || '';
           }
-        })
-      );
-      const resolveProtectedAsset = async (path?: string, fallback?: string) => {
-        if (!path) return fallback || '';
-        try {
-          return await getAuthorizedDownloadURL(ref(storage, path));
-        } catch {
-          return fallback || '';
-        }
-      };
-      const [requesterSignatureUrl, approvalSignatureUrl, paymentSupportUrl, returnSupportUrl, compensationSupportUrl] = await Promise.all([
-        resolveProtectedAsset(advance.requesterSignature?.signatureStoragePath, advance.requesterSignature?.signatureUrl),
-        resolveProtectedAsset(advance.approvalSignature?.signatureStoragePath, advance.approvalSignature?.signatureUrl),
-        resolveProtectedAsset(advance.paymentSupport?.storagePath, advance.paymentSupport?.fileUrl),
-        resolveProtectedAsset(advance.returnSupport?.storagePath, advance.returnSupport?.fileUrl),
-        resolveProtectedAsset(advance.compensationSupport?.storagePath, advance.compensationSupport?.fileUrl),
-      ]);
-      const legalizationRows = approvedReceipts
-        .map((receipt, index) => {
-          const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
-          const receiptStatus = getReceiptStatusMeta(receipt.status);
-          return `
-            <tr>
-              <td>${index + 1}</td>
-              <td><strong>${escapeHtml(receipt.categoryName)}</strong><br/><span>${escapeHtml(documentMeta.label)}</span></td>
-              <td>${escapeHtml(receipt.businessName || 'Sin razon social')}<br/><span>${escapeHtml(receipt.taxId || '')}</span></td>
-              <td>${escapeHtml(formatDate(receipt.date))}</td>
-              <td>${escapeHtml(receipt.invoiceNumber || receipt.cufe || 'Sin numero')}</td>
-              <td class="money">${escapeHtml(formatMoney(receipt.amount))}</td>
-              <td>${escapeHtml(receiptStatus.label)}</td>
-            </tr>
-          `;
-        })
-        .join('');
-      const legalizationSupportRows = approvedReceipts
-        .map((receipt, index) => `
-          <tr>
-            <td>${index + 1}</td>
-            <td>${buildSupportDocumentReference(
-              'Documento soporte de legalización',
-              receipt.fileName,
-              supportUrls[index],
-              `soporte-legalizacion-${index + 1}`
-            )}</td>
-            <td><strong>${escapeHtml(receipt.categoryName)}</strong><br/><span>${escapeHtml(receipt.businessName || 'Sin razón social')} · ${escapeHtml(receipt.invoiceNumber || receipt.cufe || 'Sin número')}</span></td>
-            <td class="money">${escapeHtml(formatMoney(receipt.amount))}</td>
-          </tr>
-        `)
-        .join('');
-      const advanceItemRows = (advance.items || [])
-        .map((item, index) => `
-          <tr>
-            <td>${index + 1}</td>
-            <td>${escapeHtml(item.categoryName)}</td>
-            <td>${escapeHtml(String(item.days))}</td>
-            <td class="money">${escapeHtml(formatMoney(item.unitAmount))}</td>
-            <td>${escapeHtml(item.note || '')}</td>
-            <td class="money">${escapeHtml(formatMoney(item.amount))}</td>
-          </tr>
-        `)
-        .join('');
-      const reconciliationSupportRows = [
-        advance.returnSupport
-          ? `
-            <tr>
-              <td>${buildSupportDocumentReference(
-                'Soporte de conciliación · devolución / consignación bancaria',
-                advance.returnSupport.fileName,
-                returnSupportUrl,
-                'soporte-consignacion-bancaria'
-              )}</td>
-              <td>${escapeHtml(formatDate(advance.returnSupport.date))}</td>
-              <td>${escapeHtml(advance.returnSupport.reference || 'Sin referencia')}</td>
-              <td class="money">${escapeHtml(formatMoney(advance.returnSupport.amount))}</td>
-            </tr>
-          `
-          : '',
-        advance.compensationSupport
-          ? `
-            <tr>
-              <td>${buildSupportDocumentReference(
-                'Soporte de conciliación · compensación',
-                advance.compensationSupport.fileName,
-                compensationSupportUrl,
-                'soporte-compensacion'
-              )}</td>
-              <td>${escapeHtml(formatDate(advance.compensationSupport.date))}</td>
-              <td>${escapeHtml(advance.compensationSupport.reference || 'Sin referencia')}</td>
-              <td class="money">${escapeHtml(formatMoney(advance.compensationSupport.amount))}</td>
-            </tr>
-          `
-          : '',
-      ].filter(Boolean).join('');
-      const paymentSupportDocument = advance.paymentSupport
-        ? buildSupportDocumentReference(
-            'Documento soporte del pago del anticipo',
-            advance.paymentSupport.fileName,
-            paymentSupportUrl,
-            'soporte-pago-anticipo'
-          )
-        : '';
-      const costCenterRows = costCenters
-        .map(
-          (center) => `
-            <tr>
-              <td>${escapeHtml(center.name)}</td>
-              <td>${escapeHtml(String(center.percentage))}%</td>
-              <td class="money">${escapeHtml(formatMoney(center.amount))}</td>
-              <td>${escapeHtml(center.note || '')}</td>
-            </tr>
-          `
-        )
-        .join('');
-      const paymentRows = advancePayments
-        .map(
-          (payment, index) => `
-            <tr>
-              <td>${index + 1}</td>
-              <td>${escapeHtml(formatDate(payment.date))}</td>
-              <td class="money">${escapeHtml(formatMoney(payment.amount))}</td>
-              <td>${escapeHtml(payment.status || 'paid')}</td>
-            </tr>
-          `
-        )
-        .join('');
-      const html = `<!doctype html>
-<html lang="es">
-  <head>
-    <meta charset="utf-8" />
-    <title>Informe anticipo ${escapeHtml(advance.customId || advance.id)}</title>
-    <style>
-      * { box-sizing: border-box; }
-      body { margin: 0; background: #f6f8fb; color: #0f172a; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      main { max-width: 1120px; margin: 32px auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 20px; overflow: hidden; box-shadow: 0 20px 60px rgba(15, 23, 42, .10); }
-      header { padding: 32px; background: linear-gradient(135deg, #070b1d, #312e81 58%, #0f766e); color: white; }
-      .eyebrow { margin: 0 0 10px; color: #8ff7df; font-size: 11px; font-weight: 900; letter-spacing: .28em; text-transform: uppercase; }
-      h1 { margin: 0; font-size: 30px; line-height: 1.1; }
-      .subtitle { margin: 12px 0 0; color: #cbd5e1; font-size: 14px; font-weight: 700; }
-      section { padding: 24px 32px; border-top: 1px solid #e2e8f0; }
-      h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; font-size: 18px; }
-      h3 { margin: 20px 0 10px; color: #334155; font-size: 13px; }
-      .step { display: inline-flex; width: 26px; height: 26px; align-items: center; justify-content: center; border-radius: 999px; background: #4f46e5; color: white; font-size: 11px; font-weight: 950; }
-      .grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-      .card { border: 1px solid #e2e8f0; border-radius: 14px; padding: 14px; background: #f8fafc; }
-      .label { color: #64748b; font-size: 10px; font-weight: 900; letter-spacing: .22em; text-transform: uppercase; }
-      .value { margin-top: 6px; font-size: 18px; font-weight: 950; }
-      table { width: 100%; border-collapse: collapse; overflow: hidden; border: 1px solid #e2e8f0; border-radius: 14px; }
-      th, td { padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; font-size: 12px; }
-      th { background: #f1f5f9; color: #64748b; font-size: 10px; font-weight: 900; letter-spacing: .18em; text-transform: uppercase; }
-      td span { color: #64748b; font-weight: 700; }
-      .money { white-space: nowrap; font-weight: 900; }
-      a { color: #4f46e5; font-weight: 900; text-decoration: none; }
-      .document-link { display: flex; flex-direction: column; gap: 3px; min-width: 210px; border: 1px solid #c7d2fe; border-radius: 10px; background: #eef2ff; padding: 10px 12px; }
-      .document-label { color: #4338ca; font-size: 9px; font-weight: 950; letter-spacing: .12em; text-transform: uppercase; }
-      .document-name { color: #0f172a; font-size: 12px; font-weight: 900; overflow-wrap: anywhere; }
-      .document-status { color: #b45309; font-size: 10px; font-weight: 800; }
-      .document-missing { border-color: #fde68a; background: #fffbeb; }
-      .signature-image { width: 180px; height: 64px; object-fit: contain; }
-      .section-note { margin: -5px 0 14px; color: #64748b; font-size: 12px; font-weight: 700; line-height: 1.5; }
-      h2, h3, .section-note { break-after: avoid-page; page-break-after: avoid; }
-      tr, .document-link, .signature-image { break-inside: avoid-page; page-break-inside: avoid; }
-      .keep-together { break-inside: avoid-page; page-break-inside: avoid; }
-      .phase-break { break-before: page; page-break-before: always; }
-      @media print {
-        body { background: white; }
-        main { margin: 0; border: 0; box-shadow: none; border-radius: 0; }
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <header>
-        <p class="eyebrow">Pixel Project · Informe de anticipo</p>
-        <h1>${escapeHtml(advanceTitle)}</h1>
-        <p class="subtitle">${escapeHtml(projectName)} · ${escapeHtml(advance.requesterName)} · generado ${escapeHtml(reportDate)}</p>
-      </header>
-      <section>
-        <h2><span class="step">1</span>Anticipo y aprobación</h2>
-        <div class="grid">
-          <div class="card"><div class="label">Anticipado</div><div class="value">${escapeHtml(formatMoney(coverage.approved))}</div></div>
-          <div class="card"><div class="label">Justificado</div><div class="value">${escapeHtml(formatMoney(getAdvanceJustifiedAmount(advance)))}</div></div>
-          <div class="card"><div class="label">Legalizado</div><div class="value">${escapeHtml(formatMoney(coverage.legalized))}</div></div>
-          <div class="card"><div class="label">Devuelto</div><div class="value">${escapeHtml(formatMoney(coverage.returnedCash))}</div></div>
-          <div class="card"><div class="label">Compensado</div><div class="value">${escapeHtml(formatMoney(advance.amountCompensated))}</div></div>
-          <div class="card"><div class="label">Costo real</div><div class="value">${escapeHtml(formatMoney(realCost))}</div></div>
-        </div>
-        <h3>Ficha técnica del anticipo</h3>
-        <table>
-          <tbody>
-            <tr><th>ID contable</th><td>${escapeHtml(advance.customId || advance.id)}</td><th>Destino</th><td>${escapeHtml(advance.destination)}</td></tr>
-            <tr><th>Periodo</th><td>${escapeHtml(formatDate(advance.travelStart))} - ${escapeHtml(formatDate(advance.travelEnd))}</td><th>Estado</th><td>${escapeHtml((statusConfig[advance.status] || statusConfig.closed).label)}</td></tr>
-            <tr><th>Solicitante</th><td>${escapeHtml(advance.requesterName)}</td><th>Saldo</th><td>${escapeHtml(formatMoney(Math.max(0, coverage.balance)))}</td></tr>
-            <tr><th>Justificacion</th><td colspan="3">${escapeHtml(advance.purpose || '')}</td></tr>
-            <tr><th>Observacion devolucion</th><td colspan="3">${escapeHtml(advance.returnComment || '')}</td></tr>
-          </tbody>
-        </table>
-        <h3>Ítems solicitados</h3>
-        <table>
-          <thead><tr><th>#</th><th>Concepto</th><th>Días / unidades</th><th>Valor unitario</th><th>Nota</th><th>Total</th></tr></thead>
-          <tbody>${advanceItemRows || '<tr><td colspan="6">Sin ítems registrados.</td></tr>'}</tbody>
-        </table>
-        <h3>Centros de costo</h3>
-        <table>
-          <thead><tr><th>Centro</th><th>Porcentaje</th><th>Monto</th><th>Nota</th></tr></thead>
-          <tbody>${costCenterRows || '<tr><td colspan="4">Sin centros de costo configurados.</td></tr>'}</tbody>
-        </table>
-        <h3>Firmas verificadas</h3>
-        <table>
-          <tbody>
-            <tr><th>Firma solicitante</th><td>${requesterSignatureUrl ? `<img class="signature-image" src="${escapeHtml(requesterSignatureUrl)}" alt="Firma solicitante"/><br/>` : ''}${escapeHtml(advance.requesterSignature?.name || 'Pendiente')}<br/><span>${escapeHtml(advance.requesterSignature?.jobTitle || '')} · ${escapeHtml(advance.requesterSignature?.email || '')}</span></td><th>Firma aprobador</th><td>${approvalSignatureUrl ? `<img class="signature-image" src="${escapeHtml(approvalSignatureUrl)}" alt="Firma aprobador"/><br/>` : ''}${escapeHtml(advance.approvalSignature?.name || 'Pendiente')}<br/><span>${escapeHtml(advance.approvalSignature?.jobTitle || '')} · ${escapeHtml(advance.approvalSignature?.email || '')}</span></td></tr>
-          </tbody>
-        </table>
-      </section>
-      <section>
-        <h2><span class="step">2</span>Pago del anticipo</h2>
-        ${advance.paymentSupport ? `
-          <table><tbody>
-            <tr><th>Valor pagado</th><td>${escapeHtml(formatMoney(advance.paymentSupport.amount))}</td><th>Fecha</th><td>${escapeHtml(formatDate(advance.paymentSupport.date))}</td></tr>
-            <tr><th>Referencia bancaria</th><td>${escapeHtml(advance.paymentSupport.reference || 'Sin referencia')}</td><th>Registrado por</th><td>${escapeHtml(advance.paymentSupport.paidByName || '')}</td></tr>
-            <tr><th>Documento</th><td colspan="3">${paymentSupportDocument}</td></tr>
-          </tbody></table>
-        ` : '<p class="section-note">Sin pago ni documento soporte registrado.</p>'}
-      </section>
-      <section class="phase-break">
-        <h2><span class="step">3</span>Legalización</h2>
-        <p class="section-note">Relación contable de las legalizaciones aprobadas que conforman el costo real.</p>
-        <table>
-          <thead><tr><th>#</th><th>Tipo</th><th>Proveedor</th><th>Fecha</th><th>Documento</th><th>Valor</th><th>Estado</th></tr></thead>
-          <tbody>${legalizationRows || '<tr><td colspan="7">Sin legalizaciones aprobadas.</td></tr>'}</tbody>
-        </table>
-        <h3>Pagos reales asociados</h3>
-        <table>
-          <thead><tr><th>#</th><th>Fecha</th><th>Valor</th><th>Estado</th></tr></thead>
-          <tbody>${paymentRows || '<tr><td colspan="4">Sin pagos reales independientes. El costo real se toma de las legalizaciones aprobadas.</td></tr>'}</tbody>
-        </table>
-      </section>
-      <section>
-        <h2><span class="step">4</span>Documentos soporte de la legalización</h2>
-        <p class="section-note">Cada archivo se identifica por su nombre y por la legalización a la que pertenece.</p>
-        <table>
-          <thead><tr><th>#</th><th>Documento soporte</th><th>Legalización referenciada</th><th>Valor</th></tr></thead>
-          <tbody>${legalizationSupportRows || '<tr><td colspan="4">Sin documentos soporte de legalización.</td></tr>'}</tbody>
-        </table>
-      </section>
-      <section>
-        <h2><span class="step">5</span>Conciliación y cierre</h2>
-        <table>
-          <tbody>
-            <tr><th>Estado</th><td>${escapeHtml(advance.reconciliationStatus === 'reconciled' ? 'Conciliado' : 'Pendiente')}</td><th>Fecha de cierre</th><td>${escapeHtml(formatDate(advance.reconciledAt || advance.closedAt))}</td></tr>
-            <tr><th>Devolución / consignación</th><td>${advance.returnSupport ? escapeHtml(formatMoney(advance.returnSupport.amount)) : 'No requerida'}</td><th>Compensación</th><td>${advance.compensationSupport ? escapeHtml(formatMoney(advance.compensationSupport.amount)) : 'No requerida'}</td></tr>
-            <tr><th>Conciliado por</th><td colspan="3">${escapeHtml(advance.reconciledByName || '')}</td></tr>
-          </tbody>
-        </table>
-      </section>
-      <section class="keep-together">
-        <h2><span class="step">6</span>Documentos soporte de la conciliación</h2>
-        <p class="section-note">Estos archivos corresponden exclusivamente al cierre: consignación bancaria por devolución o compensación administrativa.</p>
-        <table>
-          <thead><tr><th>Documento de conciliación</th><th>Fecha</th><th>Referencia</th><th>Valor</th></tr></thead>
-          <tbody>${reconciliationSupportRows || '<tr><td colspan="4">La conciliación no requirió documentos adicionales.</td></tr>'}</tbody>
-        </table>
-      </section>
-    </main>
-  </body>
-</html>`;
+        };
+        const [
+          requesterSignatureUrl,
+          approvalSignatureUrl,
+          paymentSupportUrl,
+          returnSupportUrl,
+          compensationSupportUrl,
+          receiptSupportUrls,
+        ] = await Promise.all([
+          resolveProtectedAsset(
+            advance.requesterSignature?.signatureStoragePath,
+            advance.requesterSignature?.signatureUrl
+          ),
+          resolveProtectedAsset(
+            advance.approvalSignature?.signatureStoragePath,
+            advance.approvalSignature?.signatureUrl
+          ),
+          resolveProtectedAsset(advance.paymentSupport?.storagePath, advance.paymentSupport?.fileUrl),
+          resolveProtectedAsset(advance.returnSupport?.storagePath, advance.returnSupport?.fileUrl),
+          resolveProtectedAsset(advance.compensationSupport?.storagePath, advance.compensationSupport?.fileUrl),
+          Promise.all(
+            reportReceipts.map((receipt) =>
+              resolveProtectedAsset(receipt.storagePath, receipt.fileUrl)
+            )
+          ),
+        ]);
 
-      downloadFile(
-        `informe-anticipo-${getSafeFileToken(advance.customId || advance.id)}.html`,
-        html,
-        'text/html;charset=utf-8'
-      );
+        const missingSupport = [
+          advance.paymentSupport && !paymentSupportUrl ? 'el pago del anticipo' : '',
+          ...reportReceipts.map((receipt, index) =>
+            !receiptSupportUrls[index] ? `la legalización ${receipt.categoryName}` : ''
+          ),
+          advance.returnSupport && !returnSupportUrl ? 'la consignación bancaria' : '',
+          advance.compensationSupport && !compensationSupportUrl ? 'la compensación' : '',
+        ].filter(Boolean);
+        if (missingSupport.length > 0) {
+          throw new Error(`No se pudo autorizar el soporte de ${missingSupport[0]}.`);
+        }
+
+        const coverage = getAdvanceFinancialCoverage(advance);
+        const reconciliation = getAdvanceReconciliation(advance);
+        const costCenters = normalizeCostCenters(
+          advance.costCenters,
+          asNumber(advance.amountApproved || advance.amountRequested)
+        );
+        const report: AdvanceDossierReport = {
+          title,
+          advanceId: advance.customId || 'Sin ID contable',
+          projectName: project?.name || project?.title || projectId,
+          status: (statusConfig[advance.status] || statusConfig.submitted).label,
+          generatedAt: formatDate(new Date()),
+          metrics: [
+            { label: 'Anticipado', value: formatMoney(coverage.approved) },
+            { label: 'Justificado', value: formatMoney(getAdvanceJustifiedAmount(advance)) },
+            { label: 'Legalizado', value: formatMoney(coverage.legalized) },
+            { label: 'Devuelto', value: formatMoney(coverage.returnedCash) },
+            { label: 'Compensado', value: formatMoney(advance.amountCompensated) },
+            ...(realCost === undefined
+              ? [{ label: 'Saldo', value: formatMoney(Math.max(0, coverage.balance)) }]
+              : [{ label: 'Costo real', value: formatMoney(realCost) }]),
+          ],
+          advanceDetails: [
+            { label: 'Solicitante', value: advance.requesterName },
+            { label: 'Correo', value: advance.requesterEmail || 'Sin correo' },
+            { label: 'Destino', value: advance.destination },
+            {
+              label: 'Periodo',
+              value: `${formatDate(advance.travelStart)} - ${formatDate(advance.travelEnd)}`,
+            },
+            { label: 'Justificación', value: advance.purpose || 'Sin justificación' },
+            {
+              label: 'Tareas',
+              value:
+                (advance.taskTitles || []).join(', ') ||
+                advance.taskTitle ||
+                'Sin tareas vinculadas',
+            },
+            {
+              label: 'Observación administrativa',
+              value: advance.adminComment || 'Sin observaciones',
+            },
+            {
+              label: 'Observación de devolución',
+              value: advance.returnComment || 'No aplica',
+            },
+          ],
+          items: (advance.items || []).map((item, index) => [
+            String(index + 1),
+            item.categoryName,
+            String(item.days),
+            formatMoney(item.unitAmount),
+            item.note || '-',
+            formatMoney(item.amount),
+          ]),
+          costCenters: costCenters.map((center) => [
+            center.name,
+            `${center.percentage}%`,
+            formatMoney(center.amount),
+            center.note || '-',
+          ]),
+          signatures: [
+            {
+              role: 'Firma solicitante',
+              name: advance.requesterSignature?.name || 'Pendiente',
+              jobTitle: advance.requesterSignature?.jobTitle,
+              email: advance.requesterSignature?.email,
+              signedAt: advance.requesterSignature?.signedAt,
+              imageUrl: requesterSignatureUrl,
+            },
+            {
+              role: 'Firma aprobador',
+              name: advance.approvalSignature?.name || 'Pendiente',
+              jobTitle: advance.approvalSignature?.jobTitle,
+              email: advance.approvalSignature?.email,
+              signedAt: advance.approvalSignature?.signedAt,
+              imageUrl: approvalSignatureUrl,
+            },
+          ],
+          paymentDetails: advance.paymentSupport
+            ? [
+                { label: 'Valor pagado', value: formatMoney(advance.paymentSupport.amount) },
+                { label: 'Fecha', value: formatDate(advance.paymentSupport.date) },
+                {
+                  label: 'Referencia bancaria',
+                  value: advance.paymentSupport.reference || 'Sin referencia',
+                },
+                {
+                  label: 'Registrado por',
+                  value: advance.paymentSupport.paidByName || 'Sin responsable',
+                },
+              ]
+            : [],
+          legalizations: reportReceipts.map((receipt, index) => [
+            String(index + 1),
+            `${receipt.categoryName}\n${getReceiptDocumentTypeMeta(receipt.documentType).label}`,
+            receipt.businessName || 'Sin razón social',
+            formatDate(receipt.date),
+            receipt.invoiceNumber || receipt.cufe || 'Sin número',
+            formatMoney(receipt.amount),
+            getReceiptStatusMeta(receipt.status).label,
+          ]),
+          reconciliationDetails: [
+            {
+              label: 'Estado',
+              value: advance.reconciliationStatus === 'reconciled' ? 'Conciliado' : 'Pendiente',
+            },
+            {
+              label: 'Fecha de cierre',
+              value: formatDate(advance.reconciledAt || advance.closedAt),
+            },
+            { label: 'Anticipado', value: formatMoney(reconciliation.anticipated) },
+            { label: 'Legalizado', value: formatMoney(reconciliation.legalized) },
+            {
+              label: 'Por devolver / consignar',
+              value: formatMoney(reconciliation.returnRequired),
+            },
+            {
+              label: 'Por compensar',
+              value: formatMoney(reconciliation.compensationRequired),
+            },
+            {
+              label: 'Conciliado por',
+              value: advance.reconciledByName || 'Pendiente',
+            },
+          ],
+          paymentAttachment:
+            advance.paymentSupport && paymentSupportUrl
+              ? {
+                  label: 'Soporte del pago del anticipo',
+                  description: `Pago de ${formatMoney(advance.paymentSupport.amount)} - ${formatDate(advance.paymentSupport.date)}${advance.paymentSupport.reference ? ` - Referencia ${advance.paymentSupport.reference}` : ''}`,
+                  fileName: advance.paymentSupport.fileName,
+                  url: paymentSupportUrl,
+                }
+              : undefined,
+          legalizationAttachments: reportReceipts.map((receipt, index) => ({
+            label: `Soporte de legalización ${index + 1}`,
+            description: `${receipt.categoryName} - ${receipt.businessName || 'Sin razón social'} - ${receipt.invoiceNumber || receipt.cufe || 'Sin número'} - ${formatMoney(receipt.amount)}`,
+            fileName: receipt.fileName || `soporte-legalizacion-${index + 1}`,
+            url: receiptSupportUrls[index],
+          })),
+          reconciliationAttachments: [
+            ...(advance.returnSupport && returnSupportUrl
+              ? [
+                  {
+                    label: 'Soporte de conciliación - devolución / consignación bancaria',
+                    description: `Consignación por ${formatMoney(advance.returnSupport.amount)} - ${formatDate(advance.returnSupport.date)}${advance.returnSupport.reference ? ` - Referencia ${advance.returnSupport.reference}` : ''}`,
+                    fileName: advance.returnSupport.fileName,
+                    url: returnSupportUrl,
+                  },
+                ]
+              : []),
+            ...(advance.compensationSupport && compensationSupportUrl
+              ? [
+                  {
+                    label: 'Soporte de conciliación - compensación',
+                    description: `Compensación por ${formatMoney(advance.compensationSupport.amount)} - ${formatDate(advance.compensationSupport.date)}${advance.compensationSupport.reference ? ` - Referencia ${advance.compensationSupport.reference}` : ''}`,
+                    fileName: advance.compensationSupport.fileName,
+                    url: compensationSupportUrl,
+                  },
+                ]
+              : []),
+          ],
+        };
+
+        const pdfBytes = await generateAdvanceDossierPdf(report);
+        const pdfArrayBuffer = pdfBytes.buffer.slice(
+          pdfBytes.byteOffset,
+          pdfBytes.byteOffset + pdfBytes.byteLength
+        ) as ArrayBuffer;
+        downloadBlob(
+          `${filePrefix}-${getSafeFileToken(advance.customId || advance.id)}.pdf`,
+          new Blob([pdfArrayBuffer], { type: 'application/pdf' })
+        );
+        toast.success('Expediente PDF generado con todos los soportes anexados.', { id: toastId });
+      } catch (error: any) {
+        console.error('Error generating advance dossier PDF:', error);
+        toast.error(error?.message || 'No se pudo generar el expediente PDF.', { id: toastId });
+      }
     },
     [project?.name, project?.title, projectId]
   );
 
+  const downloadAdvanceReport = useCallback(
+    async (group: (typeof realCostAdvanceGroups)[number]) => {
+      const { advance, receipts: approvedReceipts, realCost } = group;
+      await downloadAdvanceDossier({
+        advance,
+        reportReceipts: approvedReceipts,
+        title: 'Informe final del anticipo',
+        filePrefix: 'informe-final-anticipo',
+        realCost,
+      });
+      return;
+    },
+    [downloadAdvanceDossier]
+  );
+
   const downloadAdvancePaymentSheet = useCallback(
     async (advance: TravelAdvance) => {
-      const authorizeAsset = async (path?: string, fallback?: string) => {
-        if (!path) return fallback || '';
-        try {
-          return await getAuthorizedDownloadURL(ref(storage, path));
-        } catch {
-          return fallback || '';
-        }
-      };
-      const reportReceipts = (advance.receipts || []).filter((receipt) => receipt.status !== 'rejected');
-      const [requesterSignatureUrl, approvalSignatureUrl, paymentSupportUrl, returnSupportUrl, compensationSupportUrl] = await Promise.all([
-        authorizeAsset(advance.requesterSignature?.signatureStoragePath, advance.requesterSignature?.signatureUrl),
-        authorizeAsset(advance.approvalSignature?.signatureStoragePath, advance.approvalSignature?.signatureUrl),
-        authorizeAsset(advance.paymentSupport?.storagePath, advance.paymentSupport?.fileUrl),
-        authorizeAsset(advance.returnSupport?.storagePath, advance.returnSupport?.fileUrl),
-        authorizeAsset(advance.compensationSupport?.storagePath, advance.compensationSupport?.fileUrl),
-      ]);
-      const receiptSupportUrls = await Promise.all(
-        reportReceipts.map((receipt) => authorizeAsset(receipt.storagePath, receipt.fileUrl))
-      );
-      const itemRows = (advance.items || []).map((item, index) => `
-        <tr>
-          <td>${index + 1}</td><td>${escapeHtml(item.categoryName)}</td><td>${escapeHtml(String(item.days))}</td>
-          <td class="money">${escapeHtml(formatMoney(item.unitAmount))}</td><td>${escapeHtml(item.note || '')}</td>
-          <td class="money">${escapeHtml(formatMoney(item.amount))}</td>
-        </tr>`).join('');
-      const centerRows = normalizeCostCenters(
-        advance.costCenters,
-        asNumber(advance.amountApproved || advance.amountRequested)
-      ).map((center) => `
-        <tr><td>${escapeHtml(center.name)}</td><td>${escapeHtml(String(center.percentage))}%</td><td class="money">${escapeHtml(formatMoney(center.amount))}</td><td>${escapeHtml(center.note || '')}</td></tr>`).join('');
-      const legalizationRows = reportReceipts.map((receipt, index) => {
-        const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
-        const receiptStatus = getReceiptStatusMeta(receipt.status);
-        return `
-          <tr>
-            <td>${index + 1}</td>
-            <td><strong>${escapeHtml(receipt.categoryName)}</strong><br/><span>${escapeHtml(documentMeta.label)}</span></td>
-            <td>${escapeHtml(receipt.businessName || 'Sin razón social')}</td>
-            <td>${escapeHtml(formatDate(receipt.date))}</td>
-            <td>${escapeHtml(receipt.invoiceNumber || receipt.cufe || 'Sin número')}</td>
-            <td class="money">${escapeHtml(formatMoney(receipt.amount))}</td>
-            <td>${escapeHtml(receiptStatus.label)}</td>
-          </tr>
-        `;
-      }).join('');
-      const legalizationSupportRows = reportReceipts.map((receipt, index) => `
-        <tr>
-          <td>${index + 1}</td>
-          <td>${buildSupportDocumentReference(
-            'Documento soporte de legalización',
-            receipt.fileName,
-            receiptSupportUrls[index],
-            `soporte-legalizacion-${index + 1}`
-          )}</td>
-          <td><strong>${escapeHtml(receipt.categoryName)}</strong><br/><span>${escapeHtml(receipt.businessName || 'Sin razón social')} · ${escapeHtml(receipt.invoiceNumber || receipt.cufe || 'Sin número')}</span></td>
-          <td class="money">${escapeHtml(formatMoney(receipt.amount))}</td>
-        </tr>
-      `).join('');
-      const reconciliation = getAdvanceReconciliation(advance);
-      const reconciliationSupportRows = [
-        advance.returnSupport
-          ? `
-            <tr>
-              <td>${buildSupportDocumentReference(
-                'Soporte de conciliación · devolución / consignación bancaria',
-                advance.returnSupport.fileName,
-                returnSupportUrl,
-                'soporte-consignacion-bancaria'
-              )}</td>
-              <td>${escapeHtml(formatDate(advance.returnSupport.date))}</td>
-              <td>${escapeHtml(advance.returnSupport.reference || 'Sin referencia')}</td>
-              <td class="money">${escapeHtml(formatMoney(advance.returnSupport.amount))}</td>
-            </tr>
-          `
-          : '',
-        advance.compensationSupport
-          ? `
-            <tr>
-              <td>${buildSupportDocumentReference(
-                'Soporte de conciliación · compensación',
-                advance.compensationSupport.fileName,
-                compensationSupportUrl,
-                'soporte-compensacion'
-              )}</td>
-              <td>${escapeHtml(formatDate(advance.compensationSupport.date))}</td>
-              <td>${escapeHtml(advance.compensationSupport.reference || 'Sin referencia')}</td>
-              <td class="money">${escapeHtml(formatMoney(advance.compensationSupport.amount))}</td>
-            </tr>
-          `
-          : '',
-      ].filter(Boolean).join('');
-      const paymentSupportDocument = advance.paymentSupport
-        ? buildSupportDocumentReference(
-            'Documento soporte del pago del anticipo',
-            advance.paymentSupport.fileName,
-            paymentSupportUrl,
-            'soporte-pago-anticipo'
-          )
-        : '';
-      const signatureBlock = (title: string, signature?: AdvanceSignatureSnapshot, imageUrl?: string) => `
-        <div class="signature">
-          <div class="signature-title">${escapeHtml(title)}</div>
-          ${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(title)}" />` : '<div class="signature-empty">Pendiente de firma</div>'}
-          <strong>${escapeHtml(signature?.name || 'Pendiente')}</strong>
-          <span>${escapeHtml(signature?.jobTitle || 'Sin cargo')}</span>
-          <span>${escapeHtml(signature?.email || '')}</span>
-          <small>${signature?.signedAt ? `Firmado ${escapeHtml(formatDate(signature.signedAt))}` : ''}</small>
-        </div>`;
-      const projectName = project?.name || project?.title || projectId;
-      const html = `<!doctype html>
-<html lang="es">
-  <head>
-    <meta charset="utf-8" />
-    <title>Ficha anticipo ${escapeHtml(advance.customId || advance.id)}</title>
-    <style>
-      * { box-sizing: border-box; }
-      body { margin: 0; background: #eef2ff; color: #0f172a; font-family: Inter, Arial, sans-serif; }
-      main { max-width: 1050px; margin: 24px auto; background: white; border: 1px solid #dbe3ef; border-radius: 18px; overflow: hidden; box-shadow: 0 18px 55px rgba(15,23,42,.12); }
-      header { padding: 28px 32px; color: white; background: linear-gradient(135deg,#111827,#3730a3 60%,#0f766e); }
-      h1 { margin: 5px 0 0; font-size: 28px; }
-      .eyebrow { margin: 0; color: #a7f3d0; font-size: 11px; font-weight: 900; letter-spacing: .22em; text-transform: uppercase; }
-      .subtitle { color: #cbd5e1; font-size: 13px; font-weight: 700; }
-      section { padding: 22px 32px; border-top: 1px solid #e2e8f0; }
-      h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 13px; font-size: 17px; }
-      h3 { margin: 20px 0 10px; color: #334155; font-size: 13px; }
-      .step { display: inline-flex; width: 26px; height: 26px; align-items: center; justify-content: center; border-radius: 999px; background: #4f46e5; color: white; font-size: 11px; font-weight: 950; }
-      .grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; }
-      .card { padding: 12px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc; }
-      .label { color: #64748b; font-size: 9px; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
-      .value { margin-top: 5px; font-size: 15px; font-weight: 900; }
-      table { width: 100%; border-collapse: collapse; border: 1px solid #e2e8f0; }
-      th, td { padding: 10px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; font-size: 11px; }
-      th { background: #f1f5f9; color: #64748b; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
-      td span { color: #64748b; font-weight: 700; }
-      .money { white-space: nowrap; font-weight: 900; }
-      .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-      .signature { display: flex; flex-direction: column; align-items: center; padding: 18px; border: 1px solid #dbe3ef; border-radius: 14px; text-align: center; }
-      .signature-title { color: #64748b; font-size: 9px; font-weight: 900; letter-spacing: .14em; text-transform: uppercase; }
-      .signature img { width: 220px; height: 88px; margin: 10px; object-fit: contain; }
-      .signature-empty { display: flex; height: 88px; align-items: center; color: #94a3b8; font-size: 12px; }
-      .signature span, .signature small { margin-top: 3px; color: #64748b; font-size: 11px; }
-      .document-link { display: flex; flex-direction: column; gap: 3px; min-width: 210px; border: 1px solid #c7d2fe; border-radius: 10px; background: #eef2ff; padding: 10px 12px; text-decoration: none; }
-      .document-label { color: #4338ca; font-size: 9px; font-weight: 950; letter-spacing: .12em; text-transform: uppercase; }
-      .document-name { color: #0f172a; font-size: 12px; font-weight: 900; overflow-wrap: anywhere; }
-      .document-status { color: #b45309; font-size: 10px; font-weight: 800; }
-      .document-missing { border-color: #fde68a; background: #fffbeb; }
-      .section-note { margin: -4px 0 13px; color: #64748b; font-size: 11px; font-weight: 700; line-height: 1.5; }
-      h2, h3, .section-note { break-after: avoid-page; page-break-after: avoid; }
-      tr, .document-link, .signature { break-inside: avoid-page; page-break-inside: avoid; }
-      .keep-together { break-inside: avoid-page; page-break-inside: avoid; }
-      .phase-break { break-before: page; page-break-before: always; }
-      .print { position: fixed; right: 20px; bottom: 20px; padding: 11px 16px; border: 0; border-radius: 10px; background: #111827; color: white; font-weight: 800; cursor: pointer; }
-      @media print { body { background: white; } main { max-width: none; margin: 0; border: 0; box-shadow: none; } .print { display: none; } }
-    </style>
-  </head>
-  <body>
-    <main>
-      <header>
-        <p class="eyebrow">Pixel Project · Ficha de anticipo</p>
-        <h1>${escapeHtml(advance.customId || `Anticipo ${advance.id.slice(0, 8)}`)}</h1>
-        <p class="subtitle">${escapeHtml(projectName)} · ${escapeHtml((statusConfig[advance.status] || statusConfig.submitted).label)}</p>
-      </header>
-      <section>
-        <h2><span class="step">1</span>Anticipo y aprobación</h2>
-        <div class="grid">
-          <div class="card"><div class="label">Solicitante</div><div class="value">${escapeHtml(advance.requesterName)}</div></div>
-          <div class="card"><div class="label">Solicitado</div><div class="value">${escapeHtml(formatMoney(advance.amountRequested))}</div></div>
-          <div class="card"><div class="label">Valor anticipado</div><div class="value">${escapeHtml(formatMoney(advance.amountApproved))}</div></div>
-          <div class="card"><div class="label">Destino</div><div class="value">${escapeHtml(advance.destination)}</div></div>
-        </div>
-        <h3>Información del anticipo</h3>
-        <table><tbody>
-          <tr><th>Correo</th><td>${escapeHtml(advance.requesterEmail || '')}</td><th>Periodo</th><td>${escapeHtml(formatDate(advance.travelStart))} - ${escapeHtml(formatDate(advance.travelEnd))}</td></tr>
-          <tr><th>Justificación</th><td colspan="3">${escapeHtml(advance.purpose)}</td></tr>
-          <tr><th>Tareas</th><td colspan="3">${escapeHtml((advance.taskTitles || []).join(', ') || advance.taskTitle || 'Sin tareas vinculadas')}</td></tr>
-          <tr><th>Observación administrativa</th><td colspan="3">${escapeHtml(advance.adminComment || '')}</td></tr>
-        </tbody></table>
-        <h3>Ítems solicitados</h3>
-        <table><thead><tr><th>#</th><th>Concepto</th><th>Días / unidades</th><th>Valor unitario</th><th>Nota</th><th>Total</th></tr></thead><tbody>${itemRows || '<tr><td colspan="6">Sin ítems registrados.</td></tr>'}</tbody></table>
-        <h3>Centros de costos</h3>
-        <table><thead><tr><th>Centro</th><th>Porcentaje</th><th>Valor</th><th>Nota</th></tr></thead><tbody>${centerRows || '<tr><td colspan="4">Sin centro de costos.</td></tr>'}</tbody></table>
-        <h3>Firmas verificadas</h3>
-        <div class="signatures">${signatureBlock('Solicitante', advance.requesterSignature, requesterSignatureUrl)}${signatureBlock('Aprobador', advance.approvalSignature, approvalSignatureUrl)}</div>
-      </section>
-      <section>
-        <h2><span class="step">2</span>Pago del anticipo</h2>
-        ${advance.paymentSupport ? `
-          <table><tbody>
-            <tr><th>Valor pagado</th><td>${escapeHtml(formatMoney(advance.paymentSupport.amount))}</td><th>Fecha</th><td>${escapeHtml(formatDate(advance.paymentSupport.date))}</td></tr>
-            <tr><th>Referencia bancaria</th><td>${escapeHtml(advance.paymentSupport.reference || 'Sin referencia')}</td><th>Registrado por</th><td>${escapeHtml(advance.paymentSupport.paidByName || '')}</td></tr>
-            <tr><th>Documento</th><td colspan="3">${paymentSupportDocument}</td></tr>
-          </tbody></table>
-        ` : '<p class="section-note">Pendiente de pago y de documento soporte.</p>'}
-      </section>
-      <section class="phase-break">
-        <h2><span class="step">3</span>Legalización</h2>
-        <p class="section-note">Relación de gastos justificados y su estado de revisión.</p>
-        <table><thead><tr><th>#</th><th>Tipo</th><th>Proveedor</th><th>Fecha</th><th>Documento</th><th>Valor</th><th>Estado</th></tr></thead><tbody>${legalizationRows || '<tr><td colspan="7">Sin legalizaciones registradas.</td></tr>'}</tbody></table>
-      </section>
-      <section>
-        <h2><span class="step">4</span>Documentos soporte de la legalización</h2>
-        <p class="section-note">Los archivos se muestran con su nombre y la legalización que respaldan.</p>
-        <table><thead><tr><th>#</th><th>Documento soporte</th><th>Legalización referenciada</th><th>Valor</th></tr></thead><tbody>${legalizationSupportRows || '<tr><td colspan="4">Sin documentos soporte de legalización.</td></tr>'}</tbody></table>
-      </section>
-      <section>
-        <h2><span class="step">5</span>Conciliación</h2>
-        <table><tbody>
-          <tr><th>Estado</th><td>${escapeHtml(advance.reconciliationStatus === 'reconciled' ? 'Conciliado' : 'Pendiente')}</td><th>Fecha de cierre</th><td>${escapeHtml(formatDate(advance.reconciledAt || advance.closedAt))}</td></tr>
-          <tr><th>Anticipado</th><td>${escapeHtml(formatMoney(reconciliation.anticipated))}</td><th>Legalizado</th><td>${escapeHtml(formatMoney(reconciliation.legalized))}</td></tr>
-          <tr><th>Por devolver / consignar</th><td>${escapeHtml(formatMoney(reconciliation.returnRequired))}</td><th>Por compensar</th><td>${escapeHtml(formatMoney(reconciliation.compensationRequired))}</td></tr>
-          <tr><th>Conciliado por</th><td colspan="3">${escapeHtml(advance.reconciledByName || '')}</td></tr>
-        </tbody></table>
-      </section>
-      <section class="keep-together">
-        <h2><span class="step">6</span>Documentos soporte de la conciliación</h2>
-        <p class="section-note">Archivos exclusivos del cierre: consignación bancaria por devolución o compensación administrativa.</p>
-        <table><thead><tr><th>Documento de conciliación</th><th>Fecha</th><th>Referencia</th><th>Valor</th></tr></thead><tbody>${reconciliationSupportRows || '<tr><td colspan="4">La conciliación no registra documentos adicionales.</td></tr>'}</tbody></table>
-      </section>
-    </main>
-    <button class="print" onclick="window.print()">Imprimir / guardar PDF</button>
-  </body>
-</html>`;
-      downloadFile(`ficha-anticipo-${getSafeFileToken(advance.customId || advance.id)}.html`, html, 'text/html;charset=utf-8');
+      await downloadAdvanceDossier({
+        advance,
+        reportReceipts: (advance.receipts || []).filter((receipt) => receipt.status !== 'rejected'),
+        title: 'Ficha integral del anticipo',
+        filePrefix: 'ficha-anticipo',
+      });
+      return;
     },
-    [project?.name, project?.title, projectId]
+    [downloadAdvanceDossier]
   );
 
   const currentActorIds = useMemo(() => {
