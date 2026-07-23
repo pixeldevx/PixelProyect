@@ -268,6 +268,9 @@ export default function ProjectDetailsPage() {
   const [project, setProject] = useState<any>(null);
   const [documents, setDocuments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [tasksLoading, setTasksLoading] = useState(true);
+  const [projectLoadError, setProjectLoadError] = useState('');
+  const [documentsLoaded, setDocumentsLoaded] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [uploadTargetFolderId, setUploadTargetFolderId] = useState<string | null>(null);
   const [documentSearchQuery, setDocumentSearchQuery] = useState('');
@@ -491,30 +494,36 @@ export default function ProjectDetailsPage() {
   useEffect(() => {
     if (!user || !projectId) return;
 
+    let projectResolved = false;
+    setLoading(true);
+    setTasksLoading(true);
+    setProjectLoadError('');
+    const projectLoadTimeout = window.setTimeout(() => {
+      if (projectResolved) return;
+      setLoading(false);
+      setProjectLoadError('El proyecto está tardando demasiado en responder. Puedes reintentar sin cerrar tu sesión.');
+    }, 15000);
+
     // Fetch project details (realtime)
     const docRef = doc(db, 'projects', projectId);
     const unsubscribeProject = onSnapshot(docRef, (docSnap) => {
+      projectResolved = true;
+      window.clearTimeout(projectLoadTimeout);
       if (docSnap.exists()) {
         setProject({ id: docSnap.id, ...docSnap.data() });
+        setProjectLoadError('');
+        setLoading(false);
       } else {
+        setLoading(false);
+        setProjectLoadError('El proyecto no existe o ya no está disponible.');
         router.push('/projects');
       }
     }, (error) => {
       handleDataError(error, OperationType.GET, `projects/${projectId}`);
-    });
-
-    // Listen to documents
-    const q = query(collection(db, 'projects', projectId, 'documents'));
-    const unsubscribeDocs = onSnapshot(q, (snapshot) => {
-      const docsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setDocuments(docsData);
+      projectResolved = true;
+      window.clearTimeout(projectLoadTimeout);
       setLoading(false);
-    }, (error) => {
-      handleDataError(error, OperationType.LIST, `projects/${projectId}/documents`);
-      setLoading(false);
+      setProjectLoadError('No fue posible cargar los datos básicos del proyecto. Reintenta la conexión.');
     });
 
     // Listen to tasks
@@ -525,8 +534,10 @@ export default function ProjectDetailsPage() {
         ...doc.data()
       }));
       setTasks(tasksData);
+      setTasksLoading(false);
     }, (error) => {
       handleDataError(error, OperationType.LIST, `projects/${projectId}/tasks`);
+      setTasksLoading(false);
     });
 
     // Fetch all team members
@@ -583,8 +594,8 @@ export default function ProjectDetailsPage() {
     });
 
     return () => {
+      window.clearTimeout(projectLoadTimeout);
       unsubscribeProject();
-      unsubscribeDocs();
       unsubscribeTasks();
       unsubscribeTeam();
       unsubscribeUsers();
@@ -592,6 +603,26 @@ export default function ProjectDetailsPage() {
       unsubscribeBudgetLines();
     };
   }, [user, projectId, router, userRole]);
+
+  useEffect(() => {
+    if (!user || !projectId || activeTab !== 'documents') return;
+
+    setDocumentsLoaded(false);
+    const documentsQuery = query(collection(db, 'projects', projectId, 'documents'));
+    const unsubscribeDocs = onSnapshot(documentsQuery, (snapshot) => {
+      const docsData = snapshot.docs.map(documentSnapshot => ({
+        id: documentSnapshot.id,
+        ...documentSnapshot.data(),
+      }));
+      setDocuments(docsData);
+      setDocumentsLoaded(true);
+    }, (error) => {
+      handleDataError(error, OperationType.LIST, `projects/${projectId}/documents`);
+      setDocumentsLoaded(true);
+    });
+
+    return () => unsubscribeDocs();
+  }, [activeTab, projectId, user]);
 
   const confirmDeleteDocument = (docId: string, storagePath: string, name: string, versionStoragePaths: string[] = []) => {
     setDocumentToDelete({ id: docId, storagePath, name, versionStoragePaths });
@@ -3034,7 +3065,7 @@ export default function ProjectDetailsPage() {
     }
   };
 
-  if (loading || !project) {
+  if (loading) {
     return (
       <DashboardLayout>
         <div className="flex items-center justify-center h-64 text-slate-500">
@@ -3044,13 +3075,52 @@ export default function ProjectDetailsPage() {
     );
   }
 
+  if (!project) {
+    return (
+      <DashboardLayout>
+        <div className="mx-auto flex min-h-[420px] max-w-xl items-center justify-center px-4">
+          <Card className="w-full border-amber-200 shadow-sm">
+            <CardContent className="flex flex-col items-center px-6 py-10 text-center">
+              <div className="rounded-full bg-amber-50 p-3 text-amber-600">
+                <AlertCircle size={28} />
+              </div>
+              <h1 className="mt-4 text-xl font-black text-slate-900">No pudimos abrir el proyecto</h1>
+              <p className="mt-2 max-w-md text-sm font-medium leading-6 text-slate-500">
+                {projectLoadError || 'La conexión no devolvió los datos del proyecto.'}
+              </p>
+              <div className="mt-5 flex flex-wrap justify-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => router.push('/projects')}
+                >
+                  Volver a proyectos
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="bg-indigo-600 text-white hover:bg-indigo-700"
+                >
+                  <RefreshCw size={15} className="mr-2" />
+                  Reintentar
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
   // Check if minimum required documents are present
   const hasContract = documents.some(d => d.type === 'contract');
   const hasProposal = documents.some(d => d.type === 'proposal');
-  const missingRequiredDocuments = [
-    !hasContract ? 'Contrato firmado' : null,
-    !hasProposal ? 'Propuesta técnica/comercial' : null,
-  ].filter(Boolean) as string[];
+  const missingRequiredDocuments = documentsLoaded
+    ? [
+        !hasContract ? 'Contrato firmado' : null,
+        !hasProposal ? 'Propuesta técnica/comercial' : null,
+      ].filter(Boolean) as string[]
+    : [];
   const pendingRateCardTask = dynamicRateCardStatusChange?.task || null;
   const pendingManualStaticRateCard = pendingRateCardTask ? isManualStaticRateCardEnabled(pendingRateCardTask) : false;
   const lockPendingRateCardAssignee = Boolean(pendingManualStaticRateCard && pendingRateCardTask?.assignedTo);
@@ -3315,6 +3385,13 @@ export default function ProjectDetailsPage() {
                 </p>
               </CardContent>
             </Card>
+          ) : !documentsLoaded ? (
+            <Card className="border-slate-200 shadow-sm">
+              <CardContent className="flex items-center justify-center gap-3 px-6 py-16 text-sm font-semibold text-slate-500">
+                <Loader2 className="h-5 w-5 animate-spin text-indigo-500" />
+                Cargando documentos del proyecto...
+              </CardContent>
+            </Card>
           ) : (
             <>
               <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center">
@@ -3462,46 +3539,53 @@ export default function ProjectDetailsPage() {
           {/* Tasks List / Gantt */}
           <Card className="border-slate-200 shadow-sm">
             <CardContent className="p-0">
-              <ProjectGantt
-                tasks={tasks}
-                teamMembers={teamMembersForAssignment}
-                assigneeOptions={projectAssignableTeamMembers}
-                taskGroups={taskGroups}
-                onUpdateTaskProgress={canEditTaskDetails ? handleUpdateTaskProgress : undefined}
-                onUpdateTaskValue={canEditTaskDetails ? handleUpdateTaskValue : undefined}
-                onUpdateTaskStatus={canEditTaskStatus ? handleUpdateTaskStatus : undefined}
-                onUpdateTaskPriority={canEditTaskDetails ? handleUpdateTaskPriority : undefined}
-                onUpdateTaskAssignee={canEditTaskDetails ? handleUpdateTaskAssignee : undefined}
-	                onUpdateTaskGroup={canEditTaskDetails ? handleUpdateTaskGroup : undefined}
-	                onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
-	                onDeleteTasks={canDeleteTasks ? handleDeleteTasks : undefined}
-	                onDeleteTaskTree={canDeleteTasks ? handleDeleteTaskTree : undefined}
-	                onSyncTask={canEditTaskDetails ? handleSyncTaskValue : undefined}
-                onReorderTasks={canEditTaskDetails ? handleReorderTasks : undefined}
-                onUpdateTaskDates={canEditTaskDates ? handleUpdateTaskDates : undefined}
-                onUpdateTaskTitle={canEditTaskDetails ? handleUpdateTaskTitle : undefined}
-                onCreateTaskGroup={canEditTaskDetails ? handleCreateTaskGroup : undefined}
-                onUpdateTaskGroupDefinition={canEditTaskDetails ? handleUpdateTaskGroupDefinition : undefined}
-                onDeleteTaskGroup={canEditTaskDetails ? handleDeleteTaskGroup : undefined}
-                onOpenIncrementTask={canEditTaskDetails ? setSelectedTaskForIncrement : undefined}
-                canEditTaskDetails={canEditTaskDetails}
-                canEditTaskDates={canEditTaskDates}
-                canEditTaskStatus={canEditTaskStatus}
-                canAddSubtasks={canAddSubtasks}
-                canEditTaskStructure={canEditTaskStructure}
-                canDeleteTasks={canDeleteTasks}
-                onEditTaskStructure={setTaskForStructureEdit}
-                onAddSubtask={canAddSubtasks ? setTaskForStructureEdit : undefined}
-                onOpenTaskDocs={(taskId, task) => {
-                  setSelectedTaskForDocs(task);
-                  setIsTaskDocsModalOpen(true);
-                }}
-                onOpenTaskComments={setSelectedTaskForComments}
-                onResetWorkflowTask={canEditTaskDetails ? handleResetWorkflowTask : undefined}
-                onCreateBulkWorkflowIterations={canCreateTasks && canAddSubtasks ? setTaskForBulkIterations : undefined}
-                onRepairMissingTaskMatrix={canEditTaskDetails || canEditTaskStructure ? handleRepairMissingTaskMatrix : undefined}
-                onCreateTask={canCreateTasks ? () => setIsCreateTaskModalOpen(true) : undefined}
-              />
+              {tasksLoading ? (
+                <div className="flex min-h-[320px] items-center justify-center gap-3 text-sm font-semibold text-slate-500">
+                  <Loader2 className="h-5 w-5 animate-spin text-indigo-500" />
+                  Cargando tareas del proyecto...
+                </div>
+              ) : (
+                <ProjectGantt
+                  tasks={tasks}
+                  teamMembers={teamMembersForAssignment}
+                  assigneeOptions={projectAssignableTeamMembers}
+                  taskGroups={taskGroups}
+                  onUpdateTaskProgress={canEditTaskDetails ? handleUpdateTaskProgress : undefined}
+                  onUpdateTaskValue={canEditTaskDetails ? handleUpdateTaskValue : undefined}
+                  onUpdateTaskStatus={canEditTaskStatus ? handleUpdateTaskStatus : undefined}
+                  onUpdateTaskPriority={canEditTaskDetails ? handleUpdateTaskPriority : undefined}
+                  onUpdateTaskAssignee={canEditTaskDetails ? handleUpdateTaskAssignee : undefined}
+                  onUpdateTaskGroup={canEditTaskDetails ? handleUpdateTaskGroup : undefined}
+                  onDeleteTask={canDeleteTasks ? handleDeleteTask : undefined}
+                  onDeleteTasks={canDeleteTasks ? handleDeleteTasks : undefined}
+                  onDeleteTaskTree={canDeleteTasks ? handleDeleteTaskTree : undefined}
+                  onSyncTask={canEditTaskDetails ? handleSyncTaskValue : undefined}
+                  onReorderTasks={canEditTaskDetails ? handleReorderTasks : undefined}
+                  onUpdateTaskDates={canEditTaskDates ? handleUpdateTaskDates : undefined}
+                  onUpdateTaskTitle={canEditTaskDetails ? handleUpdateTaskTitle : undefined}
+                  onCreateTaskGroup={canEditTaskDetails ? handleCreateTaskGroup : undefined}
+                  onUpdateTaskGroupDefinition={canEditTaskDetails ? handleUpdateTaskGroupDefinition : undefined}
+                  onDeleteTaskGroup={canEditTaskDetails ? handleDeleteTaskGroup : undefined}
+                  onOpenIncrementTask={canEditTaskDetails ? setSelectedTaskForIncrement : undefined}
+                  canEditTaskDetails={canEditTaskDetails}
+                  canEditTaskDates={canEditTaskDates}
+                  canEditTaskStatus={canEditTaskStatus}
+                  canAddSubtasks={canAddSubtasks}
+                  canEditTaskStructure={canEditTaskStructure}
+                  canDeleteTasks={canDeleteTasks}
+                  onEditTaskStructure={setTaskForStructureEdit}
+                  onAddSubtask={canAddSubtasks ? setTaskForStructureEdit : undefined}
+                  onOpenTaskDocs={(taskId, task) => {
+                    setSelectedTaskForDocs(task);
+                    setIsTaskDocsModalOpen(true);
+                  }}
+                  onOpenTaskComments={setSelectedTaskForComments}
+                  onResetWorkflowTask={canEditTaskDetails ? handleResetWorkflowTask : undefined}
+                  onCreateBulkWorkflowIterations={canCreateTasks && canAddSubtasks ? setTaskForBulkIterations : undefined}
+                  onRepairMissingTaskMatrix={canEditTaskDetails || canEditTaskStructure ? handleRepairMissingTaskMatrix : undefined}
+                  onCreateTask={canCreateTasks ? () => setIsCreateTaskModalOpen(true) : undefined}
+                />
+              )}
             </CardContent>
           </Card>
         </div>

@@ -42,7 +42,8 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { user, userRole, loading, logout } = useAuth();
   const { permissions: rolePermissions } = useRolePermissions(userRole);
-  const inboxPendingCount = useInboxPendingCount();
+  const isProjectDetailRoute = Boolean(pathname && /^\/projects\/[^/]+/.test(pathname));
+  const inboxPendingCount = useInboxPendingCount(!isProjectDetailRoute);
   
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);

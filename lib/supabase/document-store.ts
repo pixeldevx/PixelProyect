@@ -40,6 +40,7 @@ const COLLECTION_FETCH_PAGE_SIZE = 1000;
 const BULK_WRITE_CHUNK_SIZE = 250;
 const BULK_READ_ID_CHUNK_SIZE = 250;
 const REMOTE_CHANGE_DEBOUNCE_MS = 450;
+const REALTIME_CHANNEL_RELEASE_DELAY_MS = 750;
 const DOCUMENT_SELECT_COLUMNS = 'collection_path,doc_id,data,created_at,updated_at';
 
 class IncrementTransform {
@@ -209,6 +210,76 @@ const getRealtimeFilter = (source: DocumentReference | CollectionReference | Sup
   const watched = getWatchedCollection(source);
   if (watched.isCollectionGroup && watched.collectionGroupId) return `collection_group=eq.${watched.collectionGroupId}`;
   return `collection_path=eq.${watched.collectionPath}`;
+};
+
+type SharedRealtimeListener = (payload: any) => void;
+
+type SharedRealtimeChannel = {
+  channel: ReturnType<typeof supabase.channel>;
+  listeners: Set<SharedRealtimeListener>;
+  releaseTimer: ReturnType<typeof setTimeout> | null;
+};
+
+const sharedRealtimeChannels = new Map<string, SharedRealtimeChannel>();
+
+const acquireSharedRealtimeChannel = (
+  source: DocumentReference | CollectionReference | SupabaseQuery,
+  listener: SharedRealtimeListener,
+) => {
+  const realtimeFilter = getRealtimeFilter(source);
+  const channelKey = realtimeFilter || 'all_documents';
+  let shared = sharedRealtimeChannels.get(channelKey);
+
+  if (!shared) {
+    const listeners = new Set<SharedRealtimeListener>();
+    const postgresChangesConfig = {
+      event: '*' as const,
+      schema: 'public',
+      table: SUPABASE_DOCUMENTS_TABLE,
+      ...(realtimeFilter ? { filter: realtimeFilter } : {}),
+    };
+    const channel = supabase
+      .channel(`app_documents_shared_${Math.random().toString(36).slice(2)}`)
+      .on(
+        'postgres_changes',
+        postgresChangesConfig,
+        (payload) => {
+          Array.from(listeners).forEach((currentListener) => currentListener(payload));
+        },
+      )
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`Supabase Realtime channel ${channelKey} reported ${status}.`);
+        }
+      });
+
+    shared = {
+      channel,
+      listeners,
+      releaseTimer: null,
+    };
+    sharedRealtimeChannels.set(channelKey, shared);
+  } else if (shared.releaseTimer) {
+    clearTimeout(shared.releaseTimer);
+    shared.releaseTimer = null;
+  }
+
+  shared.listeners.add(listener);
+
+  return () => {
+    const current = sharedRealtimeChannels.get(channelKey);
+    if (!current) return;
+
+    current.listeners.delete(listener);
+    if (current.listeners.size > 0 || current.releaseTimer) return;
+
+    current.releaseTimer = setTimeout(() => {
+      const latest = sharedRealtimeChannels.get(channelKey);
+      if (!latest || latest.listeners.size > 0) return;
+      sharedRealtimeChannels.delete(channelKey);
+      void supabase.removeChannel(latest.channel);
+    }, REALTIME_CHANNEL_RELEASE_DELAY_MS);
+  };
 };
 
 const parentDocForCollectionPath = (collectionPath: string): DocumentReference | null => {
@@ -871,12 +942,14 @@ export function onSnapshot(
     try {
       if (!active) return;
       if ((source as DocumentReference).kind === 'doc') {
-        onNext(await getDoc(source as DocumentReference));
+        const snapshot = await getDoc(source as DocumentReference);
+        if (active) onNext(snapshot);
       } else {
-        onNext(await getDocs(source as CollectionReference | SupabaseQuery));
+        const snapshot = await getDocs(source as CollectionReference | SupabaseQuery);
+        if (active) onNext(snapshot);
       }
     } catch (error) {
-      onError?.(error);
+      if (active) onError?.(error);
     }
   };
 
@@ -927,22 +1000,7 @@ export function onSnapshot(
     window.addEventListener(LOCAL_DOCUMENT_CHANGE_EVENT, handleLocalChange);
   }
 
-  const realtimeFilter = getRealtimeFilter(source);
-  const postgresChangesConfig = {
-    event: '*' as const,
-    schema: 'public',
-    table: SUPABASE_DOCUMENTS_TABLE,
-    ...(realtimeFilter ? { filter: realtimeFilter } : {}),
-  };
-
-  const channel = supabase
-    .channel(`app_documents_${Math.random().toString(36).slice(2)}`)
-    .on(
-      'postgres_changes',
-      postgresChangesConfig,
-      handleRemoteChange
-    )
-    .subscribe();
+  const releaseRealtimeChannel = acquireSharedRealtimeChannel(source, handleRemoteChange);
 
   return () => {
     active = false;
@@ -953,6 +1011,6 @@ export function onSnapshot(
     if (typeof window !== 'undefined') {
       window.removeEventListener(LOCAL_DOCUMENT_CHANGE_EVENT, handleLocalChange);
     }
-    void supabase.removeChannel(channel);
+    releaseRealtimeChannel();
   };
 }

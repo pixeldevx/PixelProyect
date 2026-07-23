@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from 'react';
-import { collection, getDocs, onSnapshot, query, where } from '@/lib/supabase/document-store';
+import { collection, collectionGroup, getDocs, onSnapshot, query, where } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { canLoadProjectForUser } from '@/lib/project-access';
@@ -35,7 +35,7 @@ const isTaskPendingForUser = (task: any, assignedIds: string[]) => {
   return isAssignedToCurrentUser(task, assignedIds);
 };
 
-export function useInboxPendingCount() {
+export function useInboxPendingCount(enabled = true) {
   const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   const [count, setCount] = useState(0);
   const [memberIds, setMemberIds] = useState<string[]>([]);
@@ -48,7 +48,7 @@ export function useInboxPendingCount() {
     let cancelled = false;
 
     const loadMemberIds = async () => {
-      if (!user?.email) {
+      if (!enabled || !user?.email) {
         setMemberIds([]);
         return;
       }
@@ -71,24 +71,28 @@ export function useInboxPendingCount() {
     return () => {
       cancelled = true;
     };
-  }, [user?.email, user?.uid]);
+  }, [enabled, user?.email, user?.uid]);
 
   useEffect(() => {
-    if (!user || memberIds.length === 0) {
+    if (!enabled || !user || memberIds.length === 0) {
       return;
     }
 
-    let taskUnsubscribes: Array<() => void> = [];
-    const projectCounts = new Map<string, number>();
+    let accessibleProjectIds = new Set<string>();
+    let allTasks: Array<{ projectId: string; task: any }> = [];
+
+    const updateCount = () => {
+      const nextCount = allTasks
+        .filter(({ projectId }) => accessibleProjectIds.has(projectId))
+        .filter(({ task }) => isTaskPendingForUser(task, memberIds))
+        .length;
+      setCount(nextCount);
+    };
 
     const unsubscribeProjects = onSnapshot(
       query(collection(db, 'projects')),
       (projectSnapshot) => {
-        taskUnsubscribes.forEach((unsubscribe) => unsubscribe());
-        taskUnsubscribes = [];
-        projectCounts.clear();
-
-        const projects = projectSnapshot.docs
+        accessibleProjectIds = new Set(projectSnapshot.docs
           .map((projectDoc) => ({ id: projectDoc.id, ...projectDoc.data() }))
           .filter((project) => {
             return canLoadProjectForUser(project, {
@@ -97,32 +101,9 @@ export function useInboxPendingCount() {
               userId: user.uid,
               userRole,
             });
-          });
-
-        if (projects.length === 0) {
-          setCount(0);
-          return;
-        }
-
-        projects.forEach((project: any) => {
-          const unsubscribeTasks = onSnapshot(
-            query(collection(db, 'projects', project.id, 'tasks')),
-            (taskSnapshot) => {
-              const projectCount = taskSnapshot.docs
-                .map((taskDoc) => taskDoc.data())
-                .filter((task) => isTaskPendingForUser(task, memberIds))
-                .length;
-
-              projectCounts.set(project.id, projectCount);
-              setCount(Array.from(projectCounts.values()).reduce((sum, value) => sum + value, 0));
-            },
-            (error) => {
-              console.error(`Error loading inbox tasks for ${project.id}:`, error);
-            }
-          );
-
-          taskUnsubscribes.push(unsubscribeTasks);
-        });
+          })
+          .map(project => project.id));
+        updateCount();
       },
       (error) => {
         console.error('Error loading inbox projects:', error);
@@ -130,11 +111,26 @@ export function useInboxPendingCount() {
       }
     );
 
+    const unsubscribeTasks = onSnapshot(
+      query(collectionGroup(db, 'tasks')),
+      (taskSnapshot) => {
+        allTasks = taskSnapshot.docs.map((taskDoc) => ({
+          projectId: taskDoc.ref.parent.parent?.id || '',
+          task: taskDoc.data(),
+        }));
+        updateCount();
+      },
+      (error) => {
+        console.error('Error loading inbox tasks:', error);
+        setCount(0);
+      },
+    );
+
     return () => {
       unsubscribeProjects();
-      taskUnsubscribes.forEach((unsubscribe) => unsubscribe());
+      unsubscribeTasks();
     };
-  }, [managedOrganizationIds, memberIds, user, userRole]);
+  }, [enabled, managedOrganizationIds, memberIds, user, userRole]);
 
-  return user && memberIds.length > 0 ? count : 0;
+  return enabled && user && memberIds.length > 0 ? count : 0;
 }
