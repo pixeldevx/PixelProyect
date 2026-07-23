@@ -616,35 +616,69 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
     });
   };
 
-  const appendAttachment = async (attachment: AdvanceDossierAttachment, ordinal?: number) => {
-    addAttachmentDivider(attachment, ordinal);
-    const asset = await fetchAsset(attachment);
-
-    if (asset.kind === 'pdf') {
-      let source: PDFDocument;
-      try {
-        source = await PDFDocument.load(asset.bytes);
-      } catch {
-        throw new Error(`No se pudo abrir el PDF correspondiente a "${attachment.label}".`);
+  type PreparedAttachment =
+    | {
+        attachment: AdvanceDossierAttachment;
+        kind: 'pdf';
+        pages: PDFPage[];
       }
-      const copiedPages = await pdf.copyPages(source, source.getPageIndices());
-      copiedPages.forEach((copiedPage) => pdf.addPage(copiedPage));
+    | {
+        attachment: AdvanceDossierAttachment;
+        kind: 'image';
+        image: PDFImage;
+      };
+
+  const omittedAttachments: string[] = [];
+
+  const prepareAttachment = async (
+    attachment: AdvanceDossierAttachment
+  ): Promise<PreparedAttachment | null> => {
+    try {
+      const asset = await fetchAsset(attachment);
+
+      if (asset.kind === 'pdf') {
+        const source = await PDFDocument.load(asset.bytes);
+        const pages = await pdf.copyPages(source, source.getPageIndices());
+        if (pages.length === 0) throw new Error('El PDF no contiene páginas.');
+        return { attachment, kind: 'pdf', pages };
+      }
+
+      if (asset.kind === 'unsupported') {
+        throw new Error('El formato no es PDF ni una imagen compatible.');
+      }
+
+      return {
+        attachment,
+        kind: 'image',
+        image: await embedImageAsset(pdf, asset),
+      };
+    } catch (error) {
+      omittedAttachments.push(attachment.label);
+      console.warn(`Se omitió el anexo "${attachment.label}" del expediente:`, error);
+      return null;
+    }
+  };
+
+  const appendPreparedAttachment = (prepared: PreparedAttachment, ordinal?: number) => {
+    addAttachmentDivider(prepared.attachment, ordinal);
+
+    if (prepared.kind === 'pdf') {
+      prepared.pages.forEach((copiedPage) => pdf.addPage(copiedPage));
       return;
     }
 
-    if (asset.kind === 'unsupported') {
-      throw new Error(`El soporte "${attachment.label}" no es PDF ni una imagen compatible.`);
-    }
-
-    const image = await embedImageAsset(pdf, asset);
+    const image = prepared.image;
     const imagePage = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    imagePage.drawText(fitText(fonts.bold, attachment.label.toUpperCase(), 8, CONTENT_WIDTH), {
-      x: MARGIN_X,
-      y: PAGE_HEIGHT - 30,
-      size: 8,
-      font: fonts.bold,
-      color: SLATE_700,
-    });
+    imagePage.drawText(
+      fitText(fonts.bold, prepared.attachment.label.toUpperCase(), 8, CONTENT_WIDTH),
+      {
+        x: MARGIN_X,
+        y: PAGE_HEIGHT - 30,
+        size: 8,
+        font: fonts.bold,
+        color: SLATE_700,
+      }
+    );
     const availableWidth = CONTENT_WIDTH;
     const availableHeight = PAGE_HEIGHT - 86;
     const scale = Math.min(availableWidth / image.width, availableHeight / image.height, 1);
@@ -663,22 +697,35 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
     title: string,
     attachments: AdvanceDossierAttachment[]
   ) => {
+    const preparedResults = await Promise.all(
+      attachments.map((attachment) => prepareAttachment(attachment))
+    );
+    const preparedAttachments = preparedResults.filter(
+      (attachment): attachment is PreparedAttachment => Boolean(attachment)
+    );
+    const omittedCount = attachments.length - preparedAttachments.length;
+
     addReportPage();
     drawSectionTitle(step, title);
-    if (attachments.length === 0) {
-      page.drawText('No se cargaron documentos para esta etapa.', {
-        x: MARGIN_X,
-        y,
-        size: 10,
-        font: fonts.oblique,
-        color: SLATE_500,
-      });
+    if (preparedAttachments.length === 0) {
+      page.drawText(
+        attachments.length === 0
+          ? 'No se cargaron documentos para esta etapa.'
+          : 'Los documentos cargados no estaban disponibles o no tenían un formato válido. El expediente continúa sin esos anexos.',
+        {
+          x: MARGIN_X,
+          y,
+          size: 10,
+          font: fonts.oblique,
+          color: SLATE_500,
+        }
+      );
       y -= 22;
       return;
     }
     page.drawText(
       normalizePdfText(
-        `${attachments.length} documento${attachments.length === 1 ? '' : 's'} se anexa${attachments.length === 1 ? '' : 'n'} completo${attachments.length === 1 ? '' : 's'} a continuación.`
+        `${preparedAttachments.length} documento${preparedAttachments.length === 1 ? '' : 's'} se anexa${preparedAttachments.length === 1 ? '' : 'n'} completo${preparedAttachments.length === 1 ? '' : 's'} a continuación.`
       ),
       {
         x: MARGIN_X,
@@ -688,8 +735,8 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
         color: SLATE_700,
       }
     );
-    attachments.forEach((attachment, index) => {
-      page.drawText(fitText(fonts.bold, `${index + 1}. ${attachment.label}`, 9, CONTENT_WIDTH - 10), {
+    preparedAttachments.forEach((prepared, index) => {
+      page.drawText(fitText(fonts.bold, `${index + 1}. ${prepared.attachment.label}`, 9, CONTENT_WIDTH - 10), {
         x: MARGIN_X + 8,
         y: y - 24 - index * 18,
         size: 9,
@@ -697,9 +744,23 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
         color: SLATE_950,
       });
     });
-    for (let index = 0; index < attachments.length; index += 1) {
-      await appendAttachment(attachments[index], index + 1);
+    if (omittedCount > 0) {
+      page.drawText(
+        normalizePdfText(
+          `${omittedCount} archivo${omittedCount === 1 ? '' : 's'} se omitió${omittedCount === 1 ? '' : 'eron'} por no estar disponible${omittedCount === 1 ? '' : 's'} o estar dañado${omittedCount === 1 ? '' : 's'}.`
+        ),
+        {
+          x: MARGIN_X + 8,
+          y: y - 32 - preparedAttachments.length * 18,
+          size: 8,
+          font: fonts.oblique,
+          color: SLATE_500,
+        }
+      );
     }
+    preparedAttachments.forEach((prepared, index) => {
+      appendPreparedAttachment(prepared, index + 1);
+    });
   };
 
   addReportPage(false);
@@ -785,7 +846,21 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
       });
       y -= 22;
     }
-    if (report.paymentAttachment) await appendAttachment(report.paymentAttachment);
+    if (report.paymentAttachment) {
+      const preparedPaymentAttachment = await prepareAttachment(report.paymentAttachment);
+      if (preparedPaymentAttachment) {
+        appendPreparedAttachment(preparedPaymentAttachment);
+      } else {
+        page.drawText('El soporte de pago no pudo anexarse. El expediente continúa sin ese archivo.', {
+          x: MARGIN_X,
+          y,
+          size: 9,
+          font: fonts.oblique,
+          color: SLATE_500,
+        });
+        y -= 20;
+      }
+    }
   }
 
   if (sections.legalizations) {
@@ -817,7 +892,10 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
     );
   }
 
-  return pdf.save();
+  return {
+    bytes: await pdf.save(),
+    omittedAttachments,
+  };
 };
 
 const drawTextOnPage = (

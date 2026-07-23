@@ -1340,6 +1340,7 @@ export function ProjectAdministration({
         const includePayment = scope === 'payment' || scope === 'full';
         const includeLegalizations = scope === 'justifications' || scope === 'full';
         const includeReconciliation = scope === 'full';
+        const unavailableAttachments: string[] = [];
         const resolveProtectedAsset = async (path?: string, fallback?: string) => {
           if (!path) return fallback || '';
           try {
@@ -1364,9 +1365,12 @@ export function ProjectAdministration({
             }
             return { url: fallback || '' };
           } catch (error: any) {
-            throw new Error(
-              `No se pudo autorizar ${label}.${error?.message ? ` ${error.message}` : ''}`
+            unavailableAttachments.push(label);
+            console.warn(
+              `Se omitirá ${label} del expediente porque no pudo descargarse:`,
+              error
             );
+            return null;
           }
         };
         const [
@@ -1610,7 +1614,13 @@ export function ProjectAdministration({
           ] : [],
         };
 
-        const pdfBytes = await generateAdvanceDossierPdf(report);
+        const {
+          bytes: pdfBytes,
+          omittedAttachments: invalidAttachments,
+        } = await generateAdvanceDossierPdf(report);
+        const omittedAttachments = Array.from(
+          new Set([...unavailableAttachments, ...invalidAttachments])
+        );
         const pdfArrayBuffer = pdfBytes.buffer.slice(
           pdfBytes.byteOffset,
           pdfBytes.byteOffset + pdfBytes.byteLength
@@ -1619,7 +1629,12 @@ export function ProjectAdministration({
           `${filePrefix}-${getSafeFileToken(advance.customId || advance.id)}.pdf`,
           new Blob([pdfArrayBuffer], { type: 'application/pdf' })
         );
-        toast.success('Reporte PDF generado con los documentos seleccionados.', { id: toastId });
+        toast.success(
+          omittedAttachments.length > 0
+            ? `Reporte PDF generado. Se omitieron ${omittedAttachments.length} archivo${omittedAttachments.length === 1 ? '' : 's'} no disponible${omittedAttachments.length === 1 ? '' : 's'} o dañado${omittedAttachments.length === 1 ? '' : 's'}.`
+            : 'Reporte PDF generado con los documentos seleccionados.',
+          { id: toastId }
+        );
       } catch (error: any) {
         console.error('Error generating advance dossier PDF:', error);
         toast.error(error?.message || 'No se pudo generar el expediente PDF.', { id: toastId });
