@@ -13,6 +13,8 @@ import {
   ClipboardCheck,
   CreditCard,
   Download,
+  Eye,
+  EyeOff,
   FileImage,
   FileText,
   FolderKanban,
@@ -790,6 +792,7 @@ export function ProjectAdministration({
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'requests' | 'payables' | 'receipts' | 'conciliation' | 'payments' | 'settings'>('requests');
   const [advanceSearch, setAdvanceSearch] = useState('');
+  const [showPaidAdvances, setShowPaidAdvances] = useState(false);
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [advanceForm, setAdvanceForm] = useState(() => buildEmptyAdvanceForm(currentUser, teamMembers));
   const [advanceTaskSearch, setAdvanceTaskSearch] = useState('');
@@ -1127,9 +1130,18 @@ export function ProjectAdministration({
     });
   }, [advanceSearch, advances]);
 
-  const payableAdvances = useMemo(
-    () => filteredAdvances.filter((advance) => ['submitted', 'pending_payment', 'paid', 'returned'].includes(advance.status)),
+  const hiddenPaidAdvancesCount = useMemo(
+    () => filteredAdvances.filter((advance) => advance.status === 'paid').length,
     [filteredAdvances]
+  );
+
+  const payableAdvances = useMemo(
+    () =>
+      filteredAdvances.filter((advance) =>
+        ['submitted', 'pending_payment', 'returned'].includes(advance.status) ||
+        (showPaidAdvances && advance.status === 'paid')
+      ),
+    [filteredAdvances, showPaidAdvances]
   );
 
   const receipts = useMemo(
@@ -2651,13 +2663,13 @@ export function ProjectAdministration({
   };
 
   const handleCompleteAdvance = async (advance: TravelAdvance) => {
-    if (!canCorrectAdvanceReceipt(advance)) {
-      toast.error('Solo el solicitante o el área administrativa pueden completar este anticipo.');
+    if (!requesterMatchesCurrentActor(advance.requesterId, advance.requesterEmail)) {
+      toast.error('Solo el solicitante original puede cerrar el anticipo y enviarlo a conciliación.');
       return;
     }
 
     const latestAdvance = advances.find((item) => item.id === advance.id) || advance;
-    if (!isAdvanceReadyForLegalization(latestAdvance) && !['completed', 'closed'].includes(latestAdvance.status)) {
+    if (!isAdvanceReadyForLegalization(latestAdvance)) {
       toast.error('El anticipo debe tener su pago registrado antes de legalizarse.');
       return;
     }
@@ -2670,6 +2682,11 @@ export function ProjectAdministration({
       toast.error('Subsanar los soportes devueltos antes de completar.');
       return;
     }
+    if (!nextReceipts.every(isApprovedReceipt)) {
+      const pendingCount = nextReceipts.filter((receipt) => !isApprovedReceipt(receipt)).length;
+      toast.error(`Aún ${pendingCount === 1 ? 'hay 1 legalización pendiente' : `hay ${pendingCount} legalizaciones pendientes`} de aprobación administrativa.`);
+      return;
+    }
 
     const amountLegalized = nextReceipts.filter(isApprovedReceipt).reduce((sum, item) => sum + asNumber(item.amount), 0);
     const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
@@ -2679,24 +2696,21 @@ export function ProjectAdministration({
       amountLegalized,
     });
     const balance = coverage.balance;
-    const allReceiptsReviewed = nextReceipts.every(isApprovedReceipt);
     const reconciliation = getAdvanceReconciliation({
       ...latestAdvance,
       receipts: nextReceipts,
       amountApproved,
       amountLegalized,
     });
-    const reconciliationStatus: AdvanceReconciliationStatus = allReceiptsReviewed
-      ? reconciliation.returnRequired > 0
-        ? latestAdvance.returnSupport
+    const reconciliationStatus: AdvanceReconciliationStatus = reconciliation.returnRequired > 0
+      ? latestAdvance.returnSupport
+        ? 'ready'
+        : 'pending_return'
+      : reconciliation.compensationRequired > 0
+        ? latestAdvance.compensationSupport
           ? 'ready'
-          : 'pending_return'
-        : reconciliation.compensationRequired > 0
-          ? latestAdvance.compensationSupport
-            ? 'ready'
-            : 'pending_compensation'
-          : 'ready'
-      : 'pending_validation';
+          : 'pending_compensation'
+        : 'ready';
 
     setSubmitting(true);
     try {
@@ -2705,7 +2719,7 @@ export function ProjectAdministration({
         balance,
         status: 'completed',
         reconciliationStatus,
-        nextAction: allReceiptsReviewed ? 'reconcile_advance' : 'validate_receipt',
+        nextAction: 'reconcile_advance',
         pendingRole: 'administrative_validation',
         inboxTargetUserId: null,
         completedAt: serverTimestamp(),
@@ -2720,7 +2734,7 @@ export function ProjectAdministration({
         amountReturned: coverage.returnedCash,
         balance,
       });
-      if (allReceiptsReviewed && reconciliation.returnRequired > 0) {
+      if (reconciliation.returnRequired > 0) {
         setReconciliationAdvance({
           ...latestAdvance,
           receipts: nextReceipts,
@@ -2731,10 +2745,10 @@ export function ProjectAdministration({
         setReconciliationFile(null);
         setReconciliationForm({ date: todayInputValue(), reference: '', note: '' });
         toast.success('Justificación cerrada. Adjunta ahora el soporte de devolución para enviarla a conciliación.');
-      } else if (allReceiptsReviewed && reconciliation.compensationRequired > 0) {
+      } else if (reconciliation.compensationRequired > 0) {
         toast.success('Justificación cerrada. La compensación quedó pendiente del área administrativa en Conciliación.');
       } else {
-        toast.success(allReceiptsReviewed ? 'Justificación enviada a conciliación.' : 'Justificación enviada para revisión administrativa.');
+        toast.success('Justificación cerrada y enviada a conciliación.');
       }
     } catch (error: any) {
       console.error('Error completing advance:', error);
@@ -3000,6 +3014,10 @@ export function ProjectAdministration({
   const handleSaveReconciliationSupport = async () => {
     if (!reconciliationAdvance || !reconciliationFile) return;
     const latestAdvance = advances.find((advance) => advance.id === reconciliationAdvance.id) || reconciliationAdvance;
+    if (!['completed', 'closed'].includes(latestAdvance.status) || (!latestAdvance.completedAt && latestAdvance.status !== 'closed')) {
+      toast.error('El solicitante debe cerrar primero el anticipo antes de registrar la conciliación.');
+      return;
+    }
     const reconciliation = getAdvanceReconciliation(latestAdvance);
     const kind = reconciliation.returnRequired > 0 ? 'return' : 'compensation';
     const amount = kind === 'return' ? reconciliation.returnRequired : reconciliation.compensationRequired;
@@ -3098,6 +3116,10 @@ export function ProjectAdministration({
       return;
     }
     const latestAdvance = advances.find((item) => item.id === advance.id) || advance;
+    if (!['completed', 'closed'].includes(latestAdvance.status) || (!latestAdvance.completedAt && latestAdvance.status !== 'closed')) {
+      toast.error('Este anticipo todavía no ha sido cerrado por el solicitante.');
+      return;
+    }
     const openReceipts = (latestAdvance.receipts || []).some((receipt) => !isApprovedReceipt(receipt));
     if (openReceipts) {
       toast.error('Primero revisa todos los soportes de la justificación.');
@@ -3912,14 +3934,14 @@ export function ProjectAdministration({
   return (
     <div className="space-y-5">
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-col gap-5 bg-slate-950 px-5 py-6 text-white lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-3 bg-slate-950 px-5 py-4 text-white lg:flex-row lg:items-center lg:justify-between">
           <div>
             <div className="inline-flex items-center gap-2 rounded-md bg-emerald-400/10 px-3 py-1 text-[11px] font-black uppercase tracking-[0.28em] text-emerald-200 ring-1 ring-emerald-300/20">
               <FolderKanban size={14} />
               Control administrativo
             </div>
-            <h2 className="mt-3 text-3xl font-black tracking-tight">Anticipos, legalizaciones y costos reales</h2>
-            <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-slate-300">
+            <h2 className="mt-2 text-2xl font-black tracking-tight">Anticipos, legalizaciones y costos reales</h2>
+            <p className="mt-1 max-w-3xl text-xs font-semibold leading-5 text-slate-300">
               Gestiona solicitudes de viaje, soportes de campo y validaciones administrativas sin perder trazabilidad.
               Los soportes aprobados alimentan los pagos reales del proyecto.
             </p>
@@ -3940,7 +3962,7 @@ export function ProjectAdministration({
           </div>
         </div>
 
-        <div className="grid gap-3 border-t border-slate-800 bg-slate-950/95 p-4 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-2 border-t border-slate-800 bg-slate-950/95 p-3 sm:grid-cols-2 xl:grid-cols-5">
           <Metric label="Solicitado" value={formatMoney(metrics.requested)} icon={<Send size={18} />} tone="blue" />
           <Metric label="Justificado" value={formatMoney(metrics.justified)} icon={<ClipboardCheck size={18} />} tone="indigo" />
           <Metric label="Legalizado" value={formatMoney(metrics.legalized)} icon={<ReceiptText size={18} />} tone="emerald" />
@@ -4015,7 +4037,7 @@ export function ProjectAdministration({
                     advance={advance}
                     canValidate={false}
                     canManage={canManage}
-                    canCorrect={canCorrectAdvanceReceipt(advance)}
+                    canCorrect={requesterMatchesCurrentActor(advance.requesterId, advance.requesterEmail)}
                     onOpenReceipt={() => setSelectedAdvance(advance)}
                     onComplete={() => handleCompleteAdvance(advance)}
                     onApprove={() => openReviewAction({ type: 'approveAdvance', advance })}
@@ -4036,14 +4058,25 @@ export function ProjectAdministration({
                     <div className="flex items-center gap-2 text-violet-700"><WalletCards size={20} /><h3 className="text-lg font-black">Anticipos por pagar</h3></div>
                     <p className="mt-1 text-sm font-medium text-slate-600">Revisa la ficha y sus ítems, firma la aprobación, registra el soporte de pago o devuelve la solicitud para corrección.</p>
                   </div>
-                  <div className="relative min-w-0 lg:w-96">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                    <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder="Buscar por ID del anticipo, persona o destino..." />
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <button
+                      type="button"
+                      aria-pressed={showPaidAdvances}
+                      onClick={() => setShowPaidAdvances((current) => !current)}
+                      className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-3 text-xs font-black ring-1 transition ${showPaidAdvances ? 'bg-sky-600 text-white ring-sky-600' : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'}`}
+                    >
+                      {showPaidAdvances ? <EyeOff size={15} /> : <Eye size={15} />}
+                      {showPaidAdvances ? 'Ocultar pagados' : `Mostrar pagados${hiddenPaidAdvancesCount ? ` (${hiddenPaidAdvancesCount})` : ''}`}
+                    </button>
+                    <div className="relative min-w-0 lg:w-80">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder="Buscar por ID, persona o destino..." />
+                    </div>
                   </div>
                 </div>
               </div>
               {payableAdvances.length === 0 ? (
-                <EmptyState title="No hay anticipos en este proceso" body="Las solicitudes por validar, pagar, devueltas o recién pagadas aparecerán aquí." />
+                <EmptyState title="No hay anticipos pendientes de pago" body={hiddenPaidAdvancesCount > 0 && !showPaidAdvances ? `Hay ${hiddenPaidAdvancesCount} anticipo${hiddenPaidAdvancesCount === 1 ? '' : 's'} pagado${hiddenPaidAdvancesCount === 1 ? '' : 's'} oculto${hiddenPaidAdvancesCount === 1 ? '' : 's'}. Activa “Mostrar pagados” para consultarlos.` : 'Las solicitudes por validar, pagar o devueltas aparecerán aquí.'} />
               ) : payableAdvances.map((advance) => {
                 const status = statusConfig[advance.status] || statusConfig.submitted;
                 const canCorrect = canCorrectAdvanceReceipt(advance);
@@ -4077,20 +4110,25 @@ export function ProjectAdministration({
                         {advance.status === 'paid' && canManage && <Button type="button" size="sm" onClick={() => setSelectedAdvance(advance)} className="bg-sky-600 text-white hover:bg-sky-700"><ReceiptText size={14} className="mr-2" />Legalizar</Button>}
                       </div>
                     </div>
-                    <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,.8fr)]">
-                      <div className="overflow-x-auto">
-                        <table className="w-full min-w-[620px] text-left text-xs">
-                          <thead className="bg-slate-100 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500"><tr><th className="px-3 py-2">Ítem</th><th className="px-3 py-2">Días / unidades</th><th className="px-3 py-2">Unitario</th><th className="px-3 py-2">Nota</th><th className="px-3 py-2 text-right">Total</th></tr></thead>
-                          <tbody className="divide-y divide-slate-100">{(advance.items || []).map((item) => <tr key={item.id}><td className="px-3 py-2 font-bold text-slate-900">{item.categoryName}</td><td className="px-3 py-2 text-slate-600">{item.days}</td><td className="px-3 py-2 text-slate-600">{formatMoney(item.unitAmount)}</td><td className="px-3 py-2 text-slate-500">{item.note || '—'}</td><td className="px-3 py-2 text-right font-black">{formatMoney(item.amount)}</td></tr>)}</tbody>
-                          <tfoot className="border-t-2 border-slate-200"><tr><td colSpan={4} className="px-3 py-3 text-right text-xs font-black uppercase text-slate-500">Total solicitado</td><td className="px-3 py-3 text-right text-sm font-black text-indigo-700">{formatMoney(advance.amountRequested)}</td></tr></tfoot>
-                        </table>
-                      </div>
-                      <div className="space-y-3">
-                        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1"><SignatureSummary title="Firma solicitante" signature={advance.requesterSignature} /><SignatureSummary title="Firma aprobador" signature={advance.approvalSignature} /></div>
-                        {advance.adminComment && <div className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-xs text-orange-800"><strong>Observación administrativa:</strong> {advance.adminComment}</div>}
-                        {advance.paymentSupport && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3"><p className="text-xs font-black text-emerald-800">Pago {formatMoney(advance.paymentSupport.amount)} · {formatDate(advance.paymentSupport.date)}</p><p className="mt-1 text-xs text-emerald-700">{advance.paymentSupport.reference ? `Ref. ${advance.paymentSupport.reference}` : 'Sin referencia bancaria'}</p><div className="mt-2"><SecureDocumentLink storagePath={advance.paymentSupport.storagePath} fallbackUrl={advance.paymentSupport.fileUrl} className="text-xs font-black text-emerald-800">Ver soporte de pago</SecureDocumentLink></div></div>}
+                    <AdvanceLifecycle advance={advance} compact />
+                    <div className="grid gap-2 border-t border-slate-100 p-3 sm:grid-cols-2 xl:grid-cols-5">
+                      <ReceiptGroupMetric label="Solicitado" value={formatMoney(advance.amountRequested)} tone="slate" />
+                      <ReceiptGroupMetric label="Ítems" value={`${advance.items?.length || 0}`} tone="slate" />
+                      <ReceiptGroupMetric label="Firma solicitante" value={advance.requesterSignature ? 'Verificada' : 'Pendiente'} tone={advance.requesterSignature ? 'emerald' : 'amber'} />
+                      <ReceiptGroupMetric label="Firma aprobador" value={advance.approvalSignature ? 'Verificada' : 'Pendiente'} tone={advance.approvalSignature ? 'emerald' : 'amber'} />
+                      <div className={`rounded-lg border px-3 py-2 ${advance.paymentSupport ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-violet-200 bg-violet-50 text-violet-800'}`}>
+                        <p className="text-[9px] font-black uppercase tracking-[0.16em] opacity-70">Soporte de pago</p>
+                        {advance.paymentSupport ? (
+                          <SecureDocumentLink storagePath={advance.paymentSupport.storagePath} fallbackUrl={advance.paymentSupport.fileUrl} className="mt-1 inline-flex items-center gap-1 text-sm font-black"><FileText size={13} />{formatMoney(advance.paymentSupport.amount)}</SecureDocumentLink>
+                        ) : <p className="mt-1 text-sm font-black">Pendiente</p>}
                       </div>
                     </div>
+                    {(advance.adminComment || advance.paymentSupport?.reference) && (
+                      <div className="flex flex-wrap gap-x-5 gap-y-1 border-t border-slate-100 bg-slate-50 px-4 py-2 text-xs font-bold text-slate-600">
+                        {advance.adminComment && <span><strong className="text-orange-700">Observación:</strong> {advance.adminComment}</span>}
+                        {advance.paymentSupport?.reference && <span><strong className="text-emerald-700">Referencia:</strong> {advance.paymentSupport.reference}</span>}
+                      </div>
+                    )}
                   </section>
                 );
               })}
@@ -4223,6 +4261,8 @@ export function ProjectAdministration({
                           </div>
                         )}
                       </div>
+
+                      <AdvanceLifecycle advance={group.advance} compact />
 
                       {isExpanded && (
                         <div className="divide-y divide-slate-100">
@@ -4371,6 +4411,7 @@ export function ProjectAdministration({
                         )}
                       </div>
                     </div>
+                    <AdvanceLifecycle advance={advance} compact />
                     <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
                       <ReceiptGroupMetric label="Anticipado" value={formatMoney(item.anticipated)} tone="slate" />
                       <ReceiptGroupMetric label="Justificado" value={formatMoney(item.justified)} tone="indigo" />
@@ -4443,6 +4484,8 @@ export function ProjectAdministration({
                           Descargar informe
                         </Button>
                       </div>
+
+                      <AdvanceLifecycle advance={group.advance} compact />
 
                       <div className="grid gap-3 p-4 md:grid-cols-3 xl:grid-cols-7">
                         <ReceiptGroupMetric label="Anticipado" value={formatMoney(group.coverage.approved)} tone="slate" />
@@ -6203,12 +6246,12 @@ function Metric({ label, value, icon, tone }: { label: string; value: string; ic
     rose: 'bg-rose-400/10 text-rose-200 ring-rose-300/20',
   };
   return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
       <div className="flex items-center justify-between gap-3">
         <p className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-400">{label}</p>
-        <span className={`rounded-lg p-2 ring-1 ${tones[tone]}`}>{icon}</span>
+        <span className={`rounded-lg p-1.5 ring-1 ${tones[tone]}`}>{icon}</span>
       </div>
-      <p className="mt-4 text-2xl font-black tracking-tight text-white">{value}</p>
+      <p className="mt-2 text-xl font-black tracking-tight text-white">{value}</p>
     </div>
   );
 }
@@ -6318,6 +6361,42 @@ function LocalFilePreview({ file }: { file: File }) {
   );
 }
 
+function AdvanceLifecycle({ advance, compact = false }: { advance: TravelAdvance; compact?: boolean }) {
+  const receipts = advance.receipts || [];
+  const allLegalizationsApproved = receipts.length > 0 && receipts.every(isApprovedReceipt);
+  const requesterClosed = Boolean(advance.completedAt) && ['completed', 'closed'].includes(advance.status);
+  const reconciled = advance.reconciliationStatus === 'reconciled';
+  const steps = [
+    { label: 'Creación', complete: true },
+    { label: 'Aprobación', complete: Boolean(advance.approvalSignature) || ['pending_payment', 'paid', 'approved', 'completed', 'closed'].includes(advance.status) },
+    { label: 'Por pagar', complete: Boolean(advance.paymentSupport) || ['paid', 'approved', 'completed', 'closed'].includes(advance.status) },
+    { label: 'Legalizaciones', complete: allLegalizationsApproved },
+    { label: 'Cierre funcionario', complete: requesterClosed },
+    { label: 'Conciliación', complete: reconciled },
+    { label: 'Informe final', complete: reconciled && advance.status === 'closed' },
+  ];
+  const activeIndex = steps.findIndex((step) => !step.complete);
+
+  return (
+    <div className={`overflow-x-auto border-t border-slate-100 bg-white ${compact ? 'px-3 py-2.5' : 'px-4 py-3'}`} aria-label="Ciclo de vida del anticipo">
+      <div className="grid min-w-[820px] grid-cols-7">
+        {steps.map((step, index) => {
+          const active = index === activeIndex;
+          return (
+            <div key={step.label} className="relative flex min-w-0 flex-col items-center text-center">
+              {index > 0 && <span className={`absolute right-1/2 top-3 h-0.5 w-full ${step.complete ? 'bg-emerald-400' : 'bg-slate-200'}`} />}
+              <span className={`relative z-10 flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-black ring-4 ring-white ${step.complete ? 'bg-emerald-500 text-white' : active ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200' : 'bg-slate-200 text-slate-500'}`}>
+                {step.complete ? <CheckCircle2 size={14} /> : index + 1}
+              </span>
+              <span className={`mt-1.5 truncate px-1 text-[9px] font-black uppercase tracking-[0.1em] ${step.complete ? 'text-emerald-700' : active ? 'text-indigo-700' : 'text-slate-400'}`}>{step.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AdvanceCard({
   advance,
   canValidate,
@@ -6360,6 +6439,9 @@ function AdvanceCard({
     asNumber(advance.amountApproved) > 0
       ? Math.min(100, Math.round((getAdvanceJustifiedAmount(advance) / asNumber(advance.amountApproved)) * 100))
       : 0;
+  const advanceReceipts = advance.receipts || [];
+  const pendingApprovalCount = advanceReceipts.filter((receipt) => !isApprovedReceipt(receipt)).length;
+  const allLegalizationsApproved = advanceReceipts.length > 0 && pendingApprovalCount === 0;
 
   return (
     <article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -6403,17 +6485,19 @@ function AdvanceCard({
             )}
           </div>
         </div>
-        <div className="grid min-w-[280px] gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:min-w-[360px]">
           <SummaryLine label="Solicitado" value={formatMoney(advance.amountRequested)} />
           <SummaryLine label="Justificado" value={formatMoney(getAdvanceJustifiedAmount(advance))} />
           <SummaryLine label="Legalizado" value={formatMoney(advance.amountLegalized)} strong />
           <SummaryLine label="Avance justificación" value={`${progress}%`} />
-          <div className="mt-1 grid grid-cols-2 gap-2">
-            <SignatureSummary title="Solicitante" signature={advance.requesterSignature} />
-            <SignatureSummary title="Aprobador" signature={advance.approvalSignature} />
+          <div className="col-span-2 flex flex-wrap gap-2 text-[10px] font-black uppercase tracking-[0.1em]">
+            <span className={`rounded-md px-2 py-1 ring-1 ${advance.requesterSignature ? 'bg-emerald-50 text-emerald-700 ring-emerald-100' : 'bg-amber-50 text-amber-700 ring-amber-100'}`}>Solicitante {advance.requesterSignature ? 'firmó' : 'pendiente'}</span>
+            <span className={`rounded-md px-2 py-1 ring-1 ${advance.approvalSignature ? 'bg-emerald-50 text-emerald-700 ring-emerald-100' : 'bg-amber-50 text-amber-700 ring-amber-100'}`}>Aprobador {advance.approvalSignature ? 'firmó' : 'pendiente'}</span>
           </div>
         </div>
       </div>
+
+      <AdvanceLifecycle advance={advance} />
 
       <div className="grid gap-3 border-t border-slate-100 bg-slate-50/70 p-4 lg:grid-cols-[1fr_auto] lg:items-center">
         <div className="flex min-w-0 flex-wrap gap-2">
@@ -6440,10 +6524,18 @@ function AdvanceCard({
               Legalizar
             </Button>
           )}
-          {canCorrect && isAdvanceReadyForLegalization(advance) && (advance.receipts || []).length > 0 && (
-            <Button type="button" size="sm" variant="outline" onClick={onComplete} className="border-emerald-200 text-emerald-700 hover:bg-emerald-50">
+          {canCorrect && isAdvanceReadyForLegalization(advance) && advanceReceipts.length > 0 && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onComplete}
+              disabled={!allLegalizationsApproved}
+              title={!allLegalizationsApproved ? 'Todas las legalizaciones deben estar aprobadas antes del cierre.' : 'Cerrar como solicitante y enviar a conciliación.'}
+              className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+            >
               <CheckCircle2 size={15} className="mr-2" />
-              Enviar a conciliación
+              {allLegalizationsApproved ? 'Cerrar y enviar a conciliación' : `${pendingApprovalCount} por aprobar`}
             </Button>
           )}
           {canValidate && advance.status === 'submitted' && (
