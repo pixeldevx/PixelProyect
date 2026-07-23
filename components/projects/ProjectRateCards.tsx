@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users, FileText, Download, DollarSign, WalletCards, Target, Wrench, RefreshCw, Save } from 'lucide-react';
+import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users, FileText, Download, DollarSign, WalletCards, Target, Wrench, RefreshCw, Save, CalendarRange } from 'lucide-react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc, writeBatch } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
@@ -26,6 +26,70 @@ import {
   buildHistoricalRateCardRepairPlan,
 } from '@/lib/rate-card-trace';
 
+const toDateKey = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const parseDateLike = (value: any): Date | null => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value?.toDate === 'function') {
+    const date = value.toDate();
+    return date instanceof Date && !Number.isNaN(date.getTime()) ? date : null;
+  }
+  if (typeof value?.toMillis === 'function') {
+    const date = new Date(value.toMillis());
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value?.seconds === 'number') {
+    const date = new Date(value.seconds * 1000);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value === 'number') {
+    const date = new Date(value < 10000000000 ? value * 1000 : value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  if (typeof value === 'string') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  return null;
+};
+
+const normalizeDateKey = (value: any) => {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  const dateKeyMatch = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (dateKeyMatch) {
+    const [, year, month, day] = dateKeyMatch;
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+
+  const parsed = parseDateLike(trimmed);
+  return parsed ? toDateKey(parsed) : '';
+};
+
+const getEntryDateKey = (entry: any) => {
+  const directDateKey = normalizeDateKey(entry.dateKey || entry.dayKey || entry.reportDate);
+  if (directDateKey) return directDateKey;
+
+  const date =
+    parseDateLike(entry.createdAt) ||
+    parseDateLike(entry.completedAt) ||
+    parseDateLike(entry.approvedAt) ||
+    parseDateLike(entry.updatedAt);
+
+  return date ? toDateKey(date) : '';
+};
+
+const isHistoricalBalanceEntry = (entry: any) =>
+  Boolean(entry?.historicalBalance) ||
+  entry?.source === 'historical_user_stats' ||
+  entry?.source === 'historical_rework_stats';
+
 export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembers = [], budgetLines = [] }: { projectId: string, currentUser: any, tasks?: any[], teamMembers?: any[], budgetLines?: any[] }) {
   const [rateCards, setRateCards] = useState<any[]>([]);
   const [name, setName] = useState('');
@@ -46,6 +110,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [rateCardToEdit, setRateCardToEdit] = useState<any>(null);
   const [rateCardEntries, setRateCardEntries] = useState<any[]>([]);
+  const [dashboardStartDate, setDashboardStartDate] = useState('');
+  const [dashboardEndDate, setDashboardEndDate] = useState('');
   const [reportStartDate, setReportStartDate] = useState('');
   const [reportEndDate, setReportEndDate] = useState('');
   const [reportGenerated, setReportGenerated] = useState(false);
@@ -107,6 +173,29 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     }
   }, [rateCards, selectedRateCardId, analysisRateIds]);
 
+  const dashboardDateRangeInvalid = Boolean(
+    dashboardStartDate &&
+    dashboardEndDate &&
+    dashboardStartDate > dashboardEndDate
+  );
+  const dashboardDateFilteringRequested = Boolean(dashboardStartDate || dashboardEndDate);
+  const hasDashboardDateFilter = Boolean(
+    !dashboardDateRangeInvalid &&
+    (dashboardStartDate || dashboardEndDate)
+  );
+  const dashboardRateCardEntries = rateCardEntries.filter((entry) => {
+    if (!hasDashboardDateFilter) return !dashboardDateRangeInvalid;
+    if (isHistoricalBalanceEntry(entry)) return false;
+    const dateKey = getEntryDateKey(entry);
+    if (!dateKey) return false;
+    if (dashboardStartDate && dateKey < dashboardStartDate) return false;
+    if (dashboardEndDate && dateKey > dashboardEndDate) return false;
+    return true;
+  });
+  const undatedMovementCount = rateCardEntries.filter(
+    (entry) => isHistoricalBalanceEntry(entry) || !getEntryDateKey(entry)
+  ).length;
+
   // Calculate data for charts and totals
   const userTotals: Record<string, { name: string; income: number; cost: number; output: number; reworkCost: number }> = {};
   const rateCardAnalytics: any[] = [];
@@ -118,18 +207,32 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
   rateCards.forEach(card => {
     let cardTotalUnits = 0;
-    const rateEntries = rateCardEntries.filter(entry => entry.rateCardId === card.id);
-    const entryUserStats = rateEntries.reduce((acc: Record<string, number>, entry: any) => {
+    const allRateEntries = rateCardEntries.filter(entry => entry.rateCardId === card.id);
+    const rateEntries = dashboardRateCardEntries.filter(entry => entry.rateCardId === card.id);
+    const productionEntries = rateEntries.filter(entry => !entry.isRework);
+    const reworkEntries = rateEntries.filter(entry => entry.isRework);
+    const entryUserStats = productionEntries.reduce((acc: Record<string, number>, entry: any) => {
       const userId = entry.assignedTo || 'unknown';
       acc[userId] = (acc[userId] || 0) + Number(entry.units || 0);
       return acc;
     }, {});
-    const hasReportedEntries = rateEntries.length > 0;
-    const computedUserStats: Record<string, number> = hasReportedEntries ? entryUserStats : { ...(card.userStats || {}) };
+    const entryUserReworkStats = reworkEntries.reduce((acc: Record<string, number>, entry: any) => {
+      const userId = entry.assignedTo || 'unknown';
+      acc[userId] = (acc[userId] || 0) + Math.abs(Number(entry.units || 0));
+      return acc;
+    }, {});
+    const hasHistoricalEntries = allRateEntries.length > 0;
+    const useEntryHistory = dashboardDateFilteringRequested || hasHistoricalEntries;
+    const computedUserStats: Record<string, number> = useEntryHistory ? entryUserStats : { ...(card.userStats || {}) };
+    const computedUserReworkStats: Record<string, number> = useEntryHistory
+      ? entryUserReworkStats
+      : { ...(card.userReworkStats || {}) };
 
-    if (card.syncExternal) {
+    if (dashboardDateFilteringRequested) {
+      cardTotalUnits = productionEntries.reduce((sum, entry) => sum + Number(entry.units || 0), 0);
+    } else if (card.syncExternal) {
       cardTotalUnits = Number(card.currentValue || 0);
-    } else if (hasReportedEntries) {
+    } else if (hasHistoricalEntries) {
       cardTotalUnits = Object.values(computedUserStats).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
     } else {
       cardTotalUnits = Number(card.currentValue || 0);
@@ -157,7 +260,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     const incomeValue = getRateCardIncomeValue(cardTotalUnits, card);
     const costValue = getRateCardCostValue(cardTotalUnits, card);
     const outputValue = getRateCardOutputValue(cardTotalUnits, card);
-    const reworkCostValue = getRateCardCostValue(Number(card.reworkValue || 0), card);
+    const reworkUnits = Object.values(computedUserReworkStats)
+      .reduce((sum: number, val: any) => sum + Math.abs(Number(val) || 0), 0);
+    const reworkCostValue = getRateCardCostValue(reworkUnits, card);
     const associatedBudgetLine = budgetLines.find(bl => bl.id === card.budgetLineId);
     const contributors = Object.entries(computedUserStats)
       .map(([userId, units]: [string, any]) => {
@@ -211,8 +316,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       userTotals[userId].output += getRateCardOutputValue(amount, card);
     });
     
-    if (card.userReworkStats) {
-      Object.entries(card.userReworkStats).forEach(([userId, units]: [string, any]) => {
+    if (Object.keys(computedUserReworkStats).length > 0) {
+      Object.entries(computedUserReworkStats).forEach(([userId, units]: [string, any]) => {
         const member = teamMembers.find(m => m.id === userId);
         const userName = member ? member.name : 'Usuario Desconocido';
         const amount = Number(units || 0);
@@ -245,13 +350,6 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
   };
 
-  const toDateKey = (date: Date) => {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
-
   const getEntryPeriodKeys = (date = new Date()) => {
     const year = date.getFullYear();
     const dateKey = toDateKey(date);
@@ -261,58 +359,6 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     const weekKey = `${year}-W${String(Math.ceil(dayOfYear / 7)).padStart(2, '0')}`;
 
     return { dateKey, weekKey, monthKey };
-  };
-
-  const parseDateLike = (value: any): Date | null => {
-    if (!value) return null;
-    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
-    if (typeof value?.toDate === 'function') {
-      const date = value.toDate();
-      return date instanceof Date && !Number.isNaN(date.getTime()) ? date : null;
-    }
-    if (typeof value?.toMillis === 'function') {
-      const date = new Date(value.toMillis());
-      return Number.isNaN(date.getTime()) ? null : date;
-    }
-    if (typeof value?.seconds === 'number') {
-      const date = new Date(value.seconds * 1000);
-      return Number.isNaN(date.getTime()) ? null : date;
-    }
-    if (typeof value === 'number') {
-      const date = new Date(value < 10000000000 ? value * 1000 : value);
-      return Number.isNaN(date.getTime()) ? null : date;
-    }
-    if (typeof value === 'string') {
-      const date = new Date(value);
-      return Number.isNaN(date.getTime()) ? null : date;
-    }
-    return null;
-  };
-
-  const normalizeDateKey = (value: any) => {
-    if (typeof value !== 'string') return '';
-    const trimmed = value.trim();
-    const dateKeyMatch = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-    if (dateKeyMatch) {
-      const [, year, month, day] = dateKeyMatch;
-      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-    }
-
-    const parsed = parseDateLike(trimmed);
-    return parsed ? toDateKey(parsed) : '';
-  };
-
-  const getEntryDateKey = (entry: any) => {
-    const directDateKey = normalizeDateKey(entry.dateKey || entry.dayKey || entry.reportDate);
-    if (directDateKey) return directDateKey;
-
-    const date =
-      parseDateLike(entry.createdAt) ||
-      parseDateLike(entry.completedAt) ||
-      parseDateLike(entry.approvedAt) ||
-      parseDateLike(entry.updatedAt);
-
-    return date ? toDateKey(date) : '';
   };
 
   const formatReportDate = (dateKey: string) => {
@@ -514,7 +560,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   };
 
   const selectedRateCardEntries = selectedRateCard
-    ? rateCardEntries
+    ? dashboardRateCardEntries
       .filter(entry => entry.rateCardId === selectedRateCard.id)
       .map(entry => {
         const units = Number(entry.units || 0);
@@ -543,12 +589,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       }))
       .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || ''))
     : [];
-  const isStoredHistoricalEntry = (entry: any) =>
-    Boolean(entry?.historicalBalance) ||
-    entry?.source === 'historical_user_stats' ||
-    entry?.source === 'historical_rework_stats';
   const maintenanceStoredHistoricalRows = maintenanceEntries
-    .filter(isStoredHistoricalEntry)
+    .filter(isHistoricalBalanceEntry)
     .map((entry: any) => ({
       id: `stored-${entry.id}`,
       entryId: entry.id,
@@ -568,7 +610,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     ...maintenanceStoredHistoricalRows,
     ...maintenanceHistoricalRows,
   ];
-  const maintenanceDetailedEntries = maintenanceEntries.filter(entry => !isStoredHistoricalEntry(entry));
+  const maintenanceDetailedEntries = maintenanceEntries.filter(entry => !isHistoricalBalanceEntry(entry));
   const maintenanceRepairPlan = maintenanceRateCard
     ? buildHistoricalRateCardRepairPlan({
         rateCard: maintenanceRateCard,
@@ -588,7 +630,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     .reduce((sum, row) => sum + row.units, 0);
   const chartDisplayData = userChartData.slice(0, 8);
   const activeUserCount = userChartData.filter(row => row.income > 0 || row.cost > 0 || row.output > 0 || row.reworkCost > 0).length;
-  const totalMovements = rateCardEntries.length;
+  const totalMovements = dashboardRateCardEntries.length;
   const totalMargin = totalProjectGenerated - totalProjectCost;
   const topFinancialUsers = userChartData
     .filter(row => row.income > 0 || row.cost > 0 || row.reworkCost > 0)
@@ -598,6 +640,31 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     .sort((left, right) => right.output - left.output)
     .slice(0, 5);
   const selectedRateCardLastEntry = selectedRateCardEntries[0];
+  const dashboardPeriodLabel = dashboardDateRangeInvalid
+    ? 'Rango de fechas inválido'
+    : dashboardStartDate && dashboardEndDate
+      ? `${formatReportDate(dashboardStartDate)} - ${formatReportDate(dashboardEndDate)}`
+      : dashboardStartDate
+        ? `Desde ${formatReportDate(dashboardStartDate)}`
+        : dashboardEndDate
+          ? `Hasta ${formatReportDate(dashboardEndDate)}`
+          : 'Todo el periodo';
+
+  const applyDashboardDatePreset = (preset: 'all' | 'month' | 'last30') => {
+    if (preset === 'all') {
+      setDashboardStartDate('');
+      setDashboardEndDate('');
+      return;
+    }
+
+    const end = new Date();
+    const start =
+      preset === 'month'
+        ? new Date(end.getFullYear(), end.getMonth(), 1)
+        : new Date(end.getFullYear(), end.getMonth(), end.getDate() - 29);
+    setDashboardStartDate(toDateKey(start));
+    setDashboardEndDate(toDateKey(end));
+  };
 
   const buildRateCardRecalculation = (card: any) => {
     const entries = rateCardEntries.filter(entry => entry.rateCardId === card.id);
@@ -1310,6 +1377,87 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       {/* Dashboard Section */}
       {rateCards.length > 0 && (
         <div className="space-y-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+              <div className="flex min-w-0 items-start gap-3">
+                <span className="rounded-xl bg-indigo-50 p-2.5 text-indigo-600 ring-1 ring-indigo-100">
+                  <CalendarRange size={20} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-black text-slate-900">Periodo de las estadísticas</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">
+                    {dashboardPeriodLabel} · {totalMovements} movimiento{totalMovements === 1 ? '' : 's'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => applyDashboardDatePreset('all')}
+                    className={`h-10 rounded-lg px-3 text-xs font-black ring-1 transition ${
+                      !dashboardDateFilteringRequested
+                        ? 'bg-indigo-600 text-white ring-indigo-600'
+                        : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    Todo el periodo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyDashboardDatePreset('month')}
+                    className="h-10 rounded-lg bg-white px-3 text-xs font-black text-slate-600 ring-1 ring-slate-200 transition hover:bg-slate-50"
+                  >
+                    Este mes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyDashboardDatePreset('last30')}
+                    className="h-10 rounded-lg bg-white px-3 text-xs font-black text-slate-600 ring-1 ring-slate-200 transition hover:bg-slate-50"
+                  >
+                    Últimos 30 días
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                    Desde
+                    <input
+                      type="date"
+                      value={dashboardStartDate}
+                      max={dashboardEndDate || undefined}
+                      onChange={(event) => setDashboardStartDate(event.target.value)}
+                      className="mt-1 block h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold normal-case tracking-normal text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </label>
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                    Hasta
+                    <input
+                      type="date"
+                      value={dashboardEndDate}
+                      min={dashboardStartDate || undefined}
+                      onChange={(event) => setDashboardEndDate(event.target.value)}
+                      className="mt-1 block h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold normal-case tracking-normal text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {dashboardDateRangeInvalid && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">
+                <AlertCircle size={14} />
+                La fecha inicial no puede ser posterior a la fecha final.
+              </div>
+            )}
+            {hasDashboardDateFilter && undatedMovementCount > 0 && (
+              <p className="mt-3 text-xs font-semibold text-amber-700">
+                {undatedMovementCount} movimiento{undatedMovementCount === 1 ? '' : 's'} histórico{undatedMovementCount === 1 ? '' : 's'} sin fecha se excluye{undatedMovementCount === 1 ? '' : 'n'} del rango. Se conserva{undatedMovementCount === 1 ? '' : 'n'} en “Todo el periodo”.
+              </p>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <Card className="border-emerald-200 bg-emerald-50/40 shadow-sm">
               <CardContent className="p-5">
@@ -1447,7 +1595,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   </div>
                 ) : (
                   <div className="flex min-h-[260px] items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 text-sm italic text-slate-400">
-                    No hay datos por usuario aún.
+                    {dashboardDateFilteringRequested
+                      ? 'No hay movimientos por usuario en el periodo seleccionado.'
+                      : 'No hay datos por usuario aún.'}
                   </div>
                 )}
 
@@ -1459,7 +1609,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     </div>
                     <div className="mt-2 space-y-2">
                       {topFinancialUsers.length === 0 ? (
-                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Sin contribución monetaria todavía.</p>
+                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">
+                          {dashboardDateFilteringRequested ? 'Sin contribución monetaria en este periodo.' : 'Sin contribución monetaria todavía.'}
+                        </p>
                       ) : (
                         topFinancialUsers.map((person, index) => (
                           <div key={`${person.name}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-white px-3 py-2 text-xs ring-1 ring-slate-100">
@@ -1480,7 +1632,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     </div>
                     <div className="mt-2 space-y-2">
                       {topProductiveUsers.length === 0 ? (
-                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Sin producción por unidad todavía.</p>
+                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">
+                          {dashboardDateFilteringRequested ? 'Sin producción por unidad en este periodo.' : 'Sin producción por unidad todavía.'}
+                        </p>
                       ) : (
                         topProductiveUsers.map((person, index) => (
                           <div key={`${person.name}-output-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-white px-3 py-2 text-xs ring-1 ring-slate-100">
@@ -1563,7 +1717,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     <div className="mt-3 space-y-2">
                       <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Top contribuyentes</p>
                       {selectedRateCardContribution.length === 0 ? (
-                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Sin movimientos individuales.</p>
+                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">
+                          {dashboardDateFilteringRequested ? 'Sin contribuyentes en el periodo seleccionado.' : 'Sin movimientos individuales.'}
+                        </p>
                       ) : (
                         selectedRateCardContribution.map((person: any) => (
                           <div key={person.userId} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg bg-white p-2">
@@ -1583,7 +1739,11 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                         </span>
                       </div>
                       {selectedRateCardEntries.length === 0 ? (
-                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Este rate todavía no tiene interacciones reportadas.</p>
+                        <p className="rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">
+                          {dashboardDateFilteringRequested
+                            ? 'Este rate no tiene interacciones en el periodo seleccionado.'
+                            : 'Este rate todavía no tiene interacciones reportadas.'}
+                        </p>
                       ) : (
                         <div className="max-h-60 space-y-2 overflow-y-auto pr-1">
                           {selectedRateCardEntries.slice(0, 8).map((entry: any) => (
