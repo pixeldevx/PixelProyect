@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users, FileText, Download, DollarSign, WalletCards, Target, Wrench, RefreshCw, Save, CalendarRange } from 'lucide-react';
+import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users, FileText, Download, Upload, DollarSign, WalletCards, Target, Wrench, RefreshCw, Save, CalendarRange } from 'lucide-react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc, writeBatch } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
@@ -21,6 +21,7 @@ import {
   normalizeRateCardValueType,
 } from '@/lib/rate-card-config';
 import { syncRateDrivenIncrementalTasksForRate } from '@/lib/incremental-rate-tasks';
+import { getTaskTitle } from '@/lib/task-title';
 import {
   addTraceableRateCardMovementToBatch,
   buildHistoricalRateCardRepairPlan,
@@ -91,6 +92,99 @@ const isHistoricalBalanceEntry = (entry: any) =>
   entry?.source === 'historical_user_stats' ||
   entry?.source === 'historical_rework_stats';
 
+const normalizeLookupText = (value: any) =>
+  String(value ?? '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+const normalizeCsvHeader = (value: any) =>
+  normalizeLookupText(value).replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+
+const escapeCsvCell = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+
+const parseDelimitedRows = (text: string) => {
+  const cleanText = text.replace(/^\uFEFF/, '');
+  const firstLine = cleanText.split(/\r?\n/, 1)[0] || '';
+  const delimiter = firstLine.includes(';') ? ';' : firstLine.includes('\t') ? '\t' : ',';
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+
+  for (let index = 0; index < cleanText.length; index += 1) {
+    const character = cleanText[index];
+    const nextCharacter = cleanText[index + 1];
+
+    if (character === '"') {
+      if (quoted && nextCharacter === '"') {
+        cell += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+
+    if (!quoted && character === delimiter) {
+      row.push(cell);
+      cell = '';
+      continue;
+    }
+
+    if (!quoted && (character === '\n' || character === '\r')) {
+      if (character === '\r' && nextCharacter === '\n') index += 1;
+      row.push(cell);
+      if (row.some(value => value.trim())) rows.push(row);
+      row = [];
+      cell = '';
+      continue;
+    }
+
+    cell += character;
+  }
+
+  row.push(cell);
+  if (row.some(value => value.trim())) rows.push(row);
+  return rows;
+};
+
+const normalizeEditableDateKey = (value: any) => {
+  const normalized = normalizeDateKey(String(value ?? '').trim());
+  if (!normalized) return '';
+  const [year, month, day] = normalized.split('-').map(Number);
+  const date = new Date(year, month - 1, day, 12);
+  return (
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+  ) ? normalized : '';
+};
+
+const sanitizeCsvFilename = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9-_]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase() || 'rate-card';
+
+type MaintenanceBulkChange = {
+  entryId: string;
+  rowNumber: number;
+  entry: any;
+  updates: Record<string, any>;
+  changedFields: string[];
+};
+
+type MaintenanceBulkPreview = {
+  fileName: string;
+  totalRows: number;
+  changes: MaintenanceBulkChange[];
+  errors: string[];
+};
+
 export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembers = [], budgetLines = [] }: { projectId: string, currentUser: any, tasks?: any[], teamMembers?: any[], budgetLines?: any[] }) {
   const [rateCards, setRateCards] = useState<any[]>([]);
   const [name, setName] = useState('');
@@ -119,6 +213,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [entryDrafts, setEntryDrafts] = useState<Record<string, { units: string; assignedTo: string; comment: string }>>({});
   const [maintenanceLoading, setMaintenanceLoading] = useState(false);
   const [maintenanceConfirm, setMaintenanceConfirm] = useState<{ type: 'reset' | 'deleteEntry' | 'repairTrace'; entry?: any } | null>(null);
+  const [maintenanceBulkPreview, setMaintenanceBulkPreview] = useState<MaintenanceBulkPreview | null>(null);
+  const maintenanceFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const EPSILON = 0.000001;
 
@@ -211,6 +307,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     .filter(resolution => resolution.source === 'task_origin').length;
   const historicalInclusionDateCount = historicalDateResolutions
     .filter(resolution => resolution.source === 'historical_inclusion').length;
+  const historicalSanitizedDateCount = historicalDateResolutions
+    .filter(resolution => resolution.source === 'manual_sanitation').length;
   const unresolvedHistoricalDateCount = historicalDateResolutions
     .filter(resolution => resolution.source === 'unresolved').length;
 
@@ -468,10 +566,29 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     const dateResolution = getReportEntryDateResolution(entry);
     const costUnits = isRework ? Math.abs(units) : units;
     const costValue = getRateCardCostValue(costUnits, rateCardContext);
-    const incomeValue = isRework ? 0 : getRateCardIncomeValue(units, rateCardContext);
+    const recognizedIncomeValue = isRework ? 0 : getRateCardIncomeValue(units, rateCardContext);
+    const taskId = entry.taskId || '';
+    const parentTaskId = entry.parentTaskId || '';
+    const relatedProductionUnits = isRework
+      ? rateCardEntries
+        .filter((candidate: any) => {
+          if (candidate.rateCardId !== entry.rateCardId || candidate.isRework) return false;
+          if (taskId) return candidate.taskId === taskId;
+          if (parentTaskId) return !candidate.taskId && candidate.parentTaskId === parentTaskId;
+          return false;
+        })
+        .reduce((sum: number, candidate: any) => sum + Number(candidate.units || 0), 0)
+      : units;
+    const taskIncomeValue = isRework
+      ? getRateCardIncomeValue(
+        Math.abs(relatedProductionUnits) > EPSILON ? relatedProductionUnits : Math.abs(units),
+        rateCardContext,
+      )
+      : recognizedIncomeValue;
+    const displayIncomeValue = isRework ? taskIncomeValue : recognizedIncomeValue;
     const outputValue = isRework ? 0 : getRateCardOutputValue(units, rateCardContext);
     const resultValue = isCurrencyRateCard(rateCardContext)
-      ? incomeValue - costValue
+      ? recognizedIncomeValue - costValue
       : outputValue;
 
     return {
@@ -485,10 +602,12 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       rateType: normalizeRateCardValueType(rateCardContext?.rateType || rateCardContext?.valueType),
       unitLabel: rateCardContext?.unitLabel || rateCardContext?.measureUnit || 'unidades',
       currency: rateCardContext?.currency || 'USD',
-      income: incomeValue,
+      income: displayIncomeValue,
+      recognizedIncome: recognizedIncomeValue,
+      taskIncome: taskIncomeValue,
       cost: costValue,
       output: outputValue,
-      margin: incomeValue - costValue,
+      margin: recognizedIncomeValue - costValue,
       value: resultValue,
       units,
     };
@@ -592,19 +711,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
   const buildRateCardRecalculation = (card: any) => {
     const entries = rateCardEntries.filter(entry => entry.rateCardId === card.id);
-    const reportedUnits = entries.reduce((sum, entry) => sum + Number(entry.units || 0), 0);
-    const calculatedIncome = getRateCardIncomeValue(reportedUnits, card);
-    const calculatedCost = getRateCardCostValue(reportedUnits, card);
-    const calculatedOutput = getRateCardOutputValue(reportedUnits, card);
-
-    return {
-      reportedUnits,
-      calculatedIncome,
-      calculatedCost,
-      calculatedOutput,
-      calculatedMargin: calculatedIncome - calculatedCost,
-      recalculatedAt: serverTimestamp(),
-    };
+    return buildRateCardStateFromEntries(card, entries);
   };
 
   const buildRateCardStateFromEntries = (card: any, entries: any[]) => {
@@ -680,12 +787,315 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     setSelectedRateCardId(card.id);
     setEntryDrafts(buildEntryDrafts(entries));
     setMaintenanceConfirm(null);
+    setMaintenanceBulkPreview(null);
   };
 
   const closeMaintenancePanel = () => {
     setMaintenanceRateCardId(null);
     setEntryDrafts({});
     setMaintenanceConfirm(null);
+    setMaintenanceBulkPreview(null);
+    if (maintenanceFileInputRef.current) maintenanceFileInputRef.current.value = '';
+  };
+
+  const downloadMaintenanceCsv = () => {
+    if (!maintenanceRateCard || maintenanceEntries.length === 0) {
+      toast.info('Este rate card no tiene movimientos para descargar.');
+      return;
+    }
+
+    const headers = [
+      'movimiento_id',
+      'rate_card_id',
+      'tipo_movimiento',
+      'fecha',
+      'persona_id',
+      'persona',
+      'persona_correo',
+      'tarea_id',
+      'tarea',
+      'cantidad',
+      'comentario',
+      'fuente',
+      'ingreso_tarea_referencia',
+      'ingreso_reconocido',
+      'costo',
+      'impacto_margen',
+    ];
+    const rows = maintenanceEntries.map((entry: any) => {
+      const reportRow = buildReportRow(entry, maintenanceRateCard);
+      const member = teamMembers.find(candidate => candidate.id === entry.assignedTo);
+      const linkedTask = tasks.find(candidate => candidate.id === entry.taskId);
+
+      return [
+        entry.id,
+        maintenanceRateCard.id,
+        entry.isRework ? 'REPROCESO' : 'PRODUCCION',
+        reportRow.dateKey,
+        entry.assignedTo || '',
+        member?.name || member?.displayName || '',
+        member?.email || member?.userEmail || '',
+        entry.taskId || '',
+        linkedTask ? getTaskTitle(linkedTask) : entry.taskTitle || '',
+        entry.units ?? 0,
+        entry.comment || '',
+        entry.source || '',
+        reportRow.taskIncome.toFixed(2),
+        reportRow.recognizedIncome.toFixed(2),
+        reportRow.cost.toFixed(2),
+        reportRow.margin.toFixed(2),
+      ];
+    });
+    const csv = [headers, ...rows]
+      .map(row => row.map(escapeCsvCell).join(';'))
+      .join('\r\n');
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `saneamiento-${sanitizeCsvFilename(maintenanceRateCard.name)}-${toDateKey(new Date())}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    toast.success('Plantilla de saneamiento descargada.');
+  };
+
+  const resolveBulkMember = (row: Record<string, string>, entry: any) => {
+    const requestedId = String(row.persona_id || '').trim();
+    const requestedEmail = normalizeLookupText(row.persona_correo);
+    const requestedName = normalizeLookupText(row.persona);
+    if (!requestedId && !requestedEmail && !requestedName) return { member: null, error: '' };
+
+    const currentMember = teamMembers.find((member: any) => member.id === entry.assignedTo);
+    const currentId = String(entry.assignedTo || '');
+    const currentEmail = normalizeLookupText(currentMember?.email || currentMember?.userEmail);
+    const currentName = normalizeLookupText(currentMember?.name || currentMember?.displayName);
+    const idChanged = requestedId !== currentId;
+    const nameChanged = Boolean(requestedName && requestedName !== currentName);
+    const emailChanged = Boolean(requestedEmail && requestedEmail !== currentEmail);
+    if (!idChanged && !nameChanged && !emailChanged && currentId) {
+      return { member: currentMember || { id: currentId }, error: '' };
+    }
+    const matches = teamMembers.filter((member: any) => {
+      const memberEmail = normalizeLookupText(member.email || member.userEmail);
+      const memberName = normalizeLookupText(member.name || member.displayName);
+      if (idChanged) return member.id === requestedId || member.uid === requestedId;
+      if (nameChanged) return memberName === requestedName;
+      if (emailChanged) return memberEmail === requestedEmail;
+      return member.id === currentId || member.uid === currentId;
+    });
+
+    if (matches.length === 1) return { member: matches[0], error: '' };
+    if (matches.length > 1) return { member: null, error: 'la persona es ambigua; usa persona_id' };
+    return { member: null, error: 'la persona no pertenece al equipo del proyecto' };
+  };
+
+  const resolveBulkTask = (row: Record<string, string>, entry: any) => {
+    const requestedId = String(row.tarea_id || '').trim();
+    const requestedName = normalizeLookupText(row.tarea);
+    if (!requestedId && !requestedName) return { task: null, error: '' };
+
+    const currentTask = tasks.find((task: any) => task.id === entry.taskId);
+    const currentId = String(entry.taskId || '');
+    const currentName = normalizeLookupText(currentTask ? getTaskTitle(currentTask, '') : entry.taskTitle);
+    const idChanged = requestedId !== currentId;
+    const nameChanged = Boolean(requestedName && requestedName !== currentName);
+    if (!idChanged && !nameChanged && currentId) {
+      return {
+        task: currentTask || {
+          id: currentId,
+          title: entry.taskTitle || null,
+          externalWorkflowId: entry.externalWorkflowId || null,
+          parentTaskId: entry.parentTaskId || null,
+        },
+        error: '',
+      };
+    }
+    const matches = tasks.filter((task: any) => {
+      if (idChanged) return task.id === requestedId || task.externalWorkflowId === requestedId;
+      if (!nameChanged) return task.id === currentId;
+      return (
+        normalizeLookupText(getTaskTitle(task, '')) === requestedName ||
+        normalizeLookupText(task.externalWorkflowId) === requestedName
+      );
+    });
+
+    if (matches.length === 1) return { task: matches[0], error: '' };
+    if (matches.length > 1) return { task: null, error: 'la tarea es ambigua; usa tarea_id' };
+    return { task: null, error: 'la tarea no existe en este proyecto' };
+  };
+
+  const handleMaintenanceCsvFile = async (file: File | null) => {
+    if (!file || !maintenanceRateCard) return;
+
+    try {
+      const rows = parseDelimitedRows(await file.text());
+      if (rows.length < 2) {
+        toast.warning('La plantilla no contiene movimientos para sanear.');
+        return;
+      }
+
+      const headers = rows[0].map(normalizeCsvHeader);
+      const requiredHeaders = ['movimiento_id', 'fecha', 'cantidad'];
+      const missingHeaders = requiredHeaders.filter(header => !headers.includes(header));
+      if (missingHeaders.length > 0) {
+        toast.error(`Faltan columnas obligatorias: ${missingHeaders.join(', ')}.`);
+        return;
+      }
+
+      const changes: MaintenanceBulkChange[] = [];
+      const errors: string[] = [];
+      const seenEntryIds = new Set<string>();
+      const entryById = new Map(maintenanceEntries.map((entry: any) => [entry.id, entry]));
+      const hasCommentColumn = headers.includes('comentario');
+
+      rows.slice(1).forEach((cells, rowIndex) => {
+        const rowNumber = rowIndex + 2;
+        const row = headers.reduce((record: Record<string, string>, header, cellIndex) => {
+          if (header) record[header] = String(cells[cellIndex] ?? '').trim();
+          return record;
+        }, {});
+        const entryId = row.movimiento_id;
+
+        if (!entryId) {
+          errors.push(`Fila ${rowNumber}: falta movimiento_id.`);
+          return;
+        }
+        if (seenEntryIds.has(entryId)) {
+          errors.push(`Fila ${rowNumber}: movimiento_id duplicado (${entryId}).`);
+          return;
+        }
+        seenEntryIds.add(entryId);
+
+        const entry = entryById.get(entryId);
+        if (!entry) {
+          errors.push(`Fila ${rowNumber}: el movimiento no pertenece a este rate card.`);
+          return;
+        }
+        if (row.rate_card_id && row.rate_card_id !== maintenanceRateCard.id) {
+          errors.push(`Fila ${rowNumber}: rate_card_id no coincide con el panel abierto.`);
+          return;
+        }
+
+        const dateKey = normalizeEditableDateKey(row.fecha);
+        if (!dateKey) {
+          errors.push(`Fila ${rowNumber}: fecha inválida; usa AAAA-MM-DD.`);
+          return;
+        }
+
+        const parsedUnits = normalizeDecimalInput(row.cantidad, Number.NaN);
+        if (!Number.isFinite(parsedUnits)) {
+          errors.push(`Fila ${rowNumber}: cantidad inválida.`);
+          return;
+        }
+
+        const memberResolution = resolveBulkMember(row, entry);
+        if (memberResolution.error) {
+          errors.push(`Fila ${rowNumber}: ${memberResolution.error}.`);
+          return;
+        }
+        const taskResolution = resolveBulkTask(row, entry);
+        if (taskResolution.error) {
+          errors.push(`Fila ${rowNumber}: ${taskResolution.error}.`);
+          return;
+        }
+
+        const [year, month, day] = dateKey.split('-').map(Number);
+        const periodKeys = getEntryPeriodKeys(new Date(year, month - 1, day, 12));
+        const nextAssignedTo = memberResolution.member?.id || null;
+        const nextTask = taskResolution.task;
+        const nextComment = hasCommentColumn ? row.comentario || null : entry.comment || null;
+        const updates: Record<string, any> = {
+          ...periodKeys,
+          sanitizedDateKey: dateKey,
+          dateSource: 'bulk_sanitation',
+          units: parsedUnits,
+          assignedTo: nextAssignedTo,
+          taskId: nextTask?.id || null,
+          taskTitle: nextTask ? getTaskTitle(nextTask) : null,
+          externalWorkflowId: nextTask?.externalWorkflowId || null,
+          parentTaskId: nextTask?.parentTaskId || null,
+          comment: nextComment,
+          manuallyAdjusted: true,
+          adjustedAt: serverTimestamp(),
+          adjustedBy: currentUser?.uid || null,
+          adjustedByEmail: currentUser?.email || null,
+          bulkAdjustedAt: serverTimestamp(),
+          bulkAdjustedBy: currentUser?.uid || null,
+          bulkAdjustedByEmail: currentUser?.email || null,
+          updatedAt: serverTimestamp(),
+        };
+        const changedFields: string[] = [];
+        if (getReportEntryDateResolution(entry).dateKey !== dateKey) changedFields.push('fecha');
+        if ((entry.assignedTo || null) !== nextAssignedTo) changedFields.push('persona');
+        if ((entry.taskId || null) !== (nextTask?.id || null)) changedFields.push('tarea');
+        if (Math.abs(Number(entry.units || 0) - parsedUnits) > EPSILON) changedFields.push('cantidad');
+        if ((entry.comment || null) !== nextComment) changedFields.push('comentario');
+
+        if (changedFields.length > 0) {
+          changes.push({ entryId, rowNumber, entry, updates, changedFields });
+        }
+      });
+
+      setMaintenanceBulkPreview({
+        fileName: file.name,
+        totalRows: rows.length - 1,
+        changes,
+        errors,
+      });
+    } catch (error: any) {
+      console.error('Error reading rate card sanitation template:', error);
+      toast.error(`No se pudo leer la plantilla: ${error.message}`);
+    } finally {
+      if (maintenanceFileInputRef.current) maintenanceFileInputRef.current.value = '';
+    }
+  };
+
+  const executeBulkMaintenanceImport = async () => {
+    if (
+      !maintenanceRateCard ||
+      !maintenanceBulkPreview ||
+      maintenanceBulkPreview.errors.length > 0 ||
+      maintenanceBulkPreview.changes.length === 0
+    ) return;
+
+    setMaintenanceLoading(true);
+    try {
+      const batch = writeBatch(db);
+      const updatesById = new Map(
+        maintenanceBulkPreview.changes.map(change => [change.entryId, change.updates]),
+      );
+      maintenanceBulkPreview.changes.forEach(change => {
+        batch.update(
+          doc(db, 'projects', projectId, 'rateCardEntries', change.entryId),
+          change.updates,
+        );
+      });
+      const nextEntries = rateCardEntries
+        .filter(entry => entry.rateCardId === maintenanceRateCard.id)
+        .map(entry => updatesById.has(entry.id) ? { ...entry, ...updatesById.get(entry.id) } : entry);
+      batch.update(
+        doc(db, 'projects', projectId, 'rateCards', maintenanceRateCard.id),
+        buildRateCardStateFromEntries(maintenanceRateCard, nextEntries),
+      );
+
+      await batch.commit();
+      await syncRateDrivenIncrementalTasksForRate({
+        projectId,
+        rateCardId: maintenanceRateCard.id,
+      });
+      setEntryDrafts(buildEntryDrafts(nextEntries));
+      toast.success(
+        `${maintenanceBulkPreview.changes.length} movimiento${maintenanceBulkPreview.changes.length === 1 ? '' : 's'} saneado${maintenanceBulkPreview.changes.length === 1 ? '' : 's'} y rate card recalculado.`,
+      );
+      setMaintenanceBulkPreview(null);
+    } catch (error: any) {
+      console.error('Error importing rate card sanitation template:', error);
+      toast.error(`No se pudo aplicar el saneamiento masivo: ${error.message}`);
+    } finally {
+      setMaintenanceLoading(false);
+    }
   };
 
   const updateEntryDraft = (entryId: string, updates: Partial<{ units: string; assignedTo: string; comment: string }>) => {
@@ -1026,7 +1436,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     .map(entry => buildReportRow(entry, getRateCardById(entry.rateCardId)))
     .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || '') || a.personName.localeCompare(b.personName));
   const reportHasHistoricalBalances = reportRows.some((entry: any) => entry.historicalBalance);
-  const reportIncome = reportRows.reduce((sum: number, entry: any) => sum + entry.income, 0);
+  const reportIncome = reportRows.reduce((sum: number, entry: any) => sum + entry.recognizedIncome, 0);
   const reportCost = reportRows.reduce((sum: number, entry: any) => sum + entry.cost, 0);
   const reportMargin = reportIncome - reportCost;
   const reportUsesAllRateCards = rateCards.length > 0 && analysisRateIds.length === rateCards.length;
@@ -1050,7 +1460,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       };
     }
     acc[key].units += entry.units;
-    acc[key].income += entry.income;
+    acc[key].income += entry.recognizedIncome;
     acc[key].cost += entry.cost;
     acc[key].value += entry.value;
     acc[key].movements += 1;
@@ -1075,12 +1485,14 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       return;
     }
 
-    const headers = ['Fecha', 'Origen de fecha', 'Persona', 'Rate Card', 'Tarea', 'Unidades', 'Indicador', 'Ingreso', 'Costo', 'Resultado', 'Tipo', 'Unidad/moneda', 'Fuente'];
+    const headers = ['Fecha', 'Origen de fecha', 'Persona', 'Rate Card', 'Tarea', 'Unidades', 'Indicador', 'Ingreso tarea / referencia', 'Ingreso reconocido', 'Costo', 'Resultado', 'Tipo', 'Unidad/moneda', 'Fuente'];
     const csvRows = reportRows.map((entry: any) => [
       entry.displayDate || entry.dateKey,
       entry.dateOrigin === 'task_origin'
         ? 'Tarea de origen'
-        : entry.dateOrigin === 'historical_inclusion'
+        : entry.dateOrigin === 'manual_sanitation'
+          ? 'Fecha saneada'
+          : entry.dateOrigin === 'historical_inclusion'
           ? 'Incorporación histórica'
           : 'Movimiento',
       entry.personName,
@@ -1089,6 +1501,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       entry.units,
       entry.indicator,
       entry.income.toFixed(2),
+      entry.recognizedIncome.toFixed(2),
       entry.cost.toFixed(2),
       entry.value.toFixed(2),
       entry.rateType === 'unit' ? 'Unidad' : 'Dinero',
@@ -1362,12 +1775,14 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 La fecha inicial no puede ser posterior a la fecha final.
               </div>
             )}
-            {hasDashboardDateFilter && (historicalTaskDateCount > 0 || historicalInclusionDateCount > 0) && (
+            {hasDashboardDateFilter && (historicalTaskDateCount > 0 || historicalInclusionDateCount > 0 || historicalSanitizedDateCount > 0) && (
               <p className="mt-3 text-xs font-semibold text-emerald-700">
                 Los movimientos históricos también se filtran por fecha:
                 {historicalTaskDateCount > 0 ? ` ${historicalTaskDateCount} recuperado${historicalTaskDateCount === 1 ? '' : 's'} desde la tarea de origen` : ''}
-                {historicalTaskDateCount > 0 && historicalInclusionDateCount > 0 ? ' y' : ''}
-                {historicalInclusionDateCount > 0 ? ` ${historicalInclusionDateCount} desde su fecha documentada de incorporación` : ''}.
+                {historicalTaskDateCount > 0 && (historicalInclusionDateCount > 0 || historicalSanitizedDateCount > 0) ? ',' : ''}
+                {historicalInclusionDateCount > 0 ? ` ${historicalInclusionDateCount} desde su fecha documentada de incorporación` : ''}
+                {historicalInclusionDateCount > 0 && historicalSanitizedDateCount > 0 ? ' y' : ''}
+                {historicalSanitizedDateCount > 0 ? ` ${historicalSanitizedDateCount} con fecha saneada manualmente` : ''}.
               </p>
             )}
             {hasDashboardDateFilter && unresolvedHistoricalDateCount > 0 && (
@@ -1905,7 +2320,11 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                           <div>{entry.displayDate || formatReportDate(entry.dateKey)}</div>
                           {isHistoricalBalanceEntry(entry) && (
                             <span className="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
-                              {entry.dateOrigin === 'task_origin' ? 'Fecha de tarea' : 'Fecha de incorporación'}
+                              {entry.dateOrigin === 'task_origin'
+                                ? 'Fecha de tarea'
+                                : entry.dateOrigin === 'manual_sanitation'
+                                  ? 'Fecha saneada'
+                                  : 'Fecha de incorporación'}
                             </span>
                           )}
                         </TableCell>
@@ -1918,7 +2337,12 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                           {formatRateCardUnits(entry.units, entry)}
                         </TableCell>
                         <TableCell className="text-right font-semibold text-emerald-700">
-                          {formatMoney(entry.income, entry.currency || 'USD')}
+                          <div>{formatMoney(entry.income, entry.currency || 'USD')}</div>
+                          {entry.isRework && (
+                            <div className="mt-0.5 text-[10px] font-bold text-slate-400">
+                              Ingreso de la tarea · no se duplica
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="text-right font-semibold text-rose-700">
                           {formatMoney(entry.cost, entry.currency || 'USD')}
@@ -2086,10 +2510,37 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   </div>
                   <h3 className="mt-3 truncate text-2xl font-black text-slate-950">{maintenanceRateCard.name}</h3>
                   <p className="mt-1 text-sm font-medium text-slate-500">
-                    Corrige movimientos pegados, elimina registros erróneos o reinicia completamente este rate card.
+                    Corrige movimientos uno a uno o descarga la plantilla para sanear fecha, persona, tarea, cantidad y comentario en lote.
                   </p>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                  <input
+                    ref={maintenanceFileInputRef}
+                    type="file"
+                    accept=".csv,.txt,text/csv,text/plain"
+                    className="hidden"
+                    onChange={(event) => handleMaintenanceCsvFile(event.target.files?.[0] || null)}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={downloadMaintenanceCsv}
+                    disabled={maintenanceLoading || maintenanceEntries.length === 0}
+                    className="border-slate-200 text-slate-700 hover:bg-slate-50"
+                  >
+                    <Download size={15} className="mr-2" />
+                    Descargar CSV
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => maintenanceFileInputRef.current?.click()}
+                    disabled={maintenanceLoading}
+                    className="border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                  >
+                    <Upload size={15} className="mr-2" />
+                    Cargar saneamiento
+                  </Button>
                   <Button
                     type="button"
                     variant="outline"
@@ -2357,6 +2808,134 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   </Table>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {maintenanceRateCard && maintenanceBulkPreview && (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="border-b border-slate-100 p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${maintenanceBulkPreview.errors.length > 0 ? 'bg-rose-50 text-rose-600' : 'bg-indigo-50 text-indigo-600'}`}>
+                    <Upload size={22} />
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="text-lg font-black text-slate-950">Validar saneamiento masivo</h4>
+                    <p className="mt-1 truncate text-sm font-semibold text-slate-500" title={maintenanceBulkPreview.fileName}>
+                      {maintenanceBulkPreview.fileName}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMaintenanceBulkPreview(null)}
+                  disabled={maintenanceLoading}
+                  className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Cerrar validación del saneamiento"
+                >
+                  <X size={19} />
+                </button>
+              </div>
+
+              <div className="mt-5 grid grid-cols-3 gap-3">
+                <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Filas leídas</p>
+                  <p className="mt-1 text-xl font-black text-slate-900">{maintenanceBulkPreview.totalRows}</p>
+                </div>
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-indigo-600">Con cambios</p>
+                  <p className="mt-1 text-xl font-black text-indigo-900">{maintenanceBulkPreview.changes.length}</p>
+                </div>
+                <div className={`rounded-xl border p-3 ${maintenanceBulkPreview.errors.length > 0 ? 'border-rose-100 bg-rose-50' : 'border-emerald-100 bg-emerald-50'}`}>
+                  <p className={`text-[10px] font-black uppercase tracking-wider ${maintenanceBulkPreview.errors.length > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>Errores</p>
+                  <p className={`mt-1 text-xl font-black ${maintenanceBulkPreview.errors.length > 0 ? 'text-rose-900' : 'text-emerald-900'}`}>{maintenanceBulkPreview.errors.length}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="max-h-[48vh] space-y-4 overflow-auto bg-slate-50/70 p-6">
+              {maintenanceBulkPreview.errors.length > 0 && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                  <p className="text-sm font-black text-rose-900">
+                    Corrige estos errores y vuelve a cargar la plantilla
+                  </p>
+                  <ul className="mt-3 space-y-2 text-xs font-semibold text-rose-800">
+                    {maintenanceBulkPreview.errors.slice(0, 12).map((error, index) => (
+                      <li key={`${error}-${index}`} className="rounded-lg bg-white/70 px-3 py-2">{error}</li>
+                    ))}
+                  </ul>
+                  {maintenanceBulkPreview.errors.length > 12 && (
+                    <p className="mt-3 text-xs font-black text-rose-700">
+                      Y {maintenanceBulkPreview.errors.length - 12} error{maintenanceBulkPreview.errors.length - 12 === 1 ? '' : 'es'} más.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {maintenanceBulkPreview.errors.length === 0 && maintenanceBulkPreview.changes.length === 0 && (
+                <div className="rounded-2xl border border-slate-200 bg-white p-5 text-center">
+                  <p className="font-black text-slate-900">La plantilla no contiene cambios</p>
+                  <p className="mt-1 text-sm font-medium text-slate-500">Los valores coinciden con la información actual.</p>
+                </div>
+              )}
+
+              {maintenanceBulkPreview.changes.length > 0 && (
+                <div className="rounded-2xl border border-slate-200 bg-white">
+                  <div className="border-b border-slate-100 px-4 py-3">
+                    <p className="text-sm font-black text-slate-900">Cambios detectados</p>
+                    <p className="mt-0.5 text-xs font-medium text-slate-500">La carga conserva el tipo y la fuente de cada movimiento.</p>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {maintenanceBulkPreview.changes.slice(0, 20).map(change => (
+                      <div key={change.entryId} className="flex items-center justify-between gap-4 px-4 py-3 text-xs">
+                        <div className="min-w-0">
+                          <p className="truncate font-black text-slate-800">
+                            Fila {change.rowNumber} · {change.entry.taskTitle || change.entry.id}
+                          </p>
+                          <p className="mt-1 truncate font-semibold text-slate-500">{change.entryId}</p>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                          {change.changedFields.map(field => (
+                            <span key={field} className="rounded-full bg-indigo-50 px-2 py-1 font-black text-indigo-700">{field}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {maintenanceBulkPreview.changes.length > 20 && (
+                    <p className="border-t border-slate-100 px-4 py-3 text-xs font-black text-slate-500">
+                      Y {maintenanceBulkPreview.changes.length - 20} movimiento{maintenanceBulkPreview.changes.length - 20 === 1 ? '' : 's'} más.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 border-t border-slate-100 p-5">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setMaintenanceBulkPreview(null)}
+                disabled={maintenanceLoading}
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                onClick={executeBulkMaintenanceImport}
+                disabled={
+                  maintenanceLoading ||
+                  maintenanceBulkPreview.errors.length > 0 ||
+                  maintenanceBulkPreview.changes.length === 0
+                }
+                className="bg-indigo-600 text-white hover:bg-indigo-700"
+              >
+                {maintenanceLoading ? <RefreshCw size={15} className="mr-2 animate-spin" /> : <Save size={15} className="mr-2" />}
+                Aplicar saneamiento
+              </Button>
             </div>
           </div>
         </div>

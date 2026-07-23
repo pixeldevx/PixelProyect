@@ -197,7 +197,7 @@ const getTaskCompletionEvidence = (task: any) => {
 export type RateCardEntryDateResolution = {
   date: Date | null;
   dateKey: string;
-  source: 'task_origin' | 'historical_inclusion' | 'unresolved';
+  source: 'task_origin' | 'historical_inclusion' | 'manual_sanitation' | 'unresolved';
   evidence: string | null;
 };
 
@@ -213,6 +213,16 @@ export const resolveHistoricalRateCardEntryDate = (
   entry: any,
   tasks: any[] = [],
 ): RateCardEntryDateResolution => {
+  const sanitizedDateKey = normalizeHistoricalDateKey(entry?.sanitizedDateKey);
+  if (sanitizedDateKey) {
+    return {
+      date: parseRateCardTraceDate(`${sanitizedDateKey}T12:00:00`),
+      dateKey: sanitizedDateKey,
+      source: 'manual_sanitation',
+      evidence: 'sanitized_date_key',
+    };
+  }
+
   const taskIds = [entry?.taskId, entry?.parentTaskId].filter(Boolean);
   const task = taskIds
     .map(taskId => tasks.find(candidate => candidate?.id === taskId))
