@@ -790,7 +790,7 @@ export function ProjectAdministration({
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [locationsLoaded, setLocationsLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'requests' | 'payables' | 'receipts' | 'conciliation' | 'payments' | 'settings'>('requests');
+  const [view, setView] = useState<'requests' | 'approvals' | 'payables' | 'receipts' | 'conciliation' | 'payments' | 'settings'>('requests');
   const [advanceSearch, setAdvanceSearch] = useState('');
   const [showPaidAdvances, setShowPaidAdvances] = useState(false);
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
@@ -1135,14 +1135,21 @@ export function ProjectAdministration({
     [filteredAdvances]
   );
 
+  const approvalAdvances = useMemo(
+    () => filteredAdvances.filter((advance) => ['submitted', 'returned'].includes(advance.status)),
+    [filteredAdvances]
+  );
+
   const payableAdvances = useMemo(
     () =>
       filteredAdvances.filter((advance) =>
-        ['submitted', 'pending_payment', 'returned'].includes(advance.status) ||
+        advance.status === 'pending_payment' ||
         (showPaidAdvances && advance.status === 'paid')
       ),
     [filteredAdvances, showPaidAdvances]
   );
+
+  const administrativeQueueAdvances = view === 'approvals' ? approvalAdvances : payableAdvances;
 
   const receipts = useMemo(
     () =>
@@ -3975,6 +3982,7 @@ export function ProjectAdministration({
         <div className="flex flex-wrap gap-2">
           {[
             ['requests', 'Anticipos', advances.length],
+            ['approvals', 'Anticipos por aprobar', approvalAdvances.length],
             ['payables', 'Anticipos por pagar', payableAdvances.length],
             ['receipts', 'Legalizaciones', receipts.length],
             ['conciliation', 'Conciliación', reconciliationAdvances.filter((item) => item.advance.reconciliationStatus !== 'reconciled').length],
@@ -4050,36 +4058,49 @@ export function ProjectAdministration({
             </div>
           )}
 
-          {view === 'payables' && (
+          {(view === 'approvals' || view === 'payables') && (
             <div className="space-y-4">
-              <div className="rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50 to-white p-4 shadow-sm">
+              <div className={`rounded-xl border bg-gradient-to-r to-white p-4 shadow-sm ${view === 'approvals' ? 'border-amber-200 from-amber-50' : 'border-violet-200 from-violet-50'}`}>
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
-                    <div className="flex items-center gap-2 text-violet-700"><WalletCards size={20} /><h3 className="text-lg font-black">Anticipos por pagar</h3></div>
-                    <p className="mt-1 text-sm font-medium text-slate-600">Revisa la ficha y sus ítems, firma la aprobación, registra el soporte de pago o devuelve la solicitud para corrección.</p>
+                    <div className={`flex items-center gap-2 ${view === 'approvals' ? 'text-amber-700' : 'text-violet-700'}`}>
+                      {view === 'approvals' ? <ClipboardCheck size={20} /> : <WalletCards size={20} />}
+                      <h3 className="text-lg font-black">{view === 'approvals' ? 'Anticipos por aprobar' : 'Anticipos por pagar'}</h3>
+                    </div>
+                    <p className="mt-1 text-sm font-medium text-slate-600">
+                      {view === 'approvals'
+                        ? 'Revisa la ficha, los ítems y la firma del solicitante para aprobar, devolver o rechazar la solicitud.'
+                        : 'Gestiona únicamente anticipos aprobados: registra el soporte de pago o devuelve la solicitud para corrección.'}
+                    </p>
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <button
-                      type="button"
-                      aria-pressed={showPaidAdvances}
-                      onClick={() => setShowPaidAdvances((current) => !current)}
-                      className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-3 text-xs font-black ring-1 transition ${showPaidAdvances ? 'bg-sky-600 text-white ring-sky-600' : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'}`}
-                    >
-                      {showPaidAdvances ? <EyeOff size={15} /> : <Eye size={15} />}
-                      {showPaidAdvances ? 'Ocultar pagados' : `Mostrar pagados${hiddenPaidAdvancesCount ? ` (${hiddenPaidAdvancesCount})` : ''}`}
-                    </button>
+                    {view === 'payables' && (
+                      <button
+                        type="button"
+                        aria-pressed={showPaidAdvances}
+                        onClick={() => setShowPaidAdvances((current) => !current)}
+                        className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-3 text-xs font-black ring-1 transition ${showPaidAdvances ? 'bg-sky-600 text-white ring-sky-600' : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'}`}
+                      >
+                        {showPaidAdvances ? <EyeOff size={15} /> : <Eye size={15} />}
+                        {showPaidAdvances ? 'Ocultar pagados' : `Mostrar pagados${hiddenPaidAdvancesCount ? ` (${hiddenPaidAdvancesCount})` : ''}`}
+                      </button>
+                    )}
                     <div className="relative min-w-0 lg:w-80">
                       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                      <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder="Buscar por ID, persona o destino..." />
+                      <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder={view === 'approvals' ? 'Buscar solicitud por ID, persona o destino...' : 'Buscar por ID, persona o destino...'} />
                     </div>
                   </div>
                 </div>
               </div>
-              {payableAdvances.length === 0 ? (
-                <EmptyState title="No hay anticipos pendientes de pago" body={hiddenPaidAdvancesCount > 0 && !showPaidAdvances ? `Hay ${hiddenPaidAdvancesCount} anticipo${hiddenPaidAdvancesCount === 1 ? '' : 's'} pagado${hiddenPaidAdvancesCount === 1 ? '' : 's'} oculto${hiddenPaidAdvancesCount === 1 ? '' : 's'}. Activa “Mostrar pagados” para consultarlos.` : 'Las solicitudes por validar, pagar o devueltas aparecerán aquí.'} />
-              ) : payableAdvances.map((advance) => {
+              {administrativeQueueAdvances.length === 0 ? (
+                view === 'approvals' ? (
+                  <EmptyState title="No hay anticipos por aprobar" body="Las solicitudes nuevas o devueltas para corrección aparecerán en esta bandeja." />
+                ) : (
+                  <EmptyState title="No hay anticipos pendientes de pago" body={hiddenPaidAdvancesCount > 0 && !showPaidAdvances ? `Hay ${hiddenPaidAdvancesCount} anticipo${hiddenPaidAdvancesCount === 1 ? '' : 's'} pagado${hiddenPaidAdvancesCount === 1 ? '' : 's'} oculto${hiddenPaidAdvancesCount === 1 ? '' : 's'}. Activa “Mostrar pagados” para consultarlos.` : 'Los anticipos aparecerán aquí después de ser aprobados y firmados.'} />
+                )
+              ) : administrativeQueueAdvances.map((advance) => {
                 const status = statusConfig[advance.status] || statusConfig.submitted;
-                const canCorrect = canCorrectAdvanceReceipt(advance);
+                const canCorrect = requesterMatchesCurrentActor(advance.requesterId, advance.requesterEmail);
                 return (
                   <section key={advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                     <div className="flex flex-col gap-4 border-b border-slate-200 bg-slate-50 p-4 xl:flex-row xl:items-start xl:justify-between">
