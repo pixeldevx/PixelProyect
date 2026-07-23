@@ -112,9 +112,6 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [rateCardEntries, setRateCardEntries] = useState<any[]>([]);
   const [dashboardStartDate, setDashboardStartDate] = useState('');
   const [dashboardEndDate, setDashboardEndDate] = useState('');
-  const [reportStartDate, setReportStartDate] = useState('');
-  const [reportEndDate, setReportEndDate] = useState('');
-  const [reportGenerated, setReportGenerated] = useState(false);
   const [selectedRateCardId, setSelectedRateCardId] = useState<string | null>(null);
   const [analysisRateIds, setAnalysisRateIds] = useState<string[]>([]);
   const [maintenanceRateCardId, setMaintenanceRateCardId] = useState<string | null>(null);
@@ -167,7 +164,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
     const validAnalysisIds = analysisRateIds.filter(id => rateCards.some(card => card.id === id));
     if (validAnalysisIds.length === 0) {
-      setAnalysisRateIds([rateCards[0].id]);
+      setAnalysisRateIds(rateCards.map(card => card.id));
     } else if (validAnalysisIds.length !== analysisRateIds.length) {
       setAnalysisRateIds(validAnalysisIds);
     }
@@ -183,7 +180,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     !dashboardDateRangeInvalid &&
     (dashboardStartDate || dashboardEndDate)
   );
+  const reportableRateCardIds = new Set(rateCards.map(card => card.id));
   const dashboardRateCardEntries = rateCardEntries.filter((entry) => {
+    if (!reportableRateCardIds.has(entry.rateCardId)) return false;
     if (!hasDashboardDateFilter) return !dashboardDateRangeInvalid;
     if (isHistoricalBalanceEntry(entry)) return false;
     const dateKey = getEntryDateKey(entry);
@@ -206,8 +205,6 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   let unitRateCardCount = 0;
 
   rateCards.forEach(card => {
-    let cardTotalUnits = 0;
-    const allRateEntries = rateCardEntries.filter(entry => entry.rateCardId === card.id);
     const rateEntries = dashboardRateCardEntries.filter(entry => entry.rateCardId === card.id);
     const productionEntries = rateEntries.filter(entry => !entry.isRework);
     const reworkEntries = rateEntries.filter(entry => entry.isRework);
@@ -221,48 +218,18 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       acc[userId] = (acc[userId] || 0) + Math.abs(Number(entry.units || 0));
       return acc;
     }, {});
-    const hasHistoricalEntries = allRateEntries.length > 0;
-    const useEntryHistory = dashboardDateFilteringRequested || hasHistoricalEntries;
-    const computedUserStats: Record<string, number> = useEntryHistory ? entryUserStats : { ...(card.userStats || {}) };
-    const computedUserReworkStats: Record<string, number> = useEntryHistory
-      ? entryUserReworkStats
-      : { ...(card.userReworkStats || {}) };
-
-    if (dashboardDateFilteringRequested) {
-      cardTotalUnits = productionEntries.reduce((sum, entry) => sum + Number(entry.units || 0), 0);
-    } else if (card.syncExternal) {
-      cardTotalUnits = Number(card.currentValue || 0);
-    } else if (hasHistoricalEntries) {
-      cardTotalUnits = Object.values(computedUserStats).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
-    } else {
-      cardTotalUnits = Number(card.currentValue || 0);
-      tasks.forEach(task => {
-        if (!task.isRateCardTask && task.indicator && task.indicator.toLowerCase() === card.indicator.toLowerCase()) {
-          const value = Number(task.indicatorValue || 0);
-          const progress = Number(task.progress || 0);
-          const units = value * (progress / 100);
-          cardTotalUnits += units;
-          
-          if (units > 0 && task.assignedTo) {
-            computedUserStats[task.assignedTo] = (computedUserStats[task.assignedTo] || 0) + units;
-          }
-        }
-      });
-      
-      const userStatsTotal = Object.values(computedUserStats).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
-      
-      if (userStatsTotal > cardTotalUnits) {
-        cardTotalUnits = userStatsTotal;
-      }
-    }
+    const computedUserStats: Record<string, number> = entryUserStats;
+    const computedUserReworkStats: Record<string, number> = entryUserReworkStats;
+    const cardTotalUnits = productionEntries.reduce((sum, entry) => sum + Number(entry.units || 0), 0);
     
     const currencyRate = isCurrencyRateCard(card);
     const incomeValue = getRateCardIncomeValue(cardTotalUnits, card);
-    const costValue = getRateCardCostValue(cardTotalUnits, card);
+    const productionCostValue = getRateCardCostValue(cardTotalUnits, card);
     const outputValue = getRateCardOutputValue(cardTotalUnits, card);
     const reworkUnits = Object.values(computedUserReworkStats)
       .reduce((sum: number, val: any) => sum + Math.abs(Number(val) || 0), 0);
     const reworkCostValue = getRateCardCostValue(reworkUnits, card);
+    const costValue = productionCostValue + reworkCostValue;
     const associatedBudgetLine = budgetLines.find(bl => bl.id === card.budgetLineId);
     const contributors = Object.entries(computedUserStats)
       .map(([userId, units]: [string, any]) => {
@@ -294,6 +261,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       cardTotalUnits,
       incomeValue,
       costValue,
+      productionCostValue,
       outputValue,
       marginValue: incomeValue - costValue,
       reworkCostValue,
@@ -333,7 +301,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const selectedRateCard = rateCardAnalytics.find(card => card.id === selectedRateCardId) || rateCardAnalytics[0] || null;
   const selectedRateCardContribution = selectedRateCard?.contributors || [];
   const userChartData = Object.values(userTotals)
-    .map((row) => ({ ...row, margin: row.income - row.cost }))
+    .map((row) => ({ ...row, margin: row.income - row.cost - row.reworkCost }))
     .sort((a, b) => (b.income + b.output) - (a.income + a.output));
   const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
   const formatMoney = (value: number, currency = 'USD') =>
@@ -480,6 +448,11 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     const isRework = Boolean(entry.isRework);
     const costUnits = isRework ? Math.abs(units) : units;
     const costValue = getRateCardCostValue(costUnits, rateCardContext);
+    const incomeValue = isRework ? 0 : getRateCardIncomeValue(units, rateCardContext);
+    const outputValue = isRework ? 0 : getRateCardOutputValue(units, rateCardContext);
+    const resultValue = isCurrencyRateCard(rateCardContext)
+      ? incomeValue - costValue
+      : outputValue;
 
     return {
       ...entry,
@@ -490,90 +463,19 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       rateType: normalizeRateCardValueType(rateCardContext?.rateType || rateCardContext?.valueType),
       unitLabel: rateCardContext?.unitLabel || rateCardContext?.measureUnit || 'unidades',
       currency: rateCardContext?.currency || 'USD',
-      income: isRework ? 0 : getRateCardIncomeValue(units, rateCardContext),
+      income: incomeValue,
       cost: costValue,
-      value: isRework ? -costValue : getRateCardOutputValue(units, rateCardContext),
+      output: outputValue,
+      margin: incomeValue - costValue,
+      value: resultValue,
       units,
     };
-  };
-
-  const buildHistoricalBalanceRows = () => {
-    if (!reportGenerated || !reportEndDate) return [];
-
-    const trackedUnitsByUser = rateCardEntries.reduce((acc: Record<string, number>, entry: any) => {
-      if (!entry.rateCardId) return acc;
-      const statsType = entry.isRework ? 'rework' : 'production';
-      const userId = entry.assignedTo || 'unknown';
-      const key = `${entry.rateCardId}::${userId}::${statsType}`;
-      acc[key] = (acc[key] || 0) + Number(entry.units || 0);
-      return acc;
-    }, {});
-
-    return rateCards.flatMap(card => {
-      if (analysisRateIds.length > 0 && !analysisRateIds.includes(card.id)) return [];
-
-      const rows: any[] = [];
-      const productionStats = card.userStats || {};
-      const reworkStats = card.userReworkStats || {};
-
-      Object.entries(productionStats).forEach(([assignedTo, rawUnits]) => {
-        const totalUnits = Number(rawUnits || 0);
-        const trackedUnits = trackedUnitsByUser[`${card.id}::${assignedTo}::production`] || 0;
-        const historicalUnits = totalUnits - trackedUnits;
-        if (Math.abs(historicalUnits) < 0.000001) return;
-
-        rows.push(buildReportRow({
-          id: `historical-${card.id}-${assignedTo}-production`,
-          rateCardId: card.id,
-          assignedTo,
-          units: historicalUnits,
-          dateKey: reportEndDate,
-          displayDate: 'Acumulado histórico',
-          taskTitle: 'Saldo acumulado sin fecha individual',
-          source: 'historical_user_stats',
-          historicalBalance: true,
-        }, card));
-      });
-
-      Object.entries(reworkStats).forEach(([assignedTo, rawUnits]) => {
-        const totalUnits = Number(rawUnits || 0);
-        const trackedUnits = trackedUnitsByUser[`${card.id}::${assignedTo}::rework`] || 0;
-        const historicalUnits = totalUnits - trackedUnits;
-        if (Math.abs(historicalUnits) < 0.000001) return;
-
-        rows.push(buildReportRow({
-          id: `historical-${card.id}-${assignedTo}-rework`,
-          rateCardId: card.id,
-          assignedTo,
-          units: historicalUnits,
-          dateKey: reportEndDate,
-          displayDate: 'Reproceso histórico',
-          taskTitle: 'Reproceso acumulado sin fecha individual',
-          source: 'historical_rework_stats',
-          historicalBalance: true,
-          isRework: true,
-        }, card));
-      });
-
-      return rows;
-    });
   };
 
   const selectedRateCardEntries = selectedRateCard
     ? dashboardRateCardEntries
       .filter(entry => entry.rateCardId === selectedRateCard.id)
-      .map(entry => {
-        const units = Number(entry.units || 0);
-        return {
-          ...entry,
-          dateKey: getEntryDateKey(entry),
-          personName: getMemberName(entry.assignedTo),
-          income: getRateCardIncomeValue(units, selectedRateCard),
-          cost: getRateCardCostValue(units, selectedRateCard),
-          value: getRateCardOutputValue(units, selectedRateCard),
-          units,
-        };
-      })
+      .map(entry => buildReportRow(entry, selectedRateCard))
       .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || ''))
     : [];
   const maintenanceRateCard = maintenanceRateCardId
@@ -1084,7 +986,6 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   };
 
   const toggleAnalysisRate = (rateCardId: string) => {
-    setReportGenerated(false);
     setAnalysisRateIds(previous => {
       if (previous.includes(rateCardId)) {
         return previous.length === 1 ? previous : previous.filter(id => id !== rateCardId);
@@ -1094,39 +995,18 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   };
 
   const selectAllAnalysisRates = () => {
-    setReportGenerated(false);
     setAnalysisRateIds(rateCards.map(card => card.id));
   };
 
-  const handleGenerateReport = () => {
-    if (!reportStartDate || !reportEndDate) {
-      toast.warning('Selecciona fecha inicial y fecha final para generar el informe.');
-      return;
-    }
-
-    if (reportEndDate < reportStartDate) {
-      toast.warning('La fecha final no puede ser anterior a la fecha inicial.');
-      return;
-    }
-
-    setReportGenerated(true);
-  };
-
-  const reportRows = reportGenerated
-    ? [
-      ...rateCardEntries
-        .map(entry => buildReportRow({
-          ...entry,
-          dateKey: getEntryDateKey(entry),
-        }, getRateCardById(entry.rateCardId)))
-        .filter(entry => {
-          const matchesRate = analysisRateIds.length === 0 || analysisRateIds.includes(entry.rateCardId);
-          return matchesRate && entry.dateKey && entry.dateKey >= reportStartDate && entry.dateKey <= reportEndDate;
-        }),
-      ...buildHistoricalBalanceRows(),
-    ].sort((a, b) => b.dateKey.localeCompare(a.dateKey) || a.personName.localeCompare(b.personName))
-    : [];
+  const reportRows = dashboardRateCardEntries
+    .filter(entry => analysisRateIds.length === 0 || analysisRateIds.includes(entry.rateCardId))
+    .map(entry => buildReportRow(entry, getRateCardById(entry.rateCardId)))
+    .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || '') || a.personName.localeCompare(b.personName));
   const reportHasHistoricalBalances = reportRows.some((entry: any) => entry.historicalBalance);
+  const reportIncome = reportRows.reduce((sum: number, entry: any) => sum + entry.income, 0);
+  const reportCost = reportRows.reduce((sum: number, entry: any) => sum + entry.cost, 0);
+  const reportMargin = reportIncome - reportCost;
+  const reportUsesAllRateCards = rateCards.length > 0 && analysisRateIds.length === rateCards.length;
 
   const reportSummaryRows = Object.values(reportRows.reduce((acc: Record<string, any>, entry: any) => {
     const key = `${entry.assignedTo || 'unknown'}::${entry.rateCardId || 'unknown'}`;
@@ -1193,7 +1073,10 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `informe-rate-cards-${reportStartDate}-${reportEndDate}.csv`;
+    const periodToken = dashboardStartDate || dashboardEndDate
+      ? `${dashboardStartDate || 'inicio'}-${dashboardEndDate || 'fin'}`
+      : 'todo-el-periodo';
+    link.download = `informe-rate-cards-${periodToken}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -1478,7 +1361,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     <p className="text-xs font-black uppercase tracking-wider text-rose-700">Costos</p>
                     <p className="mt-2 text-2xl font-black text-slate-900">{formatMoney(totalProjectCost)}</p>
                     <p className="mt-1 text-xs font-semibold text-rose-700">
-                      Producción asociada{totalProjectRework > 0 ? ` · ${formatMoney(totalProjectRework)} reproceso` : ''}
+                      Producción y reproceso{totalProjectRework > 0 ? ` · incluye ${formatMoney(totalProjectRework)} de reproceso` : ''}
                     </p>
                   </div>
                   <WalletCards className="h-8 w-8 text-rose-500" />
@@ -1780,51 +1663,20 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 Estadísticas e interacciones de rates
               </CardTitle>
               <CardDescription className="mt-1">
-                Selecciona uno o varios indicadores, grafica su movimiento y descarga el reporte filtrado.
+                Usa el mismo periodo y los mismos movimientos del tablero superior para la gráfica, las tablas y el CSV.
               </CardDescription>
             </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(150px,1fr)_minmax(150px,1fr)_auto_auto]">
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
-                  Fecha inicial
-                </label>
-                <input
-                  type="date"
-                  value={reportStartDate}
-                  onChange={(event) => {
-                    setReportStartDate(event.target.value);
-                    setReportGenerated(false);
-                  }}
-                  className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                />
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              <div className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2">
+                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-500">Periodo unificado</p>
+                <p className="mt-0.5 text-sm font-bold text-indigo-900">{dashboardPeriodLabel}</p>
               </div>
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
-                  Fecha final
-                </label>
-                <input
-                  type="date"
-                  value={reportEndDate}
-                  onChange={(event) => {
-                    setReportEndDate(event.target.value);
-                    setReportGenerated(false);
-                  }}
-                  className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                />
-              </div>
-              <Button
-                type="button"
-                onClick={handleGenerateReport}
-                className="h-10 self-end bg-indigo-600 text-white hover:bg-indigo-700"
-              >
-                Analizar
-              </Button>
               <Button
                 type="button"
                 variant="outline"
                 onClick={exportReportCsv}
-                disabled={!reportGenerated || reportRows.length === 0}
-                className="h-10 self-end border-slate-200 text-slate-700 hover:bg-slate-50"
+                disabled={dashboardDateRangeInvalid || reportRows.length === 0}
+                className="h-10 border-slate-200 text-slate-700 hover:bg-slate-50"
               >
                 <Download size={15} className="mr-2" />
                 CSV
@@ -1843,7 +1695,6 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    setReportGenerated(false);
                     setAnalysisRateIds(selectedRateCard ? [selectedRateCard.id] : rateCards.slice(0, 1).map(card => card.id));
                   }}
                   className="h-8 border-slate-200 text-xs"
@@ -1874,23 +1725,32 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          {reportGenerated ? (
-            <>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          {!reportUsesAllRateCards && (
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm font-semibold text-indigo-800">
+              Este detalle resume {selectedAnalysisCards.length} de {rateCards.length} indicadores. Selecciona “Todos” para que sus totales coincidan con el tablero general.
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
                 <div className="rounded-lg border border-slate-100 bg-slate-50 p-4">
-                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Movimientos</p>
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Movimientos seleccionados</p>
                   <p className="mt-1 text-2xl font-bold text-slate-900">{reportRows.length}</p>
                 </div>
                 <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-4">
                   <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Ingresos</p>
                   <p className="mt-1 text-2xl font-bold text-slate-900">
-                    {formatMoney(reportRows.reduce((sum: number, entry: any) => sum + entry.income, 0), rateCards[0]?.currency || 'USD')}
+                    {formatMoney(reportIncome, rateCards[0]?.currency || 'USD')}
                   </p>
                 </div>
                 <div className="rounded-lg border border-rose-100 bg-rose-50 p-4">
                   <p className="text-xs font-bold uppercase tracking-wider text-rose-700">Costos</p>
                   <p className="mt-1 text-2xl font-bold text-slate-900">
-                    {formatMoney(reportRows.reduce((sum: number, entry: any) => sum + entry.cost, 0), rateCards[0]?.currency || 'USD')}
+                    {formatMoney(reportCost, rateCards[0]?.currency || 'USD')}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-indigo-700">Margen</p>
+                  <p className={`mt-1 text-2xl font-bold ${reportMargin < 0 ? 'text-rose-700' : 'text-slate-900'}`}>
+                    {formatMoney(reportMargin, rateCards[0]?.currency || 'USD')}
                   </p>
                 </div>
               </div>
@@ -1960,7 +1820,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                         <TableHead className="font-semibold text-slate-600">Unidades netas</TableHead>
                         <TableHead className="font-semibold text-slate-600 text-right">Ingreso</TableHead>
                         <TableHead className="font-semibold text-slate-600 text-right">Costo</TableHead>
-                        <TableHead className="font-semibold text-slate-600 text-right">Resultado</TableHead>
+                        <TableHead className="font-semibold text-slate-600 text-right">Margen / resultado</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1999,7 +1859,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                       <TableHead className="font-semibold text-slate-600">Unidades</TableHead>
                       <TableHead className="font-semibold text-slate-600 text-right">Ingreso</TableHead>
                       <TableHead className="font-semibold text-slate-600 text-right">Costo</TableHead>
-                      <TableHead className="font-semibold text-slate-600 text-right">Resultado</TableHead>
+                      <TableHead className="font-semibold text-slate-600 text-right">Margen / resultado</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -2037,12 +1897,6 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   </TableBody>
                 </Table>
               </div>
-            </>
-          ) : (
-            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 py-10 text-center text-sm text-slate-500">
-              Selecciona el rango de fechas para generar el informe.
-            </div>
-          )}
         </CardContent>
       </Card>
 
