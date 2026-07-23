@@ -29,6 +29,11 @@ export type AdvanceDossierReport = {
   projectName: string;
   status: string;
   generatedAt: string;
+  sections?: {
+    payment?: boolean;
+    legalizations?: boolean;
+    reconciliation?: boolean;
+  };
   metrics: Array<{ label: string; value: string }>;
   advanceDetails: Array<{ label: string; value: string }>;
   items: string[][];
@@ -747,34 +752,59 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
   drawSubheading('Firmas verificadas');
   await drawSignatures(report.signatures);
 
-  drawSectionTitle(2, 'Pago del anticipo');
-  if (report.paymentDetails.length > 0) {
-    drawKeyValues(report.paymentDetails);
-  } else {
-    page.drawText('Pendiente de pago y de soporte.', {
-      x: MARGIN_X,
-      y,
-      size: 10,
-      font: fonts.oblique,
-      color: SLATE_500,
-    });
-    y -= 22;
+  const sections = {
+    payment: report.sections?.payment ?? true,
+    legalizations: report.sections?.legalizations ?? true,
+    reconciliation: report.sections?.reconciliation ?? true,
+  };
+  let sectionNumber = 2;
+
+  if (sections.payment) {
+    drawSectionTitle(sectionNumber, 'Pago del anticipo');
+    sectionNumber += 1;
+    if (report.paymentDetails.length > 0) {
+      drawKeyValues(report.paymentDetails);
+    } else {
+      page.drawText('Pendiente de pago y de soporte.', {
+        x: MARGIN_X,
+        y,
+        size: 10,
+        font: fonts.oblique,
+        color: SLATE_500,
+      });
+      y -= 22;
+    }
+    if (report.paymentAttachment) await appendAttachment(report.paymentAttachment);
   }
-  if (report.paymentAttachment) await appendAttachment(report.paymentAttachment);
 
-  drawSectionTitle(3, 'Legalización', true);
-  drawTable({
-    headers: ['#', 'Tipo', 'Proveedor', 'Fecha', 'Documento', 'Valor', 'Estado'],
-    rows: report.legalizations,
-    widths: [0.05, 0.18, 0.18, 0.13, 0.17, 0.15, 0.14],
-  });
+  if (sections.legalizations) {
+    drawSectionTitle(sectionNumber, 'Legalización', true);
+    sectionNumber += 1;
+    drawTable({
+      headers: ['#', 'Tipo', 'Proveedor', 'Fecha', 'Documento', 'Valor', 'Estado'],
+      rows: report.legalizations,
+      widths: [0.05, 0.18, 0.18, 0.13, 0.17, 0.15, 0.14],
+    });
 
-  await appendAttachmentGroup(4, 'Documentos soporte de la legalización', report.legalizationAttachments);
+    await appendAttachmentGroup(
+      sectionNumber,
+      'Documentos soporte de la legalización',
+      report.legalizationAttachments
+    );
+    sectionNumber += 1;
+  }
 
-  drawSectionTitle(5, 'Conciliación', true);
-  drawKeyValues(report.reconciliationDetails);
+  if (sections.reconciliation) {
+    drawSectionTitle(sectionNumber, 'Conciliación', true);
+    sectionNumber += 1;
+    drawKeyValues(report.reconciliationDetails);
 
-  await appendAttachmentGroup(6, 'Documentos soporte de la conciliación', report.reconciliationAttachments);
+    await appendAttachmentGroup(
+      sectionNumber,
+      'Documentos soporte de la conciliación',
+      report.reconciliationAttachments
+    );
+  }
 
   return pdf.save();
 };

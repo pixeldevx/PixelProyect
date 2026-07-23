@@ -541,6 +541,9 @@ const getAdvanceReconciliation = (advance: Partial<TravelAdvance>) => {
   };
 };
 
+const isAdvanceReconciled = (advance: Partial<TravelAdvance>) =>
+  advance.reconciliationStatus === 'reconciled' || advance.status === 'closed';
+
 const getSafeFileToken = (value: any) =>
   String(value || 'anticipo')
     .normalize('NFD')
@@ -785,6 +788,7 @@ export function ProjectAdministration({
   const [view, setView] = useState<'requests' | 'approvals' | 'payables' | 'receipts' | 'conciliation' | 'payments' | 'settings'>('requests');
   const [advanceSearch, setAdvanceSearch] = useState('');
   const [showPaidAdvances, setShowPaidAdvances] = useState(false);
+  const [showReconciledAdvances, setShowReconciledAdvances] = useState(false);
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [advanceForm, setAdvanceForm] = useState(() => buildEmptyAdvanceForm(currentUser, teamMembers));
   const [advanceTaskSearch, setAdvanceTaskSearch] = useState('');
@@ -1127,6 +1131,19 @@ export function ProjectAdministration({
     [filteredAdvances]
   );
 
+  const hiddenReconciledAdvancesCount = useMemo(
+    () => filteredAdvances.filter(isAdvanceReconciled).length,
+    [filteredAdvances]
+  );
+
+  const requestAdvances = useMemo(
+    () =>
+      filteredAdvances.filter(
+        (advance) => showReconciledAdvances || !isAdvanceReconciled(advance)
+      ),
+    [filteredAdvances, showReconciledAdvances]
+  );
+
   const approvalAdvances = useMemo(
     () => filteredAdvances.filter((advance) => ['submitted', 'returned'].includes(advance.status)),
     [filteredAdvances]
@@ -1251,6 +1268,14 @@ export function ProjectAdministration({
     [filteredAdvances]
   );
 
+  const visibleReconciliationAdvances = useMemo(
+    () =>
+      reconciliationAdvances.filter(
+        (item) => showReconciledAdvances || !isAdvanceReconciled(item.advance)
+      ),
+    [reconciliationAdvances, showReconciledAdvances]
+  );
+
   const realCostAdvanceGroups = useMemo(
     () =>
       filteredAdvances
@@ -1293,16 +1318,21 @@ export function ProjectAdministration({
       reportReceipts,
       title,
       filePrefix,
+      scope,
       realCost,
     }: {
       advance: TravelAdvance;
       reportReceipts: AdvanceReceipt[];
       title: string;
       filePrefix: string;
+      scope: 'payment' | 'justifications' | 'full';
       realCost?: number;
     }) => {
       const toastId = toast.loading('Preparando el expediente y anexando los soportes...');
       try {
+        const includePayment = scope === 'payment' || scope === 'full';
+        const includeLegalizations = scope === 'justifications' || scope === 'full';
+        const includeReconciliation = scope === 'full';
         const resolveProtectedAsset = async (path?: string, fallback?: string) => {
           if (!path) return fallback || '';
           try {
@@ -1327,23 +1357,33 @@ export function ProjectAdministration({
             advance.approvalSignature?.signatureStoragePath,
             advance.approvalSignature?.signatureUrl
           ),
-          resolveProtectedAsset(advance.paymentSupport?.storagePath, advance.paymentSupport?.fileUrl),
-          resolveProtectedAsset(advance.returnSupport?.storagePath, advance.returnSupport?.fileUrl),
-          resolveProtectedAsset(advance.compensationSupport?.storagePath, advance.compensationSupport?.fileUrl),
-          Promise.all(
-            reportReceipts.map((receipt) =>
-              resolveProtectedAsset(receipt.storagePath, receipt.fileUrl)
-            )
-          ),
+          includePayment
+            ? resolveProtectedAsset(advance.paymentSupport?.storagePath, advance.paymentSupport?.fileUrl)
+            : Promise.resolve(''),
+          includeReconciliation
+            ? resolveProtectedAsset(advance.returnSupport?.storagePath, advance.returnSupport?.fileUrl)
+            : Promise.resolve(''),
+          includeReconciliation
+            ? resolveProtectedAsset(advance.compensationSupport?.storagePath, advance.compensationSupport?.fileUrl)
+            : Promise.resolve(''),
+          includeLegalizations
+            ? Promise.all(
+                reportReceipts.map((receipt) =>
+                  resolveProtectedAsset(receipt.storagePath, receipt.fileUrl)
+                )
+              )
+            : Promise.resolve([]),
         ]);
 
         const missingSupport = [
-          advance.paymentSupport && !paymentSupportUrl ? 'el pago del anticipo' : '',
-          ...reportReceipts.map((receipt, index) =>
-            !receiptSupportUrls[index] ? `la legalización ${receipt.categoryName}` : ''
-          ),
-          advance.returnSupport && !returnSupportUrl ? 'la consignación bancaria' : '',
-          advance.compensationSupport && !compensationSupportUrl ? 'la compensación' : '',
+          includePayment && advance.paymentSupport && !paymentSupportUrl ? 'el pago del anticipo' : '',
+          ...(includeLegalizations
+            ? reportReceipts.map((receipt, index) =>
+                !receiptSupportUrls[index] ? `la legalización ${receipt.categoryName}` : ''
+              )
+            : []),
+          includeReconciliation && advance.returnSupport && !returnSupportUrl ? 'la consignación bancaria' : '',
+          includeReconciliation && advance.compensationSupport && !compensationSupportUrl ? 'la compensación' : '',
         ].filter(Boolean);
         if (missingSupport.length > 0) {
           throw new Error(`No se pudo autorizar el soporte de ${missingSupport[0]}.`);
@@ -1361,16 +1401,35 @@ export function ProjectAdministration({
           projectName: project?.name || project?.title || projectId,
           status: (statusConfig[advance.status] || statusConfig.submitted).label,
           generatedAt: formatDate(new Date()),
-          metrics: [
-            { label: 'Anticipado', value: formatMoney(coverage.approved) },
-            { label: 'Justificado', value: formatMoney(getAdvanceJustifiedAmount(advance)) },
-            { label: 'Legalizado', value: formatMoney(coverage.legalized) },
-            { label: 'Devuelto', value: formatMoney(coverage.returnedCash) },
-            { label: 'Compensado', value: formatMoney(advance.amountCompensated) },
-            ...(realCost === undefined
-              ? [{ label: 'Saldo', value: formatMoney(Math.max(0, coverage.balance)) }]
-              : [{ label: 'Costo real', value: formatMoney(realCost) }]),
-          ],
+          sections: {
+            payment: includePayment,
+            legalizations: includeLegalizations,
+            reconciliation: includeReconciliation,
+          },
+          metrics:
+            scope === 'payment'
+              ? [
+                  { label: 'Solicitado', value: formatMoney(advance.amountRequested) },
+                  { label: 'Aprobado', value: formatMoney(coverage.approved) },
+                  { label: 'Pagado', value: formatMoney(advance.paymentSupport?.amount) },
+                ]
+              : scope === 'justifications'
+                ? [
+                    { label: 'Anticipado', value: formatMoney(coverage.approved) },
+                    { label: 'Justificado', value: formatMoney(getAdvanceJustifiedAmount(advance)) },
+                    { label: 'Legalizado', value: formatMoney(coverage.legalized) },
+                    { label: 'Saldo', value: formatMoney(Math.max(0, coverage.balance)) },
+                  ]
+                : [
+                    { label: 'Anticipado', value: formatMoney(coverage.approved) },
+                    { label: 'Justificado', value: formatMoney(getAdvanceJustifiedAmount(advance)) },
+                    { label: 'Legalizado', value: formatMoney(coverage.legalized) },
+                    { label: 'Devuelto', value: formatMoney(coverage.returnedCash) },
+                    { label: 'Compensado', value: formatMoney(advance.amountCompensated) },
+                    ...(realCost === undefined
+                      ? [{ label: 'Saldo', value: formatMoney(Math.max(0, coverage.balance)) }]
+                      : [{ label: 'Costo real', value: formatMoney(realCost) }]),
+                  ],
           advanceDetails: [
             { label: 'Solicitante', value: advance.requesterName },
             { label: 'Correo', value: advance.requesterEmail || 'Sin correo' },
@@ -1428,7 +1487,7 @@ export function ProjectAdministration({
               imageUrl: approvalSignatureUrl,
             },
           ],
-          paymentDetails: advance.paymentSupport
+          paymentDetails: includePayment && advance.paymentSupport
             ? [
                 { label: 'Valor pagado', value: formatMoney(advance.paymentSupport.amount) },
                 { label: 'Fecha', value: formatDate(advance.paymentSupport.date) },
@@ -1442,7 +1501,7 @@ export function ProjectAdministration({
                 },
               ]
             : [],
-          legalizations: reportReceipts.map((receipt, index) => [
+          legalizations: includeLegalizations ? reportReceipts.map((receipt, index) => [
             String(index + 1),
             `${receipt.categoryName}\n${getReceiptDocumentTypeMeta(receipt.documentType).label}`,
             receipt.businessName || 'Sin razón social',
@@ -1450,8 +1509,8 @@ export function ProjectAdministration({
             receipt.invoiceNumber || receipt.cufe || 'Sin número',
             formatMoney(receipt.amount),
             getReceiptStatusMeta(receipt.status).label,
-          ]),
-          reconciliationDetails: [
+          ]) : [],
+          reconciliationDetails: includeReconciliation ? [
             {
               label: 'Estado',
               value: advance.reconciliationStatus === 'reconciled' ? 'Conciliado' : 'Pendiente',
@@ -1474,9 +1533,9 @@ export function ProjectAdministration({
               label: 'Conciliado por',
               value: advance.reconciledByName || 'Pendiente',
             },
-          ],
+          ] : [],
           paymentAttachment:
-            advance.paymentSupport && paymentSupportUrl
+            includePayment && advance.paymentSupport && paymentSupportUrl
               ? {
                   label: 'Soporte del pago del anticipo',
                   description: `Pago de ${formatMoney(advance.paymentSupport.amount)} - ${formatDate(advance.paymentSupport.date)}${advance.paymentSupport.reference ? ` - Referencia ${advance.paymentSupport.reference}` : ''}`,
@@ -1484,13 +1543,15 @@ export function ProjectAdministration({
                   url: paymentSupportUrl,
                 }
               : undefined,
-          legalizationAttachments: reportReceipts.map((receipt, index) => ({
-            label: `Soporte de legalización ${index + 1}`,
-            description: `${receipt.categoryName} - ${receipt.businessName || 'Sin razón social'} - ${receipt.invoiceNumber || receipt.cufe || 'Sin número'} - ${formatMoney(receipt.amount)}`,
-            fileName: receipt.fileName || `soporte-legalizacion-${index + 1}`,
-            url: receiptSupportUrls[index],
-          })),
-          reconciliationAttachments: [
+          legalizationAttachments: includeLegalizations
+            ? reportReceipts.map((receipt, index) => ({
+                label: `Soporte de legalización ${index + 1}`,
+                description: `${receipt.categoryName} - ${receipt.businessName || 'Sin razón social'} - ${receipt.invoiceNumber || receipt.cufe || 'Sin número'} - ${formatMoney(receipt.amount)}`,
+                fileName: receipt.fileName || `soporte-legalizacion-${index + 1}`,
+                url: receiptSupportUrls[index],
+              }))
+            : [],
+          reconciliationAttachments: includeReconciliation ? [
             ...(advance.returnSupport && returnSupportUrl
               ? [
                   {
@@ -1511,7 +1572,7 @@ export function ProjectAdministration({
                   },
                 ]
               : []),
-          ],
+          ] : [],
         };
 
         const pdfBytes = await generateAdvanceDossierPdf(report);
@@ -1523,7 +1584,7 @@ export function ProjectAdministration({
           `${filePrefix}-${getSafeFileToken(advance.customId || advance.id)}.pdf`,
           new Blob([pdfArrayBuffer], { type: 'application/pdf' })
         );
-        toast.success('Expediente PDF generado con todos los soportes anexados.', { id: toastId });
+        toast.success('Reporte PDF generado con los documentos seleccionados.', { id: toastId });
       } catch (error: any) {
         console.error('Error generating advance dossier PDF:', error);
         toast.error(error?.message || 'No se pudo generar el expediente PDF.', { id: toastId });
@@ -1532,30 +1593,42 @@ export function ProjectAdministration({
     [project?.name, project?.title, projectId]
   );
 
-  const downloadAdvanceReport = useCallback(
-    async (group: (typeof realCostAdvanceGroups)[number]) => {
-      const { advance, receipts: approvedReceipts, realCost } = group;
+  const downloadAdvanceReportOption = useCallback(
+    async (
+      advance: TravelAdvance,
+      scope: 'payment' | 'justifications' | 'full',
+      realCost?: number
+    ) => {
+      const isFinalReport = scope === 'full' && isAdvanceReconciled(advance);
+      const reportReceipts =
+        scope === 'payment'
+          ? []
+          : (advance.receipts || []).filter((receipt) =>
+              isFinalReport ? isApprovedReceipt(receipt) : receipt.status !== 'rejected'
+            );
+      const reportMeta = {
+        payment: {
+          title: 'Anticipo y soporte de pago',
+          filePrefix: 'anticipo-con-pago',
+        },
+        justifications: {
+          title: 'Anticipo y justificaciones',
+          filePrefix: 'anticipo-con-justificaciones',
+        },
+        full: {
+          title: 'Informe completo del anticipo',
+          filePrefix: 'informe-completo-anticipo',
+        },
+      }[scope];
+
       await downloadAdvanceDossier({
         advance,
-        reportReceipts: approvedReceipts,
-        title: 'Informe final del anticipo',
-        filePrefix: 'informe-final-anticipo',
+        reportReceipts,
+        title: reportMeta.title,
+        filePrefix: reportMeta.filePrefix,
+        scope,
         realCost,
       });
-      return;
-    },
-    [downloadAdvanceDossier]
-  );
-
-  const downloadAdvancePaymentSheet = useCallback(
-    async (advance: TravelAdvance) => {
-      await downloadAdvanceDossier({
-        advance,
-        reportReceipts: (advance.receipts || []).filter((receipt) => receipt.status !== 'rejected'),
-        title: 'Ficha integral del anticipo',
-        filePrefix: 'ficha-anticipo',
-      });
-      return;
     },
     [downloadAdvanceDossier]
   );
@@ -4006,7 +4079,7 @@ export function ProjectAdministration({
       <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap gap-2">
           {[
-            ['requests', 'Anticipos', advances.length],
+            ['requests', 'Anticipos', advances.filter((advance) => showReconciledAdvances || !isAdvanceReconciled(advance)).length],
             ['approvals', 'Anticipos por aprobar', approvalAdvances.length],
             ['payables', 'Anticipos por pagar', payableAdvances.length],
             ['receipts', 'Legalizaciones', receipts.length],
@@ -4055,16 +4128,38 @@ export function ProjectAdministration({
                     placeholder="Buscar por ID, solicitante, municipio, tarea o justificación..."
                   />
                 </div>
+                <button
+                  type="button"
+                  aria-pressed={showReconciledAdvances}
+                  onClick={() => setShowReconciledAdvances((current) => !current)}
+                  className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-3 text-xs font-black ring-1 transition ${
+                    showReconciledAdvances
+                      ? 'bg-teal-600 text-white ring-teal-600'
+                      : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {showReconciledAdvances ? <EyeOff size={15} /> : <Eye size={15} />}
+                  {showReconciledAdvances
+                    ? 'Ocultar conciliados'
+                    : `Mostrar conciliados${hiddenReconciledAdvancesCount ? ` (${hiddenReconciledAdvancesCount})` : ''}`}
+                </button>
                 <span className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-500 ring-1 ring-slate-200">
-                  {filteredAdvances.length} de {advances.length}
+                  {requestAdvances.length} de {advances.length}
                 </span>
               </div>
               {advances.length === 0 ? (
                 <EmptyState title="No hay anticipos registrados" body="Crea el primer anticipo de viaje para iniciar el control administrativo del proyecto." />
-              ) : filteredAdvances.length === 0 ? (
-                <EmptyState title="Sin anticipos encontrados" body="Ajusta la búsqueda o revisa el ID ingresado para consultar la solicitud." />
+              ) : requestAdvances.length === 0 ? (
+                <EmptyState
+                  title="Sin anticipos encontrados"
+                  body={
+                    hiddenReconciledAdvancesCount > 0 && !showReconciledAdvances
+                      ? `Hay ${hiddenReconciledAdvancesCount} anticipo${hiddenReconciledAdvancesCount === 1 ? '' : 's'} conciliado${hiddenReconciledAdvancesCount === 1 ? '' : 's'} oculto${hiddenReconciledAdvancesCount === 1 ? '' : 's'}. Activa “Mostrar conciliados” para consultarlo${hiddenReconciledAdvancesCount === 1 ? '' : 's'}.`
+                      : 'Ajusta la búsqueda o revisa el ID ingresado para consultar la solicitud.'
+                  }
+                />
               ) : (
-                filteredAdvances.map((advance) => (
+                requestAdvances.map((advance) => (
                   <AdvanceCard
                     key={advance.id}
                     advance={advance}
@@ -4077,6 +4172,8 @@ export function ProjectAdministration({
                     onReturn={() => openReviewAction({ type: 'returnAdvance', advance })}
                     onReject={() => openReviewAction({ type: 'rejectAdvance', advance })}
                     onDelete={() => openReviewAction({ type: 'deleteAdvance', advance })}
+                    onView={() => setViewingAdvance(advance)}
+                    onGenerateReport={(scope) => void downloadAdvanceReportOption(advance, scope)}
                   />
                 ))
               )}
@@ -4139,7 +4236,10 @@ export function ProjectAdministration({
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button type="button" size="sm" variant="outline" onClick={() => setViewingAdvance(advance)}><FileText size={14} className="mr-2" />Ver anticipo</Button>
-                        <Button type="button" size="sm" variant="outline" onClick={() => void downloadAdvancePaymentSheet(advance)}><Download size={14} className="mr-2" />Descargar ficha</Button>
+                        <AdvanceReportMenu
+                          advance={advance}
+                          onSelect={(scope) => void downloadAdvanceReportOption(advance, scope)}
+                        />
                         {(canManage || canValidate) && ['submitted', 'pending_payment', 'paid'].includes(advance.status) && (
                           <Button type="button" size="sm" variant="outline" onClick={() => openAdvanceEditor(advance)} className="border-indigo-200 text-indigo-700 hover:bg-indigo-50"><PencilLine size={14} className="mr-2" />Editar</Button>
                         )}
@@ -4415,15 +4515,39 @@ export function ProjectAdministration({
                     <div className="flex items-center gap-2 text-cyan-800"><RefreshCw size={20} /><h3 className="text-lg font-black">Conciliación de anticipos</h3></div>
                     <p className="mt-1 text-sm font-medium text-slate-600">Compara lo anticipado, justificado y legalizado. El expediente solo se cierra con devolución o compensación soportada cuando exista diferencia.</p>
                   </div>
-                  <div className="relative min-w-0 lg:w-96">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                    <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder="Buscar conciliación por ID, persona o destino..." />
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <button
+                      type="button"
+                      aria-pressed={showReconciledAdvances}
+                      onClick={() => setShowReconciledAdvances((current) => !current)}
+                      className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-3 text-xs font-black ring-1 transition ${
+                        showReconciledAdvances
+                          ? 'bg-teal-600 text-white ring-teal-600'
+                          : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {showReconciledAdvances ? <EyeOff size={15} /> : <Eye size={15} />}
+                      {showReconciledAdvances
+                        ? 'Ocultar conciliados'
+                        : `Mostrar conciliados${hiddenReconciledAdvancesCount ? ` (${hiddenReconciledAdvancesCount})` : ''}`}
+                    </button>
+                    <div className="relative min-w-0 lg:w-80">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <input className={`${inputClass} pl-10`} value={advanceSearch} onChange={(event) => setAdvanceSearch(event.target.value)} placeholder="Buscar conciliación por ID, persona o destino..." />
+                    </div>
                   </div>
                 </div>
               </div>
-              {reconciliationAdvances.length === 0 ? (
-                <EmptyState title={advanceSearch.trim() ? 'No se encontró esa conciliación' : 'Sin anticipos pendientes de conciliación'} body="Aparecerán aquí cuando el profesional cierre su justificación y todos los soportes entren a revisión." />
-              ) : reconciliationAdvances.map((item) => {
+              {visibleReconciliationAdvances.length === 0 ? (
+                <EmptyState
+                  title={advanceSearch.trim() ? 'No se encontró esa conciliación' : 'Sin anticipos pendientes de conciliación'}
+                  body={
+                    hiddenReconciledAdvancesCount > 0 && !showReconciledAdvances
+                      ? 'Los anticipos ya conciliados están ocultos. Puedes consultarlos en Costos reales o activar “Mostrar conciliados”.'
+                      : 'Aparecerán aquí cuando el profesional cierre su justificación y todos los soportes entren a revisión.'
+                  }
+                />
+              ) : visibleReconciliationAdvances.map((item) => {
                 const { advance } = item;
                 const hasOpenReceipts = (advance.receipts || []).some((receipt) => !isApprovedReceipt(receipt));
                 const requiredKind = item.returnRequired > 0 ? 'return' : item.compensationRequired > 0 ? 'compensation' : 'exact';
@@ -4446,6 +4570,10 @@ export function ProjectAdministration({
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button type="button" size="sm" variant="outline" onClick={() => setViewingAdvance(advance)}><FileText size={14} className="mr-2" />Ver anticipo</Button>
+                        <AdvanceReportMenu
+                          advance={advance}
+                          onSelect={(scope) => void downloadAdvanceReportOption(advance, scope)}
+                        />
                         {!isReconciled && !hasOpenReceipts && requiredKind === 'return' && !supportMatches && (canCorrectAdvanceReceipt(advance) || canManage || canValidate) && (
                           <Button type="button" size="sm" onClick={() => openReconciliationSupport(advance)} className="bg-amber-600 text-white hover:bg-amber-700"><Upload size={14} className="mr-2" />{requiredSupport ? 'Actualizar devolución' : 'Cargar devolución'}</Button>
                         )}
@@ -4521,14 +4649,17 @@ export function ProjectAdministration({
                             {group.advance.requesterName} · {group.advance.destination} · cerrado {formatDate(group.advance.closedAt || group.advance.updatedAt)}
                           </p>
                         </div>
-                        <Button
-                          type="button"
-                          onClick={() => downloadAdvanceReport(group)}
-                          className="bg-slate-950 font-bold text-white hover:bg-slate-800"
-                        >
-                          <Download size={16} className="mr-2" />
-                          Descargar informe
-                        </Button>
+                        <div className="flex flex-wrap gap-2">
+                          <Button type="button" variant="outline" onClick={() => setViewingAdvance(group.advance)}>
+                            <FileText size={16} className="mr-2" />
+                            Ver anticipo
+                          </Button>
+                          <AdvanceReportMenu
+                            advance={group.advance}
+                            onSelect={(scope) => void downloadAdvanceReportOption(group.advance, scope, group.realCost)}
+                            dark
+                          />
+                        </div>
                       </div>
 
                       <AdvanceLifecycle advance={group.advance} compact />
@@ -5224,7 +5355,10 @@ export function ProjectAdministration({
               </div>
             </div>
             <ModalFooter>
-              <Button type="button" variant="outline" onClick={() => void downloadAdvancePaymentSheet(advance)}><Download size={15} className="mr-2" />Descargar ficha</Button>
+              <AdvanceReportMenu
+                advance={advance}
+                onSelect={(scope) => void downloadAdvanceReportOption(advance, scope)}
+              />
               {(canManage || canValidate) && ['submitted', 'pending_payment', 'paid'].includes(advance.status) && <Button type="button" variant="outline" onClick={() => { setViewingAdvance(null); openAdvanceEditor(advance); }} className="border-indigo-200 text-indigo-700"><PencilLine size={15} className="mr-2" />Editar anticipo</Button>}
               {canValidate && advance.status === 'pending_payment' && <Button type="button" onClick={() => { setViewingAdvance(null); openAdvancePayment(advance); }} className="bg-violet-600 font-bold text-white hover:bg-violet-700"><CreditCard size={15} className="mr-2" />Registrar pago</Button>}
               <Button type="button" variant="outline" onClick={() => setViewingAdvance(null)}>Cerrar</Button>
@@ -6327,6 +6461,51 @@ function ReceiptGroupMetric({
   );
 }
 
+function AdvanceReportMenu({
+  advance,
+  onSelect,
+  dark = false,
+}: {
+  advance: TravelAdvance;
+  onSelect: (scope: 'payment' | 'justifications' | 'full') => void;
+  dark?: boolean;
+}) {
+  const hasPayment = Boolean(advance.paymentSupport);
+  const hasJustifications = (advance.receipts || []).some((receipt) => receipt.status !== 'rejected');
+
+  return (
+    <label
+      className={`relative inline-flex h-9 items-center overflow-hidden rounded-md border text-sm font-bold shadow-sm transition focus-within:ring-2 focus-within:ring-indigo-300 ${
+        dark
+          ? 'border-slate-950 bg-slate-950 text-white hover:bg-slate-800'
+          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+      }`}
+    >
+      <Download size={15} className="pointer-events-none absolute left-3" />
+      <select
+        defaultValue=""
+        aria-label="Generar reporte del anticipo"
+        onChange={(event) => {
+          const scope = event.target.value as 'payment' | 'justifications' | 'full';
+          if (scope) onSelect(scope);
+          event.currentTarget.value = '';
+        }}
+        className="h-full cursor-pointer appearance-none bg-transparent py-0 pl-9 pr-8 text-sm font-bold outline-none"
+      >
+        <option value="" disabled>Generar reporte</option>
+        <option value="payment" disabled={!hasPayment}>
+          {hasPayment ? 'Anticipo con pago' : 'Anticipo con pago (pendiente)'}
+        </option>
+        <option value="justifications" disabled={!hasJustifications}>
+          {hasJustifications ? 'Anticipo con justificaciones' : 'Anticipo con justificaciones (sin soportes)'}
+        </option>
+        <option value="full">Informe completo</option>
+      </select>
+      <ChevronDown size={14} className="pointer-events-none absolute right-2.5" />
+    </label>
+  );
+}
+
 function SummaryLine({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg bg-white/70 px-3 py-2 ring-1 ring-slate-200">
@@ -6448,6 +6627,8 @@ function AdvanceCard({
   canValidate,
   canManage,
   canCorrect,
+  onView,
+  onGenerateReport,
   onOpenReceipt,
   onComplete,
   onApprove,
@@ -6459,6 +6640,8 @@ function AdvanceCard({
   canValidate: boolean;
   canManage: boolean;
   canCorrect: boolean;
+  onView: () => void;
+  onGenerateReport: (scope: 'payment' | 'justifications' | 'full') => void;
   onOpenReceipt: () => void;
   onComplete: () => void;
   onApprove: () => void;
@@ -6564,6 +6747,11 @@ function AdvanceCard({
           )}
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={onView}>
+            <FileText size={15} className="mr-2" />
+            Ver anticipo
+          </Button>
+          <AdvanceReportMenu advance={advance} onSelect={onGenerateReport} />
           {canManage && isAdvanceReadyForLegalization(advance) && (
             <Button type="button" size="sm" onClick={onOpenReceipt} className="bg-emerald-600 text-white hover:bg-emerald-700">
               <ReceiptText size={15} className="mr-2" />
