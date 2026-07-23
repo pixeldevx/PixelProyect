@@ -24,6 +24,7 @@ import { syncRateDrivenIncrementalTasksForRate } from '@/lib/incremental-rate-ta
 import {
   addTraceableRateCardMovementToBatch,
   buildHistoricalRateCardRepairPlan,
+  resolveHistoricalRateCardEntryDate,
 } from '@/lib/rate-card-trace';
 
 const toDateKey = (date: Date) => {
@@ -181,19 +182,37 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     (dashboardStartDate || dashboardEndDate)
   );
   const reportableRateCardIds = new Set(rateCards.map(card => card.id));
+  const getReportEntryDateResolution = (entry: any) => {
+    if (isHistoricalBalanceEntry(entry)) {
+      return resolveHistoricalRateCardEntryDate(entry, tasks);
+    }
+
+    const dateKey = getEntryDateKey(entry);
+    return {
+      date: dateKey ? parseDateLike(`${dateKey}T12:00:00`) : null,
+      dateKey,
+      source: dateKey ? 'movement' : 'unresolved',
+      evidence: dateKey ? 'movement_date' : null,
+    };
+  };
   const dashboardRateCardEntries = rateCardEntries.filter((entry) => {
     if (!reportableRateCardIds.has(entry.rateCardId)) return false;
     if (!hasDashboardDateFilter) return !dashboardDateRangeInvalid;
-    if (isHistoricalBalanceEntry(entry)) return false;
-    const dateKey = getEntryDateKey(entry);
+    const dateKey = getReportEntryDateResolution(entry).dateKey;
     if (!dateKey) return false;
     if (dashboardStartDate && dateKey < dashboardStartDate) return false;
     if (dashboardEndDate && dateKey > dashboardEndDate) return false;
     return true;
   });
-  const undatedMovementCount = rateCardEntries.filter(
-    (entry) => isHistoricalBalanceEntry(entry) || !getEntryDateKey(entry)
-  ).length;
+  const historicalDateResolutions = rateCardEntries
+    .filter(entry => reportableRateCardIds.has(entry.rateCardId) && isHistoricalBalanceEntry(entry))
+    .map(entry => getReportEntryDateResolution(entry));
+  const historicalTaskDateCount = historicalDateResolutions
+    .filter(resolution => resolution.source === 'task_origin').length;
+  const historicalInclusionDateCount = historicalDateResolutions
+    .filter(resolution => resolution.source === 'historical_inclusion').length;
+  const unresolvedHistoricalDateCount = historicalDateResolutions
+    .filter(resolution => resolution.source === 'unresolved').length;
 
   // Calculate data for charts and totals
   const userTotals: Record<string, { name: string; income: number; cost: number; output: number; reworkCost: number }> = {};
@@ -446,6 +465,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     const units = Number(entry.units || 0);
     const rateCardContext = card || entry;
     const isRework = Boolean(entry.isRework);
+    const dateResolution = getReportEntryDateResolution(entry);
     const costUnits = isRework ? Math.abs(units) : units;
     const costValue = getRateCardCostValue(costUnits, rateCardContext);
     const incomeValue = isRework ? 0 : getRateCardIncomeValue(units, rateCardContext);
@@ -456,7 +476,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
 
     return {
       ...entry,
-      dateKey: entry.dateKey || getEntryDateKey(entry),
+      dateKey: dateResolution.dateKey,
+      dateOrigin: dateResolution.source,
+      dateEvidence: dateResolution.evidence,
       personName: getMemberName(entry.assignedTo),
       rateCardName: card?.name || entry.rateCardName || 'Rate Card eliminado',
       indicator: rateCardContext?.indicator || 'unidades',
@@ -787,6 +809,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
           comment: 'Movimiento creado desde saneamiento para convertir un acumulado histórico sin detalle en historial editable.',
           isRework: row.isRework,
           historicalBalance: true,
+          dateSource: 'historical_inclusion',
           manuallyAdjusted: true,
           ...periodKeys,
           createdAt: serverTimestamp(),
@@ -1052,9 +1075,14 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       return;
     }
 
-    const headers = ['Fecha', 'Persona', 'Rate Card', 'Tarea', 'Unidades', 'Indicador', 'Ingreso', 'Costo', 'Resultado', 'Tipo', 'Unidad/moneda', 'Fuente'];
+    const headers = ['Fecha', 'Origen de fecha', 'Persona', 'Rate Card', 'Tarea', 'Unidades', 'Indicador', 'Ingreso', 'Costo', 'Resultado', 'Tipo', 'Unidad/moneda', 'Fuente'];
     const csvRows = reportRows.map((entry: any) => [
       entry.displayDate || entry.dateKey,
+      entry.dateOrigin === 'task_origin'
+        ? 'Tarea de origen'
+        : entry.dateOrigin === 'historical_inclusion'
+          ? 'Incorporación histórica'
+          : 'Movimiento',
       entry.personName,
       entry.rateCardName,
       entry.taskTitle || '',
@@ -1334,9 +1362,17 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 La fecha inicial no puede ser posterior a la fecha final.
               </div>
             )}
-            {hasDashboardDateFilter && undatedMovementCount > 0 && (
+            {hasDashboardDateFilter && (historicalTaskDateCount > 0 || historicalInclusionDateCount > 0) && (
+              <p className="mt-3 text-xs font-semibold text-emerald-700">
+                Los movimientos históricos también se filtran por fecha:
+                {historicalTaskDateCount > 0 ? ` ${historicalTaskDateCount} recuperado${historicalTaskDateCount === 1 ? '' : 's'} desde la tarea de origen` : ''}
+                {historicalTaskDateCount > 0 && historicalInclusionDateCount > 0 ? ' y' : ''}
+                {historicalInclusionDateCount > 0 ? ` ${historicalInclusionDateCount} desde su fecha documentada de incorporación` : ''}.
+              </p>
+            )}
+            {hasDashboardDateFilter && unresolvedHistoricalDateCount > 0 && (
               <p className="mt-3 text-xs font-semibold text-amber-700">
-                {undatedMovementCount} movimiento{undatedMovementCount === 1 ? '' : 's'} histórico{undatedMovementCount === 1 ? '' : 's'} sin fecha se excluye{undatedMovementCount === 1 ? '' : 'n'} del rango. Se conserva{undatedMovementCount === 1 ? '' : 'n'} en “Todo el periodo”.
+                {unresolvedHistoricalDateCount} movimiento{unresolvedHistoricalDateCount === 1 ? '' : 's'} histórico{unresolvedHistoricalDateCount === 1 ? '' : 's'} sin tarea ni fecha de incorporación se excluye{unresolvedHistoricalDateCount === 1 ? '' : 'n'} del rango.
               </p>
             )}
           </div>
@@ -1756,7 +1792,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
               </div>
               {reportHasHistoricalBalances && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-                  Algunos valores vienen de saldos acumulados antiguos sin fecha individual. Se incluyen como acumulado histórico para que el reporte no oculte producción registrada.
+                  Algunos valores vienen de saldos acumulados antiguos. Cuando no existe una tarea vinculada, se ubican por la fecha documentada en que fueron incorporados al historial.
                 </div>
               )}
 
@@ -1866,7 +1902,12 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     {reportRows.map((entry: any) => (
                       <TableRow key={entry.id}>
                         <TableCell className="whitespace-nowrap text-slate-700">
-                          {entry.displayDate || formatReportDate(entry.dateKey)}
+                          <div>{entry.displayDate || formatReportDate(entry.dateKey)}</div>
+                          {isHistoricalBalanceEntry(entry) && (
+                            <span className="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                              {entry.dateOrigin === 'task_origin' ? 'Fecha de tarea' : 'Fecha de incorporación'}
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell className="font-medium text-slate-900">{entry.personName}</TableCell>
                         <TableCell className="text-slate-700">{entry.rateCardName}</TableCell>

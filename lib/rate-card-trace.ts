@@ -194,6 +194,90 @@ const getTaskCompletionEvidence = (task: any) => {
   return null;
 };
 
+export type RateCardEntryDateResolution = {
+  date: Date | null;
+  dateKey: string;
+  source: 'task_origin' | 'historical_inclusion' | 'unresolved';
+  evidence: string | null;
+};
+
+const normalizeHistoricalDateKey = (value: any) => {
+  if (typeof value !== 'string') return '';
+  const match = value.trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!match) return '';
+  const [, year, month, day] = match;
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+};
+
+export const resolveHistoricalRateCardEntryDate = (
+  entry: any,
+  tasks: any[] = [],
+): RateCardEntryDateResolution => {
+  const taskIds = [entry?.taskId, entry?.parentTaskId].filter(Boolean);
+  const task = taskIds
+    .map(taskId => tasks.find(candidate => candidate?.id === taskId))
+    .find(Boolean);
+
+  if (task) {
+    const stepIndex = typeof entry?.stepIndex === 'number' ? entry.stepIndex : null;
+    const step = stepIndex !== null && Array.isArray(task?.workflowSteps)
+      ? task.workflowSteps[stepIndex]
+      : null;
+    const stepDate = parseRateCardTraceDate(step?.completedAt);
+    const workflowDate = stepIndex !== null ? getWorkflowHistoryDate(task, stepIndex) : null;
+    const taskCompletion = getTaskCompletionEvidence(task);
+    const taskDate = stepDate || workflowDate || taskCompletion?.date || null;
+
+    if (taskDate) {
+      return {
+        date: taskDate,
+        dateKey: getRateCardPeriodKeys(taskDate).dateKey,
+        source: 'task_origin',
+        evidence: stepDate
+          ? 'step_completed_at'
+          : workflowDate
+            ? 'workflow_history'
+            : taskCompletion?.evidence || 'task_completion',
+      };
+    }
+  }
+
+  const inclusionDate =
+    parseRateCardTraceDate(entry?.createdAt) ||
+    parseRateCardTraceDate(entry?.recordedAt) ||
+    parseRateCardTraceDate(entry?.adjustedAt);
+
+  if (inclusionDate) {
+    return {
+      date: inclusionDate,
+      dateKey: getRateCardPeriodKeys(inclusionDate).dateKey,
+      source: 'historical_inclusion',
+      evidence: entry?.createdAt
+        ? 'entry_created_at'
+        : entry?.recordedAt
+          ? 'entry_recorded_at'
+          : 'entry_adjusted_at',
+    };
+  }
+
+  const storedDateKey = normalizeHistoricalDateKey(entry?.dateKey || entry?.dayKey || entry?.reportDate);
+  if (storedDateKey) {
+    return {
+      date: parseRateCardTraceDate(`${storedDateKey}T12:00:00`),
+      dateKey: storedDateKey,
+      source: 'historical_inclusion',
+      evidence: 'stored_date_key',
+    };
+  }
+
+  return {
+    date: null,
+    dateKey: '',
+    source: 'unresolved',
+    evidence: null,
+  };
+};
+
 const resolveRepairAssignee = (
   source: any,
   step: any,
