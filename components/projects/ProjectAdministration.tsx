@@ -201,6 +201,8 @@ type AdvanceReconciliationSupport = {
 
 type AdvanceReconciliationStatus = 'pending_validation' | 'pending_return' | 'pending_compensation' | 'ready' | 'reconciled';
 
+type AdvanceReportScope = 'advance' | 'payment' | 'justifications' | 'reconciliation' | 'full';
+
 type AdvanceSignatureSnapshot = {
   signatureUrl: string;
   signatureStoragePath?: string;
@@ -550,6 +552,28 @@ const getAdvanceReconciliation = (advance: Partial<TravelAdvance>) => {
 
 const isAdvanceReconciled = (advance: Partial<TravelAdvance>) =>
   advance.reconciliationStatus === 'reconciled' || advance.status === 'closed';
+
+const getAdvanceReportAvailability = (advance: Partial<TravelAdvance>) => {
+  const hasPayment = Boolean(advance.paymentSupport);
+  const hasLegalizations = (advance.receipts || []).some(
+    (receipt) => receipt.status !== 'rejected'
+  );
+  const hasEnteredReconciliation =
+    advance.status === 'completed' ||
+    advance.status === 'closed' ||
+    Boolean(advance.completedAt);
+  const hasFinalReport =
+    advance.status === 'closed' &&
+    advance.reconciliationStatus === 'reconciled';
+
+  return {
+    advance: true,
+    payment: hasPayment,
+    justifications: hasLegalizations,
+    reconciliation: hasEnteredReconciliation,
+    full: hasFinalReport,
+  } satisfies Record<AdvanceReportScope, boolean>;
+};
 
 const getSafeFileToken = (value: any) =>
   String(value || 'anticipo')
@@ -1332,14 +1356,14 @@ export function ProjectAdministration({
       reportReceipts: AdvanceReceipt[];
       title: string;
       filePrefix: string;
-      scope: 'payment' | 'justifications' | 'full';
+      scope: AdvanceReportScope;
       realCost?: number;
     }) => {
       const toastId = toast.loading('Preparando el expediente y anexando los soportes...');
       try {
-        const includePayment = scope === 'payment' || scope === 'full';
-        const includeLegalizations = scope === 'justifications' || scope === 'full';
-        const includeReconciliation = scope === 'full';
+        const includePayment = ['payment', 'justifications', 'reconciliation', 'full'].includes(scope);
+        const includeLegalizations = ['justifications', 'reconciliation', 'full'].includes(scope);
+        const includeReconciliation = scope === 'reconciliation' || scope === 'full';
         const unavailableAttachments: string[] = [];
         const resolveProtectedAsset = async (path?: string, fallback?: string) => {
           if (!path) return fallback || '';
@@ -1441,7 +1465,13 @@ export function ProjectAdministration({
             reconciliation: includeReconciliation,
           },
           metrics:
-            scope === 'payment'
+            scope === 'advance'
+              ? [
+                  { label: 'Solicitado', value: formatMoney(advance.amountRequested) },
+                  { label: 'Aprobado', value: formatMoney(coverage.approved) },
+                  { label: 'Ítems', value: String(advance.items?.length || 0) },
+                ]
+              : scope === 'payment'
               ? [
                   { label: 'Solicitado', value: formatMoney(advance.amountRequested) },
                   { label: 'Aprobado', value: formatMoney(coverage.approved) },
@@ -1646,28 +1676,41 @@ export function ProjectAdministration({
   const downloadAdvanceReportOption = useCallback(
     async (
       advance: TravelAdvance,
-      scope: 'payment' | 'justifications' | 'full',
+      scope: AdvanceReportScope,
       realCost?: number
     ) => {
-      const isFinalReport = scope === 'full' && isAdvanceReconciled(advance);
+      if (!getAdvanceReportAvailability(advance)[scope]) {
+        toast.error('Este informe se habilitará cuando el anticipo complete la etapa correspondiente.');
+        return;
+      }
+
+      const onlyApprovedReceipts = scope === 'reconciliation' || scope === 'full';
       const reportReceipts =
-        scope === 'payment'
+        scope === 'advance' || scope === 'payment'
           ? []
           : (advance.receipts || []).filter((receipt) =>
-              isFinalReport ? isApprovedReceipt(receipt) : receipt.status !== 'rejected'
+              onlyApprovedReceipts ? isApprovedReceipt(receipt) : receipt.status !== 'rejected'
             );
       const reportMeta = {
+        advance: {
+          title: 'Informe del anticipo',
+          filePrefix: 'anticipo',
+        },
         payment: {
           title: 'Anticipo y soporte de pago',
           filePrefix: 'anticipo-con-pago',
         },
         justifications: {
-          title: 'Anticipo y justificaciones',
-          filePrefix: 'anticipo-con-justificaciones',
+          title: 'Anticipo, pago y legalizaciones',
+          filePrefix: 'anticipo-con-legalizaciones',
+        },
+        reconciliation: {
+          title: 'Anticipo y conciliación',
+          filePrefix: 'anticipo-con-conciliacion',
         },
         full: {
-          title: 'Informe completo del anticipo',
-          filePrefix: 'informe-completo-anticipo',
+          title: 'Informe final del anticipo',
+          filePrefix: 'informe-final-anticipo',
         },
       }[scope];
 
@@ -6527,11 +6570,10 @@ function AdvanceReportMenu({
   dark = false,
 }: {
   advance: TravelAdvance;
-  onSelect: (scope: 'payment' | 'justifications' | 'full') => void;
+  onSelect: (scope: AdvanceReportScope) => void;
   dark?: boolean;
 }) {
-  const hasPayment = Boolean(advance.paymentSupport);
-  const hasJustifications = (advance.receipts || []).some((receipt) => receipt.status !== 'rejected');
+  const reportAvailability = getAdvanceReportAvailability(advance);
 
   return (
     <label
@@ -6546,20 +6588,18 @@ function AdvanceReportMenu({
         defaultValue=""
         aria-label="Generar reporte del anticipo"
         onChange={(event) => {
-          const scope = event.target.value as 'payment' | 'justifications' | 'full';
+          const scope = event.target.value as AdvanceReportScope;
           if (scope) onSelect(scope);
           event.currentTarget.value = '';
         }}
         className="h-full cursor-pointer appearance-none bg-transparent py-0 pl-9 pr-8 text-sm font-bold outline-none"
       >
         <option value="" disabled>Generar reporte</option>
-        <option value="payment" disabled={!hasPayment}>
-          {hasPayment ? 'Anticipo con pago' : 'Anticipo con pago (pendiente)'}
-        </option>
-        <option value="justifications" disabled={!hasJustifications}>
-          {hasJustifications ? 'Anticipo con justificaciones' : 'Anticipo con justificaciones (sin soportes)'}
-        </option>
-        <option value="full">Informe completo</option>
+        <option value="advance">Informe del anticipo</option>
+        {reportAvailability.payment && <option value="payment">Anticipo con pago</option>}
+        {reportAvailability.justifications && <option value="justifications">Anticipo con legalizaciones</option>}
+        {reportAvailability.reconciliation && <option value="reconciliation">Anticipo con conciliación</option>}
+        {reportAvailability.full && <option value="full">Informe final</option>}
       </select>
       <ChevronDown size={14} className="pointer-events-none absolute right-2.5" />
     </label>
@@ -6701,7 +6741,7 @@ function AdvanceCard({
   canManage: boolean;
   canCorrect: boolean;
   onView: () => void;
-  onGenerateReport: (scope: 'payment' | 'justifications' | 'full') => void;
+  onGenerateReport: (scope: AdvanceReportScope) => void;
   onOpenReceipt: () => void;
   onComplete: () => void;
   onApprove: () => void;
