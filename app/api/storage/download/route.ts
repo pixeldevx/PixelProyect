@@ -11,6 +11,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
     const path = String(body.path || '');
+    const proxyDownload = body.proxy === true;
     const parsed = parseS3StoragePath(path);
     if (!parsed) {
       return json({ error: 'Ruta S3 inválida.' }, 400);
@@ -44,6 +45,22 @@ export async function POST(request: Request) {
       sessionToken: s3.sessionToken,
       expiresInSeconds: 300,
     });
+
+    if (proxyDownload) {
+      const upstream = await fetch(downloadUrl, { cache: 'no-store' });
+      if (!upstream.ok || !upstream.body) {
+        return json({ error: `Amazon S3 no permitió descargar el documento (${upstream.status}).` }, 502);
+      }
+
+      const headers = new Headers({
+        'Cache-Control': 'private, no-store, max-age=0',
+        'Content-Disposition': 'inline',
+        'Content-Type': upstream.headers.get('content-type') || 'application/octet-stream',
+      });
+      const contentLength = upstream.headers.get('content-length');
+      if (contentLength) headers.set('Content-Length', contentLength);
+      return new NextResponse(upstream.body, { status: 200, headers });
+    }
 
     return json({ url: downloadUrl, expiresInSeconds: 300 });
   } catch (error: any) {

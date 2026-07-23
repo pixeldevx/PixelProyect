@@ -11,7 +11,8 @@ export type AdvanceDossierAttachment = {
   label: string;
   description?: string;
   fileName: string;
-  url: string;
+  url?: string;
+  blob?: Blob;
 };
 
 export type AdvanceDossierSignature = {
@@ -174,14 +175,24 @@ const convertImageBlobToPng = async (blob: Blob) => {
   return new Uint8Array(await pngBlob.arrayBuffer());
 };
 
-const fetchAsset = async (attachment: Pick<AdvanceDossierAttachment, 'fileName' | 'url'>) => {
-  const response = await fetch(attachment.url);
-  if (!response.ok) throw new Error(`No se pudo descargar el anexo (${response.status}).`);
-  const blob = await response.blob();
+const fetchAsset = async (
+  attachment: Pick<AdvanceDossierAttachment, 'fileName' | 'url' | 'blob'>
+) => {
+  let blob = attachment.blob;
+  let responseContentType = '';
+
+  if (!blob) {
+    if (!attachment.url) throw new Error('El anexo no tiene un archivo disponible.');
+    const response = await fetch(attachment.url);
+    if (!response.ok) throw new Error(`No se pudo descargar el anexo (${response.status}).`);
+    responseContentType = response.headers.get('content-type') || '';
+    blob = await response.blob();
+  }
+
   return {
     blob,
     bytes: new Uint8Array(await blob.arrayBuffer()),
-    kind: getFileKind(attachment.fileName, blob.type || response.headers.get('content-type') || ''),
+    kind: getFileKind(attachment.fileName, blob.type || responseContentType),
   };
 };
 

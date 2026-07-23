@@ -263,6 +263,7 @@ export default function ProjectDetailsPage() {
   const searchParams = useSearchParams();
   const projectId = params.id as string;
   const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
+  const userId = user?.uid || '';
   const { permissions: rolePermissions, loading: rolePermissionsLoading } = useRolePermissions(userRole);
 
   const [project, setProject] = useState<any>(null);
@@ -492,7 +493,7 @@ export default function ProjectDetailsPage() {
 
 
   useEffect(() => {
-    if (!user || !projectId) return;
+    if (!userId || !projectId) return;
 
     let projectResolved = false;
     setLoading(true);
@@ -602,10 +603,10 @@ export default function ProjectDetailsPage() {
       unsubscribeRateCards();
       unsubscribeBudgetLines();
     };
-  }, [user, projectId, router, userRole]);
+  }, [userId, projectId, router, userRole]);
 
   useEffect(() => {
-    if (!user || !projectId || activeTab !== 'documents') return;
+    if (!userId || !projectId || activeTab !== 'documents') return;
 
     setDocumentsLoaded(false);
     const documentsQuery = query(collection(db, 'projects', projectId, 'documents'));
@@ -622,7 +623,7 @@ export default function ProjectDetailsPage() {
     });
 
     return () => unsubscribeDocs();
-  }, [activeTab, projectId, user]);
+  }, [activeTab, projectId, userId]);
 
   const confirmDeleteDocument = (docId: string, storagePath: string, name: string, versionStoragePaths: string[] = []) => {
     setDocumentToDelete({ id: docId, storagePath, name, versionStoragePaths });

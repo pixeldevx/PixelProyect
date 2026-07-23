@@ -42,7 +42,14 @@ import { Button } from '@/components/ui/button';
 import { SecureDocumentLink } from '@/components/projects/SecureDocumentLink';
 import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, updateDoc, where } from '@/lib/supabase/document-store';
 import { db, storage } from '@/lib/backend';
-import { ref, uploadBytes, getDownloadURL, getAuthorizedDownloadURL } from '@/lib/supabase/storage-shim';
+import {
+  ref,
+  uploadBytes,
+  getDownloadURL,
+  getAuthorizedDownloadBlob,
+  getAuthorizedDownloadURL,
+  getStoragePathFromDownloadUrl,
+} from '@/lib/supabase/storage-shim';
 import { buildDocumentStoragePath, getDocumentFolderStorageSegments } from '@/lib/document-storage';
 import { ensureManagedDocumentFolderPath } from '@/lib/document-folders';
 import { isCompletedTaskStatus } from '@/lib/taskProgress';
@@ -1341,13 +1348,34 @@ export function ProjectAdministration({
             return fallback || '';
           }
         };
+        const resolveProtectedAttachment = async (
+          path: string | undefined,
+          fallback: string | undefined,
+          label: string
+        ) => {
+          const recoverablePath = path || getStoragePathFromDownloadUrl(fallback);
+          if (!recoverablePath && !fallback) return null;
+
+          try {
+            if (recoverablePath) {
+              return {
+                blob: await getAuthorizedDownloadBlob(ref(storage, recoverablePath)),
+              };
+            }
+            return { url: fallback || '' };
+          } catch (error: any) {
+            throw new Error(
+              `No se pudo autorizar ${label}.${error?.message ? ` ${error.message}` : ''}`
+            );
+          }
+        };
         const [
           requesterSignatureUrl,
           approvalSignatureUrl,
-          paymentSupportUrl,
-          returnSupportUrl,
-          compensationSupportUrl,
-          receiptSupportUrls,
+          paymentSupportAsset,
+          returnSupportAsset,
+          compensationSupportAsset,
+          receiptSupportAssets,
         ] = await Promise.all([
           resolveProtectedAsset(
             advance.requesterSignature?.signatureStoragePath,
@@ -1358,36 +1386,38 @@ export function ProjectAdministration({
             advance.approvalSignature?.signatureUrl
           ),
           includePayment
-            ? resolveProtectedAsset(advance.paymentSupport?.storagePath, advance.paymentSupport?.fileUrl)
-            : Promise.resolve(''),
+            ? resolveProtectedAttachment(
+                advance.paymentSupport?.storagePath,
+                advance.paymentSupport?.fileUrl,
+                'el soporte del pago del anticipo'
+              )
+            : Promise.resolve(null),
           includeReconciliation
-            ? resolveProtectedAsset(advance.returnSupport?.storagePath, advance.returnSupport?.fileUrl)
-            : Promise.resolve(''),
+            ? resolveProtectedAttachment(
+                advance.returnSupport?.storagePath,
+                advance.returnSupport?.fileUrl,
+                'el soporte de devolución'
+              )
+            : Promise.resolve(null),
           includeReconciliation
-            ? resolveProtectedAsset(advance.compensationSupport?.storagePath, advance.compensationSupport?.fileUrl)
-            : Promise.resolve(''),
+            ? resolveProtectedAttachment(
+                advance.compensationSupport?.storagePath,
+                advance.compensationSupport?.fileUrl,
+                'el soporte de compensación'
+              )
+            : Promise.resolve(null),
           includeLegalizations
             ? Promise.all(
                 reportReceipts.map((receipt) =>
-                  resolveProtectedAsset(receipt.storagePath, receipt.fileUrl)
+                  resolveProtectedAttachment(
+                    receipt.storagePath,
+                    receipt.fileUrl,
+                    `el soporte de la legalización ${receipt.categoryName}`
+                  )
                 )
               )
             : Promise.resolve([]),
         ]);
-
-        const missingSupport = [
-          includePayment && advance.paymentSupport && !paymentSupportUrl ? 'el pago del anticipo' : '',
-          ...(includeLegalizations
-            ? reportReceipts.map((receipt, index) =>
-                !receiptSupportUrls[index] ? `la legalización ${receipt.categoryName}` : ''
-              )
-            : []),
-          includeReconciliation && advance.returnSupport && !returnSupportUrl ? 'la consignación bancaria' : '',
-          includeReconciliation && advance.compensationSupport && !compensationSupportUrl ? 'la compensación' : '',
-        ].filter(Boolean);
-        if (missingSupport.length > 0) {
-          throw new Error(`No se pudo autorizar el soporte de ${missingSupport[0]}.`);
-        }
 
         const coverage = getAdvanceFinancialCoverage(advance);
         const reconciliation = getAdvanceReconciliation(advance);
@@ -1508,7 +1538,7 @@ export function ProjectAdministration({
             formatDate(receipt.date),
             receipt.invoiceNumber || receipt.cufe || 'Sin número',
             formatMoney(receipt.amount),
-            getReceiptStatusMeta(receipt.status).label,
+            `${getReceiptStatusMeta(receipt.status).label}${receipt.storagePath || receipt.fileUrl ? '' : ' - Sin archivo adjunto'}`,
           ]) : [],
           reconciliationDetails: includeReconciliation ? [
             {
@@ -1535,40 +1565,45 @@ export function ProjectAdministration({
             },
           ] : [],
           paymentAttachment:
-            includePayment && advance.paymentSupport && paymentSupportUrl
+            includePayment && advance.paymentSupport && paymentSupportAsset
               ? {
                   label: 'Soporte del pago del anticipo',
                   description: `Pago de ${formatMoney(advance.paymentSupport.amount)} - ${formatDate(advance.paymentSupport.date)}${advance.paymentSupport.reference ? ` - Referencia ${advance.paymentSupport.reference}` : ''}`,
-                  fileName: advance.paymentSupport.fileName,
-                  url: paymentSupportUrl,
+                  fileName: advance.paymentSupport.fileName || 'soporte-pago',
+                  ...paymentSupportAsset,
                 }
               : undefined,
           legalizationAttachments: includeLegalizations
-            ? reportReceipts.map((receipt, index) => ({
-                label: `Soporte de legalización ${index + 1}`,
-                description: `${receipt.categoryName} - ${receipt.businessName || 'Sin razón social'} - ${receipt.invoiceNumber || receipt.cufe || 'Sin número'} - ${formatMoney(receipt.amount)}`,
-                fileName: receipt.fileName || `soporte-legalizacion-${index + 1}`,
-                url: receiptSupportUrls[index],
-              }))
+            ? reportReceipts.flatMap((receipt, index) => {
+                const asset = receiptSupportAssets[index];
+                return asset
+                  ? [{
+                      label: `Soporte de legalización ${index + 1}`,
+                      description: `${receipt.categoryName} - ${receipt.businessName || 'Sin razón social'} - ${receipt.invoiceNumber || receipt.cufe || 'Sin número'} - ${formatMoney(receipt.amount)}`,
+                      fileName: receipt.fileName || `soporte-legalizacion-${index + 1}`,
+                      ...asset,
+                    }]
+                  : [];
+              })
             : [],
           reconciliationAttachments: includeReconciliation ? [
-            ...(advance.returnSupport && returnSupportUrl
+            ...(advance.returnSupport && returnSupportAsset
               ? [
                   {
                     label: 'Soporte de conciliación - devolución / consignación bancaria',
                     description: `Consignación por ${formatMoney(advance.returnSupport.amount)} - ${formatDate(advance.returnSupport.date)}${advance.returnSupport.reference ? ` - Referencia ${advance.returnSupport.reference}` : ''}`,
-                    fileName: advance.returnSupport.fileName,
-                    url: returnSupportUrl,
+                    fileName: advance.returnSupport.fileName || 'soporte-devolucion',
+                    ...returnSupportAsset,
                   },
                 ]
               : []),
-            ...(advance.compensationSupport && compensationSupportUrl
+            ...(advance.compensationSupport && compensationSupportAsset
               ? [
                   {
                     label: 'Soporte de conciliación - compensación',
                     description: `Compensación por ${formatMoney(advance.compensationSupport.amount)} - ${formatDate(advance.compensationSupport.date)}${advance.compensationSupport.reference ? ` - Referencia ${advance.compensationSupport.reference}` : ''}`,
-                    fileName: advance.compensationSupport.fileName,
-                    url: compensationSupportUrl,
+                    fileName: advance.compensationSupport.fileName || 'soporte-compensacion',
+                    ...compensationSupportAsset,
                   },
                 ]
               : []),
@@ -3399,6 +3434,10 @@ export function ProjectAdministration({
       toast.error('Completa categoría, valor y razón social del soporte.');
       return;
     }
+    if (!receiptFile) {
+      toast.error('Adjunta el documento soporte antes de crear la legalización.');
+      return;
+    }
     const documentType = getReceiptDocumentType(receiptForm.documentType);
     const documentTypeMeta = getReceiptDocumentTypeMeta(documentType);
     if (documentType === 'invoice' && category.requiresCufe && !receiptForm.cufe.trim()) {
@@ -4465,7 +4504,7 @@ export function ProjectAdministration({
                                     <p className="mt-2 text-xs font-bold text-indigo-600">Aprobado con {(receipt.approvalChanges || []).length} ajuste(s) administrativo(s) registrados.</p>
                                   )}
                                   <div className="mt-3 flex flex-wrap gap-3">
-                                    {receipt.fileUrl && (
+                                    {(receipt.fileUrl || receipt.storagePath) && (
                                       <SecureDocumentLink storagePath={receipt.storagePath} fallbackUrl={receipt.fileUrl} className="inline-flex items-center gap-1 text-xs font-black text-indigo-600 hover:text-indigo-800">
                                         <FileImage size={14} /> Ver soporte
                                       </SecureDocumentLink>
@@ -4624,6 +4663,9 @@ export function ProjectAdministration({
               ) : (
                 realCostAdvanceGroups.map((group) => {
                   const statusMeta = statusConfig[group.advance.status] || statusConfig.closed;
+                  const attachedSupportCount = group.receipts.filter(
+                    (receipt) => Boolean(receipt.storagePath || receipt.fileUrl)
+                  ).length;
                   return (
                     <section key={group.advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                       <div className="grid gap-4 border-b border-slate-100 bg-slate-50 p-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
@@ -4641,7 +4683,10 @@ export function ProjectAdministration({
                               </span>
                             )}
                             <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-slate-600 ring-1 ring-slate-200">
-                              {group.receipts.length} soporte{group.receipts.length === 1 ? '' : 's'} aprobado{group.receipts.length === 1 ? '' : 's'}
+                              {group.receipts.length} legalización{group.receipts.length === 1 ? '' : 'es'} aprobada{group.receipts.length === 1 ? '' : 's'}
+                            </span>
+                            <span className="rounded-md bg-indigo-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-indigo-700 ring-1 ring-indigo-100">
+                              {attachedSupportCount} soporte{attachedSupportCount === 1 ? '' : 's'} adjunto{attachedSupportCount === 1 ? '' : 's'}
                             </span>
                           </div>
                           <h4 className="mt-2 truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</h4>
@@ -4671,7 +4716,7 @@ export function ProjectAdministration({
                         <ReceiptGroupMetric label="Devuelto" value={formatMoney(group.coverage.returnedCash)} tone="amber" />
                         <ReceiptGroupMetric label="Compensado" value={formatMoney(group.advance.amountCompensated)} tone="indigo" />
                         <ReceiptGroupMetric label="Costo real" value={formatMoney(group.realCost)} tone="slate" />
-                        <ReceiptGroupMetric label="Soportes" value={`${group.receipts.length}`} tone="slate" />
+                        <ReceiptGroupMetric label="Soportes adjuntos" value={`${attachedSupportCount}`} tone="slate" />
                       </div>
 
                       <div className="grid gap-4 border-t border-slate-100 p-4 lg:grid-cols-[0.9fr_1.4fr]">
@@ -4723,7 +4768,7 @@ export function ProjectAdministration({
                                         {receipt.cufe ? ` · CUFE ${receipt.cufe}` : ''}
                                       </p>
                                     </div>
-                                    {receipt.fileUrl && (
+                                    {(receipt.fileUrl || receipt.storagePath) && (
                                       <SecureDocumentLink
                                         storagePath={receipt.storagePath}
                                         fallbackUrl={receipt.fileUrl}
@@ -6229,7 +6274,7 @@ export function ProjectAdministration({
                   </div>
                 )}
 
-                {receiptEditor.receipt.fileUrl && (
+                {(receiptEditor.receipt.fileUrl || receiptEditor.receipt.storagePath) && (
                   <SecureDocumentLink storagePath={receiptEditor.receipt.storagePath} fallbackUrl={receiptEditor.receipt.fileUrl} className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-indigo-700 shadow-sm hover:bg-indigo-50">
                     <FileImage size={16} /> Ver soporte original
                   </SecureDocumentLink>

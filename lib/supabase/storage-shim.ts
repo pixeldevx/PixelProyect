@@ -26,6 +26,19 @@ const getS3DownloadPath = (storageRef: StorageRef) => {
   return parseS3StoragePath(storageRef.fullPath) ? storageRef.fullPath : null;
 };
 
+export const getStoragePathFromDownloadUrl = (url?: string | null) => {
+  const value = String(url || '').trim();
+  if (!value) return '';
+
+  try {
+    const parsed = new URL(value, typeof window === 'undefined' ? 'https://pixel.local' : window.location.origin);
+    if (parsed.pathname !== '/api/storage/download') return '';
+    return parsed.searchParams.get('path') || '';
+  } catch {
+    return '';
+  }
+};
+
 export const ref = (storage: StorageRoot, path: string): StorageRef => {
   const cleanPath = path.replace(/^\/+/, '');
   const parsedS3Path = parseS3StoragePath(cleanPath);
@@ -137,6 +150,33 @@ export const getAuthorizedDownloadURL = async (storageRef: StorageRef) => {
     .createSignedUrl(storageRef.fullPath, 300);
   if (error || !data?.signedUrl) throw error || new Error('No se pudo firmar el documento.');
   return data.signedUrl;
+};
+
+export const getAuthorizedDownloadBlob = async (storageRef: StorageRef) => {
+  const s3Path = getS3DownloadPath(storageRef);
+  if (s3Path) {
+    const headers = await getAuthHeaders();
+    const response = await fetch('/api/storage/download', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: JSON.stringify({ path: s3Path, proxy: true }),
+    });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error || 'No se pudo descargar el documento autorizado.');
+    }
+    return response.blob();
+  }
+
+  const { data, error } = await supabase.storage
+    .from(storageRef.bucket)
+    .download(storageRef.fullPath);
+  if (error || !data) throw error || new Error('No se pudo descargar el documento.');
+  return data;
 };
 
 export const deleteObject = async (storageRef: StorageRef) => {

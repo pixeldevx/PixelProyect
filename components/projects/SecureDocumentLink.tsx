@@ -4,7 +4,11 @@ import React, { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { storage } from '@/lib/backend';
-import { getAuthorizedDownloadURL, ref } from '@/lib/supabase/storage-shim';
+import {
+  getAuthorizedDownloadURL,
+  getStoragePathFromDownloadUrl,
+  ref,
+} from '@/lib/supabase/storage-shim';
 
 export function SecureDocumentLink({
   storagePath,
@@ -23,14 +27,21 @@ export function SecureDocumentLink({
 
   const handleOpen = async () => {
     if (opening) return;
+    const previewWindow = window.open('about:blank', '_blank');
+    if (previewWindow) previewWindow.opener = null;
     setOpening(true);
     try {
-      const url = storagePath
-        ? await getAuthorizedDownloadURL(ref(storage, storagePath))
+      const recoverableStoragePath = storagePath || getStoragePathFromDownloadUrl(fallbackUrl);
+      const url = recoverableStoragePath
+        ? await getAuthorizedDownloadURL(ref(storage, recoverableStoragePath))
         : String(fallbackUrl || '');
       if (!url) throw new Error('El soporte no tiene una ruta disponible.');
-      window.open(url, '_blank', 'noopener,noreferrer');
+      if (!previewWindow) {
+        throw new Error('El navegador bloqueó la pestaña del soporte. Habilita las ventanas emergentes para Pixel.');
+      }
+      previewWindow.location.replace(url);
     } catch (error: any) {
+      previewWindow?.close();
       toast.error(error?.message || 'No se pudo abrir el soporte.');
     } finally {
       setOpening(false);

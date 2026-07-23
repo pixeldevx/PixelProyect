@@ -53,6 +53,18 @@ const mapUser = (user: SupabaseUser | null): User | null => {
 
 type AuthListener = (user: User | null) => void | Promise<void>;
 
+const isSameAuthUser = (left: User | null, right: User | null) => {
+  if (!left || !right) return left === right;
+
+  return (
+    left.uid === right.uid &&
+    left.email === right.email &&
+    left.displayName === right.displayName &&
+    left.photoURL === right.photoURL &&
+    left.emailVerified === right.emailVerified
+  );
+};
+
 const withTimeout = async <T,>(
   promise: PromiseLike<T>,
   timeoutMs: number,
@@ -86,6 +98,20 @@ class SupabaseAuthShim {
 
   onAuthStateChanged(callback: AuthListener) {
     let active = true;
+    let hasEmittedUser = false;
+
+    const emitUserIfChanged = (nextUser: User | null) => {
+      if (!active) return;
+      const changed = !isSameAuthUser(this.currentUser, nextUser);
+      this.currentUser = nextUser;
+
+      // Supabase can emit INITIAL_SESSION, SIGNED_IN and TOKEN_REFRESHED again
+      // when a tab regains focus. Revalidating the same logical user remounts
+      // project screens and discards forms that are still being edited.
+      if (hasEmittedUser && !changed) return;
+      hasEmittedUser = true;
+      runAuthListener(callback, nextUser);
+    };
 
     const emitInitialSession = async () => {
       try {
@@ -95,22 +121,18 @@ class SupabaseAuthShim {
           'Supabase tardó demasiado cargando la sesión guardada.'
         );
         if (!active) return;
-        this.currentUser = mapUser(data.session?.user || null);
-        runAuthListener(callback, this.currentUser);
+        emitUserIfChanged(mapUser(data.session?.user || null));
       } catch (error) {
         console.error('Error loading Supabase session:', error);
         if (!active) return;
-        this.currentUser = null;
-        runAuthListener(callback, null);
+        emitUserIfChanged(null);
       }
     };
 
     void emitInitialSession();
 
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!active) return;
-      this.currentUser = mapUser(session?.user || null);
-      runAuthListener(callback, this.currentUser);
+      emitUserIfChanged(mapUser(session?.user || null));
     });
 
     return () => {
