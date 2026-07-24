@@ -22,6 +22,8 @@ export type AdvanceDossierSignature = {
   email?: string;
   signedAt?: string;
   imageUrl?: string;
+  imageBlob?: Blob;
+  imageFileName?: string;
 };
 
 export type AdvanceDossierReport = {
@@ -80,9 +82,15 @@ const WHITE = rgb(1, 1, 1);
 const normalizePdfText = (value: unknown) =>
   String(value ?? '')
     .replace(/[\u2010-\u2015]/g, '-')
+    .replace(/[\u2018\u2019\u201a\u201b]/g, "'")
+    .replace(/[\u201c\u201d\u201e\u201f]/g, '"')
     .replace(/\u00b7/g, '-')
+    .replace(/\u2022/g, '-')
     .replace(/\u2026/g, '...')
-    .replace(/\u00a0/g, ' ');
+    .replace(/\u00a0/g, ' ')
+    .replace(/[\u2190-\u21ff]/g, '->')
+    .replace(/[\u2700-\u27bf]/g, '')
+    .replace(/[^\x09\x0a\x0d\x20-\x7e\xa0-\xff]/g, '');
 
 const fitText = (font: PDFFont, text: string, size: number, maxWidth: number) => {
   const normalized = normalizePdfText(text);
@@ -492,11 +500,16 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
 
     const embeddedImages = await Promise.all(
       signatures.slice(0, 2).map(async (signature) => {
-        if (!signature.imageUrl) return null;
+        if (!signature.imageUrl && !signature.imageBlob) return null;
         try {
-          const asset = await fetchAsset({ fileName: 'signature.png', url: signature.imageUrl });
+          const asset = await fetchAsset({
+            fileName: signature.imageFileName || 'signature.png',
+            url: signature.imageUrl,
+            blob: signature.imageBlob,
+          });
           return embedImageAsset(pdf, asset);
-        } catch {
+        } catch (error) {
+          console.warn(`Se omitió la imagen de ${signature.role} en el expediente:`, error);
           return null;
         }
       })

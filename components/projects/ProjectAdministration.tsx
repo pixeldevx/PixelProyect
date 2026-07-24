@@ -1456,12 +1456,26 @@ export function ProjectAdministration({
         const paymentSummary = getAdvancePaymentSummary(advance);
         const paymentSupports = paymentSummary.supports;
         const unavailableAttachments: string[] = [];
-        const resolveProtectedAsset = async (path?: string, fallback?: string) => {
-          if (!path) return fallback || '';
+        const resolveProtectedSignature = async (
+          path: string | undefined,
+          fallback: string | undefined,
+          label: string
+        ) => {
+          const recoverablePath = path || getStoragePathFromDownloadUrl(fallback);
+          if (!recoverablePath && !fallback) return {};
+
           try {
-            return await getAuthorizedDownloadURL(ref(storage, path));
-          } catch {
-            return fallback || '';
+            if (recoverablePath) {
+              return {
+                imageBlob: await getAuthorizedDownloadBlob(ref(storage, recoverablePath)),
+                imageFileName: recoverablePath.split('/').pop() || `${label}.png`,
+              };
+            }
+            return { imageUrl: fallback || '' };
+          } catch (error) {
+            unavailableAttachments.push(`la imagen de ${label}`);
+            console.warn(`Se omitirá la imagen de ${label} del expediente:`, error);
+            return fallback ? { imageUrl: fallback } : {};
           }
         };
         const resolveProtectedAttachment = async (
@@ -1489,20 +1503,22 @@ export function ProjectAdministration({
           }
         };
         const [
-          requesterSignatureUrl,
-          approvalSignatureUrl,
+          requesterSignatureAsset,
+          approvalSignatureAsset,
           paymentSupportAssets,
           returnSupportAsset,
           compensationSupportAsset,
           receiptSupportAssets,
         ] = await Promise.all([
-          resolveProtectedAsset(
+          resolveProtectedSignature(
             advance.requesterSignature?.signatureStoragePath,
-            advance.requesterSignature?.signatureUrl
+            advance.requesterSignature?.signatureUrl,
+            'firma solicitante'
           ),
-          resolveProtectedAsset(
+          resolveProtectedSignature(
             advance.approvalSignature?.signatureStoragePath,
-            advance.approvalSignature?.signatureUrl
+            advance.approvalSignature?.signatureUrl,
+            'firma aprobador'
           ),
           includePayment
             ? Promise.all(
@@ -1636,7 +1652,7 @@ export function ProjectAdministration({
               jobTitle: advance.requesterSignature?.jobTitle,
               email: advance.requesterSignature?.email,
               signedAt: advance.requesterSignature?.signedAt,
-              imageUrl: requesterSignatureUrl,
+              ...requesterSignatureAsset,
             },
             {
               role: 'Firma aprobador',
@@ -1644,7 +1660,7 @@ export function ProjectAdministration({
               jobTitle: advance.approvalSignature?.jobTitle,
               email: advance.approvalSignature?.email,
               signedAt: advance.approvalSignature?.signedAt,
-              imageUrl: approvalSignatureUrl,
+              ...approvalSignatureAsset,
             },
           ],
           paymentDetails: includePayment && paymentSupports.length > 0
