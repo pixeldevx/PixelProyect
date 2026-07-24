@@ -57,6 +57,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const canAccessInventoryOverview = INVENTORY_OVERVIEW_ROLES.has(userRole || '') && rolePermissions.inventoryOverview;
   const canAccessBillingOverview = Boolean(rolePermissions.billingOverview);
   const canAccessPersonnelOverview = Boolean(rolePermissions.personnelOverview);
+  const canAccessAdministrationOverview = Boolean(rolePermissions.administrationProjectView);
   const roleLabel = ROLE_LABELS[userRole || ''] || 'Perfil de usuario';
   const displayName = user?.displayName || user?.email?.split('@')[0] || 'Usuario';
   const userInitial = displayName.charAt(0).toUpperCase();
@@ -231,6 +232,9 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           )}
           {canAccessBillingOverview && (
             <NavItem href="/billing" icon={<FileText size={18} />} label="Facturación" active={pathname?.startsWith('/billing')} collapsed={isCollapsed} />
+          )}
+          {canAccessAdministrationOverview && (
+            <NavItem href="/administration" icon={<BriefcaseBusiness size={18} />} label="Administrativo" active={pathname?.startsWith('/administration')} collapsed={isCollapsed} />
           )}
           <NavItem href="/settlements" icon={<FileText size={18} />} label="Settlements" active={pathname?.startsWith('/settlements')} collapsed={isCollapsed} />
           <NavItem href="/rate-cards" icon={<FileText size={18} />} label="Rate Cards" active={pathname?.startsWith('/rate-cards')} collapsed={isCollapsed} />
