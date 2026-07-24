@@ -81,6 +81,9 @@ export const isWorkflowDocumentValue = (value: any): value is WorkflowDocumentVa
       (value.url || value.documentId || value.storagePath),
   );
 
+export const isWorkflowDocumentValueArray = (value: any): value is WorkflowDocumentValue[] =>
+  Array.isArray(value) && value.length > 0 && value.every(isWorkflowDocumentValue);
+
 export const getWorkflowDocumentDisplayName = (value: any) =>
   value?.name || value?.fileName || 'Documento adjunto';
 
@@ -390,27 +393,34 @@ export const collectWorkflowDocumentsFromHistory = (task: any) => {
 
   (task?.workflowHistory || []).forEach((entry: any) => {
     Object.entries(entry?.formData || {}).forEach(([fieldId, value]) => {
-      if (!isWorkflowDocumentValue(value)) return;
-      const rawStepIndex = Number(entry?.stepIndex ?? value.stepIndex);
+      const documentValues = isWorkflowDocumentValueArray(value)
+        ? value
+        : isWorkflowDocumentValue(value)
+          ? [value]
+          : [];
+      if (documentValues.length === 0) return;
+      const rawStepIndex = Number(entry?.stepIndex ?? documentValues[0]?.stepIndex);
       const stepIndex = Number.isFinite(rawStepIndex) ? rawStepIndex : null;
       const step = stepIndex !== null ? steps[stepIndex] : null;
       const field = step?.form?.fields?.find((item: any) => item.id === fieldId);
 
-      docs.push({
-        ...value,
-        fieldId,
-        fieldLabel: field?.label || value.fieldLabel || fieldId,
-        stepIndex,
-        stepLabel:
-          entry.stepLabel ||
-          value.stepLabel ||
-          step?.label ||
-          (stepIndex !== null ? `Paso ${stepIndex + 1}` : 'Paso'),
-        comment: entry.comment || null,
-        action: entry.action || null,
-        timestamp: entry.timestamp || value.uploadedAt || null,
-        userName: entry.userName || null,
-        userEmail: entry.userEmail || null,
+      documentValues.forEach((documentValue) => {
+        docs.push({
+          ...documentValue,
+          fieldId,
+          fieldLabel: field?.label || documentValue.fieldLabel || fieldId,
+          stepIndex,
+          stepLabel:
+            entry.stepLabel ||
+            documentValue.stepLabel ||
+            step?.label ||
+            (stepIndex !== null ? `Paso ${stepIndex + 1}` : 'Paso'),
+          comment: entry.comment || null,
+          action: entry.action || null,
+          timestamp: entry.timestamp || documentValue.uploadedAt || null,
+          userName: entry.userName || null,
+          userEmail: entry.userEmail || null,
+        });
       });
     });
   });

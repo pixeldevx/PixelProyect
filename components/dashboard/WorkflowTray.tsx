@@ -59,12 +59,14 @@ import {
   collectWorkflowDocumentsFromHistory,
   getWorkflowDocumentDisplayName,
   isWorkflowDocumentValue,
+  isWorkflowDocumentValueArray,
   uploadWorkflowFormDocument,
 } from '@/lib/workflow-form-documents';
 import { SecureDocumentLink } from '@/components/projects/SecureDocumentLink';
 
 const hasRequiredFormValue = (value: any) => {
   if (isWorkflowDocumentValue(value)) return true;
+  if (isWorkflowDocumentValueArray(value)) return true;
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return true;
@@ -89,6 +91,9 @@ const normalizeEmail = (value: unknown) =>
 
 const formatFormValue = (value: any) => {
   if (isWorkflowDocumentValue(value)) return getWorkflowDocumentDisplayName(value);
+  if (isWorkflowDocumentValueArray(value)) {
+    return value.map(getWorkflowDocumentDisplayName).join(', ');
+  }
   if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : 'Sin selección';
   if (typeof value === 'boolean') return value ? 'Sí' : 'No';
   return value || 'Sin respuesta';
@@ -102,6 +107,25 @@ const formatDateTimeFormValue = (value: any) => {
 };
 
 const renderHistoryFormValue = (value: any, field?: any) => {
+  if (isWorkflowDocumentValueArray(value)) {
+    return (
+      <div className="space-y-2">
+        {value.map((documentValue, index) => (
+          <SecureDocumentLink
+            key={`${documentValue.documentId || documentValue.storagePath || documentValue.url}-${index}`}
+            storagePath={documentValue.storagePath}
+            fallbackUrl={documentValue.url}
+            className="flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs font-bold text-indigo-700 shadow-sm hover:border-indigo-200 hover:text-indigo-900"
+          >
+            <FileText size={14} className="shrink-0" />
+            <span className="min-w-0 truncate">{getWorkflowDocumentDisplayName(documentValue)}</span>
+            <ExternalLink size={12} className="ml-auto shrink-0" />
+          </SecureDocumentLink>
+        ))}
+      </div>
+    );
+  }
+
   if (isWorkflowDocumentValue(value)) {
     return (
       <SecureDocumentLink
@@ -885,7 +909,7 @@ export default function WorkflowTray() {
   const [staticRateCardAssignees, setStaticRateCardAssignees] = useState<Record<string, string>>({});
   const [actionComment, setActionComment] = useState('');
   const [formData, setFormData] = useState<Record<string, any>>({});
-  const [workflowDocumentFiles, setWorkflowDocumentFiles] = useState<Record<string, File | null>>({});
+  const [workflowDocumentFiles, setWorkflowDocumentFiles] = useState<Record<string, File[]>>({});
   const [nextStepAssignee, setNextStepAssignee] = useState<string>('');
   const [currentMemberProfiles, setCurrentMemberProfiles] = useState<any[]>([]);
   const [projectTeamMembers, setProjectTeamMembers] = useState<any[]>([]);
@@ -1211,20 +1235,24 @@ export default function WorkflowTray() {
 
     for (const field of currentStep?.form?.fields || []) {
       if (field.type !== 'document') continue;
-      const file = workflowDocumentFiles[field.id];
-      if (!file) continue;
+      const files = workflowDocumentFiles[field.id] || [];
+      if (files.length === 0) continue;
 
-      preparedFormData[field.id] = await uploadWorkflowFormDocument({
-        file,
-        projectId: task.projectId,
-        projectName: task.projectName,
-        task,
-        tasks: workflows,
-        user,
-        field,
-        stepIndex: currentIndex,
-        stepLabel: currentStep?.label || `Paso ${currentIndex + 1}`,
-      });
+      const uploadedDocuments = [];
+      for (const file of files) {
+        uploadedDocuments.push(await uploadWorkflowFormDocument({
+          file,
+          projectId: task.projectId,
+          projectName: task.projectName,
+          task,
+          tasks: workflows,
+          user,
+          field: { ...field, documentName: files.length > 1 && !field.documentVersioning ? file.name : field.documentName },
+          stepIndex: currentIndex,
+          stepLabel: currentStep?.label || `Paso ${currentIndex + 1}`,
+        }));
+      }
+      preparedFormData[field.id] = uploadedDocuments.length === 1 ? uploadedDocuments[0] : uploadedDocuments;
     }
 
     return preparedFormData;
@@ -1297,7 +1325,7 @@ export default function WorkflowTray() {
     if (action === 'approve' && currentStep?.form?.fields) {
       const missingRequired = currentStep.form.fields.some((f: any) => {
         if (!f.required) return false;
-        if (f.type === 'document' && workflowDocumentFiles[f.id]) return false;
+        if (f.type === 'document' && (workflowDocumentFiles[f.id] || []).length > 0) return false;
         return !hasRequiredFormValue(formData[f.id]);
       });
       if (missingRequired) {
@@ -3370,7 +3398,9 @@ export default function WorkflowTray() {
                             <span className="flex min-w-0 items-center gap-2">
                               <FileUp size={16} className="text-indigo-600" />
                               <span className="truncate">
-                                {workflowDocumentFiles[field.id]?.name || 'Seleccionar documento'}
+                                {(workflowDocumentFiles[field.id] || []).length > 0
+                                  ? `${workflowDocumentFiles[field.id].length} documento${workflowDocumentFiles[field.id].length === 1 ? '' : 's'} seleccionado${workflowDocumentFiles[field.id].length === 1 ? '' : 's'}`
+                                  : 'Seleccionar documentos'}
                               </span>
                             </span>
                             <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-1 text-[10px] uppercase tracking-wider text-indigo-700">
@@ -3378,16 +3408,43 @@ export default function WorkflowTray() {
                             </span>
                             <input
                               type="file"
+                              multiple
                               className="hidden"
                               onChange={(event) => {
-                                const selectedFile = event.target.files?.[0] || null;
+                                const selectedFiles = Array.from(event.target.files || []);
                                 setWorkflowDocumentFiles((current) => ({
                                   ...current,
-                                  [field.id]: selectedFile,
+                                  [field.id]: selectedFiles,
                                 }));
                               }}
                             />
                           </label>
+                          {(workflowDocumentFiles[field.id] || []).length > 0 && (
+                            <div className="mt-2 space-y-1">
+                              {workflowDocumentFiles[field.id].map((selectedFile) => (
+                                <div key={`${selectedFile.name}-${selectedFile.size}-${selectedFile.lastModified}`} className="flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white/80 px-3 py-2 text-xs font-bold text-slate-700">
+                                  <FileText size={14} className="shrink-0 text-indigo-600" />
+                                  <span className="truncate">{selectedFile.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {isWorkflowDocumentValueArray(formData[field.id]) && (
+                            <div className="mt-2 space-y-2">
+                              {formData[field.id].map((documentValue: any, index: number) => (
+                                <SecureDocumentLink
+                                  key={`${documentValue.documentId || documentValue.storagePath || documentValue.url}-${index}`}
+                                  storagePath={documentValue.storagePath}
+                                  fallbackUrl={documentValue.url}
+                                  className="flex min-w-0 items-center gap-2 rounded-lg border border-indigo-100 bg-white/80 px-3 py-2 text-xs font-bold text-indigo-700 hover:text-indigo-900"
+                                >
+                                  <FileText size={14} className="shrink-0" />
+                                  <span className="truncate">{getWorkflowDocumentDisplayName(documentValue)}</span>
+                                  <ExternalLink size={12} className="ml-auto shrink-0" />
+                                </SecureDocumentLink>
+                              ))}
+                            </div>
+                          )}
                           {isWorkflowDocumentValue(formData[field.id]) && (
                             <SecureDocumentLink
                               storagePath={formData[field.id].storagePath}

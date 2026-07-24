@@ -1,12 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { X, Upload, Save, FileText, MessageSquare, Hash, Calendar, MapPin } from 'lucide-react';
-import { doc, updateDoc, serverTimestamp, addDoc, collection } from '@/lib/supabase/document-store';
-import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
-import { db, storage } from '@/lib/backend';
+import { doc, updateDoc, serverTimestamp } from '@/lib/supabase/document-store';
+import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { notifyTaskAssignment } from '@/lib/notifications';
 import { getTaskDisplayTitle, getTaskTitle } from '@/lib/task-title';
-import { buildDocumentStoragePath, getTaskStorageFolderSegments } from '@/lib/document-storage';
+import { uploadWorkflowFormDocument, type WorkflowDocumentValue } from '@/lib/workflow-form-documents';
 import {
   applyWorkflowStepReferenceDurations,
   applyWorkflowStepSchedule,
@@ -64,7 +63,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
   const [observation, setObservation] = useState('');
   const [workflowStartDate, setWorkflowStartDate] = useState('');
   const [workflowEndDate, setWorkflowEndDate] = useState('');
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [firstStepAssignee, setFirstStepAssignee] = useState<string>('');
 
@@ -75,7 +74,7 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
     setObservation('');
     setWorkflowStartDate(toDateInputValue(task.startDate || task.start));
     setWorkflowEndDate(toDateInputValue(task.endDate || task.end));
-    setFile(null);
+    setFiles([]);
     setFirstStepAssignee('');
   }, [isOpen, task, parentTask]);
 
@@ -178,49 +177,31 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
 
     setIsStarting(true);
     try {
-      let documentId = null;
+      const hierarchyTasks = parentTask ? [parentTask, task] : [task];
+      const startDocuments: WorkflowDocumentValue[] = [];
 
-      // 1. Upload file if exists
-      if (file) {
-        const hierarchyTasks = parentTask ? [parentTask, task] : [task];
-        const storagePath = buildDocumentStoragePath({
+      // 1. Upload initial documents if any. They are also stored in workflow history
+      // so the workflow evidence panel and task documents viewer stay in sync.
+      for (const selectedFile of files) {
+        startDocuments.push(await uploadWorkflowFormDocument({
+          file: selectedFile,
           projectId,
           projectName: task?.projectName || parentTask?.projectName,
           task,
           tasks: hierarchyTasks,
-          fileName: file.name,
-          documentName: `inicio-${file.name}`,
-          folderName: 'inicio-workflow',
-        });
-        const storageFolder = storagePath.split('/').slice(0, -1).join('/');
-        const storageRef = ref(storage, storagePath);
-        await uploadBytes(storageRef, file);
-        const downloadURL = await getDownloadURL(storageRef);
-
-        const docData = {
-          projectId: projectId,
-          taskId: task.id,
-          taskTitle: getTaskDisplayTitle(task),
-          taskFolderSegments: getTaskStorageFolderSegments(task, hierarchyTasks),
-          scope: 'task',
-          name: file.name,
-          type: 'workflow_start',
-          url: downloadURL,
-          storagePath: storageRef.fullPath,
-          storageFolder,
-          uploadedBy: userId,
-          uploadedAt: serverTimestamp(),
-          fileName: file.name,
-          fileSize: file.size,
-          contentType: file.type || null,
-          accessMode: 'all',
-          allowedMemberIds: [],
-          providerPathVersion: 'structured-v1',
-        };
-        
-        const docRef = await addDoc(collection(db, 'projects', projectId, 'documents'), docData);
-        documentId = docRef.id;
+          user: user ? { ...user, uid: userId || user.uid } : { uid: userId },
+          field: {
+            id: 'workflowStartDocuments',
+            label: 'Documentos iniciales',
+            documentName: selectedFile.name,
+            documentDestinationMode: 'task',
+            documentVersioning: false,
+          },
+          stepIndex: 0,
+          stepLabel: 'Inicio del workflow',
+        }));
       }
+      const documentId = startDocuments[0]?.documentId || null;
 
       // 2. Prepare history entry
       const historyEntry = {
@@ -234,7 +215,13 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         workflowId: cleanWorkflowId,
         municipality: cleanMunicipality,
         plannedStartDate: parsedWorkflowStart.toISOString(),
-        plannedEndDate: parsedWorkflowEnd.toISOString()
+        plannedEndDate: parsedWorkflowEnd.toISOString(),
+        formData: startDocuments.length > 0
+          ? {
+              workflowStartDocuments:
+                startDocuments.length === 1 ? startDocuments[0] : startDocuments,
+            }
+          : {},
       };
 
       // 3. Update task
@@ -274,6 +261,8 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
         workflowMunicipality: cleanMunicipality,
         initialObservation: observation,
         startDocumentId: documentId,
+        startDocumentIds: startDocuments.map((documentValue) => documentValue.documentId),
+        startDocuments,
         currentStepIndex: 0,
         workflowSteps: updatedSteps,
         workflowScheduleMode: workflowScheduleMode,
@@ -433,28 +422,41 @@ export const StartWorkflowModal: React.FC<StartWorkflowModalProps> = ({
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
               <Upload size={16} className="text-slate-400" />
-              Documento de Inicio (Opcional)
+              Documentos de inicio (Opcional)
             </label>
             <div className="relative group">
               <input
                 type="file"
-                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                multiple
+                onChange={(e) => setFiles(Array.from(e.target.files || []))}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
               />
               <div className={`w-full p-4 border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 transition-colors ${
-                file ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 group-hover:border-indigo-300 group-hover:bg-slate-50'
+                files.length > 0 ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 group-hover:border-indigo-300 group-hover:bg-slate-50'
               }`}>
-                {file ? (
+                {files.length > 0 ? (
                   <>
                     <FileText className="text-emerald-500" size={24} />
-                    <span className="text-sm font-medium text-emerald-700">{file.name}</span>
-                    <span className="text-xs text-emerald-600">Haga clic para cambiar el archivo</span>
+                    <span className="text-sm font-medium text-emerald-700">
+                      {files.length} documento{files.length === 1 ? '' : 's'} seleccionado{files.length === 1 ? '' : 's'}
+                    </span>
+                    <div className="w-full max-w-sm space-y-1">
+                      {files.map((selectedFile) => (
+                        <div
+                          key={`${selectedFile.name}-${selectedFile.size}-${selectedFile.lastModified}`}
+                          className="truncate rounded-lg border border-emerald-100 bg-white/80 px-3 py-1.5 text-xs font-semibold text-emerald-800"
+                        >
+                          {selectedFile.name}
+                        </div>
+                      ))}
+                    </div>
+                    <span className="text-xs text-emerald-600">Haga clic para cambiar los archivos</span>
                   </>
                 ) : (
                   <>
                     <Upload className="text-slate-400" size={24} />
-                    <span className="text-sm font-medium text-slate-600">Seleccionar archivo</span>
-                    <span className="text-xs text-slate-400">Arrastre o haga clic para subir</span>
+                    <span className="text-sm font-medium text-slate-600">Seleccionar documentos</span>
+                    <span className="text-xs text-slate-400">Puede cargar uno o varios archivos</span>
                   </>
                 )}
               </div>
