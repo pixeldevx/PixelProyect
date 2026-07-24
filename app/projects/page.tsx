@@ -262,21 +262,6 @@ function PortfolioMetric({
   );
 }
 
-function OrganizationMetric({
-  label,
-  value,
-}: {
-  label: string;
-  value: string | number;
-}) {
-  return (
-    <div className="rounded-md bg-slate-50 p-3 ring-1 ring-slate-100">
-      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">{label}</p>
-      <p className="mt-1 text-xl font-black text-slate-950">{value}</p>
-    </div>
-  );
-}
-
 export default function ProjectsPage() {
   const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
@@ -955,82 +940,105 @@ export default function ProjectsPage() {
                 <p className="mt-1 text-slate-500">Prueba con otro nombre o limpia la búsqueda.</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-                {filteredOrganizations.map((organization) => {
-                  const stats = organizationStatsById.get(organization.id) || {
-                    totalProjects: 0,
-                    activeProjects: 0,
-                    completedProjects: 0,
-                    pausedProjects: 0,
-                    memberCount: 0,
-                    lastActivity: 0,
-                  };
-                  const lastActivityLabel = stats.lastActivity ? formatDate(stats.lastActivity) : 'Sin actividad';
-                  const hasProjects = stats.totalProjects > 0;
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="grid grid-cols-[minmax(0,1fr)_120px_120px_120px_150px_44px] gap-3 border-b border-slate-100 bg-slate-50 px-4 py-3 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400 max-xl:hidden">
+                  <span>Organización</span>
+                  <span>Proyectos</span>
+                  <span>Activos</span>
+                  <span>Equipo</span>
+                  <span>Actividad</span>
+                  <span />
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {filteredOrganizations.map((organization) => {
+                    const stats = organizationStatsById.get(organization.id) || {
+                      totalProjects: 0,
+                      activeProjects: 0,
+                      completedProjects: 0,
+                      pausedProjects: 0,
+                      memberCount: 0,
+                      lastActivity: 0,
+                    };
+                    const lastActivityLabel = stats.lastActivity ? formatDate(stats.lastActivity) : 'Sin actividad';
+                    const hasProjects = stats.totalProjects > 0;
+                    const completionRatio = stats.totalProjects
+                      ? Math.round((stats.completedProjects / stats.totalProjects) * 100)
+                      : 0;
 
-                  return (
-                    <article
-                      key={organization.id}
-                      className="relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
-                    >
-                      <div className="absolute inset-x-0 top-0 h-1 bg-indigo-500" />
-                      <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-indigo-50 to-white opacity-80" />
-                      <div className="relative p-5">
-                        <div className="mb-5 flex items-start justify-between gap-3">
-                          <div className="flex min-w-0 items-center gap-3">
-                            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100">
-                              <Building2 size={24} />
-                            </div>
-                            <div className="min-w-0">
-                              <span className="mb-1 inline-flex rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-indigo-700 ring-1 ring-indigo-100 bg-indigo-50">
+                    return (
+                      <button
+                        key={organization.id}
+                        type="button"
+                        onClick={() => openOrganization(organization.id)}
+                        className="group grid w-full grid-cols-1 gap-4 bg-white px-4 py-4 text-left transition hover:bg-indigo-50/60 xl:grid-cols-[minmax(0,1fr)_120px_120px_120px_150px_44px]"
+                      >
+                        <div className="flex min-w-0 items-center gap-3">
+                          <div className="relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 text-white shadow-sm shadow-indigo-600/20">
+                            <Building2 size={23} />
+                            <div className="absolute inset-0 opacity-0 transition group-hover:opacity-20 bg-white" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="mb-1 flex flex-wrap items-center gap-2">
+                              <span className="inline-flex rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-indigo-700 ring-1 ring-indigo-100">
                                 Organización
                               </span>
-                              <h3 className="truncate text-xl font-black tracking-tight text-slate-950">
-                                {organization.name || organization.id}
-                              </h3>
+                              <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${hasProjects ? 'bg-emerald-50 text-emerald-700 ring-emerald-100' : 'bg-slate-50 text-slate-500 ring-slate-200'}`}>
+                                {hasProjects ? 'Operativa' : 'Sin proyectos'}
+                              </span>
                             </div>
-                          </div>
-                          <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${hasProjects ? 'bg-emerald-50 text-emerald-700 ring-emerald-100' : 'bg-slate-50 text-slate-500 ring-slate-200'}`}>
-                            {hasProjects ? 'Con proyectos' : 'Sin proyectos'}
-                          </span>
-                        </div>
-
-                        <p className="min-h-10 text-sm font-medium leading-5 text-slate-500 line-clamp-2">
-                          {organization.description || 'Agrupa los proyectos y equipos asignados a esta organización.'}
-                        </p>
-
-                        <div className="mt-5 grid grid-cols-2 gap-2">
-                          <OrganizationMetric label="Proyectos" value={compactNumber(stats.totalProjects)} />
-                          <OrganizationMetric label="Activos" value={compactNumber(stats.activeProjects)} />
-                          <OrganizationMetric label="Cerrados" value={compactNumber(stats.completedProjects)} />
-                          <OrganizationMetric label="Equipo" value={compactNumber(stats.memberCount)} />
-                        </div>
-
-                        <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
-                          <div className="min-w-0 text-xs font-bold text-slate-500">
-                            <div className="mb-1 flex items-center gap-2">
-                              <Clock size={14} />
-                              <span>Actividad: {lastActivityLabel}</span>
-                            </div>
-                            <p className="truncate text-slate-400">
-                              {stats.pausedProjects > 0
-                                ? `${compactNumber(stats.pausedProjects)} proyecto${stats.pausedProjects === 1 ? '' : 's'} en pausa`
-                                : 'Lista para navegación operativa'}
+                            <h3 className="truncate text-lg font-black tracking-tight text-slate-950 group-hover:text-indigo-800">
+                              {organization.name || organization.id}
+                            </h3>
+                            <p className="mt-1 line-clamp-1 text-sm font-medium text-slate-500">
+                              {organization.description || 'Agrupa proyectos, equipos y permisos de acceso.'}
                             </p>
                           </div>
-                          <Button
-                            type="button"
-                            onClick={() => openOrganization(organization.id)}
-                            className="h-10 shrink-0 bg-slate-950 px-4 font-black text-white hover:bg-indigo-700"
-                          >
-                            Entrar
-                            <ArrowRight size={16} />
-                          </Button>
                         </div>
-                      </div>
-                    </article>
-                  );
-                })}
+
+                        <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:contents">
+                          <div className="rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-100 xl:bg-transparent xl:p-0 xl:ring-0">
+                            <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400 xl:hidden">Proyectos</p>
+                            <p className="text-lg font-black text-slate-950">{compactNumber(stats.totalProjects)}</p>
+                            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                              <div className="h-full rounded-full bg-indigo-500" style={{ width: `${completionRatio}%` }} />
+                            </div>
+                          </div>
+                          <div className="rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-100 xl:bg-transparent xl:p-0 xl:ring-0">
+                            <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400 xl:hidden">Activos</p>
+                            <p className="text-lg font-black text-emerald-700">{compactNumber(stats.activeProjects)}</p>
+                            <p className="text-[11px] font-bold text-slate-400">{compactNumber(stats.completedProjects)} cerrados</p>
+                          </div>
+                          <div className="rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-100 xl:bg-transparent xl:p-0 xl:ring-0">
+                            <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400 xl:hidden">Equipo</p>
+                            <p className="text-lg font-black text-slate-950">{compactNumber(stats.memberCount)}</p>
+                            <p className="text-[11px] font-bold text-slate-400">personas</p>
+                          </div>
+                          <div className="rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-100 xl:bg-transparent xl:p-0 xl:ring-0">
+                            <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400 xl:hidden">Actividad</p>
+                            <p className="truncate text-sm font-black text-slate-700">{lastActivityLabel}</p>
+                            <p className="truncate text-[11px] font-bold text-slate-400">
+                              {stats.pausedProjects > 0
+                                ? `${compactNumber(stats.pausedProjects)} en pausa`
+                                : 'Lista para entrar'}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-end xl:hidden">
+                          <span className="inline-flex items-center gap-2 rounded-lg bg-slate-950 px-3 py-2 text-xs font-black text-white">
+                            Entrar
+                            <ArrowRight size={14} />
+                          </span>
+                        </div>
+                        <div className="hidden items-center justify-end xl:flex">
+                          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition group-hover:border-indigo-200 group-hover:bg-indigo-600 group-hover:text-white">
+                            <ArrowRight size={16} />
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </>
@@ -1090,101 +1098,100 @@ export default function ProjectsPage() {
             <p className="mt-1 text-slate-500">Prueba con otro nombre, organización o filtro de salud.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-            {filteredProjects.map((project) => {
-              const stats = projectStatsById[project.id] || EMPTY_PROJECT_STATS;
-              const health = getProjectHealth(stats);
-              const HealthIcon = health.icon;
-              const projectMembers = getProjectMembers(project);
-              const organization =
-                organizationsById.get(project.organizationId) ||
-                (project.organizationIds || [])
-                  .map((organizationId: string) => organizationsById.get(organizationId))
-                  .find(Boolean);
-              const memberCount = project.assignedTeamMembers?.length || 0;
-              const lastActivityLabel = stats.lastActivity ? formatDate(stats.lastActivity) : formatDate(project.updatedAt || project.createdAt);
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="grid grid-cols-[minmax(280px,1.45fr)_minmax(220px,1fr)_230px_150px] gap-4 border-b border-slate-100 bg-slate-50 px-4 py-3 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400 max-xl:hidden">
+              <span>Proyecto</span>
+              <span>Avance y señales</span>
+              <span>Operación</span>
+              <span className="text-right">Acciones</span>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {filteredProjects.map((project) => {
+                const stats = projectStatsById[project.id] || EMPTY_PROJECT_STATS;
+                const health = getProjectHealth(stats);
+                const HealthIcon = health.icon;
+                const projectMembers = getProjectMembers(project);
+                const organization =
+                  organizationsById.get(project.organizationId) ||
+                  (project.organizationIds || [])
+                    .map((organizationId: string) => organizationsById.get(organizationId))
+                    .find(Boolean);
+                const memberCount = project.assignedTeamMembers?.length || 0;
+                const lastActivityLabel = stats.lastActivity ? formatDate(stats.lastActivity) : formatDate(project.updatedAt || project.createdAt);
+                const progressValue = Math.min(Math.max(stats.averageProgress, 0), 100);
 
-              return (
-                <article key={project.id} className="relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-                  <div className={`absolute inset-x-0 top-0 h-1 ${health.rail}`} />
-                  <div className={`absolute inset-x-0 top-0 h-28 bg-gradient-to-b ${health.glow} opacity-80`} />
-                  <div className="relative p-5">
-                    <div className="mb-4 flex items-start justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-3">
-                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-indigo-600 ring-1 ring-slate-200">
+                return (
+                  <article key={project.id} className="group relative overflow-hidden bg-white transition hover:bg-slate-50">
+                    <div className={`absolute left-0 top-0 h-full w-1.5 ${health.rail}`} />
+                    <div className={`pointer-events-none absolute inset-y-0 left-0 w-2/3 bg-gradient-to-r ${health.glow} opacity-0 transition group-hover:opacity-80`} />
+                    <div className="relative grid grid-cols-1 gap-4 px-4 py-4 xl:grid-cols-[minmax(280px,1.45fr)_minmax(220px,1fr)_230px_150px] xl:items-center">
+                      <div className="flex min-w-0 items-start gap-3 pl-2">
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white text-indigo-600 shadow-sm ring-1 ring-slate-200 transition group-hover:ring-indigo-200">
                           <FolderKanban size={22} />
                         </div>
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <div className="mb-1 flex flex-wrap items-center gap-2">
                             {getStatusBadge(project.status)}
-                            <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${health.badge}`}>
+                            <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${health.badge}`}>
                               <HealthIcon size={12} />
                               {health.label}
                             </span>
                           </div>
-                          <h3 className="truncate text-xl font-black tracking-tight text-slate-950">{project.name}</h3>
+                          <h3 className="truncate text-lg font-black tracking-tight text-slate-950 group-hover:text-indigo-800">{project.name}</h3>
+                          <p className="mt-1 line-clamp-1 text-sm font-medium text-slate-500">
+                            {project.description || 'Sin descripción'}
+                          </p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-bold text-slate-400">
+                            <span className="inline-flex items-center gap-1">
+                              <Building2 size={13} />
+                              {organization?.name || 'Sin organización'}
+                            </span>
+                            <span className="inline-flex items-center gap-1">
+                              <Clock size={13} />
+                              Actividad: {lastActivityLabel}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                      {canDeleteProject(project) && (
-                        <button
-                          onClick={() => handleDeleteProject(project.id)}
-                          className="rounded-md p-2 text-slate-400 transition hover:bg-red-50 hover:text-red-600"
-                          title="Eliminar proyecto"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      )}
-                    </div>
 
-                    <p className="min-h-10 text-sm font-medium leading-5 text-slate-500 line-clamp-2">
-                      {project.description || 'Sin descripción'}
-                    </p>
-
-                    <div className="mt-5">
-                      <div className="mb-2 flex items-center justify-between text-xs font-black uppercase tracking-[0.12em] text-slate-400">
-                        <span>Avance general</span>
-                        <span className="text-slate-700">{stats.averageProgress}%</span>
-                      </div>
-                      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                        <div className={`h-full rounded-full ${health.rail}`} style={{ width: `${Math.min(Math.max(stats.averageProgress, 0), 100)}%` }} />
-                      </div>
-                    </div>
-
-                    <div className="mt-5 grid grid-cols-3 gap-2">
-                      <div className="rounded-md bg-slate-50 p-3 ring-1 ring-slate-100">
-                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Abiertas</p>
-                        <p className="mt-1 text-xl font-black text-slate-950">{compactNumber(stats.open)}</p>
-                      </div>
-                      <div className={`rounded-md p-3 ring-1 ${stats.overdue > 0 ? 'bg-red-50 ring-red-100' : 'bg-slate-50 ring-slate-100'}`}>
-                        <p className={`text-[10px] font-black uppercase tracking-[0.14em] ${stats.overdue > 0 ? 'text-red-500' : 'text-slate-400'}`}>Vencidas</p>
-                        <p className={`mt-1 text-xl font-black ${stats.overdue > 0 ? 'text-red-700' : 'text-slate-950'}`}>{compactNumber(stats.overdue)}</p>
-                      </div>
-                      <div className={`rounded-md p-3 ring-1 ${stats.dueSoon > 0 ? 'bg-orange-50 ring-orange-100' : 'bg-slate-50 ring-slate-100'}`}>
-                        <p className={`text-[10px] font-black uppercase tracking-[0.14em] ${stats.dueSoon > 0 ? 'text-orange-500' : 'text-slate-400'}`}>Próximas</p>
-                        <p className={`mt-1 text-xl font-black ${stats.dueSoon > 0 ? 'text-orange-700' : 'text-slate-950'}`}>{compactNumber(stats.dueSoon)}</p>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 grid grid-cols-1 gap-2 text-xs font-bold text-slate-500 sm:grid-cols-2">
-                      <div className="flex min-w-0 items-center gap-2 rounded-md bg-white/70 px-3 py-2 ring-1 ring-slate-100">
-                        <Clock size={14} className="shrink-0 text-slate-400" />
-                        <span className="truncate">Próximo cierre: {formatShortDate(stats.nextDueDate)}</span>
-                      </div>
-                      <div className="flex min-w-0 items-center gap-2 rounded-md bg-white/70 px-3 py-2 ring-1 ring-slate-100">
-                        <BarChart3 size={14} className="shrink-0 text-slate-400" />
-                        <span className="truncate">{compactNumber(stats.workflows)} workflows · {compactNumber(stats.highPriority)} alta prioridad</span>
-                      </div>
-                    </div>
-
-                    <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
-                      <div className="min-w-0">
-                        <div className="mb-2 flex items-center gap-2 text-xs font-bold text-slate-500">
-                          <Clock size={14} />
-                          <span>Actividad: {lastActivityLabel}</span>
+                      <div className="rounded-xl border border-slate-100 bg-white/80 p-3 shadow-sm">
+                        <div className="mb-2 flex items-center justify-between text-xs font-black uppercase tracking-[0.12em] text-slate-400">
+                          <span>Avance general</span>
+                          <span className="text-slate-800">{progressValue}%</span>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                          <div className={`h-full rounded-full ${health.rail}`} style={{ width: `${progressValue}%` }} />
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-bold text-slate-500">
+                          <div className="flex min-w-0 items-center gap-2 rounded-lg bg-slate-50 px-2 py-1.5">
+                            <Clock size={14} className="shrink-0 text-slate-400" />
+                            <span className="truncate">Cierre: {formatShortDate(stats.nextDueDate)}</span>
+                          </div>
+                          <div className="flex min-w-0 items-center gap-2 rounded-lg bg-slate-50 px-2 py-1.5">
+                            <BarChart3 size={14} className="shrink-0 text-slate-400" />
+                            <span className="truncate">{compactNumber(stats.workflows)} workflows</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-3 gap-2 xl:grid-cols-3">
+                          <div className="rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-100">
+                            <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">Abiertas</p>
+                            <p className="text-lg font-black text-slate-950">{compactNumber(stats.open)}</p>
+                          </div>
+                          <div className={`rounded-lg px-3 py-2 ring-1 ${stats.overdue > 0 ? 'bg-red-50 ring-red-100' : 'bg-slate-50 ring-slate-100'}`}>
+                            <p className={`text-[10px] font-black uppercase tracking-[0.12em] ${stats.overdue > 0 ? 'text-red-500' : 'text-slate-400'}`}>Vencidas</p>
+                            <p className={`text-lg font-black ${stats.overdue > 0 ? 'text-red-700' : 'text-slate-950'}`}>{compactNumber(stats.overdue)}</p>
+                          </div>
+                          <div className={`rounded-lg px-3 py-2 ring-1 ${stats.dueSoon > 0 ? 'bg-orange-50 ring-orange-100' : 'bg-slate-50 ring-slate-100'}`}>
+                            <p className={`text-[10px] font-black uppercase tracking-[0.12em] ${stats.dueSoon > 0 ? 'text-orange-500' : 'text-slate-400'}`}>Próx.</p>
+                            <p className={`text-lg font-black ${stats.dueSoon > 0 ? 'text-orange-700' : 'text-slate-950'}`}>{compactNumber(stats.dueSoon)}</p>
+                          </div>
+                        </div>
+                        <div className="flex min-w-0 items-center gap-2">
                           <div className="flex -space-x-2 overflow-hidden">
-                            {projectMembers.slice(0, 4).map((member: any) => {
+                            {projectMembers.slice(0, 5).map((member: any) => {
                               const display = member.name || member.email || '?';
                               return (
                                 <div key={member.id} className="relative inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-full bg-indigo-100 text-[10px] font-black text-indigo-700 ring-2 ring-white" title={display}>
@@ -1196,38 +1203,46 @@ export default function ProjectsPage() {
                                 </div>
                               );
                             })}
-                            {memberCount > 4 && (
+                            {memberCount > 5 && (
                               <div className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-[10px] font-black text-slate-600 ring-2 ring-white">
-                                +{memberCount - 4}
+                                +{memberCount - 5}
                               </div>
                             )}
                           </div>
-                          <div className="min-w-0 text-xs font-bold text-slate-500">
-                            <p className="truncate">{memberCount} miembro{memberCount !== 1 ? 's' : ''}</p>
-                            <p className="truncate text-slate-400">{organization?.name || 'Sin organización'}</p>
-                          </div>
+                          <span className="truncate text-xs font-bold text-slate-500">
+                            {memberCount} miembro{memberCount !== 1 ? 's' : ''}
+                          </span>
                         </div>
                       </div>
 
-                      <div className="flex shrink-0 flex-col gap-2">
+                      <div className="flex flex-wrap justify-end gap-2">
                         {canEditProject(project) && (
-                          <Button variant="outline" size="sm" onClick={() => handleOpenEditTeam(project)} className="h-9 justify-start border-slate-200 text-slate-600 hover:bg-slate-50">
+                          <Button variant="outline" size="sm" onClick={() => handleOpenEditTeam(project)} className="h-9 border-slate-200 bg-white text-slate-600 hover:bg-slate-50">
                             <Users size={14} />
                             Equipo
                           </Button>
                         )}
                         <Link href={`/projects/${project.id}`}>
-                          <Button className="h-10 bg-slate-950 px-4 font-black text-white hover:bg-indigo-700">
+                          <Button className="h-9 bg-slate-950 px-4 font-black text-white hover:bg-indigo-700">
                             Abrir
-                            <ArrowRight size={16} />
+                            <ArrowRight size={15} />
                           </Button>
                         </Link>
+                        {canDeleteProject(project) && (
+                          <button
+                            onClick={() => handleDeleteProject(project.id)}
+                            className="flex h-9 w-9 items-center justify-center rounded-md border border-red-100 bg-white text-red-500 transition hover:bg-red-50"
+                            title="Eliminar proyecto"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
                       </div>
                     </div>
-                  </div>
-                </article>
-              );
-            })}
+                  </article>
+                );
+              })}
+            </div>
           </div>
         )}
           </>
