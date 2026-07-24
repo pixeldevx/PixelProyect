@@ -598,6 +598,14 @@ const getDateValue = (value: any): Date | null => {
   if (!value) return null;
   if (value instanceof Date) return value;
   if (typeof value?.toDate === 'function') return value.toDate();
+  if (typeof value === 'string') {
+    const dateOnlyMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (dateOnlyMatch) {
+      const [, year, month, day] = dateOnlyMatch;
+      const localDate = new Date(Number(year), Number(month) - 1, Number(day));
+      return Number.isNaN(localDate.getTime()) ? null : localDate;
+    }
+  }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
@@ -608,7 +616,13 @@ const formatDate = (value: any) => {
   return date.toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' });
 };
 
-const todayInputValue = () => new Date().toISOString().slice(0, 10);
+const todayInputValue = () => {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 const inclusiveDays = (start: string, end: string) => {
   if (!start || !end) return 1;
