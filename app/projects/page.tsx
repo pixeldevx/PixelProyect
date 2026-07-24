@@ -1099,7 +1099,7 @@ export default function ProjectsPage() {
           </div>
         ) : (
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div className="grid grid-cols-[minmax(280px,1.45fr)_minmax(220px,1fr)_230px_150px] gap-4 border-b border-slate-100 bg-slate-50 px-4 py-3 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400 max-xl:hidden">
+            <div className="grid grid-cols-[minmax(250px,1.35fr)_minmax(220px,1fr)_minmax(230px,.85fr)_minmax(112px,.35fr)] gap-3 border-b border-slate-100 bg-slate-50 px-4 py-3 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400 max-xl:hidden">
               <span>Proyecto</span>
               <span>Avance y señales</span>
               <span>Operación</span>
@@ -1124,7 +1124,7 @@ export default function ProjectsPage() {
                   <article key={project.id} className="group relative overflow-hidden bg-white transition hover:bg-slate-50">
                     <div className={`absolute left-0 top-0 h-full w-1.5 ${health.rail}`} />
                     <div className={`pointer-events-none absolute inset-y-0 left-0 w-2/3 bg-gradient-to-r ${health.glow} opacity-0 transition group-hover:opacity-80`} />
-                    <div className="relative grid grid-cols-1 gap-4 px-4 py-4 xl:grid-cols-[minmax(280px,1.45fr)_minmax(220px,1fr)_230px_150px] xl:items-center">
+                    <div className="relative grid grid-cols-1 gap-4 px-4 py-4 xl:grid-cols-[minmax(250px,1.35fr)_minmax(220px,1fr)_minmax(230px,.85fr)_minmax(112px,.35fr)] xl:items-center">
                       <div className="flex min-w-0 items-start gap-3 pl-2">
                         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white text-indigo-600 shadow-sm ring-1 ring-slate-200 transition group-hover:ring-indigo-200">
                           <FolderKanban size={22} />
@@ -1174,24 +1174,24 @@ export default function ProjectsPage() {
                         </div>
                       </div>
 
-                      <div className="space-y-2">
-                        <div className="grid grid-cols-3 gap-2 xl:grid-cols-3">
-                          <div className="rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-100">
-                            <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">Abiertas</p>
+                      <div className="min-w-0 space-y-2">
+                        <div className="grid grid-cols-3 gap-1.5">
+                          <div className="min-w-0 rounded-lg bg-slate-50 px-2.5 py-2 ring-1 ring-slate-100">
+                            <p className="truncate text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">Abiertas</p>
                             <p className="text-lg font-black text-slate-950">{compactNumber(stats.open)}</p>
                           </div>
-                          <div className={`rounded-lg px-3 py-2 ring-1 ${stats.overdue > 0 ? 'bg-red-50 ring-red-100' : 'bg-slate-50 ring-slate-100'}`}>
-                            <p className={`text-[10px] font-black uppercase tracking-[0.12em] ${stats.overdue > 0 ? 'text-red-500' : 'text-slate-400'}`}>Vencidas</p>
+                          <div className={`min-w-0 rounded-lg px-2.5 py-2 ring-1 ${stats.overdue > 0 ? 'bg-red-50 ring-red-100' : 'bg-slate-50 ring-slate-100'}`}>
+                            <p className={`truncate text-[10px] font-black uppercase tracking-[0.12em] ${stats.overdue > 0 ? 'text-red-500' : 'text-slate-400'}`}>Vencidas</p>
                             <p className={`text-lg font-black ${stats.overdue > 0 ? 'text-red-700' : 'text-slate-950'}`}>{compactNumber(stats.overdue)}</p>
                           </div>
-                          <div className={`rounded-lg px-3 py-2 ring-1 ${stats.dueSoon > 0 ? 'bg-orange-50 ring-orange-100' : 'bg-slate-50 ring-slate-100'}`}>
-                            <p className={`text-[10px] font-black uppercase tracking-[0.12em] ${stats.dueSoon > 0 ? 'text-orange-500' : 'text-slate-400'}`}>Próx.</p>
+                          <div className={`min-w-0 rounded-lg px-2.5 py-2 ring-1 ${stats.dueSoon > 0 ? 'bg-orange-50 ring-orange-100' : 'bg-slate-50 ring-slate-100'}`}>
+                            <p className={`truncate text-[10px] font-black uppercase tracking-[0.12em] ${stats.dueSoon > 0 ? 'text-orange-500' : 'text-slate-400'}`}>Próx.</p>
                             <p className={`text-lg font-black ${stats.dueSoon > 0 ? 'text-orange-700' : 'text-slate-950'}`}>{compactNumber(stats.dueSoon)}</p>
                           </div>
                         </div>
-                        <div className="flex min-w-0 items-center gap-2">
-                          <div className="flex -space-x-2 overflow-hidden">
-                            {projectMembers.slice(0, 5).map((member: any) => {
+                        <div className="flex min-w-0 items-center gap-2 rounded-lg bg-white/70 px-1.5 py-1 ring-1 ring-slate-100">
+                          <div className="flex shrink-0 -space-x-2 overflow-hidden">
+                            {projectMembers.slice(0, 4).map((member: any) => {
                               const display = member.name || member.email || '?';
                               return (
                                 <div key={member.id} className="relative inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-full bg-indigo-100 text-[10px] font-black text-indigo-700 ring-2 ring-white" title={display}>
@@ -1203,9 +1203,9 @@ export default function ProjectsPage() {
                                 </div>
                               );
                             })}
-                            {memberCount > 5 && (
+                            {memberCount > 4 && (
                               <div className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-[10px] font-black text-slate-600 ring-2 ring-white">
-                                +{memberCount - 5}
+                                +{memberCount - 4}
                               </div>
                             )}
                           </div>
@@ -1215,15 +1215,15 @@ export default function ProjectsPage() {
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap justify-end gap-2">
+                      <div className="flex flex-wrap items-center justify-start gap-2 xl:flex-col xl:items-stretch xl:justify-center">
                         {canEditProject(project) && (
-                          <Button variant="outline" size="sm" onClick={() => handleOpenEditTeam(project)} className="h-9 border-slate-200 bg-white text-slate-600 hover:bg-slate-50">
+                          <Button variant="outline" size="sm" onClick={() => handleOpenEditTeam(project)} className="h-9 justify-center border-slate-200 bg-white px-3 text-slate-600 hover:bg-slate-50 xl:w-full">
                             <Users size={14} />
-                            Equipo
+                            <span className="xl:sr-only 2xl:not-sr-only">Equipo</span>
                           </Button>
                         )}
-                        <Link href={`/projects/${project.id}`}>
-                          <Button className="h-9 bg-slate-950 px-4 font-black text-white hover:bg-indigo-700">
+                        <Link href={`/projects/${project.id}`} className="min-w-0 xl:w-full">
+                          <Button className="h-9 w-full bg-slate-950 px-4 font-black text-white hover:bg-indigo-700">
                             Abrir
                             <ArrowRight size={15} />
                           </Button>
@@ -1231,7 +1231,7 @@ export default function ProjectsPage() {
                         {canDeleteProject(project) && (
                           <button
                             onClick={() => handleDeleteProject(project.id)}
-                            className="flex h-9 w-9 items-center justify-center rounded-md border border-red-100 bg-white text-red-500 transition hover:bg-red-50"
+                            className="flex h-9 w-9 items-center justify-center rounded-md border border-red-100 bg-white text-red-500 transition hover:bg-red-50 xl:w-full"
                             title="Eliminar proyecto"
                           >
                             <Trash2 className="h-4 w-4" />
