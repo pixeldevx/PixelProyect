@@ -8,6 +8,8 @@ import {
   AlertTriangle,
   ArrowRight,
   BarChart3,
+  Building2,
+  ChevronLeft,
   CheckCircle2,
   Clock,
   Folder,
@@ -28,7 +30,7 @@ import { useAuth } from '@/hooks/useAuth';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import Image from 'next/image';
-import { belongsToAnyOrganization } from '@/lib/organizations';
+import { belongsToAnyOrganization, getOrganizationIds } from '@/lib/organizations';
 import { differenceInCalendarDays, format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { isWorkflowTaskType } from '@/lib/workflow-routing';
@@ -70,6 +72,15 @@ type ProjectStats = {
 
 type HealthFilter = 'all' | 'risk' | 'dueSoon' | 'healthy';
 
+type OrganizationStats = {
+  totalProjects: number;
+  activeProjects: number;
+  completedProjects: number;
+  pausedProjects: number;
+  memberCount: number;
+  lastActivity: number;
+};
+
 const COMPLETED_STATUSES = new Set(['completed', 'completed_late', 'listo']);
 const ACTIVE_STATUSES = new Set(['in_progress', 'en_curso', 'trabajando', 'reproceso']);
 const BLOCKED_STATUSES = new Set(['stuck', 'detenido', 'blocked', 'devuelto']);
@@ -94,6 +105,8 @@ const EMPTY_PROJECT_STATS: ProjectStats = {
 };
 
 const compactNumber = (value: number) => new Intl.NumberFormat('es-CO').format(value);
+
+const getProjectOrganizationIds = (project: any) => getOrganizationIds(project);
 
 const getDate = (value: any): Date | null => {
   if (!value) return null;
@@ -249,6 +262,21 @@ function PortfolioMetric({
   );
 }
 
+function OrganizationMetric({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | number;
+}) {
+  return (
+    <div className="rounded-md bg-slate-50 p-3 ring-1 ring-slate-100">
+      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">{label}</p>
+      <p className="mt-1 text-xl font-black text-slate-950">{value}</p>
+    </div>
+  );
+}
+
 export default function ProjectsPage() {
   const { user, userRole, userOrganizationId, userOrganizationIds } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
@@ -261,6 +289,8 @@ export default function ProjectsPage() {
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const [selectedProjectOrgId, setSelectedProjectOrgId] = useState('');
   const [projectSearch, setProjectSearch] = useState('');
+  const [organizationSearch, setOrganizationSearch] = useState('');
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(null);
   const [healthFilter, setHealthFilter] = useState<HealthFilter>('all');
   const [tasksByProject, setTasksByProject] = useState<Record<string, ProjectTask[]>>({});
 
@@ -273,17 +303,33 @@ export default function ProjectsPage() {
     () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
     [userOrganizationId, userOrganizationIds]
   );
-  const visibleOrganizations = useMemo(
-    () =>
-      userRole === 'admin'
-        ? organizations
-        : organizations.filter((organization) => managedOrganizationIds.includes(organization.id)),
-    [managedOrganizationIds, organizations, userRole]
-  );
   const organizationsById = useMemo(
     () => new Map(organizations.map((organization) => [organization.id, organization])),
     [organizations]
   );
+  const accessibleOrganizationIds = useMemo(() => {
+    if (userRole === 'admin') return organizations.map((organization) => organization.id);
+
+    const ids = new Set<string>(managedOrganizationIds);
+    projects.forEach((project) => {
+      getProjectOrganizationIds(project).forEach((organizationId) => ids.add(organizationId));
+    });
+    return Array.from(ids).filter(Boolean);
+  }, [managedOrganizationIds, organizations, projects, userRole]);
+  const visibleOrganizations = useMemo(() => {
+    const accessibleSet = new Set(accessibleOrganizationIds);
+    return organizations
+      .filter((organization) => accessibleSet.has(organization.id))
+      .sort((left, right) => String(left.name || left.id).localeCompare(String(right.name || right.id), 'es'));
+  }, [accessibleOrganizationIds, organizations]);
+  const selectedOrganization = useMemo(
+    () => visibleOrganizations.find((organization) => organization.id === selectedOrganizationId) || null,
+    [selectedOrganizationId, visibleOrganizations]
+  );
+  const selectedOrganizationProjects = useMemo(() => {
+    if (!selectedOrganizationId) return [];
+    return projects.filter((project) => belongsToAnyOrganization(project, [selectedOrganizationId]));
+  }, [projects, selectedOrganizationId]);
 
   useEffect(() => {
     if (!user) return;
@@ -354,18 +400,14 @@ export default function ProjectsPage() {
   }, [user, userRole, managedOrganizationIds]);
 
   useEffect(() => {
-    if (!user) return;
-    if (projects.length === 0) {
-      setTasksByProject({});
+    if (!user || !selectedOrganizationId) {
+      return;
+    }
+    if (selectedOrganizationProjects.length === 0) {
       return;
     }
 
-    const projectIds = new Set(projects.map((project) => project.id));
-    setTasksByProject((current) =>
-      Object.fromEntries(Object.entries(current).filter(([projectId]) => projectIds.has(projectId)))
-    );
-
-    const unsubscribes = projects.map((project) =>
+    const unsubscribes = selectedOrganizationProjects.map((project) =>
       onSnapshot(
         query(collection(db, 'projects', project.id, 'tasks'), orderBy('displayOrder', 'asc')),
         (snapshot) => {
@@ -383,21 +425,15 @@ export default function ProjectsPage() {
     );
 
     return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
-  }, [projects, user]);
-
-  useEffect(() => {
-    if (!isCreating) return;
-    if (selectedProjectOrgId || visibleOrganizations.length === 0) return;
-    setSelectedProjectOrgId(visibleOrganizations[0].id);
-  }, [isCreating, selectedProjectOrgId, visibleOrganizations]);
+  }, [selectedOrganizationId, selectedOrganizationProjects, user]);
 
   const projectStatsById = useMemo(() => {
-    return Object.fromEntries(projects.map((project) => [project.id, calculateProjectStats(tasksByProject[project.id] || [])]));
-  }, [projects, tasksByProject]);
+    return Object.fromEntries(selectedOrganizationProjects.map((project) => [project.id, calculateProjectStats(tasksByProject[project.id] || [])]));
+  }, [selectedOrganizationProjects, tasksByProject]);
 
   const portfolioStats = useMemo(() => {
-    const stats = projects.map((project) => projectStatsById[project.id] || EMPTY_PROJECT_STATS);
-    const activeProjects = projects.filter((project) => project.status !== 'completed').length;
+    const stats = selectedOrganizationProjects.map((project) => projectStatsById[project.id] || EMPTY_PROJECT_STATS);
+    const activeProjects = selectedOrganizationProjects.filter((project) => project.status !== 'completed').length;
     const totalTasks = stats.reduce((sum, item) => sum + item.total, 0);
     const totalOpen = stats.reduce((sum, item) => sum + item.open, 0);
     const totalOverdue = stats.reduce((sum, item) => sum + item.overdue, 0);
@@ -416,10 +452,10 @@ export default function ProjectsPage() {
       totalWorkflows,
       averageProgress,
     };
-  }, [projectStatsById, projects]);
+  }, [projectStatsById, selectedOrganizationProjects]);
 
   const healthCounts = useMemo(() => {
-    return projects.reduce(
+    return selectedOrganizationProjects.reduce(
       (counts, project) => {
         const stats = projectStatsById[project.id] || EMPTY_PROJECT_STATS;
         const health = getProjectHealth(stats);
@@ -428,14 +464,78 @@ export default function ProjectsPage() {
         if (health.key === 'healthy') counts.healthy += 1;
         return counts;
       },
-      { all: projects.length, risk: 0, dueSoon: 0, healthy: 0 }
+      { all: selectedOrganizationProjects.length, risk: 0, dueSoon: 0, healthy: 0 }
     );
-  }, [projectStatsById, projects]);
+  }, [projectStatsById, selectedOrganizationProjects]);
+
+  const organizationStatsById = useMemo(() => {
+    const initial = new Map<string, OrganizationStats>();
+    visibleOrganizations.forEach((organization) => {
+      initial.set(organization.id, {
+        totalProjects: 0,
+        activeProjects: 0,
+        completedProjects: 0,
+        pausedProjects: 0,
+        memberCount: 0,
+        lastActivity: 0,
+      });
+    });
+
+    projects.forEach((project) => {
+      getProjectOrganizationIds(project).forEach((organizationId) => {
+        if (!initial.has(organizationId)) return;
+        const current = initial.get(organizationId)!;
+        current.totalProjects += 1;
+        if (project.status === 'completed') current.completedProjects += 1;
+        else current.activeProjects += 1;
+        if (project.status === 'on-hold') current.pausedProjects += 1;
+        current.lastActivity = Math.max(current.lastActivity, getTime(project.updatedAt || project.createdAt));
+      });
+    });
+
+    visibleOrganizations.forEach((organization) => {
+      const memberIds = new Set<string>();
+      projects
+        .filter((project) => belongsToAnyOrganization(project, [organization.id]))
+        .forEach((project) => {
+          (project.assignedTeamMembers || []).forEach((memberId: string) => memberIds.add(memberId));
+        });
+      const current = initial.get(organization.id);
+      if (current) current.memberCount = memberIds.size;
+    });
+
+    return initial;
+  }, [projects, visibleOrganizations]);
+
+  const filteredOrganizations = useMemo(() => {
+    const search = organizationSearch.trim().toLowerCase();
+    return visibleOrganizations.filter((organization) => {
+      if (!search) return true;
+      const stats = organizationStatsById.get(organization.id);
+      return [organization.name, organization.id, organization.description, stats?.totalProjects]
+        .filter((value) => value !== undefined && value !== null)
+        .some((value) => String(value).toLowerCase().includes(search));
+    });
+  }, [organizationSearch, organizationStatsById, visibleOrganizations]);
+
+  const organizationOverviewStats = useMemo(() => {
+    const memberIds = new Set<string>();
+    projects.forEach((project) => {
+      (project.assignedTeamMembers || []).forEach((memberId: string) => memberIds.add(memberId));
+    });
+
+    return {
+      organizations: visibleOrganizations.length,
+      projects: projects.length,
+      activeProjects: projects.filter((project) => project.status !== 'completed').length,
+      members: memberIds.size,
+    };
+  }, [projects, visibleOrganizations]);
 
   const filteredProjects = useMemo(() => {
     const search = projectSearch.trim().toLowerCase();
 
-    return projects.filter((project) => {
+    return selectedOrganizationProjects.filter((project) => {
       const stats = projectStatsById[project.id] || EMPTY_PROJECT_STATS;
       const health = getProjectHealth(stats);
       const organization =
@@ -462,7 +562,7 @@ export default function ProjectsPage() {
 
       return matchesSearch && matchesHealth;
     });
-  }, [healthFilter, organizationsById, projectSearch, projectStatsById, projects, teamMembers]);
+  }, [healthFilter, organizationsById, projectSearch, projectStatsById, selectedOrganizationProjects, teamMembers]);
 
   const toggleMemberSelection = (memberId: string) => {
     setSelectedMembers(prev => 
@@ -470,6 +570,29 @@ export default function ProjectsPage() {
         ? prev.filter(id => id !== memberId)
         : [...prev, memberId]
     );
+  };
+
+  const toggleCreateProject = () => {
+    setIsCreating((current) => {
+      const next = !current;
+      if (next) {
+        setSelectedProjectOrgId(selectedOrganizationId || visibleOrganizations[0]?.id || '');
+      }
+      return next;
+    });
+  };
+
+  const openOrganization = (organizationId: string) => {
+    setSelectedOrganizationId(organizationId);
+    setProjectSearch('');
+    setHealthFilter('all');
+  };
+
+  const closeOrganization = () => {
+    setSelectedOrganizationId(null);
+    setProjectSearch('');
+    setHealthFilter('all');
+    setTasksByProject({});
   };
 
   const handleOpenEditTeam = (project: any) => {
@@ -613,13 +736,27 @@ export default function ProjectsPage() {
                 <Sparkles size={14} />
                 Centro de proyectos
               </div>
-              <h1 className="text-3xl font-black tracking-tight text-slate-950">Proyectos</h1>
+              {selectedOrganization && (
+                <button
+                  type="button"
+                  onClick={closeOrganization}
+                  className="mb-3 inline-flex items-center gap-2 text-sm font-black text-slate-500 transition hover:text-indigo-700"
+                >
+                  <ChevronLeft size={16} />
+                  Volver a organizaciones
+                </button>
+              )}
+              <h1 className="text-3xl font-black tracking-tight text-slate-950">
+                {selectedOrganization ? selectedOrganization.name || 'Organización' : 'Organizaciones'}
+              </h1>
               <p className="mt-2 text-base font-medium text-slate-500">
-                Prioriza, compara y entra al proyecto correcto con señales claras de avance, carga y riesgo.
+                {selectedOrganization
+                  ? 'Prioriza, compara y entra al proyecto correcto dentro de esta organización.'
+                  : 'Primero elige la organización objetivo; luego verás únicamente los proyectos a los que tienes acceso.'}
               </p>
             </div>
             {(userRole === 'admin' || userRole === 'org_admin' || userRole === 'manager' || userRole === 'coordinador') && (
-              <Button onClick={() => setIsCreating(!isCreating)} className="h-12 shrink-0 bg-indigo-600 px-5 font-black hover:bg-indigo-700">
+              <Button onClick={toggleCreateProject} className="h-12 shrink-0 bg-indigo-600 px-5 font-black hover:bg-indigo-700">
                 <Plus size={18} />
                 Nuevo Proyecto
               </Button>
@@ -627,36 +764,69 @@ export default function ProjectsPage() {
           </div>
         </section>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <PortfolioMetric
-            label="Activos"
-            value={compactNumber(portfolioStats.activeProjects)}
-            detail={`${compactNumber(projects.length)} proyectos visibles`}
-            icon={<FolderKanban size={20} />}
-            tone="indigo"
-          />
-          <PortfolioMetric
-            label="Tareas abiertas"
-            value={compactNumber(portfolioStats.totalOpen)}
-            detail={`${portfolioStats.averageProgress}% de avance promedio`}
-            icon={<Target size={20} />}
-            tone="emerald"
-          />
-          <PortfolioMetric
-            label="Riesgo"
-            value={compactNumber(portfolioStats.totalOverdue)}
-            detail={`${compactNumber(portfolioStats.totalDueSoon)} por vencer pronto`}
-            icon={<AlertTriangle size={20} />}
-            tone={portfolioStats.totalOverdue > 0 ? 'red' : 'orange'}
-          />
-          <PortfolioMetric
-            label="Workflows"
-            value={compactNumber(portfolioStats.totalWorkflows)}
-            detail={`${compactNumber(portfolioStats.totalTasks)} tareas monitoreadas`}
-            icon={<Layers3 size={20} />}
-            tone="indigo"
-          />
-        </div>
+        {selectedOrganization ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <PortfolioMetric
+              label="Activos"
+              value={compactNumber(portfolioStats.activeProjects)}
+              detail={`${compactNumber(selectedOrganizationProjects.length)} proyectos en la organización`}
+              icon={<FolderKanban size={20} />}
+              tone="indigo"
+            />
+            <PortfolioMetric
+              label="Tareas abiertas"
+              value={compactNumber(portfolioStats.totalOpen)}
+              detail={`${portfolioStats.averageProgress}% de avance promedio`}
+              icon={<Target size={20} />}
+              tone="emerald"
+            />
+            <PortfolioMetric
+              label="Riesgo"
+              value={compactNumber(portfolioStats.totalOverdue)}
+              detail={`${compactNumber(portfolioStats.totalDueSoon)} por vencer pronto`}
+              icon={<AlertTriangle size={20} />}
+              tone={portfolioStats.totalOverdue > 0 ? 'red' : 'orange'}
+            />
+            <PortfolioMetric
+              label="Workflows"
+              value={compactNumber(portfolioStats.totalWorkflows)}
+              detail={`${compactNumber(portfolioStats.totalTasks)} tareas monitoreadas`}
+              icon={<Layers3 size={20} />}
+              tone="indigo"
+            />
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <PortfolioMetric
+              label="Organizaciones"
+              value={compactNumber(organizationOverviewStats.organizations)}
+              detail="Ámbitos a los que tienes acceso"
+              icon={<Building2 size={20} />}
+              tone="indigo"
+            />
+            <PortfolioMetric
+              label="Proyectos visibles"
+              value={compactNumber(organizationOverviewStats.projects)}
+              detail={`${compactNumber(organizationOverviewStats.activeProjects)} activos`}
+              icon={<FolderKanban size={20} />}
+              tone="emerald"
+            />
+            <PortfolioMetric
+              label="Equipo vinculado"
+              value={compactNumber(organizationOverviewStats.members)}
+              detail="Personas asignadas a proyectos visibles"
+              icon={<Users size={20} />}
+              tone="indigo"
+            />
+            <PortfolioMetric
+              label="Control"
+              value="2 niveles"
+              detail="Organización primero, proyectos después"
+              icon={<Layers3 size={20} />}
+              tone="orange"
+            />
+          </div>
+        )}
 
         {isCreating && (
           <Card className="border-indigo-100 bg-indigo-50/30 shadow-sm">
@@ -743,6 +913,129 @@ export default function ProjectsPage() {
         </Card>
       )}
 
+        {!selectedOrganization ? (
+          <>
+            <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <div>
+                  <h2 className="text-xl font-black tracking-tight text-slate-950">Organizaciones disponibles</h2>
+                  <p className="mt-1 text-sm font-medium text-slate-500">
+                    Selecciona la organización objetivo para ver sus proyectos y cargar sus métricas.
+                  </p>
+                </div>
+                <span className="inline-flex h-9 items-center rounded border border-indigo-100 bg-indigo-50 px-3 text-xs font-black uppercase tracking-[0.12em] text-indigo-700">
+                  {compactNumber(filteredOrganizations.length)} visibles
+                </span>
+              </div>
+              <div className="mt-4">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    value={organizationSearch}
+                    onChange={(event) => setOrganizationSearch(event.target.value)}
+                    className="h-11 w-full rounded-md border border-slate-200 bg-white pl-10 pr-3 text-sm font-medium text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                    placeholder="Buscar organización..."
+                  />
+                </div>
+              </div>
+            </section>
+
+            {loading ? (
+              <div className="rounded-lg border border-slate-200 bg-white py-14 text-center text-slate-500 shadow-sm">Cargando organizaciones...</div>
+            ) : visibleOrganizations.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-200 bg-white py-14 text-center shadow-sm">
+                <Building2 className="mx-auto mb-3 h-12 w-12 text-slate-300" />
+                <h3 className="text-lg font-black text-slate-900">No hay organizaciones disponibles</h3>
+                <p className="mt-1 text-slate-500">Tu usuario aún no tiene organizaciones o proyectos asociados.</p>
+              </div>
+            ) : filteredOrganizations.length === 0 ? (
+              <div className="rounded-lg border border-slate-200 bg-white py-14 text-center shadow-sm">
+                <Search className="mx-auto mb-3 h-12 w-12 text-slate-300" />
+                <h3 className="text-lg font-black text-slate-900">No encontramos organizaciones</h3>
+                <p className="mt-1 text-slate-500">Prueba con otro nombre o limpia la búsqueda.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+                {filteredOrganizations.map((organization) => {
+                  const stats = organizationStatsById.get(organization.id) || {
+                    totalProjects: 0,
+                    activeProjects: 0,
+                    completedProjects: 0,
+                    pausedProjects: 0,
+                    memberCount: 0,
+                    lastActivity: 0,
+                  };
+                  const lastActivityLabel = stats.lastActivity ? formatDate(stats.lastActivity) : 'Sin actividad';
+                  const hasProjects = stats.totalProjects > 0;
+
+                  return (
+                    <article
+                      key={organization.id}
+                      className="relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                    >
+                      <div className="absolute inset-x-0 top-0 h-1 bg-indigo-500" />
+                      <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-indigo-50 to-white opacity-80" />
+                      <div className="relative p-5">
+                        <div className="mb-5 flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100">
+                              <Building2 size={24} />
+                            </div>
+                            <div className="min-w-0">
+                              <span className="mb-1 inline-flex rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-indigo-700 ring-1 ring-indigo-100 bg-indigo-50">
+                                Organización
+                              </span>
+                              <h3 className="truncate text-xl font-black tracking-tight text-slate-950">
+                                {organization.name || organization.id}
+                              </h3>
+                            </div>
+                          </div>
+                          <span className={`rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${hasProjects ? 'bg-emerald-50 text-emerald-700 ring-emerald-100' : 'bg-slate-50 text-slate-500 ring-slate-200'}`}>
+                            {hasProjects ? 'Con proyectos' : 'Sin proyectos'}
+                          </span>
+                        </div>
+
+                        <p className="min-h-10 text-sm font-medium leading-5 text-slate-500 line-clamp-2">
+                          {organization.description || 'Agrupa los proyectos y equipos asignados a esta organización.'}
+                        </p>
+
+                        <div className="mt-5 grid grid-cols-2 gap-2">
+                          <OrganizationMetric label="Proyectos" value={compactNumber(stats.totalProjects)} />
+                          <OrganizationMetric label="Activos" value={compactNumber(stats.activeProjects)} />
+                          <OrganizationMetric label="Cerrados" value={compactNumber(stats.completedProjects)} />
+                          <OrganizationMetric label="Equipo" value={compactNumber(stats.memberCount)} />
+                        </div>
+
+                        <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
+                          <div className="min-w-0 text-xs font-bold text-slate-500">
+                            <div className="mb-1 flex items-center gap-2">
+                              <Clock size={14} />
+                              <span>Actividad: {lastActivityLabel}</span>
+                            </div>
+                            <p className="truncate text-slate-400">
+                              {stats.pausedProjects > 0
+                                ? `${compactNumber(stats.pausedProjects)} proyecto${stats.pausedProjects === 1 ? '' : 's'} en pausa`
+                                : 'Lista para navegación operativa'}
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            onClick={() => openOrganization(organization.id)}
+                            className="h-10 shrink-0 bg-slate-950 px-4 font-black text-white hover:bg-indigo-700"
+                          >
+                            Entrar
+                            <ArrowRight size={16} />
+                          </Button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
         <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div>
@@ -784,11 +1077,11 @@ export default function ProjectsPage() {
 
         {loading ? (
           <div className="rounded-lg border border-slate-200 bg-white py-14 text-center text-slate-500 shadow-sm">Cargando proyectos...</div>
-        ) : projects.length === 0 ? (
+        ) : selectedOrganizationProjects.length === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-200 bg-white py-14 text-center shadow-sm">
             <Folder className="mx-auto mb-3 h-12 w-12 text-slate-300" />
-            <h3 className="text-lg font-black text-slate-900">No hay proyectos</h3>
-            <p className="mt-1 text-slate-500">Crea tu primer proyecto para empezar a planificar.</p>
+            <h3 className="text-lg font-black text-slate-900">No hay proyectos en esta organización</h3>
+            <p className="mt-1 text-slate-500">Crea un proyecto o revisa que tu usuario esté vinculado al equipo correcto.</p>
           </div>
         ) : filteredProjects.length === 0 ? (
           <div className="rounded-lg border border-slate-200 bg-white py-14 text-center shadow-sm">
@@ -936,6 +1229,8 @@ export default function ProjectsPage() {
               );
             })}
           </div>
+        )}
+          </>
         )}
       </div>
       
