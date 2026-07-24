@@ -317,7 +317,7 @@ export default function AdministrationOverviewPage() {
   const [teamMembers, setTeamMembers] = useState<TeamMemberRow[]>([]);
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [advances, setAdvances] = useState<TravelAdvance[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [advancesLoaded, setAdvancesLoaded] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedProjectId, setSelectedProjectId] = useState('all');
   const [selectedOrganizationId, setSelectedOrganizationId] = useState('all');
@@ -325,6 +325,7 @@ export default function AdministrationOverviewPage() {
   const [showClosed, setShowClosed] = useState(false);
 
   const canAccessAdministration = Boolean(permissions.administrationProjectView);
+  const loading = canAccessAdministration && !advancesLoaded;
   const managedOrganizationIds = useMemo(
     () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
     [userOrganizationId, userOrganizationIds]
@@ -333,11 +334,8 @@ export default function AdministrationOverviewPage() {
 
   useEffect(() => {
     if (!user || !canAccessAdministration) {
-      setLoading(false);
       return;
     }
-
-    setLoading(true);
 
     const unsubscribeProjects = onSnapshot(
       query(collection(db, 'projects')),
@@ -382,11 +380,11 @@ export default function AdministrationOverviewPage() {
             } as TravelAdvance;
           })
         );
-        setLoading(false);
+        setAdvancesLoaded(true);
       },
       (error) => {
         console.error('Error loading global advances:', error);
-        setLoading(false);
+        setAdvancesLoaded(true);
       }
     );
 
@@ -427,6 +425,13 @@ export default function AdministrationOverviewPage() {
       .filter((project) => selectedOrganizationId === 'all' || belongsToAnyOrganization(project, [selectedOrganizationId]))
       .sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
   }, [scopedProjects, selectedOrganizationId]);
+  const activeSelectedProjectId = useMemo(
+    () =>
+      selectedProjectId === 'all' || visibleProjects.some((project) => project.id === selectedProjectId)
+        ? selectedProjectId
+        : 'all',
+    [selectedProjectId, visibleProjects]
+  );
 
   const baseFilteredAdvances = useMemo(() => {
     const search = normalizeText(searchTerm);
@@ -435,7 +440,7 @@ export default function AdministrationOverviewPage() {
     return advances
       .filter((advance) => scopedProjectIds.has(advance.projectId))
       .filter((advance) => visibleProjectIds.has(advance.projectId))
-      .filter((advance) => selectedProjectId === 'all' || advance.projectId === selectedProjectId)
+      .filter((advance) => activeSelectedProjectId === 'all' || advance.projectId === activeSelectedProjectId)
       .filter((advance) => showClosed || (advance.status !== 'closed' && advance.reconciliationStatus !== 'reconciled'))
       .filter((advance) => {
         if (!search) return true;
@@ -457,7 +462,7 @@ export default function AdministrationOverviewPage() {
           .some((value) => normalizeText(value).includes(search));
       })
       .sort((left, right) => getDateTime(right.createdAt || right.approvedAt) - getDateTime(left.createdAt || left.approvedAt));
-  }, [advances, organizations, projectById, scopedProjectIds, searchTerm, selectedProjectId, showClosed, visibleProjects]);
+  }, [activeSelectedProjectId, advances, organizations, projectById, scopedProjectIds, searchTerm, showClosed, visibleProjects]);
 
   const filteredAdvances = useMemo(
     () =>
@@ -493,12 +498,6 @@ export default function AdministrationOverviewPage() {
       closed: baseFilteredAdvances.filter((advance) => advance.status === 'closed' || advance.reconciliationStatus === 'reconciled').length,
     };
   }, [baseFilteredAdvances, filteredAdvances]);
-
-  useEffect(() => {
-    if (selectedProjectId === 'all') return;
-    if (visibleProjects.some((project) => project.id === selectedProjectId)) return;
-    setSelectedProjectId('all');
-  }, [selectedProjectId, visibleProjects]);
 
   const statusFilters: Array<{ id: StatusFilter; label: string; count: number }> = [
     { id: 'all', label: 'Todos', count: baseFilteredAdvances.length },
@@ -581,7 +580,7 @@ export default function AdministrationOverviewPage() {
                   ))}
                 </select>
                 <select
-                  value={selectedProjectId}
+                  value={activeSelectedProjectId}
                   onChange={(event) => setSelectedProjectId(event.target.value)}
                   className="h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/15"
                 >
