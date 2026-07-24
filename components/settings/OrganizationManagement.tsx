@@ -4,11 +4,12 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
-import { Plus, Edit2 } from 'lucide-react';
-import { collection, query, onSnapshot, doc, setDoc, updateDoc, serverTimestamp } from '@/lib/supabase/document-store';
+import { Plus, Edit2, Loader2, Trash2 } from 'lucide-react';
+import { collection, query, onSnapshot, doc, setDoc, updateDoc, serverTimestamp, deleteDoc, getDocs } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/useAuth';
+import { belongsToAnyOrganization } from '@/lib/organizations';
 
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 
@@ -19,6 +20,7 @@ export function OrganizationManagement() {
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingOrg, setEditingOrg] = useState<any>(null);
+  const [deletingOrgId, setDeletingOrgId] = useState<string | null>(null);
   
   const [orgName, setOrgName] = useState('');
 
@@ -91,6 +93,59 @@ export function OrganizationManagement() {
     }
   };
 
+  const getOrganizationDependencies = async (organizationId: string) => {
+    const [projectsSnapshot, teamMembersSnapshot, usersSnapshot] = await Promise.all([
+      getDocs(query(collection(db, 'projects'))),
+      getDocs(query(collection(db, 'team_members'))),
+      getDocs(query(collection(db, 'users'))),
+    ]);
+
+    const projectCount = projectsSnapshot.docs.filter((projectDoc) =>
+      belongsToAnyOrganization(projectDoc.data(), [organizationId])
+    ).length;
+    const memberCount = teamMembersSnapshot.docs.filter((memberDoc) =>
+      belongsToAnyOrganization(memberDoc.data(), [organizationId])
+    ).length;
+    const userCount = usersSnapshot.docs.filter((userDoc) =>
+      belongsToAnyOrganization(userDoc.data(), [organizationId])
+    ).length;
+
+    return { projectCount, memberCount, userCount };
+  };
+
+  const handleDeleteOrg = async (organization: any) => {
+    if (!organization?.id) return;
+
+    const organizationName = organization.name || organization.id;
+    const confirmed = window.confirm(
+      `¿Eliminar la organización "${organizationName}"?\n\nEsta acción no se puede deshacer. Pixel revisará primero que no tenga proyectos ni usuarios asociados.`
+    );
+    if (!confirmed) return;
+
+    setDeletingOrgId(organization.id);
+    try {
+      const dependencies = await getOrganizationDependencies(organization.id);
+      const dependencyMessages = [
+        dependencies.projectCount > 0 ? `${dependencies.projectCount} proyecto${dependencies.projectCount === 1 ? '' : 's'}` : '',
+        dependencies.memberCount > 0 ? `${dependencies.memberCount} miembro${dependencies.memberCount === 1 ? '' : 's'} de equipo` : '',
+        dependencies.userCount > 0 ? `${dependencies.userCount} usuario${dependencies.userCount === 1 ? '' : 's'}` : '',
+      ].filter(Boolean);
+
+      if (dependencyMessages.length > 0) {
+        toast.error(`No se puede eliminar "${organizationName}" porque tiene ${dependencyMessages.join(', ')} asociados.`);
+        return;
+      }
+
+      await deleteDoc(doc(db, 'organizations', organization.id));
+      toast.success(`Organización "${organizationName}" eliminada`);
+    } catch (error) {
+      toast.error("Error al eliminar la organización");
+      handleDataError(error, OperationType.DELETE, `organizations/${organization.id}`);
+    } finally {
+      setDeletingOrgId(null);
+    }
+  };
+
   if (userRole !== 'admin') {
     return null;
   }
@@ -135,12 +190,27 @@ export function OrganizationManagement() {
                     {o.createdAt ? new Date(o.createdAt.toDate()).toLocaleDateString() : 'N/A'}
                   </TableCell>
                   <TableCell className="text-right">
-                    <button 
-                      onClick={() => handleOpenModal(o)}
-                      className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
-                    >
-                      <Edit2 size={16} />
-                    </button>
+                    <div className="flex justify-end gap-1">
+                      <button
+                        onClick={() => handleOpenModal(o)}
+                        className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                        title="Editar organización"
+                      >
+                        <Edit2 size={16} />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteOrg(o)}
+                        disabled={deletingOrgId === o.id}
+                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                        title="Eliminar organización"
+                      >
+                        {deletingOrgId === o.id ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <Trash2 size={16} />
+                        )}
+                      </button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
