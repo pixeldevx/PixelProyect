@@ -40,7 +40,7 @@ import {
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { SecureDocumentLink } from '@/components/projects/SecureDocumentLink';
-import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, updateDoc, where } from '@/lib/supabase/document-store';
+import { addDoc, arrayUnion, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, updateDoc, where } from '@/lib/supabase/document-store';
 import { db, storage } from '@/lib/backend';
 import {
   ref,
@@ -181,6 +181,8 @@ type AdvancePaymentSupport = {
   paidAt: string;
   paidBy?: string | null;
   paidByName?: string;
+  sequence?: number;
+  kind?: 'partial' | 'final' | 'full';
 };
 
 type AdvanceReconciliationSupport = {
@@ -254,7 +256,7 @@ type TravelAdvance = {
   taskTitle?: string;
   taskIds?: string[];
   taskTitles?: string[];
-  status: 'submitted' | 'pending_payment' | 'paid' | 'approved' | 'completed' | 'returned' | 'rejected' | 'closed';
+  status: 'submitted' | 'pending_payment' | 'partially_paid' | 'paid' | 'approved' | 'completed' | 'returned' | 'rejected' | 'closed';
   items: AdvanceItem[];
   receipts?: AdvanceReceipt[];
   amountRequested: number;
@@ -273,6 +275,10 @@ type TravelAdvance = {
   requesterSignature?: AdvanceSignatureSnapshot;
   approvalSignature?: AdvanceSignatureSnapshot;
   paymentSupport?: AdvancePaymentSupport;
+  paymentSupports?: AdvancePaymentSupport[];
+  amountPaid?: number;
+  paymentBalance?: number;
+  paymentProgress?: number;
   returnSupport?: AdvanceReconciliationSupport;
   compensationSupport?: AdvanceReconciliationSupport;
   reconciliationStatus?: AdvanceReconciliationStatus;
@@ -317,6 +323,10 @@ type BillingPayment = {
   source?: string;
   advanceId?: string;
   date?: any;
+  reference?: string | null;
+  notes?: string | null;
+  supportDocumentId?: string;
+  supportStoragePath?: string;
 };
 
 type ReviewAction =
@@ -527,6 +537,53 @@ const getAdvanceFinancialCoverage = (advance: Partial<TravelAdvance>) => {
   };
 };
 
+const getAdvancePaymentSupports = (advance: Partial<TravelAdvance>) => {
+  const supports = Array.isArray(advance.paymentSupports) ? advance.paymentSupports.filter(Boolean) : [];
+  const legacySupport = advance.paymentSupport;
+  const hasLegacyInList =
+    legacySupport &&
+    supports.some((support) =>
+      Boolean(legacySupport.billingPaymentId && support.billingPaymentId === legacySupport.billingPaymentId) ||
+      Boolean(legacySupport.documentId && support.documentId === legacySupport.documentId)
+    );
+
+  return (
+    legacySupport && !hasLegacyInList
+      ? [legacySupport, ...supports]
+      : supports.length > 0
+        ? supports
+        : legacySupport
+          ? [legacySupport]
+          : []
+  ).sort((left, right) => {
+    const leftDate = getDateValue(left.date || left.paidAt)?.getTime() || 0;
+    const rightDate = getDateValue(right.date || right.paidAt)?.getTime() || 0;
+    if (leftDate !== rightDate) return leftDate - rightDate;
+    return asNumber(left.sequence) - asNumber(right.sequence);
+  });
+};
+
+const getAdvancePaymentSummary = (advance: Partial<TravelAdvance>) => {
+  const approved = roundCurrency(advance.amountApproved || advance.amountRequested);
+  const supports = getAdvancePaymentSupports(advance);
+  const paid = roundCurrency(
+    supports.reduce((sum, support) => sum + asNumber(support.amount), 0) || asNumber(advance.amountPaid)
+  );
+  const balance = Math.max(0, roundCurrency(approved - paid));
+  const progress = approved > 0 ? Math.min(100, Math.round((paid / approved) * 100)) : 0;
+
+  return {
+    approved,
+    supports,
+    paid,
+    balance,
+    progress,
+    hasPayment: paid > 0 || supports.length > 0 || Boolean(advance.paymentSupport),
+    isFullyPaid: approved > 0 && paid + 0.01 >= approved,
+    isPartiallyPaid: paid > 0 && approved > 0 && paid + 0.01 < approved,
+  };
+};
+
 const getAdvanceJustifiedAmount = (advance: Partial<TravelAdvance>) =>
   roundCurrency(
     (advance.receipts || [])
@@ -554,7 +611,8 @@ const isAdvanceReconciled = (advance: Partial<TravelAdvance>) =>
   advance.reconciliationStatus === 'reconciled' || advance.status === 'closed';
 
 const getAdvanceReportAvailability = (advance: Partial<TravelAdvance>) => {
-  const hasPayment = Boolean(advance.paymentSupport);
+  const paymentSummary = getAdvancePaymentSummary(advance);
+  const hasPayment = paymentSummary.hasPayment;
   const hasLegalizations = (advance.receipts || []).some(
     (receipt) => receipt.status !== 'rejected'
   );
@@ -644,6 +702,7 @@ const getTaskTitle = (task: any) =>
 const statusConfig: Record<TravelAdvance['status'], { label: string; className: string }> = {
   submitted: { label: 'Por validar', className: 'bg-amber-50 text-amber-700 ring-amber-100' },
   pending_payment: { label: 'Aprobado por pagar', className: 'bg-violet-50 text-violet-700 ring-violet-100' },
+  partially_paid: { label: 'Abonado · saldo pendiente', className: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-100' },
   paid: { label: 'Pagado · por legalizar', className: 'bg-sky-50 text-sky-700 ring-sky-100' },
   approved: { label: 'En legalización (legado)', className: 'bg-sky-50 text-sky-700 ring-sky-100' },
   completed: { label: 'En conciliación', className: 'bg-cyan-50 text-cyan-700 ring-cyan-100' },
@@ -695,7 +754,7 @@ const isApprovedReceipt = (receipt: Pick<AdvanceReceipt, 'status'>) =>
   APPROVED_RECEIPT_STATUSES.includes(receipt.status);
 
 const isAdvanceReadyForLegalization = (advance: Pick<TravelAdvance, 'status'>) =>
-  advance.status === 'paid' || advance.status === 'approved';
+  advance.status === 'partially_paid' || advance.status === 'paid' || advance.status === 'approved';
 
 const normalizeCufe = (value: string) => value.replace(/\s+/g, '').trim();
 
@@ -1121,8 +1180,14 @@ export function ProjectAdministration({
     const justified = activeAdvances.reduce((sum, advance) => sum + getAdvanceJustifiedAmount(advance), 0);
     const legalized = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountLegalized), 0);
     const returnedCash = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountReturned), 0);
+    const paidDisbursements = activeAdvances.reduce((sum, advance) => sum + getAdvancePaymentSummary(advance).paid, 0);
+    const paymentBase = activeAdvances.reduce(
+      (sum, advance) => sum + asNumber(advance.amountApproved || advance.amountRequested),
+      0
+    );
     const pendingValidation = advances.filter((advance) => advance.status === 'submitted').length;
-    const pendingPayment = advances.filter((advance) => advance.status === 'pending_payment').length;
+    const pendingPayment = advances.filter((advance) => advance.status === 'pending_payment' || advance.status === 'partially_paid').length;
+    const partiallyPaid = advances.filter((advance) => getAdvancePaymentSummary(advance).isPartiallyPaid || advance.status === 'partially_paid').length;
     const returned = advances.filter(
       (advance) =>
         advance.status === 'returned' || (advance.receipts || []).some((receipt) => receipt.status === 'returned')
@@ -1136,10 +1201,13 @@ export function ProjectAdministration({
       anticipated,
       justified,
       legalized,
+      paidDisbursements,
+      paymentProgress: paymentBase > 0 ? Math.min(100, Math.round((paidDisbursements / paymentBase) * 100)) : 0,
       returnedCash,
       balance: Math.max(0, anticipated - legalized - returnedCash),
       pendingValidation,
       pendingPayment,
+      partiallyPaid,
       returned,
       realAdminPayments,
     };
@@ -1204,6 +1272,7 @@ export function ProjectAdministration({
     () =>
       filteredAdvances.filter((advance) =>
         advance.status === 'pending_payment' ||
+        advance.status === 'partially_paid' ||
         (showPaidAdvances && advance.status === 'paid')
       ),
     [filteredAdvances, showPaidAdvances]
@@ -1384,6 +1453,8 @@ export function ProjectAdministration({
         const includePayment = ['payment', 'justifications', 'reconciliation', 'full'].includes(scope);
         const includeLegalizations = ['justifications', 'reconciliation', 'full'].includes(scope);
         const includeReconciliation = scope === 'reconciliation' || scope === 'full';
+        const paymentSummary = getAdvancePaymentSummary(advance);
+        const paymentSupports = paymentSummary.supports;
         const unavailableAttachments: string[] = [];
         const resolveProtectedAsset = async (path?: string, fallback?: string) => {
           if (!path) return fallback || '';
@@ -1420,7 +1491,7 @@ export function ProjectAdministration({
         const [
           requesterSignatureUrl,
           approvalSignatureUrl,
-          paymentSupportAsset,
+          paymentSupportAssets,
           returnSupportAsset,
           compensationSupportAsset,
           receiptSupportAssets,
@@ -1434,10 +1505,14 @@ export function ProjectAdministration({
             advance.approvalSignature?.signatureUrl
           ),
           includePayment
-            ? resolveProtectedAttachment(
-                advance.paymentSupport?.storagePath,
-                advance.paymentSupport?.fileUrl,
-                'el soporte del pago del anticipo'
+            ? Promise.all(
+                paymentSupports.map((support, index) =>
+                  resolveProtectedAttachment(
+                    support.storagePath,
+                    support.fileUrl,
+                    `el soporte del pago ${index + 1} del anticipo`
+                  )
+                )
               )
             : Promise.resolve(null),
           includeReconciliation
@@ -1495,7 +1570,8 @@ export function ProjectAdministration({
               ? [
                   { label: 'Solicitado', value: formatMoney(advance.amountRequested) },
                   { label: 'Aprobado', value: formatMoney(coverage.approved) },
-                  { label: 'Pagado', value: formatMoney(advance.paymentSupport?.amount) },
+                  { label: 'Pagado', value: formatMoney(paymentSummary.paid) },
+                  { label: 'Avance pago', value: `${paymentSummary.progress}%` },
                 ]
               : scope === 'justifications'
                 ? [
@@ -1571,18 +1647,21 @@ export function ProjectAdministration({
               imageUrl: approvalSignatureUrl,
             },
           ],
-          paymentDetails: includePayment && advance.paymentSupport
+          paymentDetails: includePayment && paymentSupports.length > 0
             ? [
-                { label: 'Valor pagado', value: formatMoney(advance.paymentSupport.amount) },
-                { label: 'Fecha', value: formatDate(advance.paymentSupport.date) },
-                {
-                  label: 'Referencia bancaria',
-                  value: advance.paymentSupport.reference || 'Sin referencia',
-                },
-                {
-                  label: 'Registrado por',
-                  value: advance.paymentSupport.paidByName || 'Sin responsable',
-                },
+                { label: 'Total pagado / abonado', value: formatMoney(paymentSummary.paid) },
+                { label: 'Saldo pendiente de pago', value: formatMoney(paymentSummary.balance) },
+                { label: 'Avance del pago', value: `${paymentSummary.progress}%` },
+                ...paymentSupports.flatMap((support, index) => [
+                  {
+                    label: `${support.kind === 'partial' ? 'Abono' : support.kind === 'final' ? 'Pago final' : 'Pago'} ${index + 1}`,
+                    value: `${formatMoney(support.amount)} · ${formatDate(support.date)}${support.reference ? ` · Ref. ${support.reference}` : ''}`,
+                  },
+                  {
+                    label: `Registrado por ${index + 1}`,
+                    value: support.paidByName || 'Sin responsable',
+                  },
+                ]),
               ]
             : [],
           legalizations: includeLegalizations ? reportReceipts.map((receipt, index) => [
@@ -1618,15 +1697,20 @@ export function ProjectAdministration({
               value: advance.reconciledByName || 'Pendiente',
             },
           ] : [],
-          paymentAttachment:
-            includePayment && advance.paymentSupport && paymentSupportAsset
-              ? {
-                  label: 'Soporte del pago del anticipo',
-                  description: `Pago de ${formatMoney(advance.paymentSupport.amount)} - ${formatDate(advance.paymentSupport.date)}${advance.paymentSupport.reference ? ` - Referencia ${advance.paymentSupport.reference}` : ''}`,
-                  fileName: advance.paymentSupport.fileName || 'soporte-pago',
-                  ...paymentSupportAsset,
-                }
-              : undefined,
+          paymentAttachments:
+            includePayment && Array.isArray(paymentSupportAssets)
+              ? paymentSupports.flatMap((support, index) => {
+                  const asset = paymentSupportAssets[index];
+                  return asset
+                    ? [{
+                        label: `${support.kind === 'partial' ? 'Soporte de abono' : support.kind === 'final' ? 'Soporte de pago final' : 'Soporte del pago'} ${index + 1}`,
+                        description: `${formatMoney(support.amount)} - ${formatDate(support.date)}${support.reference ? ` - Referencia ${support.reference}` : ''}`,
+                        fileName: support.fileName || `soporte-pago-${index + 1}`,
+                        ...asset,
+                      }]
+                    : [];
+                })
+              : [],
           legalizationAttachments: includeLegalizations
             ? reportReceipts.flatMap((receipt, index) => {
                 const asset = receiptSupportAssets[index];
@@ -1690,7 +1774,7 @@ export function ProjectAdministration({
         toast.error(error?.message || 'No se pudo generar el expediente PDF.', { id: toastId });
       }
     },
-    [project?.name, project?.title, projectId]
+    [project, projectId]
   );
 
   const downloadAdvanceReportOption = useCallback(
@@ -2985,11 +3069,12 @@ export function ProjectAdministration({
   };
 
   const openAdvancePayment = (advance: TravelAdvance) => {
+    const paymentSummary = getAdvancePaymentSummary(advance);
     setPaymentAdvance(advance);
     setPaymentFile(null);
     setPaymentForm({
       customId: advance.customId || '',
-      amount: String(asNumber(advance.amountApproved || advance.amountRequested) || ''),
+      amount: String(paymentSummary.balance || paymentSummary.approved || ''),
       date: todayInputValue(),
       reference: '',
       note: '',
@@ -3062,7 +3147,7 @@ export function ProjectAdministration({
       return;
     }
     const latestAdvance = advances.find((advance) => advance.id === paymentAdvance.id) || paymentAdvance;
-    if (latestAdvance.status !== 'pending_payment') {
+    if (!['pending_payment', 'partially_paid'].includes(latestAdvance.status)) {
       toast.error('Este anticipo ya no está pendiente de pago.');
       return;
     }
@@ -3071,7 +3156,10 @@ export function ProjectAdministration({
       return;
     }
     const amount = roundCurrency(paymentForm.amount);
-    const approvedAmount = roundCurrency(latestAdvance.amountApproved || latestAdvance.amountRequested);
+    const currentPaymentSummary = getAdvancePaymentSummary(latestAdvance);
+    const approvedAmount = currentPaymentSummary.approved;
+    const previousPaidAmount = currentPaymentSummary.paid;
+    const pendingAmount = currentPaymentSummary.balance || approvedAmount;
     const customId = paymentForm.customId.trim();
     if (!customId) {
       toast.error('Asigna el ID administrativo del anticipo antes de registrar el pago.');
@@ -3085,8 +3173,12 @@ export function ProjectAdministration({
       toast.error('Ya existe otro anticipo con ese ID administrativo.');
       return;
     }
-    if (amount <= 0 || Math.abs(amount - approvedAmount) > 0.01) {
-      toast.error(`El pago debe coincidir con el valor aprobado: ${formatMoney(approvedAmount)}.`);
+    if (amount <= 0) {
+      toast.error('El valor del pago o abono debe ser mayor a cero.');
+      return;
+    }
+    if (amount - pendingAmount > 0.01) {
+      toast.error(`El pago no puede superar el saldo pendiente: ${formatMoney(pendingAmount)}.`);
       return;
     }
     if (!paymentForm.date) {
@@ -3131,13 +3223,23 @@ export function ProjectAdministration({
         paidAt: new Date().toISOString(),
         paidBy: currentUser?.uid || null,
         paidByName: getCurrentUserName(currentUser),
+        sequence: currentPaymentSummary.supports.length + 1,
+        kind: amount + 0.01 >= pendingAmount ? (previousPaidAmount > 0 ? 'final' : 'full') : 'partial',
       };
+      const totalPaid = roundCurrency(previousPaidAmount + amount);
+      const paymentBalance = Math.max(0, roundCurrency(approvedAmount - totalPaid));
+      const paymentProgress = approvedAmount > 0 ? Math.min(100, Math.round((totalPaid / approvedAmount) * 100)) : 0;
+      const fullyPaid = paymentBalance <= 0.01;
       await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
         customId,
         customIdNormalized: customId.toLowerCase(),
-        status: 'paid',
+        status: fullyPaid ? 'paid' : 'partially_paid',
         paymentSupport,
-        paidAt: serverTimestamp(),
+        paymentSupports: arrayUnion(paymentSupport),
+        amountPaid: totalPaid,
+        paymentBalance,
+        paymentProgress,
+        paidAt: fullyPaid ? serverTimestamp() : latestAdvance.paidAt || null,
         nextAction: 'justify_advance',
         pendingRole: null,
         inboxTargetUserId: latestAdvance.requesterId,
@@ -3145,12 +3247,19 @@ export function ProjectAdministration({
       });
       await logAdministrativeEvent(latestAdvance.id, 'advance_paid', {
         amount,
+        totalPaid,
+        paymentBalance,
+        paymentProgress,
         customId,
         date: paymentForm.date,
         reference: paymentForm.reference.trim(),
         documentId: uploaded.documentId,
       });
-      toast.success('Pago registrado. El anticipo ya está disponible para legalización.');
+      toast.success(
+        fullyPaid
+          ? 'Pago registrado. El anticipo quedó pagado al 100% y disponible para legalización.'
+          : `Abono registrado (${paymentProgress}%). El anticipo ya permite legalizaciones y queda pendiente por ${formatMoney(paymentBalance)}.`
+      );
       setPaymentAdvance(null);
       setPaymentFile(null);
     } catch (error: any) {
@@ -4192,8 +4301,9 @@ export function ProjectAdministration({
           </div>
         </div>
 
-        <div className="grid gap-2 border-t border-slate-800 bg-slate-950/95 p-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-2 border-t border-slate-800 bg-slate-950/95 p-3 sm:grid-cols-2 xl:grid-cols-6">
           <Metric label="Solicitado" value={formatMoney(metrics.requested)} icon={<Send size={18} />} tone="blue" />
+          <Metric label={`Pagado / abonado · ${metrics.paymentProgress}%`} value={formatMoney(metrics.paidDisbursements)} icon={<CreditCard size={18} />} tone="violet" />
           <Metric label="Justificado" value={formatMoney(metrics.justified)} icon={<ClipboardCheck size={18} />} tone="indigo" />
           <Metric label="Legalizado" value={formatMoney(metrics.legalized)} icon={<ReceiptText size={18} />} tone="emerald" />
           <Metric label="Saldo por legalizar" value={formatMoney(metrics.balance)} icon={<AlertCircle size={18} />} tone="amber" />
@@ -4230,6 +4340,7 @@ export function ProjectAdministration({
         <div className="flex flex-wrap gap-2 text-xs font-bold">
           <span className="rounded-md bg-amber-50 px-2 py-1 text-amber-700">{metrics.pendingValidation} por validar</span>
           <span className="rounded-md bg-violet-50 px-2 py-1 text-violet-700">{metrics.pendingPayment} por pagar</span>
+          <span className="rounded-md bg-fuchsia-50 px-2 py-1 text-fuchsia-700">{metrics.partiallyPaid} abonados</span>
           <span className="rounded-md bg-orange-50 px-2 py-1 text-orange-700">{metrics.returned} devueltos</span>
         </div>
       </div>
@@ -4348,6 +4459,7 @@ export function ProjectAdministration({
               ) : administrativeQueueAdvances.map((advance) => {
                 const status = statusConfig[advance.status] || statusConfig.submitted;
                 const canCorrect = requesterMatchesCurrentActor(advance.requesterId, advance.requesterEmail);
+                const paymentSummary = getAdvancePaymentSummary(advance);
                 return (
                   <section key={advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                     <div className="flex flex-col gap-4 border-b border-slate-200 bg-slate-50 p-4 xl:flex-row xl:items-start xl:justify-between">
@@ -4373,8 +4485,8 @@ export function ProjectAdministration({
                           <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>
                           <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'rejectAdvance', advance })} className="border-rose-200 text-rose-700">Rechazar</Button>
                         </>}
-                        {advance.status === 'pending_payment' && canValidate && <>
-                          <Button type="button" size="sm" onClick={() => openAdvancePayment(advance)} className="bg-violet-600 text-white hover:bg-violet-700"><CreditCard size={14} className="mr-2" />Registrar pago</Button>
+                        {['pending_payment', 'partially_paid'].includes(advance.status) && canValidate && <>
+                          <Button type="button" size="sm" onClick={() => openAdvancePayment(advance)} className="bg-violet-600 text-white hover:bg-violet-700"><CreditCard size={14} className="mr-2" />{advance.status === 'partially_paid' ? 'Registrar saldo' : 'Registrar pago'}</Button>
                           <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>
                         </>}
                         {advance.status === 'returned' && canCorrect && <Button type="button" size="sm" onClick={() => openAdvanceEditor(advance)} className="bg-orange-600 text-white hover:bg-orange-700"><PencilLine size={14} className="mr-2" />Corregir y reenviar</Button>}
@@ -4387,17 +4499,21 @@ export function ProjectAdministration({
                       <ReceiptGroupMetric label="Ítems" value={`${advance.items?.length || 0}`} tone="slate" />
                       <ReceiptGroupMetric label="Firma solicitante" value={advance.requesterSignature ? 'Verificada' : 'Pendiente'} tone={advance.requesterSignature ? 'emerald' : 'amber'} />
                       <ReceiptGroupMetric label="Firma aprobador" value={advance.approvalSignature ? 'Verificada' : 'Pendiente'} tone={advance.approvalSignature ? 'emerald' : 'amber'} />
-                      <div className={`rounded-lg border px-3 py-2 ${advance.paymentSupport ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-violet-200 bg-violet-50 text-violet-800'}`}>
-                        <p className="text-[9px] font-black uppercase tracking-[0.16em] opacity-70">Soporte de pago</p>
-                        {advance.paymentSupport ? (
-                          <SecureDocumentLink storagePath={advance.paymentSupport.storagePath} fallbackUrl={advance.paymentSupport.fileUrl} className="mt-1 inline-flex items-center gap-1 text-sm font-black"><FileText size={13} />{formatMoney(advance.paymentSupport.amount)}</SecureDocumentLink>
+                      <div className={`rounded-lg border px-3 py-2 ${paymentSummary.hasPayment ? paymentSummary.isFullyPaid ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-800' : 'border-violet-200 bg-violet-50 text-violet-800'}`}>
+                        <p className="text-[9px] font-black uppercase tracking-[0.16em] opacity-70">{paymentSummary.isFullyPaid ? 'Pago completo' : paymentSummary.hasPayment ? 'Abono registrado' : 'Soporte de pago'}</p>
+                        {paymentSummary.hasPayment ? (
+                          <>
+                            <p className="mt-1 text-sm font-black">{formatMoney(paymentSummary.paid)} · {paymentSummary.progress}%</p>
+                            <p className="mt-0.5 text-[10px] font-bold opacity-80">Saldo: {formatMoney(paymentSummary.balance)}</p>
+                          </>
                         ) : <p className="mt-1 text-sm font-black">Pendiente</p>}
                       </div>
                     </div>
-                    {(advance.adminComment || advance.paymentSupport?.reference) && (
+                    {(advance.adminComment || advance.paymentSupport?.reference || paymentSummary.supports.length > 0) && (
                       <div className="flex flex-wrap gap-x-5 gap-y-1 border-t border-slate-100 bg-slate-50 px-4 py-2 text-xs font-bold text-slate-600">
                         {advance.adminComment && <span><strong className="text-orange-700">Observación:</strong> {advance.adminComment}</span>}
-                        {advance.paymentSupport?.reference && <span><strong className="text-emerald-700">Referencia:</strong> {advance.paymentSupport.reference}</span>}
+                        {advance.paymentSupport?.reference && <span><strong className="text-emerald-700">Última referencia:</strong> {advance.paymentSupport.reference}</span>}
+                        {paymentSummary.supports.length > 0 && <span><strong className="text-fuchsia-700">Soportes de pago:</strong> {paymentSummary.supports.length}</span>}
                       </div>
                     )}
                   </section>
@@ -5422,6 +5538,7 @@ export function ProjectAdministration({
       {viewingAdvance && (() => {
         const advance = advances.find((item) => item.id === viewingAdvance.id) || viewingAdvance;
         const status = statusConfig[advance.status] || statusConfig.submitted;
+        const paymentSummary = getAdvancePaymentSummary(advance);
         const costCenters = normalizeCostCenters(
           advance.costCenters,
           asNumber(advance.amountApproved || advance.amountRequested)
@@ -5478,9 +5595,27 @@ export function ProjectAdministration({
                 <aside className="space-y-3">
                   <SignatureSummary title="Firma solicitante" signature={advance.requesterSignature} />
                   <SignatureSummary title="Firma aprobador" signature={advance.approvalSignature} />
-                  <div className={`rounded-xl border p-4 ${advance.paymentSupport ? 'border-emerald-200 bg-emerald-50' : 'border-violet-200 bg-violet-50'}`}>
+                  <div className={`rounded-xl border p-4 ${paymentSummary.hasPayment ? paymentSummary.isFullyPaid ? 'border-emerald-200 bg-emerald-50' : 'border-fuchsia-200 bg-fuchsia-50' : 'border-violet-200 bg-violet-50'}`}>
                     <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Pago</p>
-                    {advance.paymentSupport ? <><p className="mt-2 text-lg font-black text-emerald-900">{formatMoney(advance.paymentSupport.amount)}</p><p className="mt-1 text-xs font-semibold text-emerald-700">{formatDate(advance.paymentSupport.date)}{advance.paymentSupport.reference ? ` · Ref. ${advance.paymentSupport.reference}` : ''}</p><div className="mt-3"><SecureDocumentLink storagePath={advance.paymentSupport.storagePath} fallbackUrl={advance.paymentSupport.fileUrl} className="inline-flex items-center gap-2 text-xs font-black text-emerald-800"><FileText size={14} />Ver soporte de pago</SecureDocumentLink></div></> : <p className="mt-2 text-sm font-bold text-violet-800">Pendiente de registrar el desembolso.</p>}
+                    {paymentSummary.hasPayment ? (
+                      <>
+                        <p className={`mt-2 text-lg font-black ${paymentSummary.isFullyPaid ? 'text-emerald-900' : 'text-fuchsia-900'}`}>{formatMoney(paymentSummary.paid)}</p>
+                        <p className={`mt-1 text-xs font-semibold ${paymentSummary.isFullyPaid ? 'text-emerald-700' : 'text-fuchsia-700'}`}>
+                          {paymentSummary.progress}% pagado · saldo {formatMoney(paymentSummary.balance)}
+                        </p>
+                        <div className="mt-3 space-y-2">
+                          {paymentSummary.supports.map((support, index) => (
+                            <SecureDocumentLink key={`${support.documentId}-${index}`} storagePath={support.storagePath} fallbackUrl={support.fileUrl} className={`flex items-center justify-between gap-2 rounded-lg bg-white/70 px-3 py-2 text-xs font-black ring-1 ${paymentSummary.isFullyPaid ? 'text-emerald-800 ring-emerald-100' : 'text-fuchsia-800 ring-fuchsia-100'}`}>
+                              <span className="inline-flex min-w-0 items-center gap-2">
+                                <FileText size={14} />
+                                <span className="truncate">{support.kind === 'partial' ? 'Abono' : support.kind === 'final' ? 'Pago final' : 'Pago'} {index + 1}</span>
+                              </span>
+                              <span>{formatMoney(support.amount)}</span>
+                            </SecureDocumentLink>
+                          ))}
+                        </div>
+                      </>
+                    ) : <p className="mt-2 text-sm font-bold text-violet-800">Pendiente de registrar el desembolso.</p>}
                   </div>
                 </aside>
               </div>
@@ -5490,18 +5625,24 @@ export function ProjectAdministration({
                 advance={advance}
                 onSelect={(scope) => void downloadAdvanceReportOption(advance, scope)}
               />
-              {(canManage || canValidate) && ['submitted', 'pending_payment', 'paid'].includes(advance.status) && <Button type="button" variant="outline" onClick={() => { setViewingAdvance(null); openAdvanceEditor(advance); }} className="border-indigo-200 text-indigo-700"><PencilLine size={15} className="mr-2" />Editar anticipo</Button>}
-              {canValidate && advance.status === 'pending_payment' && <Button type="button" onClick={() => { setViewingAdvance(null); openAdvancePayment(advance); }} className="bg-violet-600 font-bold text-white hover:bg-violet-700"><CreditCard size={15} className="mr-2" />Registrar pago</Button>}
+              {(canManage || canValidate) && ['submitted', 'pending_payment', 'partially_paid', 'paid'].includes(advance.status) && <Button type="button" variant="outline" onClick={() => { setViewingAdvance(null); openAdvanceEditor(advance); }} className="border-indigo-200 text-indigo-700"><PencilLine size={15} className="mr-2" />Editar anticipo</Button>}
+              {canValidate && ['pending_payment', 'partially_paid'].includes(advance.status) && <Button type="button" onClick={() => { setViewingAdvance(null); openAdvancePayment(advance); }} className="bg-violet-600 font-bold text-white hover:bg-violet-700"><CreditCard size={15} className="mr-2" />{advance.status === 'partially_paid' ? 'Registrar saldo' : 'Registrar pago'}</Button>}
               <Button type="button" variant="outline" onClick={() => setViewingAdvance(null)}>Cerrar</Button>
             </ModalFooter>
           </ModalShell>
         );
       })()}
 
-      {paymentAdvance && (
+      {paymentAdvance && (() => {
+        const paymentSummary = getAdvancePaymentSummary(paymentAdvance);
+        const enteredPaymentAmount = roundCurrency(paymentForm.amount);
+        const projectedPaid = roundCurrency(paymentSummary.paid + enteredPaymentAmount);
+        const projectedProgress = paymentSummary.approved > 0 ? Math.min(100, Math.round((projectedPaid / paymentSummary.approved) * 100)) : 0;
+        const willClosePayment = enteredPaymentAmount > 0 && enteredPaymentAmount + 0.01 >= paymentSummary.balance;
+        return (
         <ModalShell
-          title="Registrar pago del anticipo"
-          subtitle="El anticipo solo pasa a legalización cuando el soporte del desembolso queda cargado e indexado."
+          title={paymentSummary.hasPayment ? 'Registrar saldo o nuevo abono' : 'Registrar pago o abono del anticipo'}
+          subtitle="El primer abono habilita las legalizaciones; el anticipo solo sale de por pagar cuando el desembolso llega al 100%."
           onClose={() => setPaymentAdvance(null)}
           wide
         >
@@ -5514,7 +5655,7 @@ export function ProjectAdministration({
                   </Field>
                   <p className="mt-2 text-xs font-semibold text-indigo-700">La administrativa asigna o confirma este ID antes del desembolso. Se usará en búsquedas, ficha e indexación documental.</p>
                 </div>
-                <Field label="Valor pagado">
+                <Field label={paymentSummary.hasPayment ? 'Valor del nuevo abono / saldo' : 'Valor pagado o abonado'}>
                   <input className={inputClass} type="number" min="0" step="0.01" value={paymentForm.amount} onChange={(event) => setPaymentForm((current) => ({ ...current, amount: event.target.value }))} />
                 </Field>
                 <Field label="Fecha del pago">
@@ -5539,9 +5680,16 @@ export function ProjectAdministration({
             </div>
             <aside className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
               <SummaryLine label="ID administrativo" value={paymentForm.customId.trim() || 'Pendiente de asignar'} />
-              <SummaryLine label="ID interno Pixel" value={paymentAdvance.id} />
               <SummaryLine label="Beneficiario" value={paymentAdvance.requesterName} />
               <SummaryLine label="Valor aprobado" value={formatMoney(paymentAdvance.amountApproved || paymentAdvance.amountRequested)} strong />
+              <SummaryLine label="Pagado / abonado" value={`${formatMoney(paymentSummary.paid)} · ${paymentSummary.progress}%`} />
+              <SummaryLine label="Saldo pendiente" value={formatMoney(paymentSummary.balance)} strong />
+              {enteredPaymentAmount > 0 && (
+                <div className={`rounded-xl border p-3 text-sm font-bold ${willClosePayment ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-800'}`}>
+                  Este registro dejará el anticipo en {projectedProgress}% pagado
+                  {willClosePayment ? ' y cerrará la etapa administrativa de pago.' : `, con saldo pendiente de ${formatMoney(Math.max(0, paymentSummary.approved - projectedPaid))}.`}
+                </div>
+              )}
               <SignatureSummary title="Firma solicitante" signature={paymentAdvance.requesterSignature} />
               <SignatureSummary title="Firma aprobador" signature={paymentAdvance.approvalSignature} />
               <Button type="button" variant="outline" onClick={() => { const advance = paymentAdvance; setPaymentAdvance(null); openAdvanceEditor(advance); }} className="w-full border-indigo-200 text-indigo-700 hover:bg-indigo-50"><PencilLine size={15} className="mr-2" />Editar anticipo completo</Button>
@@ -5551,11 +5699,12 @@ export function ProjectAdministration({
             <Button type="button" variant="outline" onClick={() => setPaymentAdvance(null)}>Cancelar</Button>
             <Button type="button" onClick={handleRegisterAdvancePayment} disabled={submitting || !paymentFile || !paymentForm.customId.trim()} className="bg-violet-600 font-bold text-white hover:bg-violet-700">
               {submitting ? <Loader2 size={16} className="mr-2 animate-spin" /> : <CreditCard size={16} className="mr-2" />}
-              Confirmar pago y habilitar legalización
+              {willClosePayment ? 'Confirmar pago final' : 'Confirmar abono y habilitar legalización'}
             </Button>
           </ModalFooter>
         </ModalShell>
-      )}
+        );
+      })()}
 
       {reconciliationAdvance && (() => {
         const reconciliation = getAdvanceReconciliation(reconciliationAdvance);
@@ -6548,10 +6697,11 @@ function SignatureSummary({ title, signature }: { title: string; signature?: Adv
   );
 }
 
-function Metric({ label, value, icon, tone }: { label: string; value: string; icon: React.ReactNode; tone: 'blue' | 'indigo' | 'emerald' | 'amber' | 'rose' }) {
+function Metric({ label, value, icon, tone }: { label: string; value: string; icon: React.ReactNode; tone: 'blue' | 'indigo' | 'violet' | 'emerald' | 'amber' | 'rose' }) {
   const tones = {
     blue: 'bg-sky-400/10 text-sky-200 ring-sky-300/20',
     indigo: 'bg-indigo-400/10 text-indigo-200 ring-indigo-300/20',
+    violet: 'bg-violet-400/10 text-violet-200 ring-violet-300/20',
     emerald: 'bg-emerald-400/10 text-emerald-200 ring-emerald-300/20',
     amber: 'bg-amber-400/10 text-amber-200 ring-amber-300/20',
     rose: 'bg-rose-400/10 text-rose-200 ring-rose-300/20',
@@ -6719,10 +6869,11 @@ function AdvanceLifecycle({ advance, compact = false }: { advance: TravelAdvance
   const allLegalizationsApproved = receipts.length > 0 && receipts.every(isApprovedReceipt);
   const requesterClosed = Boolean(advance.completedAt) && ['completed', 'closed'].includes(advance.status);
   const reconciled = advance.reconciliationStatus === 'reconciled';
+  const paymentSummary = getAdvancePaymentSummary(advance);
   const steps = [
     { label: 'Creación', complete: true },
-    { label: 'Aprobación', complete: Boolean(advance.approvalSignature) || ['pending_payment', 'paid', 'approved', 'completed', 'closed'].includes(advance.status) },
-    { label: 'Por pagar', complete: Boolean(advance.paymentSupport) || ['paid', 'approved', 'completed', 'closed'].includes(advance.status) },
+    { label: 'Aprobación', complete: Boolean(advance.approvalSignature) || ['pending_payment', 'partially_paid', 'paid', 'approved', 'completed', 'closed'].includes(advance.status) },
+    { label: paymentSummary.isPartiallyPaid ? `Por pagar ${paymentSummary.progress}%` : 'Por pagar', complete: paymentSummary.isFullyPaid || ['paid', 'approved', 'completed', 'closed'].includes(advance.status) },
     { label: 'Legalizaciones', complete: allLegalizationsApproved },
     { label: 'Cierre funcionario', complete: requesterClosed },
     { label: 'Conciliación', complete: reconciled },

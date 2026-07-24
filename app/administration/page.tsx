@@ -74,7 +74,7 @@ type TravelAdvance = {
   purpose?: string;
   travelStart?: string;
   travelEnd?: string;
-  status?: 'submitted' | 'pending_payment' | 'paid' | 'approved' | 'completed' | 'returned' | 'rejected' | 'closed';
+  status?: 'submitted' | 'pending_payment' | 'partially_paid' | 'paid' | 'approved' | 'completed' | 'returned' | 'rejected' | 'closed';
   amountRequested?: number;
   amountApproved?: number;
   amountLegalized?: number;
@@ -83,6 +83,10 @@ type TravelAdvance = {
   balance?: number;
   receipts?: AdvanceReceipt[];
   paymentSupport?: unknown;
+  paymentSupports?: Array<{ amount?: number }>;
+  amountPaid?: number;
+  paymentBalance?: number;
+  paymentProgress?: number;
   reconciliationStatus?: string;
   createdAt?: any;
   approvedAt?: any;
@@ -113,6 +117,11 @@ const statusMeta: Record<string, { label: string; className: string; dotClassNam
     label: 'Por pagar',
     className: 'bg-violet-50 text-violet-700 ring-violet-100',
     dotClassName: 'bg-violet-500',
+  },
+  partially_paid: {
+    label: 'Abonado · saldo pendiente',
+    className: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-100',
+    dotClassName: 'bg-fuchsia-500',
   },
   paid: {
     label: 'Pagado · legalización',
@@ -196,6 +205,18 @@ const getJustifiedAmount = (advance: TravelAdvance) =>
   (advance.receipts || [])
     .filter((receipt) => receipt.status !== 'rejected')
     .reduce((sum, receipt) => sum + asNumber(receipt.amount), 0);
+
+const getPaidAmount = (advance: TravelAdvance) => {
+  const supportsTotal = (advance.paymentSupports || []).reduce((sum, support) => sum + asNumber(support.amount), 0);
+  const legacySupport = advance.paymentSupport as { amount?: number } | undefined;
+  return supportsTotal || asNumber(advance.amountPaid) || asNumber(legacySupport?.amount);
+};
+
+const getPaymentProgress = (advance: TravelAdvance) => {
+  const approved = asNumber(advance.amountApproved || advance.amountRequested);
+  if (approved <= 0) return 0;
+  return Math.min(100, Math.round((getPaidAmount(advance) / approved) * 100));
+};
 
 const isApprovedReceipt = (receipt: AdvanceReceipt) =>
   receipt.status === 'approved' || receipt.status === 'approved_modified';
@@ -468,7 +489,8 @@ export default function AdministrationOverviewPage() {
     () =>
       baseFilteredAdvances.filter((advance) => {
         if (statusFilter === 'all') return true;
-        if (statusFilter === 'legalization') return advance.status === 'paid' || advance.status === 'approved';
+        if (statusFilter === 'legalization') return advance.status === 'partially_paid' || advance.status === 'paid' || advance.status === 'approved';
+        if (statusFilter === 'pending_payment') return advance.status === 'pending_payment' || advance.status === 'partially_paid';
         if (statusFilter === 'closed') return advance.status === 'closed' || advance.reconciliationStatus === 'reconciled';
         return advance.status === statusFilter;
       }),
@@ -481,6 +503,8 @@ export default function AdministrationOverviewPage() {
     const approved = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountApproved || advance.amountRequested), 0);
     const justified = activeAdvances.reduce((sum, advance) => sum + getJustifiedAmount(advance), 0);
     const legalized = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountLegalized), 0);
+    const paid = activeAdvances.reduce((sum, advance) => sum + getPaidAmount(advance), 0);
+    const paymentBase = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountApproved || advance.amountRequested), 0);
     const costReal = activeAdvances
       .filter((advance) => advance.status === 'closed' || advance.reconciliationStatus === 'reconciled')
       .reduce((sum, advance) => sum + asNumber(advance.amountLegalized), 0);
@@ -488,12 +512,15 @@ export default function AdministrationOverviewPage() {
     return {
       requested,
       approved,
+      paid,
+      paymentProgress: paymentBase > 0 ? Math.min(100, Math.round((paid / paymentBase) * 100)) : 0,
       justified,
       legalized,
       costReal,
       submitted: baseFilteredAdvances.filter((advance) => advance.status === 'submitted').length,
-      pendingPayment: baseFilteredAdvances.filter((advance) => advance.status === 'pending_payment').length,
-      legalizing: baseFilteredAdvances.filter((advance) => advance.status === 'paid' || advance.status === 'approved').length,
+      pendingPayment: baseFilteredAdvances.filter((advance) => advance.status === 'pending_payment' || advance.status === 'partially_paid').length,
+      partiallyPaid: baseFilteredAdvances.filter((advance) => advance.status === 'partially_paid' || (getPaymentProgress(advance) > 0 && getPaymentProgress(advance) < 100)).length,
+      legalizing: baseFilteredAdvances.filter((advance) => advance.status === 'partially_paid' || advance.status === 'paid' || advance.status === 'approved').length,
       conciliation: baseFilteredAdvances.filter((advance) => advance.status === 'completed').length,
       closed: baseFilteredAdvances.filter((advance) => advance.status === 'closed' || advance.reconciliationStatus === 'reconciled').length,
     };
@@ -550,9 +577,10 @@ export default function AdministrationOverviewPage() {
           <EmptyState canAccess={false} />
         ) : (
           <>
-            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
               <MetricCard label="Solicitado" value={formatMoney(totals.requested)} detail="Total filtrado" icon={<WalletCards size={20} />} tone="indigo" />
               <MetricCard label="Aprobado" value={formatMoney(totals.approved)} detail={`${totals.submitted} por aprobar`} icon={<ClipboardCheck size={20} />} tone="amber" />
+              <MetricCard label="Pagado / abonado" value={formatMoney(totals.paid)} detail={`${totals.paymentProgress}% desembolsado · ${totals.partiallyPaid} abonados`} icon={<CreditCard size={20} />} tone="sky" />
               <MetricCard label="Justificado" value={formatMoney(totals.justified)} detail={`${totals.legalizing} en legalización`} icon={<ReceiptText size={20} />} tone="sky" />
               <MetricCard label="Legalizado" value={formatMoney(totals.legalized)} detail={`${totals.conciliation} en conciliación`} icon={<CheckCircle2 size={20} />} tone="emerald" />
               <MetricCard label="Costo real" value={formatMoney(totals.costReal)} detail={`${totals.closed} conciliados`} icon={<Banknote size={20} />} tone="rose" />
@@ -653,6 +681,8 @@ export default function AdministrationOverviewPage() {
                     const receipts = advance.receipts || [];
                     const approvedReceipts = receipts.filter(isApprovedReceipt).length;
                     const justifiedAmount = getJustifiedAmount(advance);
+                    const paidAmount = getPaidAmount(advance);
+                    const paymentProgress = getPaymentProgress(advance);
                     const adminUrl = `/projects/${advance.projectId}?tab=administration`;
 
                     return (
@@ -691,10 +721,14 @@ export default function AdministrationOverviewPage() {
                             </div>
                           </div>
 
-                          <div className="grid gap-2 sm:grid-cols-3 xl:w-[520px]">
+                          <div className="grid gap-2 sm:grid-cols-4 xl:w-[680px]">
                             <div className="rounded-lg border border-slate-200 bg-white p-3">
                               <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Solicitado</p>
                               <p className="mt-1 text-base font-black text-slate-950">{formatMoney(advance.amountRequested)}</p>
+                            </div>
+                            <div className="rounded-lg border border-fuchsia-100 bg-fuchsia-50/40 p-3">
+                              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-fuchsia-500">Pagado</p>
+                              <p className="mt-1 text-base font-black text-fuchsia-700">{formatMoney(paidAmount)} · {paymentProgress}%</p>
                             </div>
                             <div className="rounded-lg border border-indigo-100 bg-indigo-50/40 p-3">
                               <p className="text-[10px] font-black uppercase tracking-[0.16em] text-indigo-400">Justificado</p>
@@ -712,7 +746,7 @@ export default function AdministrationOverviewPage() {
                             <span className="rounded-md bg-slate-100 px-2 py-1 text-slate-600">{advance.requesterName || 'Solicitante sin nombre'}</span>
                             <span className="rounded-md bg-sky-50 px-2 py-1 text-sky-700">{receipts.length} soportes</span>
                             <span className="rounded-md bg-emerald-50 px-2 py-1 text-emerald-700">{approvedReceipts} aprobados</span>
-                            {Boolean(advance.paymentSupport) && <span className="rounded-md bg-violet-50 px-2 py-1 text-violet-700">Pago registrado</span>}
+                            {paidAmount > 0 && <span className="rounded-md bg-violet-50 px-2 py-1 text-violet-700">{paymentProgress >= 100 ? 'Pago registrado' : `Abonado ${paymentProgress}%`}</span>}
                           </div>
                           <div className="flex flex-col gap-2 sm:flex-row">
                             <Link

@@ -44,6 +44,7 @@ export type AdvanceDossierReport = {
   legalizations: string[][];
   reconciliationDetails: Array<{ label: string; value: string }>;
   paymentAttachment?: AdvanceDossierAttachment;
+  paymentAttachments?: AdvanceDossierAttachment[];
   legalizationAttachments: AdvanceDossierAttachment[];
   reconciliationAttachments: AdvanceDossierAttachment[];
 };
@@ -846,12 +847,17 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
       });
       y -= 22;
     }
-    if (report.paymentAttachment) {
-      const preparedPaymentAttachment = await prepareAttachment(report.paymentAttachment);
+    const paymentAttachments = report.paymentAttachments?.length
+      ? report.paymentAttachments
+      : report.paymentAttachment
+        ? [report.paymentAttachment]
+        : [];
+    for (const paymentAttachment of paymentAttachments) {
+      const preparedPaymentAttachment = await prepareAttachment(paymentAttachment);
       if (preparedPaymentAttachment) {
         appendPreparedAttachment(preparedPaymentAttachment);
       } else {
-        page.drawText('El soporte de pago no pudo anexarse. El expediente continúa sin ese archivo.', {
+        page.drawText(`El soporte ${paymentAttachment.fileName || 'de pago'} no pudo anexarse. El expediente continúa sin ese archivo.`, {
           x: MARGIN_X,
           y,
           size: 9,
