@@ -1079,18 +1079,24 @@ export function ProjectAdministration({
   }, [advanceTaskGroupById, advanceTaskGroupFilter, advanceTaskSearch, advanceTaskStatusFilter, getAdvanceTaskGroupId, taskById, tasks]);
 
   useEffect(() => {
-    if (!advanceDraftItem && categoryOptions.length > 0) {
-      const category = categoryOptions[0];
-      setAdvanceDraftItem({
-        id: safeId(),
-        categoryId: category.id,
-        categoryName: category.name,
-        days: 1,
-        unitAmount: asNumber(category.defaultDailyAmount),
-        amount: asNumber(category.defaultDailyAmount),
-        note: '',
-      });
-    }
+    if (categoryOptions.length === 0) return;
+    if (
+      advanceDraftItem &&
+      categoryOptions.some((category) => category.id === advanceDraftItem.categoryId)
+    ) return;
+
+    const category = categoryOptions[0];
+    const days = advanceDraftItem?.days ?? 1;
+    const unitAmount = asNumber(category.defaultDailyAmount);
+    setAdvanceDraftItem({
+      id: advanceDraftItem?.id || safeId(),
+      categoryId: category.id,
+      categoryName: category.name,
+      days,
+      unitAmount,
+      amount: roundCurrency(days * unitAmount),
+      note: advanceDraftItem?.note || '',
+    });
   }, [advanceDraftItem, categoryOptions]);
 
   useEffect(() => {
@@ -1981,13 +1987,21 @@ export function ProjectAdministration({
 
   const addDraftItem = () => {
     if (!advanceDraftItem) return;
-    if (!advanceDraftItem.categoryId || !advanceDraftItem.categoryName) {
+    const selectedCategory = categoryOptions.find(
+      (category) => category.id === advanceDraftItem.categoryId
+    );
+    if (!selectedCategory) {
       toast.error('Selecciona un dominio de gasto.');
       return;
     }
+    const nextItem = {
+      ...advanceDraftItem,
+      id: safeId(),
+      categoryName: selectedCategory.name,
+    };
     setAdvanceForm((current) => ({
       ...current,
-      items: [...current.items, { ...advanceDraftItem, id: safeId() }],
+      items: [...current.items, nextItem],
     }));
   };
 
