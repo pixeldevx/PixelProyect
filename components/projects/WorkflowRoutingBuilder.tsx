@@ -89,6 +89,16 @@ const getWorkflowNodePosition = (step: any, index: number): WorkflowNodePosition
   normalizeWorkflowNodePosition(step?.visualPosition || step?.workflowPosition || step?.nodePosition) ||
   getDefaultWorkflowNodePosition(index);
 
+const getWorkflowCompleteNodePosition = (
+  steps: any[],
+  fallbackPosition: WorkflowNodePosition
+): WorkflowNodePosition =>
+  normalizeWorkflowNodePosition(
+    steps[0]?.workflowCompletePosition ||
+      steps[0]?.completeNodePosition ||
+      steps[0]?.workflowEndPosition
+  ) || fallbackPosition;
+
 const getTargetOptions = (steps: any[], currentIndex: number, allowAnyTarget = false) => {
   const targetSteps = steps
     .map((step, index) => ({ step, index }))
@@ -585,13 +595,27 @@ function WorkflowVisualEditorModal({
 
   const handleNodeDragStop: OnNodeDrag<Node> = (_event, node) => {
     const nodeId = String(node.id || "");
-    const parsedNode = parseWorkflowEditorNodeId(nodeId);
-    if (!parsedNode || !steps[parsedNode.stepIndex]) return;
-
     const position = {
       x: Math.round(node.position.x),
       y: Math.round(node.position.y),
     };
+
+    if (nodeId === COMPLETE_NODE_ID) {
+      onChange(
+        steps.map((step, index) =>
+          index === 0
+            ? {
+                ...step,
+                workflowCompletePosition: position,
+              }
+            : step
+        )
+      );
+      return;
+    }
+
+    const parsedNode = parseWorkflowEditorNodeId(nodeId);
+    if (!parsedNode || !steps[parsedNode.stepIndex]) return;
 
     if (parsedNode.kind === "decision") {
       updateStep(parsedNode.stepIndex, { decisionPosition: position });
@@ -827,6 +851,10 @@ function WorkflowVisualEditorModal({
     const averageStepY = stepPositions.length > 0
       ? stepPositions.reduce((sum, position) => sum + position.y, 0) / stepPositions.length
       : 18;
+    const fallbackCompletePosition = {
+      x: Math.round(maxStepX + 360),
+      y: Math.round(averageStepY),
+    };
 
     return [
       ...stepNodes,
@@ -835,7 +863,7 @@ function WorkflowVisualEditorModal({
       {
         id: COMPLETE_NODE_ID,
         type: "workflowComplete",
-        position: { x: Math.round(maxStepX + 360), y: Math.round(averageStepY) },
+        position: getWorkflowCompleteNodePosition(steps, fallbackCompletePosition),
         data: {},
       } satisfies Node,
     ];

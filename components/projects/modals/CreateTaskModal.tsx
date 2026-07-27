@@ -214,6 +214,7 @@ export function CreateTaskModal({
       parallelNodeEnabled?: boolean;
       decisionPosition?: { x: number; y: number } | null;
       parallelPosition?: { x: number; y: number } | null;
+      workflowCompletePosition?: { x: number; y: number } | null;
       disableImplicitLinearRoute?: boolean;
       defaultNextStepIndex?: WorkflowRouteTarget;
     }[]
@@ -416,6 +417,7 @@ export function CreateTaskModal({
         parallelNodeEnabled: Boolean(step.parallelNodeEnabled),
         decisionPosition: step.decisionPosition || null,
         parallelPosition: step.parallelPosition || null,
+        workflowCompletePosition: step.workflowCompletePosition || null,
         disableImplicitLinearRoute: Boolean(step.disableImplicitLinearRoute),
         defaultNextStepIndex: step.defaultNextStepIndex ?? null,
       };

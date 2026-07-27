@@ -62,6 +62,7 @@ type WorkflowStepDraft = {
   parallelNodeEnabled?: boolean | null;
   decisionPosition?: { x: number; y: number } | null;
   parallelPosition?: { x: number; y: number } | null;
+  workflowCompletePosition?: { x: number; y: number } | null;
   disableImplicitLinearRoute?: boolean | null;
   defaultNextStepIndex?: WorkflowRouteTarget;
 };
@@ -235,6 +236,7 @@ const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
     parallelNodeEnabled: Boolean(step?.parallelNodeEnabled),
     decisionPosition: step?.decisionPosition ?? null,
     parallelPosition: step?.parallelPosition ?? null,
+    workflowCompletePosition: step?.workflowCompletePosition ?? step?.completeNodePosition ?? step?.workflowEndPosition ?? null,
     disableImplicitLinearRoute: Boolean(step?.disableImplicitLinearRoute),
     defaultNextStepIndex: step?.defaultNextStepIndex ?? step?.defaultNextStepTarget ?? null,
   }));
@@ -686,6 +688,7 @@ export function EditTaskStructureModal({
         parallelNodeEnabled: Boolean(step.parallelNodeEnabled),
         decisionPosition: step.decisionPosition || null,
         parallelPosition: step.parallelPosition || null,
+        workflowCompletePosition: step.workflowCompletePosition || null,
         disableImplicitLinearRoute: Boolean(step.disableImplicitLinearRoute),
         defaultNextStepIndex: step.defaultNextStepIndex ?? null,
       };
