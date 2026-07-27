@@ -26,9 +26,11 @@ import {
 import {
   isVariableWorkflowTaskType,
   isWorkflowTaskType,
+  normalizeWorkflowParallelRoutes,
   normalizeWorkflowRoutes,
   routeOperatorNeedsValue,
   type WorkflowConditionalRoute,
+  type WorkflowParallelRoute,
   type WorkflowRouteTarget,
 } from '@/lib/workflow-routing';
 
@@ -206,6 +208,8 @@ export function CreateTaskModal({
       isQualityGate?: boolean;
       plannedDurationDays?: number;
       conditionalRoutes?: WorkflowConditionalRoute[];
+      parallelRoutes?: WorkflowParallelRoute[];
+      finishWorkflowOnComplete?: boolean;
       defaultNextStepIndex?: WorkflowRouteTarget;
     }[]
   >([]);
@@ -397,6 +401,12 @@ export function CreateTaskModal({
             fieldLabel: field?.label || route.fieldLabel || route.fieldId,
           };
         }),
+        parallelRoutes: normalizeWorkflowParallelRoutes(step.parallelRoutes || (step as any).parallelNextStepIndexes || []).map((route) => ({
+          ...route,
+          targetStepIndex: route.targetStepIndex,
+        })),
+        parallelNextStepIndexes: null,
+        finishWorkflowOnComplete: Boolean(step.finishWorkflowOnComplete),
         defaultNextStepIndex: step.defaultNextStepIndex ?? null,
       };
     });

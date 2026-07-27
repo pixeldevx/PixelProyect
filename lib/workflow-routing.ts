@@ -20,6 +20,12 @@ export type WorkflowConditionalRoute = {
   label?: string;
 };
 
+export type WorkflowParallelRoute = {
+  id: string;
+  targetStepIndex: WorkflowRouteTarget;
+  label?: string;
+};
+
 export const WORKFLOW_TASK_TYPES = ["workflow", "workflow_variable"] as const;
 
 export type WorkflowTaskType = (typeof WORKFLOW_TASK_TYPES)[number];
@@ -93,6 +99,45 @@ export const normalizeWorkflowRoutes = (routes: any[] = []): WorkflowConditional
       };
     })
     .filter((route) => route.fieldId);
+
+export const normalizeWorkflowParallelRoutes = (routes: any[] = []): WorkflowParallelRoute[] =>
+  routes
+    .map((route) => {
+      const rawTarget =
+        typeof route === "number" || route === "complete"
+          ? route
+          : route?.targetStepIndex ?? route?.target;
+
+      return {
+        id: route?.id || createWorkflowRouteId(),
+        targetStepIndex: normalizeTarget(rawTarget) ?? null,
+        label: route?.label || "",
+      };
+    })
+    .filter((route) => route.targetStepIndex !== null);
+
+export const normalizeWorkflowParallelTargets = (
+  value: any,
+  currentIndex: number,
+  stepCount: number
+): WorkflowParallelRoute[] => {
+  const rawRoutes = Array.isArray(value)
+    ? value
+    : Array.isArray(value?.parallelRoutes)
+      ? value.parallelRoutes
+      : [];
+
+  return normalizeWorkflowParallelRoutes(
+    rawRoutes.map((item: any) =>
+      typeof item === "number" || item === "complete"
+        ? { targetStepIndex: item }
+        : item
+    )
+  ).filter((route) => {
+    const target = targetToRuntimeIndex(route.targetStepIndex, currentIndex, stepCount);
+    return typeof target === "number";
+  });
+};
 
 export const normalizeWorkflowDefaultTarget = (
   value: any,
@@ -209,6 +254,39 @@ export const resolveWorkflowNextStepIndex = ({
   const runtimeDefault = targetToRuntimeIndex(defaultTarget, currentIndex, stepCount);
 
   return runtimeDefault === undefined ? linearNext : runtimeDefault;
+};
+
+export const resolveWorkflowNextStepIndexes = ({
+  steps,
+  currentIndex,
+  formData,
+}: {
+  steps: any[];
+  currentIndex: number;
+  formData?: Record<string, any>;
+}): number[] => {
+  const stepCount = steps.length;
+  const currentStep = steps[currentIndex];
+  if (!currentStep || currentStep?.finishWorkflowOnComplete) return [];
+
+  const primaryTarget = resolveWorkflowNextStepIndex({ steps, currentIndex, formData });
+  const targets = new Set<number>();
+  if (typeof primaryTarget === "number") targets.add(primaryTarget);
+
+  normalizeWorkflowParallelTargets(
+    [
+      ...(Array.isArray(currentStep.parallelNextStepIndexes) ? currentStep.parallelNextStepIndexes : []),
+      ...(Array.isArray(currentStep.parallelTargets) ? currentStep.parallelTargets : []),
+      ...(Array.isArray(currentStep.parallelRoutes) ? currentStep.parallelRoutes : []),
+    ],
+    currentIndex,
+    stepCount
+  ).forEach((route) => {
+    const target = targetToRuntimeIndex(route.targetStepIndex, currentIndex, stepCount);
+    if (typeof target === "number") targets.add(target);
+  });
+
+  return Array.from(targets).filter((target) => target !== currentIndex);
 };
 
 export const resolveWorkflowInboundStepIndex = ({

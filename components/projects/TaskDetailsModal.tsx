@@ -25,7 +25,13 @@ import {
   isMeetingLocationUrl,
   isMeetingTask,
 } from '@/lib/calendar-utils';
-import { isDynamicWorkflowAssignee, isWorkflowTaskType, resolveWorkflowActiveStepIndex, resolveWorkflowNextStepIndex } from '@/lib/workflow-routing';
+import {
+  isDynamicWorkflowAssignee,
+  isWorkflowTaskType,
+  normalizeWorkflowParallelRoutes,
+  resolveWorkflowActiveStepIndex,
+  resolveWorkflowNextStepIndexes,
+} from '@/lib/workflow-routing';
 
 const normalizeEmail = (value: unknown) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -57,10 +63,11 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     requiresNextAssignee?: boolean;
     nextAssignee?: string;
   } | null>(null);
-  const [pendingNextStepNotification, setPendingNextStepNotification] = useState<{
+  const [pendingNextStepNotifications, setPendingNextStepNotifications] = useState<Array<{
+    sourceStepIndex: number;
     stepIndex: number;
     assigneeId: string;
-  } | null>(null);
+  }>>([]);
   const [additionalCycles, setAdditionalCycles] = useState(1);
   const [isAddingCycles, setIsAddingCycles] = useState(false);
 
@@ -70,7 +77,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       setWorkflowSteps(task.workflowSteps || []);
       setAdditionalCycles(1);
       setStepUnitPrompt(null);
-      setPendingNextStepNotification(null);
+      setPendingNextStepNotifications([]);
     }
   }, [task]);
 
@@ -337,19 +344,21 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       if (isWorkflowTaskType(task.type)) {
         taskUpdate.currentStepIndex = newCurrentStepIndex;
 
-        if (pendingNextStepNotification) {
-          taskUpdate.workflowHistory = arrayUnion({
-            stepIndex: Math.max(0, pendingNextStepNotification.stepIndex - 1),
-            userId: auth.currentUser?.uid || null,
-            userEmail: auth.currentUser?.email || null,
-            userName: getCurrentActorName(),
-            action: "approve",
-            comment:
-              "Avance manual desde detalles de la tarea. Se asignó el siguiente paso.",
-            nextStepAssignee: pendingNextStepNotification.assigneeId,
-            nextStepIndex: pendingNextStepNotification.stepIndex,
-            timestamp: Timestamp.now(),
-          });
+        if (pendingNextStepNotifications.length > 0) {
+          taskUpdate.workflowHistory = arrayUnion(
+            ...pendingNextStepNotifications.map((notification) => ({
+              stepIndex: notification.sourceStepIndex,
+              userId: auth.currentUser?.uid || null,
+              userEmail: auth.currentUser?.email || null,
+              userName: getCurrentActorName(),
+              action: "approve",
+              comment:
+                "Avance manual desde detalles de la tarea. Se asignó una rama del workflow.",
+              nextStepAssignee: notification.assigneeId,
+              nextStepIndex: notification.stepIndex,
+              timestamp: Timestamp.now(),
+            }))
+          );
         }
       }
 
@@ -363,16 +372,18 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         ),
       );
 
-      if (pendingNextStepNotification) {
-        void notifyTaskAssignment({
-          projectId,
-          taskId: task.id,
-          assigneeId: pendingNextStepNotification.assigneeId,
-          stepIndex: pendingNextStepNotification.stepIndex,
-          eventType: "workflow_step_assigned",
-          source: "task_details_manual_advance",
+      if (pendingNextStepNotifications.length > 0) {
+        pendingNextStepNotifications.forEach((notification) => {
+          void notifyTaskAssignment({
+            projectId,
+            taskId: task.id,
+            assigneeId: notification.assigneeId,
+            stepIndex: notification.stepIndex,
+            eventType: "workflow_step_assigned",
+            source: "task_details_manual_advance",
+          });
         });
-        setPendingNextStepNotification(null);
+        setPendingNextStepNotifications([]);
       }
 
       if (task.parentTaskId) {
@@ -407,16 +418,16 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     const runtimeRateCardSources = getStaticRateCardSources(step).filter(
       (source) => source.assigneeMode === "runtime"
     );
-    const plannedNextIndex = resolveWorkflowNextStepIndex({
+    const plannedNextIndexes = resolveWorkflowNextStepIndexes({
       steps: newSteps,
       currentIndex: index,
       formData: step?.formData || {},
     });
-    const plannedNextStepRequiresDynamicAssignee = Boolean(
-      plannedNextIndex !== null && isDynamicWorkflowAssignee(newSteps[plannedNextIndex]?.assignedTo)
+    const plannedNextStepRequiresDynamicAssignee = plannedNextIndexes.some(
+      (nextIndex) => isDynamicWorkflowAssignee(newSteps[nextIndex]?.assignedTo)
     );
     const requiresNextAssignee = Boolean(
-      plannedNextIndex !== null && (step.assignsNextStep || plannedNextStepRequiresDynamicAssignee)
+      plannedNextIndexes.length > 0 && (step.assignsNextStep || plannedNextStepRequiresDynamicAssignee)
     );
 
     if (
@@ -451,27 +462,30 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
         : {}),
     };
 
-    const resolvedNextIndex =
+    const resolvedNextIndexes =
       nextStatus === "listo"
-        ? resolveWorkflowNextStepIndex({
+        ? resolveWorkflowNextStepIndexes({
             steps: newSteps,
             currentIndex: index,
             formData: newSteps[index]?.formData || {},
           })
-        : null;
+        : [];
 
-    if (nextStatus === "listo" && resolvedNextIndex !== null && newSteps[resolvedNextIndex]?.status !== "listo") {
-      newSteps[resolvedNextIndex] = {
-        ...newSteps[resolvedNextIndex],
-        status: "en_curso",
-        startedAt: newSteps[resolvedNextIndex]?.startedAt || new Date(),
-        assignedAt: new Date(),
-      };
+    if (nextStatus === "listo") {
+      resolvedNextIndexes.forEach((nextIndex) => {
+        if (newSteps[nextIndex]?.status === "listo") return;
+        newSteps[nextIndex] = {
+          ...newSteps[nextIndex],
+          status: "en_curso",
+          startedAt: newSteps[nextIndex]?.startedAt || new Date(),
+          assignedAt: new Date(),
+        };
+      });
     }
 
     if (nextStatus !== "listo") {
-      setPendingNextStepNotification((current) =>
-        current?.stepIndex === resolvedNextIndex ? null : current
+      setPendingNextStepNotifications((current) =>
+        current.filter((notification) => notification.sourceStepIndex !== index)
       );
     }
 
@@ -552,29 +566,46 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
       completedBy: auth.currentUser?.uid || null,
     };
 
-    const nextIndex = resolveWorkflowNextStepIndex({
+    const nextIndexes = resolveWorkflowNextStepIndexes({
       steps: newSteps,
       currentIndex: stepUnitPrompt.index,
       formData: newSteps[stepUnitPrompt.index]?.formData || {},
     });
 
-    if (nextIndex !== null) {
-      newSteps[nextIndex] = {
-        ...newSteps[nextIndex],
-        status: newSteps[nextIndex]?.status === "listo" ? "listo" : "en_curso",
-        startedAt: newSteps[nextIndex]?.startedAt || new Date(),
-        assignedAt: new Date(),
-        ...(stepUnitPrompt.requiresNextAssignee && stepUnitPrompt.nextAssignee
-          ? { assignedTo: stepUnitPrompt.nextAssignee }
-          : {}),
-      };
+    if (nextIndexes.length > 0) {
+      const pendingNotifications: Array<{ sourceStepIndex: number; stepIndex: number; assigneeId: string }> = [];
 
-      if (stepUnitPrompt.requiresNextAssignee && stepUnitPrompt.nextAssignee) {
-        setPendingNextStepNotification({
-          stepIndex: nextIndex,
-          assigneeId: stepUnitPrompt.nextAssignee,
-        });
-      }
+      nextIndexes.forEach((nextIndex) => {
+        const shouldAssignRuntimeOwner = Boolean(
+          stepUnitPrompt.requiresNextAssignee &&
+          stepUnitPrompt.nextAssignee &&
+          (currentStep.assignsNextStep || isDynamicWorkflowAssignee(newSteps[nextIndex]?.assignedTo))
+        );
+
+        newSteps[nextIndex] = {
+          ...newSteps[nextIndex],
+          status: newSteps[nextIndex]?.status === "listo" ? "listo" : "en_curso",
+          startedAt: newSteps[nextIndex]?.startedAt || new Date(),
+          assignedAt: new Date(),
+          ...(shouldAssignRuntimeOwner
+            ? { assignedTo: stepUnitPrompt.nextAssignee }
+            : {}),
+        };
+
+        if (shouldAssignRuntimeOwner && stepUnitPrompt.nextAssignee) {
+          pendingNotifications.push({
+            sourceStepIndex: stepUnitPrompt.index,
+            stepIndex: nextIndex,
+            assigneeId: stepUnitPrompt.nextAssignee,
+          });
+        }
+      });
+
+      setPendingNextStepNotifications(pendingNotifications);
+    } else {
+      setPendingNextStepNotifications((current) =>
+        current.filter((notification) => notification.sourceStepIndex !== stepUnitPrompt.index)
+      );
     }
 
     setWorkflowSteps(newSteps);
@@ -724,6 +755,13 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
               <div className="space-y-2">
                 {workflowSteps.map((step, index) => {
                   const isApproved = step.status === "listo";
+                  const parallelRoutes = normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []);
+                  const statusLabel =
+                    step.status === "en_curso"
+                      ? "En curso"
+                      : step.status === "listo"
+                        ? "Listo"
+                        : "Pendiente";
                   return (
                     <div
                       key={index}
@@ -744,11 +782,32 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                         <Circle className="w-5 h-5 text-slate-300 shrink-0" />
                       )}
                       <div className="flex-1">
-                        <p
-                          className={`font-medium ${isApproved ? "line-through opacity-70" : "text-slate-700"}`}
-                        >
-                          {step.label}
-                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p
+                            className={`font-medium ${isApproved ? "line-through opacity-70" : "text-slate-700"}`}
+                          >
+                            {step.label}
+                          </p>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${
+                            isApproved
+                              ? "bg-emerald-100 text-emerald-700"
+                              : step.status === "en_curso"
+                                ? "bg-indigo-100 text-indigo-700"
+                                : "bg-slate-100 text-slate-500"
+                          }`}>
+                            {statusLabel}
+                          </span>
+                          {parallelRoutes.length > 0 && (
+                            <span className="rounded-full bg-cyan-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-cyan-700">
+                              Abre {parallelRoutes.length} paralelo{parallelRoutes.length === 1 ? "" : "s"}
+                            </span>
+                          )}
+                          {step.finishWorkflowOnComplete && (
+                            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-emerald-700">
+                              Finaliza flujo
+                            </span>
+                          )}
+                        </div>
                         {step.assignedTo && (
                           <p className="text-xs opacity-70 mt-0.5">
                             Asignado a: {step.assignedTo}

@@ -33,10 +33,12 @@ import {
   getWorkflowRouteDescription,
   getWorkflowStepFormFields,
   getWorkflowTargetLabel,
+  normalizeWorkflowParallelRoutes,
   normalizeWorkflowRoutes,
   routeOperatorNeedsValue,
   WORKFLOW_ROUTE_OPERATORS,
   type WorkflowConditionalRoute,
+  type WorkflowParallelRoute,
   type WorkflowRouteOperator,
   type WorkflowRouteTarget,
 } from "@/lib/workflow-routing";
@@ -198,7 +200,10 @@ export function WorkflowRoutingBuilder({
   if (steps.length === 0) return null;
 
   const totalRoutes = steps.reduce(
-    (count, step) => count + normalizeWorkflowRoutes(step.conditionalRoutes || []).length,
+    (count, step) =>
+      count +
+      normalizeWorkflowRoutes(step.conditionalRoutes || []).length +
+      normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []).length,
     0
   );
   const variablesCount = steps.reduce(
@@ -317,6 +322,21 @@ function WorkflowVisualEditorModal({
     });
   };
 
+  const updateParallelRoute = (
+    stepIndex: number,
+    routeId: string,
+    updates: Partial<WorkflowParallelRoute>
+  ) => {
+    const step = steps[stepIndex];
+    const routes = normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []);
+    updateStep(stepIndex, {
+      parallelRoutes: routes.map((route) =>
+        route.id === routeId ? { ...route, ...updates } : route
+      ),
+      parallelNextStepIndexes: null,
+    });
+  };
+
   const addRoute = (stepIndex: number) => {
     const step = steps[stepIndex];
     const fields = getWorkflowStepFormFields(step);
@@ -334,6 +354,20 @@ function WorkflowVisualEditorModal({
 
     updateStep(stepIndex, {
       conditionalRoutes: [...normalizeWorkflowRoutes(step.conditionalRoutes || []), route],
+    });
+  };
+
+  const addParallelRoute = (stepIndex: number) => {
+    const step = steps[stepIndex];
+    const route: WorkflowParallelRoute = {
+      id: createWorkflowRouteId(),
+      targetStepIndex: getDefaultRouteTarget(stepIndex, steps.length),
+      label: "",
+    };
+
+    updateStep(stepIndex, {
+      parallelRoutes: [...normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []), route],
+      parallelNextStepIndexes: null,
     });
   };
 
@@ -367,6 +401,16 @@ function WorkflowVisualEditorModal({
       conditionalRoutes: normalizeWorkflowRoutes(step.conditionalRoutes || []).filter(
         (route) => route.id !== routeId
       ),
+    });
+  };
+
+  const removeParallelRoute = (stepIndex: number, routeId: string) => {
+    const step = steps[stepIndex];
+    updateStep(stepIndex, {
+      parallelRoutes: normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []).filter(
+        (route) => route.id !== routeId
+      ),
+      parallelNextStepIndexes: null,
     });
   };
 
@@ -409,6 +453,7 @@ function WorkflowVisualEditorModal({
     const stepNodes = steps.map((step, index) => {
       const fields = getWorkflowStepFormFields(step);
       const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
+      const parallelRoutes = normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []);
 
       return {
         id: `workflow-step-${index}`,
@@ -417,12 +462,15 @@ function WorkflowVisualEditorModal({
         data: {
           index,
           title: getStepTitle(step, index),
-          routeCount: routes.length,
+          routeCount: routes.length + parallelRoutes.length,
           fieldCount: fields.length,
           hasForm: Boolean(step.form),
           description:
+            step.finishWorkflowOnComplete
+              ? "Nodo de cierre: al completarse finaliza el workflow."
+              :
             routes.length === 0
-              ? `Ruta lineal hacia ${getWorkflowTargetLabel(getDefaultRouteTarget(index, steps.length), steps, index)}`
+              ? `Ruta hacia ${getWorkflowTargetLabel(step.defaultNextStepIndex ?? getDefaultRouteTarget(index, steps.length), steps, index)}${parallelRoutes.length ? ` + ${parallelRoutes.length} paralelo(s)` : ""}`
               : routes
                   .slice(0, 2)
                   .map((route) => getWorkflowRouteDescription(route, steps, index))
@@ -452,10 +500,11 @@ function WorkflowVisualEditorModal({
 
     steps.forEach((step, index) => {
       const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
+      const parallelRoutes = normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []);
       const defaultTarget = step.defaultNextStepIndex ?? step.defaultNextStepTarget ?? getDefaultRouteTarget(index, steps.length);
       const defaultTargetId = targetToNodeId(defaultTarget, index, steps.length);
 
-      if (defaultTargetId) {
+      if (defaultTargetId && !step.finishWorkflowOnComplete) {
         nextEdges.push({
           id: `default-${index}-${defaultTargetId}`,
           source: `workflow-step-${index}`,
@@ -499,6 +548,25 @@ function WorkflowVisualEditorModal({
           labelBgBorderRadius: 8,
         });
       });
+
+      parallelRoutes.forEach((route, routeIndex) => {
+        const targetId = targetToNodeId(route.targetStepIndex, index, steps.length);
+        if (!targetId) return;
+        nextEdges.push({
+          id: route.id || `parallel-${index}-${routeIndex}`,
+          source: `workflow-step-${index}`,
+          target: targetId,
+          type: "smoothstep",
+          label: route.label || "paralelo",
+          animated: true,
+          markerEnd: { type: MarkerType.ArrowClosed, color: "#06b6d4" },
+          style: { stroke: "#06b6d4", strokeWidth: 3, strokeDasharray: "10 4" },
+          labelStyle: { fill: "#0891b2", fontSize: 11, fontWeight: 900 },
+          labelBgStyle: { fill: "#ecfeff", fillOpacity: 0.95 },
+          labelBgPadding: [6, 4],
+          labelBgBorderRadius: 8,
+        });
+      });
     });
 
     return nextEdges;
@@ -507,6 +575,7 @@ function WorkflowVisualEditorModal({
   const selectedStep = steps[activeSelectedStepIndex];
   const selectedFields = getWorkflowStepFormFields(selectedStep);
   const selectedRoutes = normalizeWorkflowRoutes(selectedStep?.conditionalRoutes || []);
+  const selectedParallelRoutes = normalizeWorkflowParallelRoutes(selectedStep?.parallelRoutes || selectedStep?.parallelNextStepIndexes || []);
   const selectedDefaultTarget = selectedStep?.defaultNextStepIndex ?? selectedStep?.defaultNextStepTarget;
   const selectedTargetOptions = getTargetOptions(steps, activeSelectedStepIndex, allowAnyTarget);
 
@@ -613,6 +682,32 @@ function WorkflowVisualEditorModal({
                   placeholder={`Paso ${activeSelectedStepIndex + 1}`}
                   className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-white px-3 text-sm font-black text-slate-950 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/20"
                 />
+                <label className="mt-3 flex items-start gap-3 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(selectedStep.finishWorkflowOnComplete)}
+                    onChange={(event) =>
+                      updateStep(activeSelectedStepIndex, {
+                        finishWorkflowOnComplete: event.target.checked,
+                        defaultNextStepIndex: event.target.checked ? "complete" : selectedStep.defaultNextStepIndex,
+                        ...(event.target.checked
+                          ? {
+                              conditionalRoutes: [],
+                              parallelRoutes: [],
+                              parallelNextStepIndexes: null,
+                            }
+                          : {}),
+                      })
+                    }
+                    className="mt-0.5 h-4 w-4 rounded border-white/20 text-emerald-500"
+                  />
+                  <span>
+                    <span className="block text-xs font-black text-emerald-100">Nodo de finalización</span>
+                    <span className="mt-0.5 block text-[11px] font-semibold leading-5 text-emerald-100/80">
+                      Al completar este paso, Pixel cierra el workflow aunque existan pasos posteriores.
+                    </span>
+                  </span>
+                </label>
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <div className="rounded-xl bg-white/[0.05] p-3">
                     <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Variables</p>
@@ -620,7 +715,9 @@ function WorkflowVisualEditorModal({
                   </div>
                   <div className="rounded-xl bg-white/[0.05] p-3">
                     <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Rutas</p>
-                    <p className="mt-1 text-2xl font-black text-white">{selectedRoutes.length}</p>
+                    <p className="mt-1 text-2xl font-black text-white">
+                      {selectedRoutes.length + selectedParallelRoutes.length}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -672,13 +769,14 @@ function WorkflowVisualEditorModal({
                   Ruta si ninguna condicion coincide
                 </label>
                 <select
+                  disabled={Boolean(selectedStep.finishWorkflowOnComplete)}
                   value={targetToSelectValue(selectedDefaultTarget, activeSelectedStepIndex, steps.length)}
                   onChange={(event) =>
                     updateStep(activeSelectedStepIndex, {
                       defaultNextStepIndex: selectValueToTarget(event.target.value),
                     })
                   }
-                  className="mt-1 h-10 w-full rounded-xl border border-white/10 bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/20"
+                  className="mt-1 h-10 w-full rounded-xl border border-white/10 bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/20 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
                 >
                   {selectedTargetOptions.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -695,7 +793,7 @@ function WorkflowVisualEditorModal({
                     type="button"
                     size="sm"
                     onClick={() => addRoute(activeSelectedStepIndex)}
-                    disabled={selectedFields.length === 0}
+                    disabled={selectedFields.length === 0 || Boolean(selectedStep.finishWorkflowOnComplete)}
                     className="h-8 rounded-xl bg-indigo-500 px-3 text-[10px] font-black text-white hover:bg-indigo-400 disabled:opacity-40"
                   >
                     <Plus size={12} className="mr-1" />
@@ -706,7 +804,9 @@ function WorkflowVisualEditorModal({
                 <div className="mt-3 space-y-3">
                   {selectedRoutes.length === 0 && (
                     <div className="rounded-xl border border-dashed border-white/15 p-3 text-xs font-semibold text-slate-400">
-                      Sin condiciones. El paso seguira la ruta por defecto.
+                      {selectedStep.finishWorkflowOnComplete
+                        ? "Este nodo finaliza el workflow y no abre nuevas rutas."
+                        : "Sin condiciones. El paso seguira la ruta por defecto."}
                     </div>
                   )}
 
@@ -792,6 +892,75 @@ function WorkflowVisualEditorModal({
                       </div>
                     );
                   })}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-cyan-300/20 bg-cyan-400/10 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-cyan-100">
+                      <GitBranch size={14} />
+                      Ramas paralelas
+                    </p>
+                    <p className="mt-1 text-xs font-semibold leading-5 text-cyan-100/75">
+                      Estos nodos se inician al mismo tiempo que la ruta principal cuando este paso finaliza.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => addParallelRoute(activeSelectedStepIndex)}
+                    disabled={Boolean(selectedStep.finishWorkflowOnComplete)}
+                    className="h-8 shrink-0 rounded-xl bg-cyan-400 px-3 text-[10px] font-black text-slate-950 hover:bg-cyan-300 disabled:opacity-40"
+                  >
+                    <Plus size={12} className="mr-1" />
+                    Paralelo
+                  </Button>
+                </div>
+
+                <div className="mt-3 space-y-2">
+                  {selectedParallelRoutes.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-cyan-300/25 p-3 text-xs font-semibold text-cyan-100/70">
+                      Sin ramas paralelas. El paso solo abrirá la ruta principal.
+                    </div>
+                  )}
+                  {selectedParallelRoutes.map((route) => (
+                    <div key={route.id} className="grid grid-cols-[minmax(0,1fr)_38px] gap-2 rounded-2xl border border-cyan-300/20 bg-slate-900 p-3">
+                      <div className="space-y-2">
+                        <select
+                          value={targetToSelectValue(route.targetStepIndex, activeSelectedStepIndex, steps.length)}
+                          onChange={(event) =>
+                            updateParallelRoute(activeSelectedStepIndex, route.id, {
+                              targetStepIndex: selectValueToTarget(event.target.value),
+                            })
+                          }
+                          className="h-9 w-full rounded-xl border border-cyan-200 bg-cyan-50 px-3 text-xs font-black text-cyan-900 outline-none"
+                        >
+                          {selectedTargetOptions
+                            .filter((option) => option.value !== "complete")
+                            .map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                        </select>
+                        <input
+                          value={route.label || ""}
+                          onChange={(event) => updateParallelRoute(activeSelectedStepIndex, route.id, { label: event.target.value })}
+                          placeholder="Etiqueta opcional, ej. Revisión jurídica"
+                          className="h-9 w-full rounded-xl border border-white/10 bg-white px-3 text-xs font-bold text-slate-800 outline-none"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeParallelRoute(activeSelectedStepIndex, route.id)}
+                        className="flex h-9 items-center justify-center rounded-xl border border-red-400/20 bg-red-500/10 text-red-200 hover:bg-red-500/20"
+                        title="Eliminar rama paralela"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>

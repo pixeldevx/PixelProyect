@@ -28,9 +28,11 @@ import {
 import {
   isVariableWorkflowTaskType,
   isWorkflowTaskType,
+  normalizeWorkflowParallelRoutes,
   normalizeWorkflowRoutes,
   routeOperatorNeedsValue,
   type WorkflowConditionalRoute,
+  type WorkflowParallelRoute,
   type WorkflowRouteTarget,
 } from "@/lib/workflow-routing";
 
@@ -54,6 +56,8 @@ type WorkflowStepDraft = {
   isQualityGate?: boolean | null;
   plannedDurationDays?: number | null;
   conditionalRoutes?: WorkflowConditionalRoute[];
+  parallelRoutes?: WorkflowParallelRoute[];
+  finishWorkflowOnComplete?: boolean | null;
   defaultNextStepIndex?: WorkflowRouteTarget;
 };
 
@@ -220,6 +224,8 @@ const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
     isQualityGate: index === 0 ? false : step?.isQualityGate ?? null,
     plannedDurationDays: getWorkflowStepPlannedDuration(step),
     conditionalRoutes: normalizeWorkflowRoutes(step?.conditionalRoutes || step?.routes || []),
+    parallelRoutes: normalizeWorkflowParallelRoutes(step?.parallelRoutes || step?.parallelNextStepIndexes || []),
+    finishWorkflowOnComplete: Boolean(step?.finishWorkflowOnComplete),
     defaultNextStepIndex: step?.defaultNextStepIndex ?? step?.defaultNextStepTarget ?? null,
   }));
 
@@ -659,6 +665,12 @@ export function EditTaskStructureModal({
             fieldLabel: field?.label || route.fieldLabel || route.fieldId,
           };
         }),
+        parallelRoutes: normalizeWorkflowParallelRoutes(step.parallelRoutes || []).map((route) => ({
+          ...route,
+          targetStepIndex: route.targetStepIndex,
+        })),
+        parallelNextStepIndexes: null,
+        finishWorkflowOnComplete: Boolean(step.finishWorkflowOnComplete),
         defaultNextStepIndex: step.defaultNextStepIndex ?? null,
       };
     });
