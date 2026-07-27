@@ -20,7 +20,8 @@ import {
   WalletCards,
   PackageSearch,
   UserCircle,
-  BriefcaseBusiness
+  BriefcaseBusiness,
+  KeyRound
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
@@ -246,6 +247,9 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
           )}
           {userRole === 'admin' && (
             <NavItem href="/settings" icon={<Settings size={18} />} label="Settings" active={pathname?.startsWith('/settings')} collapsed={isCollapsed} />
+          )}
+          {userRole === 'admin' && (
+            <NavItem href="/licenses" icon={<KeyRound size={18} />} label="Licenciamiento" active={pathname?.startsWith('/licenses')} collapsed={isCollapsed} />
           )}
         </nav>
         
