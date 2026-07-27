@@ -479,26 +479,55 @@ function WorkflowVisualEditorModal({
     });
   };
 
-  const addRoute = (stepIndex: number) => {
-    const step = steps[stepIndex];
-    const fields = getWorkflowStepFormFields(step);
-    const firstField = fields[0];
-    if (!firstField) return;
+  const buildDecisionRouteUpdates = (
+    step: any,
+    stepIndex: number,
+    targetStepIndex: WorkflowRouteTarget = null
+  ) => {
+    let fields = getWorkflowStepFormFields(step);
+    let form = step.form;
+    let field = fields[0];
+
+    if (!field) {
+      field = {
+        id: `decision_field_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        label: "Resultado de la decisión",
+        type: "select",
+        required: true,
+        options: ["Sí", "No"],
+        selectionMode: "single",
+      };
+      fields = [field];
+      form = {
+        ...(step.form || {}),
+        title: step.form?.title || `Formulario para ${getStepTitle(step, stepIndex)}`,
+        fields,
+      };
+    }
 
     const route: WorkflowConditionalRoute = {
       id: createWorkflowRouteId(),
-      fieldId: firstField.id,
-      fieldLabel: firstField.label,
+      fieldId: field.id,
+      fieldLabel: field.label,
       operator: "equals",
       value: "",
-      targetStepIndex: null,
+      targetStepIndex,
     };
 
-    updateStep(stepIndex, {
+    return {
+      form,
       decisionNodeEnabled: true,
       disableImplicitLinearRoute: true,
       conditionalRoutes: [...normalizeWorkflowRoutes(step.conditionalRoutes || []), route],
-    });
+    };
+  };
+
+  const addRoute = (stepIndex: number) => {
+    const step = steps[stepIndex];
+    if (!step) return;
+
+    updateStep(stepIndex, buildDecisionRouteUpdates(step, stepIndex));
+    toast.success("Condición creada. Ajusta su valor y destino en el panel.");
   };
 
   const addDecisionNode = (stepIndex: number) => {
@@ -660,31 +689,7 @@ function WorkflowVisualEditorModal({
           : connectMode;
 
     if (routeMode === "condition") {
-      const fields = getWorkflowStepFormFields(step);
-      const firstField = fields[0];
-      if (!firstField) {
-        toast.warning("Crea primero un campo en el formulario del paso para usarlo como condición.");
-        updateStep(sourceNode.stepIndex, {
-          decisionNodeEnabled: true,
-          disableImplicitLinearRoute: true,
-        });
-        return;
-      }
-
-      const route: WorkflowConditionalRoute = {
-        id: createWorkflowRouteId(),
-        fieldId: firstField.id,
-        fieldLabel: firstField.label,
-        operator: "equals",
-        value: "",
-        targetStepIndex: target,
-      };
-
-      updateStep(sourceNode.stepIndex, {
-        decisionNodeEnabled: true,
-        disableImplicitLinearRoute: true,
-        conditionalRoutes: [...normalizeWorkflowRoutes(step.conditionalRoutes || []), route],
-      });
+      updateStep(sourceNode.stepIndex, buildDecisionRouteUpdates(step, sourceNode.stepIndex, target));
       setSelectedStepIndex(sourceNode.stepIndex);
       toast.success("Ruta condicional creada. Ajusta la regla en el panel derecho.");
       return;
@@ -1255,7 +1260,7 @@ function WorkflowVisualEditorModal({
                 <div className="mt-3 space-y-2">
                   {selectedFields.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-white/15 p-3 text-xs font-semibold text-slate-400">
-                      Este paso aun no tiene formulario. Crea campos para usarlos como variables de decision.
+                      Este paso aún no tiene variables. Si agregas una condición, Pixel creará una variable base llamada “Resultado de la decisión”.
                     </div>
                   ) : (
                     selectedFields.map((field: any) => (
@@ -1317,7 +1322,7 @@ function WorkflowVisualEditorModal({
                       type="button"
                       size="sm"
                       onClick={() => addRoute(activeSelectedStepIndex)}
-                      disabled={selectedFields.length === 0 || Boolean(selectedStep.finishWorkflowOnComplete)}
+                      disabled={Boolean(selectedStep.finishWorkflowOnComplete)}
                       className="h-8 rounded-xl bg-indigo-500 px-3 text-[10px] font-black text-white hover:bg-indigo-400 disabled:opacity-40"
                     >
                       <Plus size={12} className="mr-1" />
@@ -1327,11 +1332,25 @@ function WorkflowVisualEditorModal({
                 </div>
 
                 <div className="mt-3 space-y-3">
+                  {selectedRoutes.length > 0 && (
+                    <div className="rounded-xl border border-amber-300/20 bg-amber-400/10 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-100">
+                        Caminos de la decisión
+                      </p>
+                      <div className="mt-2 space-y-1.5">
+                        {selectedRoutes.map((route, routeIndex) => (
+                          <div key={`decision-summary-${route.id}`} className="rounded-lg bg-white/10 px-3 py-2 text-[11px] font-bold text-amber-50">
+                            Camino {routeIndex + 1}: {getWorkflowRouteDescription(route, steps, activeSelectedStepIndex)}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {selectedRoutes.length === 0 && (
                     <div className="rounded-xl border border-dashed border-white/15 p-3 text-xs font-semibold text-slate-400">
                       {selectedStep.finishWorkflowOnComplete
                         ? "Este nodo finaliza el workflow y no abre nuevas rutas."
-                        : "Sin condiciones. El paso seguira la ruta por defecto."}
+                        : "Sin condiciones. Presiona + Condición o arrastra una salida desde el rombo para crear un camino."}
                     </div>
                   )}
 
