@@ -237,7 +237,10 @@ export const resolveWorkflowNextStepIndex = ({
 }): number | null => {
   const stepCount = steps.length;
   const currentStep = steps[currentIndex];
-  const linearNext = currentIndex < stepCount - 1 ? currentIndex + 1 : null;
+  const implicitLinearDisabled = Boolean(
+    currentStep?.disableImplicitLinearRoute || currentStep?.manualGraphRouting
+  );
+  const linearNext = !implicitLinearDisabled && currentIndex < stepCount - 1 ? currentIndex + 1 : null;
   const routes = normalizeWorkflowRoutes(currentStep?.conditionalRoutes || currentStep?.routes || []);
 
   for (const route of routes) {
@@ -246,8 +249,10 @@ export const resolveWorkflowNextStepIndex = ({
     if (target !== undefined) return target;
   }
 
+  const rawDefaultTarget = currentStep?.defaultNextStepIndex ?? currentStep?.defaultNextStepTarget;
+  const hasExplicitDefaultTarget = rawDefaultTarget !== undefined && rawDefaultTarget !== null && rawDefaultTarget !== "";
   const defaultTarget = normalizeWorkflowDefaultTarget(
-    currentStep?.defaultNextStepIndex ?? currentStep?.defaultNextStepTarget,
+    hasExplicitDefaultTarget ? rawDefaultTarget : undefined,
     currentIndex,
     stepCount
   );

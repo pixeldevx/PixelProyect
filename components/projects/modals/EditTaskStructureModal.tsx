@@ -58,6 +58,11 @@ type WorkflowStepDraft = {
   conditionalRoutes?: WorkflowConditionalRoute[];
   parallelRoutes?: WorkflowParallelRoute[];
   finishWorkflowOnComplete?: boolean | null;
+  decisionNodeEnabled?: boolean | null;
+  parallelNodeEnabled?: boolean | null;
+  decisionPosition?: { x: number; y: number } | null;
+  parallelPosition?: { x: number; y: number } | null;
+  disableImplicitLinearRoute?: boolean | null;
   defaultNextStepIndex?: WorkflowRouteTarget;
 };
 
@@ -226,6 +231,11 @@ const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
     conditionalRoutes: normalizeWorkflowRoutes(step?.conditionalRoutes || step?.routes || []),
     parallelRoutes: normalizeWorkflowParallelRoutes(step?.parallelRoutes || step?.parallelNextStepIndexes || []),
     finishWorkflowOnComplete: Boolean(step?.finishWorkflowOnComplete),
+    decisionNodeEnabled: Boolean(step?.decisionNodeEnabled),
+    parallelNodeEnabled: Boolean(step?.parallelNodeEnabled),
+    decisionPosition: step?.decisionPosition ?? null,
+    parallelPosition: step?.parallelPosition ?? null,
+    disableImplicitLinearRoute: Boolean(step?.disableImplicitLinearRoute),
     defaultNextStepIndex: step?.defaultNextStepIndex ?? step?.defaultNextStepTarget ?? null,
   }));
 
@@ -470,6 +480,7 @@ export function EditTaskStructureModal({
         unitsToAdd: 1,
         autoAddUnits: true,
         plannedDurationDays: 1,
+        disableImplicitLinearRoute: isVariableWorkflow,
       },
     ]);
   };
@@ -671,6 +682,11 @@ export function EditTaskStructureModal({
         })),
         parallelNextStepIndexes: null,
         finishWorkflowOnComplete: Boolean(step.finishWorkflowOnComplete),
+        decisionNodeEnabled: Boolean(step.decisionNodeEnabled),
+        parallelNodeEnabled: Boolean(step.parallelNodeEnabled),
+        decisionPosition: step.decisionPosition || null,
+        parallelPosition: step.parallelPosition || null,
+        disableImplicitLinearRoute: Boolean(step.disableImplicitLinearRoute),
         defaultNextStepIndex: step.defaultNextStepIndex ?? null,
       };
     });

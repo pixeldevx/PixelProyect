@@ -210,6 +210,11 @@ export function CreateTaskModal({
       conditionalRoutes?: WorkflowConditionalRoute[];
       parallelRoutes?: WorkflowParallelRoute[];
       finishWorkflowOnComplete?: boolean;
+      decisionNodeEnabled?: boolean;
+      parallelNodeEnabled?: boolean;
+      decisionPosition?: { x: number; y: number } | null;
+      parallelPosition?: { x: number; y: number } | null;
+      disableImplicitLinearRoute?: boolean;
       defaultNextStepIndex?: WorkflowRouteTarget;
     }[]
   >([]);
@@ -407,6 +412,11 @@ export function CreateTaskModal({
         })),
         parallelNextStepIndexes: null,
         finishWorkflowOnComplete: Boolean(step.finishWorkflowOnComplete),
+        decisionNodeEnabled: Boolean(step.decisionNodeEnabled),
+        parallelNodeEnabled: Boolean(step.parallelNodeEnabled),
+        decisionPosition: step.decisionPosition || null,
+        parallelPosition: step.parallelPosition || null,
+        disableImplicitLinearRoute: Boolean(step.disableImplicitLinearRoute),
         defaultNextStepIndex: step.defaultNextStepIndex ?? null,
       };
     });
@@ -1509,7 +1519,15 @@ export function CreateTaskModal({
                       onClick={() =>
                         setWorkflowSteps([
                           ...workflowSteps,
-                          { assignedTo: "", label: "", unitsToAdd: 1, autoAddUnits: true, rateCards: [], plannedDurationDays: 1 },
+                          {
+                            assignedTo: "",
+                            label: "",
+                            unitsToAdd: 1,
+                            autoAddUnits: true,
+                            rateCards: [],
+                            plannedDurationDays: 1,
+                            disableImplicitLinearRoute: isVariableWorkflowSelected,
+                          },
                         ])
                       }
                       className="h-9 shrink-0 rounded-lg border border-indigo-200 bg-white px-3 text-xs font-bold text-indigo-600 hover:bg-indigo-50"

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   Background,
   Controls,
@@ -10,6 +10,7 @@ import {
   Position,
   ReactFlow,
   type Edge,
+  type Connection,
   type Node,
   type OnNodeDrag,
   type NodeProps,
@@ -18,6 +19,7 @@ import "@xyflow/react/dist/style.css";
 import {
   CheckCircle2,
   ClipboardList,
+  Diamond,
   GitBranch,
   Maximize2,
   MousePointer2,
@@ -26,6 +28,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { WorkflowStepFormBuilderModal } from "@/components/projects/WorkflowStepFormBuilderModal";
 import {
@@ -54,6 +57,10 @@ type WorkflowRoutingBuilderProps = {
 };
 
 const COMPLETE_NODE_ID = "workflow-complete";
+const DECISION_NODE_PREFIX = "workflow-decision-";
+const PARALLEL_NODE_PREFIX = "workflow-parallel-";
+
+type WorkflowConnectMode = "default" | "condition" | "parallel";
 
 const getStepTitle = (step: any, index: number) =>
   String(step?.label || `Paso ${index + 1}`);
@@ -96,21 +103,48 @@ const getTargetOptions = (steps: any[], currentIndex: number, allowAnyTarget = f
   ];
 };
 
-const targetToSelectValue = (target: WorkflowRouteTarget | undefined, currentIndex: number, stepCount: number) => {
+const targetToSelectValue = (target: WorkflowRouteTarget | undefined | null, currentIndex: number, stepCount: number) => {
   if (target === "complete") return "complete";
   if (typeof target === "number") return String(target);
-  return String(getDefaultRouteTarget(currentIndex, stepCount));
+  return "";
 };
 
 const selectValueToTarget = (value: string): WorkflowRouteTarget =>
+  value === "" ? null :
   value === "complete" ? "complete" : Number(value);
 
 const targetToNodeId = (target: WorkflowRouteTarget | undefined, currentIndex: number, stepCount: number) => {
-  const resolvedTarget = target ?? getDefaultRouteTarget(currentIndex, stepCount);
-  if (resolvedTarget === "complete" || resolvedTarget === null) return COMPLETE_NODE_ID;
+  const resolvedTarget = target;
+  if (resolvedTarget === "complete") return COMPLETE_NODE_ID;
+  if (resolvedTarget === null || resolvedTarget === undefined) return null;
   if (typeof resolvedTarget !== "number") return null;
   if (resolvedTarget < 0 || resolvedTarget >= stepCount || resolvedTarget === currentIndex) return null;
   return `workflow-step-${resolvedTarget}`;
+};
+
+const nodeIdToTarget = (nodeId?: string | null): WorkflowRouteTarget | undefined => {
+  if (!nodeId) return undefined;
+  if (nodeId === COMPLETE_NODE_ID) return "complete";
+  if (!nodeId.startsWith("workflow-step-")) return undefined;
+  const index = Number(nodeId.replace("workflow-step-", ""));
+  return Number.isFinite(index) ? index : undefined;
+};
+
+const parseWorkflowEditorNodeId = (nodeId?: string | null) => {
+  if (!nodeId) return null;
+  if (nodeId.startsWith("workflow-step-")) {
+    const stepIndex = Number(nodeId.replace("workflow-step-", ""));
+    return Number.isFinite(stepIndex) ? { kind: "step" as const, stepIndex } : null;
+  }
+  if (nodeId.startsWith(DECISION_NODE_PREFIX)) {
+    const stepIndex = Number(nodeId.replace(DECISION_NODE_PREFIX, ""));
+    return Number.isFinite(stepIndex) ? { kind: "decision" as const, stepIndex } : null;
+  }
+  if (nodeId.startsWith(PARALLEL_NODE_PREFIX)) {
+    const stepIndex = Number(nodeId.replace(PARALLEL_NODE_PREFIX, ""));
+    return Number.isFinite(stepIndex) ? { kind: "parallel" as const, stepIndex } : null;
+  }
+  return null;
 };
 
 function WorkflowStepNode({ data, selected }: NodeProps) {
@@ -181,8 +215,74 @@ function WorkflowCompleteNode() {
   );
 }
 
+function WorkflowDecisionNode({ data, selected }: NodeProps) {
+  const nodeData = data as any;
+  const routeCount = Number(nodeData.routeCount || 0);
+
+  return (
+    <div className="relative flex h-[154px] w-[154px] items-center justify-center">
+      <Handle type="target" position={Position.Left} className="!left-0 !h-3 !w-3 !border-2 !border-white !bg-amber-500" />
+      <div
+        className={`flex h-[112px] w-[112px] rotate-45 items-center justify-center border bg-amber-50 shadow-xl transition-all ${
+          selected
+            ? "border-amber-500 ring-4 ring-amber-400/20"
+            : "border-amber-200 hover:border-amber-400"
+        }`}
+      >
+        <div className="-rotate-45 text-center">
+          <Diamond size={18} className="mx-auto text-amber-600" />
+          <p className="mt-1 text-[9px] font-black uppercase tracking-[0.16em] text-amber-700">
+            Decisión
+          </p>
+          <p className="mt-1 text-xl font-black text-amber-950">{routeCount}</p>
+          <p className="text-[9px] font-black uppercase tracking-wider text-amber-500">
+            rutas
+          </p>
+        </div>
+      </div>
+      <Handle type="source" position={Position.Right} className="!right-0 !h-3 !w-3 !border-2 !border-white !bg-amber-500" />
+    </div>
+  );
+}
+
+function WorkflowParallelNode({ data, selected }: NodeProps) {
+  const nodeData = data as any;
+  const routeCount = Number(nodeData.routeCount || 0);
+
+  return (
+    <div
+      className={`w-[210px] rounded-2xl border bg-cyan-50 px-4 py-3 shadow-xl transition-all ${
+        selected
+          ? "border-cyan-500 ring-4 ring-cyan-400/20"
+          : "border-cyan-200 hover:border-cyan-400"
+      }`}
+    >
+      <Handle type="target" position={Position.Left} className="!h-3 !w-3 !border-2 !border-white !bg-cyan-500" />
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-cyan-500 text-white">
+          <GitBranch size={19} />
+        </div>
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-700">
+            Paralelo
+          </p>
+          <p className="text-sm font-black text-cyan-950">
+            {routeCount} rama{routeCount === 1 ? "" : "s"}
+          </p>
+        </div>
+      </div>
+      <p className="mt-2 text-[11px] font-semibold leading-4 text-cyan-700">
+        Conecta desde aquí las tareas que deben iniciar al tiempo.
+      </p>
+      <Handle type="source" position={Position.Right} className="!h-3 !w-3 !border-2 !border-white !bg-cyan-500" />
+    </div>
+  );
+}
+
 const workflowNodeTypes = {
   workflowStep: WorkflowStepNode,
+  workflowDecision: WorkflowDecisionNode,
+  workflowParallel: WorkflowParallelNode,
   workflowComplete: WorkflowCompleteNode,
 };
 
@@ -298,6 +398,7 @@ function WorkflowVisualEditorModal({
 }) {
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [formStepIndex, setFormStepIndex] = useState<number | null>(null);
+  const [connectMode, setConnectMode] = useState<WorkflowConnectMode>("default");
   const activeSelectedStepIndex = Math.min(selectedStepIndex, Math.max(0, steps.length - 1));
 
   const updateStep = (stepIndex: number, updates: Record<string, any>) => {
@@ -349,26 +450,43 @@ function WorkflowVisualEditorModal({
       fieldLabel: firstField.label,
       operator: "equals",
       value: "",
-      targetStepIndex: getDefaultRouteTarget(stepIndex, steps.length),
+      targetStepIndex: null,
     };
 
     updateStep(stepIndex, {
+      decisionNodeEnabled: true,
+      disableImplicitLinearRoute: true,
       conditionalRoutes: [...normalizeWorkflowRoutes(step.conditionalRoutes || []), route],
     });
   };
 
-  const addParallelRoute = (stepIndex: number) => {
+  const addDecisionNode = (stepIndex: number) => {
     const step = steps[stepIndex];
-    const route: WorkflowParallelRoute = {
-      id: createWorkflowRouteId(),
-      targetStepIndex: getDefaultRouteTarget(stepIndex, steps.length),
-      label: "",
-    };
-
+    const currentPosition = getWorkflowNodePosition(step, stepIndex);
     updateStep(stepIndex, {
-      parallelRoutes: [...normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []), route],
-      parallelNextStepIndexes: null,
+      decisionNodeEnabled: true,
+      decisionPosition: step.decisionPosition || {
+        x: Math.round(currentPosition.x + 330),
+        y: Math.round(currentPosition.y - 70),
+      },
+      disableImplicitLinearRoute: true,
     });
+    setConnectMode("condition");
+  };
+
+  const addParallelNode = (stepIndex: number) => {
+    const step = steps[stepIndex];
+    const currentPosition = getWorkflowNodePosition(step, stepIndex);
+    updateStep(stepIndex, {
+      parallelNodeEnabled: true,
+      parallelPosition: step.parallelPosition || {
+        x: Math.round(currentPosition.x + 330),
+        y: Math.round(currentPosition.y + 120),
+      },
+      parallelNextStepIndexes: null,
+      disableImplicitLinearRoute: true,
+    });
+    setConnectMode("parallel");
   };
 
   const addStepFromCanvas = () => {
@@ -386,6 +504,7 @@ function WorkflowVisualEditorModal({
         autoAddUnits: true,
         rateCards: [],
         plannedDurationDays: 1,
+        disableImplicitLinearRoute: true,
         visualPosition: {
           x: Math.round(lastPosition.x + 360),
           y: Math.round(lastPosition.y + (nextIndex % 2 === 0 ? -36 : 36)),
@@ -435,18 +554,173 @@ function WorkflowVisualEditorModal({
 
   const handleNodeDragStop: OnNodeDrag<Node> = (_event, node) => {
     const nodeId = String(node.id || "");
-    if (!nodeId.startsWith("workflow-step-")) return;
+    const parsedNode = parseWorkflowEditorNodeId(nodeId);
+    if (!parsedNode || !steps[parsedNode.stepIndex]) return;
 
-    const stepIndex = Number(nodeId.replace("workflow-step-", ""));
-    if (!Number.isFinite(stepIndex) || !steps[stepIndex]) return;
+    const position = {
+      x: Math.round(node.position.x),
+      y: Math.round(node.position.y),
+    };
 
-    updateStep(stepIndex, {
-      visualPosition: {
-        x: Math.round(node.position.x),
-        y: Math.round(node.position.y),
-      },
-    });
+    if (parsedNode.kind === "decision") {
+      updateStep(parsedNode.stepIndex, { decisionPosition: position });
+      return;
+    }
+
+    if (parsedNode.kind === "parallel") {
+      updateStep(parsedNode.stepIndex, { parallelPosition: position });
+      return;
+    }
+
+    updateStep(parsedNode.stepIndex, { visualPosition: position });
   };
+
+  const handleConnect = useCallback((connection: Connection) => {
+    const sourceNode = parseWorkflowEditorNodeId(connection.source);
+    const target = nodeIdToTarget(connection.target);
+
+    if (!sourceNode || target === undefined) {
+      toast.warning("Conecta desde un paso, decisión o paralelo hacia una tarea o el final.");
+      return;
+    }
+
+    if (typeof target === "number" && target === sourceNode.stepIndex) {
+      toast.warning("Una ruta no puede regresar al mismo nodo.");
+      return;
+    }
+
+    if (!allowAnyTarget && typeof target === "number" && target <= sourceNode.stepIndex) {
+      toast.warning("Este workflow solo permite conectar hacia pasos posteriores.");
+      return;
+    }
+
+    const step = steps[sourceNode.stepIndex];
+    if (!step) return;
+
+    const routeMode: WorkflowConnectMode =
+      sourceNode.kind === "decision"
+        ? "condition"
+        : sourceNode.kind === "parallel"
+          ? "parallel"
+          : connectMode;
+
+    if (routeMode === "condition") {
+      const fields = getWorkflowStepFormFields(step);
+      const firstField = fields[0];
+      if (!firstField) {
+        toast.warning("Crea primero un campo en el formulario del paso para usarlo como condición.");
+        updateStep(sourceNode.stepIndex, {
+          decisionNodeEnabled: true,
+          disableImplicitLinearRoute: true,
+        });
+        return;
+      }
+
+      const route: WorkflowConditionalRoute = {
+        id: createWorkflowRouteId(),
+        fieldId: firstField.id,
+        fieldLabel: firstField.label,
+        operator: "equals",
+        value: "",
+        targetStepIndex: target,
+      };
+
+      updateStep(sourceNode.stepIndex, {
+        decisionNodeEnabled: true,
+        disableImplicitLinearRoute: true,
+        conditionalRoutes: [...normalizeWorkflowRoutes(step.conditionalRoutes || []), route],
+      });
+      setSelectedStepIndex(sourceNode.stepIndex);
+      toast.success("Ruta condicional creada. Ajusta la regla en el panel derecho.");
+      return;
+    }
+
+    if (routeMode === "parallel") {
+      if (target === "complete") {
+        toast.warning("Una rama paralela debe iniciar otra tarea; usa ruta principal para finalizar.");
+        return;
+      }
+
+      const route: WorkflowParallelRoute = {
+        id: createWorkflowRouteId(),
+        targetStepIndex: target,
+        label: "",
+      };
+
+      updateStep(sourceNode.stepIndex, {
+        parallelNodeEnabled: true,
+        disableImplicitLinearRoute: true,
+        parallelRoutes: [...normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []), route],
+        parallelNextStepIndexes: null,
+      });
+      setSelectedStepIndex(sourceNode.stepIndex);
+      toast.success("Rama paralela conectada.");
+      return;
+    }
+
+    updateStep(sourceNode.stepIndex, {
+      defaultNextStepIndex: target,
+      disableImplicitLinearRoute: true,
+      ...(target === "complete" ? { finishWorkflowOnComplete: false } : {}),
+    });
+    setSelectedStepIndex(sourceNode.stepIndex);
+    toast.success(target === "complete" ? "Ruta de cierre conectada." : "Ruta principal conectada.");
+  }, [allowAnyTarget, connectMode, onChange, steps]);
+
+  const handleEdgesDelete = useCallback((deletedEdges: Edge[]) => {
+    if (deletedEdges.length === 0) return;
+
+    let didChange = false;
+    let nextSteps = steps.map((step) => ({ ...step }));
+
+    deletedEdges.forEach((edge) => {
+      const edgeId = String(edge.id || "");
+      const defaultMatch = edgeId.match(/^default-(\d+)-/);
+      if (defaultMatch) {
+        const stepIndex = Number(defaultMatch[1]);
+        if (Number.isFinite(stepIndex) && nextSteps[stepIndex]) {
+          nextSteps[stepIndex] = {
+            ...nextSteps[stepIndex],
+            defaultNextStepIndex: null,
+            disableImplicitLinearRoute: true,
+          };
+          didChange = true;
+        }
+        return;
+      }
+
+      nextSteps = nextSteps.map((step) => {
+        const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
+        if (routes.some((route) => route.id === edgeId)) {
+          didChange = true;
+          return {
+            ...step,
+            conditionalRoutes: routes.filter((route) => route.id !== edgeId),
+            decisionNodeEnabled: routes.length > 1 || Boolean(step.decisionNodeEnabled),
+            disableImplicitLinearRoute: true,
+          };
+        }
+
+        const parallelRoutes = normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []);
+        if (parallelRoutes.some((route) => route.id === edgeId)) {
+          didChange = true;
+          return {
+            ...step,
+            parallelRoutes: parallelRoutes.filter((route) => route.id !== edgeId),
+            parallelNextStepIndexes: null,
+            parallelNodeEnabled: parallelRoutes.length > 1 || Boolean(step.parallelNodeEnabled),
+            disableImplicitLinearRoute: true,
+          };
+        }
+
+        return step;
+      });
+    });
+
+    if (!didChange) return;
+    onChange(nextSteps);
+    toast.success("Conexión eliminada del workflow.");
+  }, [onChange, steps]);
 
   const nodes = useMemo<Node[]>(() => {
     const stepPositions = steps.map((step, index) => getWorkflowNodePosition(step, index));
@@ -454,6 +728,7 @@ function WorkflowVisualEditorModal({
       const fields = getWorkflowStepFormFields(step);
       const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
       const parallelRoutes = normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []);
+      const explicitDefaultTarget = step.defaultNextStepIndex ?? step.defaultNextStepTarget;
 
       return {
         id: `workflow-step-${index}`,
@@ -470,13 +745,51 @@ function WorkflowVisualEditorModal({
               ? "Nodo de cierre: al completarse finaliza el workflow."
               :
             routes.length === 0
-              ? `Ruta hacia ${getWorkflowTargetLabel(step.defaultNextStepIndex ?? getDefaultRouteTarget(index, steps.length), steps, index)}${parallelRoutes.length ? ` + ${parallelRoutes.length} paralelo(s)` : ""}`
+              ? explicitDefaultTarget !== undefined && explicitDefaultTarget !== null
+                ? `Ruta hacia ${getWorkflowTargetLabel(explicitDefaultTarget, steps, index)}${parallelRoutes.length ? ` + ${parallelRoutes.length} paralelo(s)` : ""}`
+                : parallelRoutes.length
+                  ? `${parallelRoutes.length} rama(s) paralela(s). Sin ruta principal.`
+                  : "Sin conexiones. Arrastra una línea para crear la ruta."
               : routes
                   .slice(0, 2)
                   .map((route) => getWorkflowRouteDescription(route, steps, index))
                   .join(" / "),
         },
       } satisfies Node;
+    });
+    const decisionNodes = steps.flatMap((step, index) => {
+      const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
+      if (!step.decisionNodeEnabled && routes.length === 0) return [];
+      const stepPosition = stepPositions[index];
+      return [{
+        id: `${DECISION_NODE_PREFIX}${index}`,
+        type: "workflowDecision",
+        position: normalizeWorkflowNodePosition(step.decisionPosition) || {
+          x: Math.round(stepPosition.x + 330),
+          y: Math.round(stepPosition.y - 70),
+        },
+        data: {
+          stepIndex: index,
+          routeCount: routes.length,
+        },
+      } satisfies Node];
+    });
+    const parallelNodes = steps.flatMap((step, index) => {
+      const parallelRoutes = normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []);
+      if (!step.parallelNodeEnabled && parallelRoutes.length === 0) return [];
+      const stepPosition = stepPositions[index];
+      return [{
+        id: `${PARALLEL_NODE_PREFIX}${index}`,
+        type: "workflowParallel",
+        position: normalizeWorkflowNodePosition(step.parallelPosition) || {
+          x: Math.round(stepPosition.x + 330),
+          y: Math.round(stepPosition.y + 120),
+        },
+        data: {
+          stepIndex: index,
+          routeCount: parallelRoutes.length,
+        },
+      } satisfies Node];
     });
 
     const maxStepX = stepPositions.reduce((max, position) => Math.max(max, position.x), 0);
@@ -486,6 +799,8 @@ function WorkflowVisualEditorModal({
 
     return [
       ...stepNodes,
+      ...decisionNodes,
+      ...parallelNodes,
       {
         id: COMPLETE_NODE_ID,
         type: "workflowComplete",
@@ -501,13 +816,17 @@ function WorkflowVisualEditorModal({
     steps.forEach((step, index) => {
       const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
       const parallelRoutes = normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []);
-      const defaultTarget = step.defaultNextStepIndex ?? step.defaultNextStepTarget ?? getDefaultRouteTarget(index, steps.length);
+      const defaultTarget = step.defaultNextStepIndex ?? step.defaultNextStepTarget;
       const defaultTargetId = targetToNodeId(defaultTarget, index, steps.length);
+      const hasDecisionNode = Boolean(step.decisionNodeEnabled || routes.length > 0);
+      const hasParallelNode = Boolean(step.parallelNodeEnabled || parallelRoutes.length > 0);
+      const decisionNodeId = `${DECISION_NODE_PREFIX}${index}`;
+      const parallelNodeId = `${PARALLEL_NODE_PREFIX}${index}`;
 
       if (defaultTargetId && !step.finishWorkflowOnComplete) {
         nextEdges.push({
           id: `default-${index}-${defaultTargetId}`,
-          source: `workflow-step-${index}`,
+          source: hasDecisionNode ? decisionNodeId : `workflow-step-${index}`,
           target: defaultTargetId,
           type: "smoothstep",
           label: routes.length > 0 ? "si no coincide" : "lineal",
@@ -525,6 +844,42 @@ function WorkflowVisualEditorModal({
         });
       }
 
+      if (hasDecisionNode) {
+        nextEdges.push({
+          id: `decision-entry-${index}`,
+          source: `workflow-step-${index}`,
+          target: decisionNodeId,
+          type: "smoothstep",
+          label: "decidir",
+          deletable: false,
+          animated: false,
+          markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b" },
+          style: { stroke: "#f59e0b", strokeWidth: 2.5 },
+          labelStyle: { fill: "#b45309", fontSize: 11, fontWeight: 900 },
+          labelBgStyle: { fill: "#fffbeb", fillOpacity: 0.95 },
+          labelBgPadding: [6, 4],
+          labelBgBorderRadius: 8,
+        });
+      }
+
+      if (hasParallelNode) {
+        nextEdges.push({
+          id: `parallel-entry-${index}`,
+          source: `workflow-step-${index}`,
+          target: parallelNodeId,
+          type: "smoothstep",
+          label: "abrir paralelo",
+          deletable: false,
+          animated: false,
+          markerEnd: { type: MarkerType.ArrowClosed, color: "#06b6d4" },
+          style: { stroke: "#06b6d4", strokeWidth: 2.5, strokeDasharray: "8 4" },
+          labelStyle: { fill: "#0891b2", fontSize: 11, fontWeight: 900 },
+          labelBgStyle: { fill: "#ecfeff", fillOpacity: 0.95 },
+          labelBgPadding: [6, 4],
+          labelBgBorderRadius: 8,
+        });
+      }
+
       routes.forEach((route, routeIndex) => {
         const targetId = targetToNodeId(route.targetStepIndex, index, steps.length);
         if (!targetId) return;
@@ -535,7 +890,7 @@ function WorkflowVisualEditorModal({
 
         nextEdges.push({
           id: route.id || `route-${index}-${routeIndex}`,
-          source: `workflow-step-${index}`,
+          source: hasDecisionNode ? decisionNodeId : `workflow-step-${index}`,
           target: targetId,
           type: "smoothstep",
           label,
@@ -554,7 +909,7 @@ function WorkflowVisualEditorModal({
         if (!targetId) return;
         nextEdges.push({
           id: route.id || `parallel-${index}-${routeIndex}`,
-          source: `workflow-step-${index}`,
+          source: hasParallelNode ? parallelNodeId : `workflow-step-${index}`,
           target: targetId,
           type: "smoothstep",
           label: route.label || "paralelo",
@@ -597,6 +952,26 @@ function WorkflowVisualEditorModal({
         </div>
 
         <div className="flex items-center gap-2">
+          <div className="hidden items-center gap-1 rounded-2xl border border-white/10 bg-white/[0.04] p-1 md:flex">
+            {[
+              { value: "default", label: "Ruta principal" },
+              { value: "condition", label: "Condición" },
+              { value: "parallel", label: "Paralelo" },
+            ].map((mode) => (
+              <button
+                key={mode.value}
+                type="button"
+                onClick={() => setConnectMode(mode.value as WorkflowConnectMode)}
+                className={`h-8 rounded-xl px-3 text-[10px] font-black uppercase tracking-wider transition-colors ${
+                  connectMode === mode.value
+                    ? "bg-white text-slate-950"
+                    : "text-slate-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
           <Button
             type="button"
             variant="outline"
@@ -631,16 +1006,20 @@ function WorkflowVisualEditorModal({
             edges={edges}
             nodeTypes={workflowNodeTypes}
             nodesDraggable
-            nodesConnectable={false}
+            nodesConnectable
             elementsSelectable
             fitView
             minZoom={0.25}
             maxZoom={1.8}
             onNodeClick={(_, node) => {
-              if (!String(node.id).startsWith("workflow-step-")) return;
-              const index = Number(String(node.id).replace("workflow-step-", ""));
-              if (Number.isFinite(index)) setSelectedStepIndex(index);
+              const parsedNode = parseWorkflowEditorNodeId(String(node.id || ""));
+              if (!parsedNode) return;
+              setSelectedStepIndex(parsedNode.stepIndex);
+              if (parsedNode.kind === "decision") setConnectMode("condition");
+              if (parsedNode.kind === "parallel") setConnectMode("parallel");
             }}
+            onConnect={handleConnect}
+            onEdgesDelete={handleEdgesDelete}
             onNodeDragStop={handleNodeDragStop}
             fitViewOptions={{ padding: 0.18 }}
             attributionPosition="bottom-left"
@@ -651,7 +1030,7 @@ function WorkflowVisualEditorModal({
                 Lienzo interactivo
               </p>
               <p className="mt-1 max-w-sm text-[11px] font-semibold text-slate-500">
-                Arrastra nodos para ordenar el flujo. Usa zoom y desplaza el lienzo para navegar; las lineas punteadas son rutas por defecto.
+                Elige modo arriba y arrastra desde un punto de salida hacia otra tarea. Las tareas nuevas nacen desconectadas.
               </p>
             </div>
             <Controls showInteractive={false} />
@@ -708,6 +1087,26 @@ function WorkflowVisualEditorModal({
                     </span>
                   </span>
                 </label>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <Button
+                    type="button"
+                    onClick={() => addDecisionNode(activeSelectedStepIndex)}
+                    disabled={Boolean(selectedStep.finishWorkflowOnComplete)}
+                    className="h-10 rounded-xl bg-amber-400 text-[10px] font-black uppercase tracking-wider text-amber-950 hover:bg-amber-300 disabled:opacity-40"
+                  >
+                    <Diamond size={14} className="mr-2" />
+                    Rombo decisión
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => addParallelNode(activeSelectedStepIndex)}
+                    disabled={Boolean(selectedStep.finishWorkflowOnComplete)}
+                    className="h-10 rounded-xl bg-cyan-400 text-[10px] font-black uppercase tracking-wider text-cyan-950 hover:bg-cyan-300 disabled:opacity-40"
+                  >
+                    <GitBranch size={14} className="mr-2" />
+                    Nodo paralelo
+                  </Button>
+                </div>
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <div className="rounded-xl bg-white/[0.05] p-3">
                     <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">Variables</p>
@@ -774,10 +1173,12 @@ function WorkflowVisualEditorModal({
                   onChange={(event) =>
                     updateStep(activeSelectedStepIndex, {
                       defaultNextStepIndex: selectValueToTarget(event.target.value),
+                      disableImplicitLinearRoute: true,
                     })
                   }
                   className="mt-1 h-10 w-full rounded-xl border border-white/10 bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/20 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
                 >
+                  <option value="">Sin ruta principal</option>
                   {selectedTargetOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
@@ -873,6 +1274,7 @@ function WorkflowVisualEditorModal({
                               }
                               className="h-9 rounded-xl border border-indigo-200 bg-indigo-50 px-3 text-xs font-black text-indigo-800 outline-none"
                             >
+                              <option value="">Sin destino: conectar en lienzo</option>
                               {selectedTargetOptions.map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
@@ -909,12 +1311,12 @@ function WorkflowVisualEditorModal({
                   <Button
                     type="button"
                     size="sm"
-                    onClick={() => addParallelRoute(activeSelectedStepIndex)}
+                    onClick={() => addParallelNode(activeSelectedStepIndex)}
                     disabled={Boolean(selectedStep.finishWorkflowOnComplete)}
                     className="h-8 shrink-0 rounded-xl bg-cyan-400 px-3 text-[10px] font-black text-slate-950 hover:bg-cyan-300 disabled:opacity-40"
                   >
                     <Plus size={12} className="mr-1" />
-                    Paralelo
+                    Nodo
                   </Button>
                 </div>
 
