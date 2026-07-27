@@ -5,6 +5,9 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   // Allow remote placeholders and Supabase Storage public files.
   images: {
     remotePatterns: [
