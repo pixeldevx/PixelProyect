@@ -49,6 +49,7 @@ import {
   getAuthorizedDownloadBlob,
   getAuthorizedDownloadURL,
   getStoragePathFromDownloadUrl,
+  deleteObject,
 } from '@/lib/supabase/storage-shim';
 import { buildDocumentStoragePath, getDocumentFolderStorageSegments } from '@/lib/document-storage';
 import { ensureManagedDocumentFolderPath } from '@/lib/document-folders';
@@ -335,6 +336,7 @@ type ReviewAction =
   | { type: 'rejectAdvance'; advance: TravelAdvance }
   | { type: 'deleteAdvance'; advance: TravelAdvance }
   | { type: 'returnReceipt'; advance: TravelAdvance; receipt: AdvanceReceipt }
+  | { type: 'deleteReceipt'; advance: TravelAdvance; receipt: AdvanceReceipt }
   | null;
 
 type ReceiptEditorMode = 'review' | 'correction';
@@ -752,6 +754,8 @@ const APPROVED_RECEIPT_STATUSES: ReceiptStatus[] = ['approved', 'approved_modifi
 
 const isApprovedReceipt = (receipt: Pick<AdvanceReceipt, 'status'>) =>
   APPROVED_RECEIPT_STATUSES.includes(receipt.status);
+
+const canDeleteUnlegalizedReceipt = (receipt: Pick<AdvanceReceipt, 'status'>) => !isApprovedReceipt(receipt);
 
 const isAdvanceReadyForLegalization = (advance: Pick<TravelAdvance, 'status'>) =>
   advance.status === 'partially_paid' || advance.status === 'paid' || advance.status === 'approved';
@@ -1919,6 +1923,25 @@ export function ProjectAdministration({
     [canValidate, currentActorIds, currentUser?.email]
   );
 
+  const removeReceiptDocumentArtifacts = async (receipt: AdvanceReceipt) => {
+    const cleanupTasks: Promise<unknown>[] = [];
+    if (receipt.documentId) {
+      cleanupTasks.push(deleteDoc(doc(db, 'projects', projectId, 'documents', receipt.documentId)));
+    }
+    if (receipt.storagePath) {
+      cleanupTasks.push(deleteObject(ref(storage, receipt.storagePath)));
+    }
+
+    if (cleanupTasks.length === 0) return;
+
+    const results = await Promise.allSettled(cleanupTasks);
+    results.forEach((result) => {
+      if (result.status === 'rejected') {
+        console.warn('No se pudo limpiar un artefacto del soporte eliminado:', result.reason);
+      }
+    });
+  };
+
   const loadLocationOptions = useCallback(async () => {
     if (locationsLoaded || locationsLoading) return;
 
@@ -2828,9 +2851,18 @@ export function ProjectAdministration({
 
   const applyReviewAction = async () => {
     if (!reviewAction) return;
-    const isDeleteAction = reviewAction.type === 'deleteAdvance';
-    if (isDeleteAction ? !canManage : !canValidate) {
-      toast.error(isDeleteAction ? 'Solo administradores o coordinadores pueden eliminar anticipos.' : 'No tienes permisos para validar este proceso.');
+    const isDeleteAdvanceAction = reviewAction.type === 'deleteAdvance';
+    const isDeleteReceiptAction = reviewAction.type === 'deleteReceipt';
+    if (isDeleteAdvanceAction && !canManage) {
+      toast.error('Solo administradores o coordinadores pueden eliminar anticipos.');
+      return;
+    }
+    if (isDeleteReceiptAction && !canCorrectAdvanceReceipt(reviewAction.advance)) {
+      toast.error('Solo el solicitante o el área administrativa pueden eliminar soportes sin legalizar.');
+      return;
+    }
+    if (!isDeleteAdvanceAction && !isDeleteReceiptAction && !canValidate) {
+      toast.error('No tienes permisos para validar este proceso.');
       return;
     }
     if ((reviewAction.type === 'returnReceipt' || reviewAction.type === 'returnAdvance') && !reviewComment.trim()) {
@@ -2976,6 +3008,58 @@ export function ProjectAdministration({
           comment: reviewComment.trim(),
         });
         toast.success('Soporte devuelto para corrección.');
+      }
+
+      if (reviewAction.type === 'deleteReceipt') {
+        const latestAdvance = advances.find((advance) => advance.id === reviewAction.advance.id) || reviewAction.advance;
+        const latestReceipt = (latestAdvance.receipts || []).find((receipt) => receipt.id === reviewAction.receipt.id) || reviewAction.receipt;
+        if (!canDeleteUnlegalizedReceipt(latestReceipt)) {
+          toast.error('Este soporte ya está legalizado y no puede eliminarse desde legalizaciones.');
+          return;
+        }
+
+        const nextReceipts = (latestAdvance.receipts || []).filter((receipt) => receipt.id !== latestReceipt.id);
+        const amountLegalized = nextReceipts
+          .filter(isApprovedReceipt)
+          .reduce((sum, item) => sum + asNumber(item.amount), 0);
+        const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
+        const coverage = getAdvanceFinancialCoverage({
+          ...latestAdvance,
+          receipts: nextReceipts,
+          amountApproved,
+          amountLegalized,
+        });
+        const hasPendingReceipts = nextReceipts.some((receipt) => !isApprovedReceipt(receipt));
+        const hasReceipts = nextReceipts.length > 0;
+        const shouldStayCompleted = latestAdvance.status === 'completed';
+
+        await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
+          receipts: nextReceipts,
+          amountLegalized,
+          balance: Math.max(0, coverage.balance),
+          status: latestAdvance.status === 'approved' ? 'approved' : latestAdvance.status,
+          nextAction: hasPendingReceipts
+            ? 'validate_receipt'
+            : shouldStayCompleted && hasReceipts
+              ? 'reconcile_advance'
+              : 'justify_advance',
+          pendingRole: hasPendingReceipts ? 'administrative_validation' : null,
+          inboxTargetUserId: hasPendingReceipts ? null : latestAdvance.requesterId,
+          completedAt: shouldStayCompleted && !hasReceipts ? null : latestAdvance.completedAt || null,
+          completedBy: shouldStayCompleted && !hasReceipts ? null : latestAdvance.completedBy || null,
+          completedByName: shouldStayCompleted && !hasReceipts ? '' : latestAdvance.completedByName || '',
+          reconciliationStatus: shouldStayCompleted && hasReceipts ? latestAdvance.reconciliationStatus || null : null,
+          updatedAt: serverTimestamp(),
+        });
+        await removeReceiptDocumentArtifacts(latestReceipt);
+        await logAdministrativeEvent(latestAdvance.id, 'receipt_deleted', {
+          receiptId: latestReceipt.id,
+          documentId: latestReceipt.documentId || null,
+          fileName: latestReceipt.fileName || null,
+          amount: asNumber(latestReceipt.amount),
+          comment: reviewComment.trim(),
+        });
+        toast.success('Soporte sin legalizar eliminado.');
       }
 
       setReviewAction(null);
@@ -4674,6 +4758,7 @@ export function ProjectAdministration({
                             const statusMeta = getReceiptStatusMeta(receipt.status);
                             const isReturned = receipt.status === 'returned';
                             const duplicateUsage = findDuplicateReceiptUsage(receipt, group.advance.id);
+                            const canDeleteReceipt = canDeleteUnlegalizedReceipt(receipt) && canCorrectAdvanceReceipt(group.advance);
                             return (
                               <div
                                 key={receipt.id}
@@ -4749,6 +4834,18 @@ export function ProjectAdministration({
                                   {isReturned && canCorrectAdvanceReceipt(group.advance) && (
                                     <Button type="button" size="sm" onClick={() => openReceiptEditor('correction', group.advance, receipt)} className="bg-rose-600 text-white hover:bg-rose-700">
                                       <RotateCcw size={14} className="mr-1" /> Subsanar y reenviar
+                                    </Button>
+                                  )}
+                                  {canDeleteReceipt && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => openReviewAction({ type: 'deleteReceipt', advance: group.advance, receipt })}
+                                      className="border-rose-200 text-rose-700 hover:bg-rose-50"
+                                    >
+                                      <Trash2 size={14} className="mr-1" />
+                                      Eliminar
                                     </Button>
                                   )}
                                 </div>
@@ -6608,6 +6705,8 @@ export function ProjectAdministration({
           title={
             reviewAction.type === 'deleteAdvance'
               ? 'Eliminar anticipo'
+              : reviewAction.type === 'deleteReceipt'
+                ? 'Eliminar soporte sin legalizar'
               : reviewAction.type.includes('Receipt')
               ? 'Devolver soporte'
               : reviewAction.type === 'approveAdvance'
@@ -6619,6 +6718,8 @@ export function ProjectAdministration({
           subtitle={
             reviewAction.type === 'deleteAdvance'
               ? 'Se eliminará el anticipo y los registros administrativos asociados.'
+              : reviewAction.type === 'deleteReceipt'
+                ? 'Se retirará este soporte pendiente de la legalización del anticipo.'
               : 'La decisión quedará en la trazabilidad administrativa.'
           }
           onClose={() => setReviewAction(null)}
@@ -6628,13 +6729,18 @@ export function ProjectAdministration({
               Esta acción borra el anticipo, sus pagos reales y la trazabilidad administrativa relacionada. No elimina otros documentos del proyecto.
             </div>
           )}
+          {reviewAction.type === 'deleteReceipt' && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold leading-6 text-rose-700">
+              Se eliminará &quot;{reviewAction.receipt.fileName || reviewAction.receipt.categoryName}&quot; de las legalizaciones pendientes. Los soportes ya legalizados no se pueden eliminar desde aquí.
+            </div>
+          )}
           {reviewAction.type === 'approveAdvance' && (
             <div className="grid gap-3 sm:grid-cols-2">
               <SignatureSummary title="Firma del solicitante" signature={reviewAction.advance.requesterSignature} />
               <SignatureSummary title="Tu firma de aprobación" signature={buildCurrentSignatureSnapshot() || undefined} />
             </div>
           )}
-          <Field label={reviewAction.type === 'deleteAdvance' ? 'Comentario administrativo (opcional)' : 'Comentario administrativo'}>
+          <Field label={reviewAction.type === 'deleteAdvance' || reviewAction.type === 'deleteReceipt' ? 'Comentario administrativo (opcional)' : 'Comentario administrativo'}>
             <textarea
               className={textareaClass}
               value={reviewComment}
@@ -6642,6 +6748,8 @@ export function ProjectAdministration({
               placeholder={
                 reviewAction.type === 'deleteAdvance'
                   ? 'Opcional: deja una nota interna antes de eliminar este anticipo.'
+                  : reviewAction.type === 'deleteReceipt'
+                    ? 'Opcional: deja una nota interna antes de eliminar este soporte.'
                   : 'Explica la decisión, observaciones o ajustes solicitados.'
               }
             />
@@ -6653,13 +6761,19 @@ export function ProjectAdministration({
               onClick={applyReviewAction}
               disabled={submitting}
               className={
-                reviewAction.type === 'deleteAdvance'
+                reviewAction.type === 'deleteAdvance' || reviewAction.type === 'deleteReceipt'
                   ? 'bg-rose-600 font-bold text-white hover:bg-rose-700'
                   : 'bg-indigo-600 font-bold text-white hover:bg-indigo-700'
               }
             >
               {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
-              {reviewAction.type === 'deleteAdvance' ? 'Eliminar anticipo' : reviewAction.type === 'approveAdvance' ? 'Firmar y aprobar' : 'Confirmar'}
+              {reviewAction.type === 'deleteAdvance'
+                ? 'Eliminar anticipo'
+                : reviewAction.type === 'deleteReceipt'
+                  ? 'Eliminar soporte'
+                  : reviewAction.type === 'approveAdvance'
+                    ? 'Firmar y aprobar'
+                    : 'Confirmar'}
             </Button>
           </ModalFooter>
         </ModalShell>
