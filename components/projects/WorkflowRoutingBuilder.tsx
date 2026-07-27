@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Background,
   Controls,
@@ -397,6 +397,7 @@ function WorkflowVisualEditorModal({
   project?: any;
 }) {
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
+  const [selectedNodeKind, setSelectedNodeKind] = useState<"step" | "decision" | "parallel">("step");
   const [formStepIndex, setFormStepIndex] = useState<number | null>(null);
   const [connectMode, setConnectMode] = useState<WorkflowConnectMode>("default");
   const activeSelectedStepIndex = Math.min(selectedStepIndex, Math.max(0, steps.length - 1));
@@ -407,6 +408,36 @@ function WorkflowVisualEditorModal({
         index === stepIndex ? { ...step, ...updates } : step
       )
     );
+  };
+
+  const removeDecisionNode = (stepIndex: number) => {
+    const step = steps[stepIndex];
+    if (!step) return;
+
+    updateStep(stepIndex, {
+      decisionNodeEnabled: false,
+      decisionPosition: null,
+      conditionalRoutes: [],
+      defaultNextStepIndex: null,
+      disableImplicitLinearRoute: true,
+    });
+    setSelectedNodeKind("step");
+    toast.success("Nodo de decisión y sus condiciones eliminados.");
+  };
+
+  const removeParallelNode = (stepIndex: number) => {
+    const step = steps[stepIndex];
+    if (!step) return;
+
+    updateStep(stepIndex, {
+      parallelNodeEnabled: false,
+      parallelPosition: null,
+      parallelRoutes: [],
+      parallelNextStepIndexes: null,
+      disableImplicitLinearRoute: true,
+    });
+    setSelectedNodeKind("step");
+    toast.success("Nodo paralelo y sus ramas eliminados.");
   };
 
   const updateRoute = (
@@ -934,6 +965,27 @@ function WorkflowVisualEditorModal({
   const selectedDefaultTarget = selectedStep?.defaultNextStepIndex ?? selectedStep?.defaultNextStepTarget;
   const selectedTargetOptions = getTargetOptions(steps, activeSelectedStepIndex, allowAnyTarget);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+
+      if (selectedNodeKind === "decision") {
+        event.preventDefault();
+        removeDecisionNode(activeSelectedStepIndex);
+      }
+
+      if (selectedNodeKind === "parallel") {
+        event.preventDefault();
+        removeParallelNode(activeSelectedStepIndex);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeSelectedStepIndex, selectedNodeKind, steps]);
+
   return (
     <div className="fixed inset-0 z-[70] flex flex-col bg-slate-950 text-white">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-slate-950 px-5 py-4">
@@ -1015,6 +1067,7 @@ function WorkflowVisualEditorModal({
               const parsedNode = parseWorkflowEditorNodeId(String(node.id || ""));
               if (!parsedNode) return;
               setSelectedStepIndex(parsedNode.stepIndex);
+              setSelectedNodeKind(parsedNode.kind);
               if (parsedNode.kind === "decision") setConnectMode("condition");
               if (parsedNode.kind === "parallel") setConnectMode("parallel");
             }}
@@ -1051,6 +1104,36 @@ function WorkflowVisualEditorModal({
             </div>
           ) : (
             <div className="space-y-4">
+              {selectedNodeKind !== "step" && (
+                <div className={`rounded-2xl border p-4 ${
+                  selectedNodeKind === "decision"
+                    ? "border-amber-300/30 bg-amber-400/10"
+                    : "border-cyan-300/30 bg-cyan-400/10"
+                }`}>
+                  <p className={`text-[10px] font-black uppercase tracking-[0.2em] ${
+                    selectedNodeKind === "decision" ? "text-amber-100" : "text-cyan-100"
+                  }`}>
+                    Nodo seleccionado
+                  </p>
+                  <p className="mt-1 text-xs font-semibold leading-5 text-white/75">
+                    {selectedNodeKind === "decision"
+                      ? "Este rombo contiene las condiciones del paso seleccionado."
+                      : "Este nodo contiene las ramas paralelas del paso seleccionado."}
+                  </p>
+                  <Button
+                    type="button"
+                    onClick={() =>
+                      selectedNodeKind === "decision"
+                        ? removeDecisionNode(activeSelectedStepIndex)
+                        : removeParallelNode(activeSelectedStepIndex)
+                    }
+                    className="mt-3 h-10 w-full rounded-xl border border-red-400/30 bg-red-500/15 text-xs font-black uppercase tracking-wider text-red-100 hover:bg-red-500/25"
+                  >
+                    <Trash2 size={14} className="mr-2" />
+                    {selectedNodeKind === "decision" ? "Eliminar rombo y condiciones" : "Eliminar nodo paralelo y ramas"}
+                  </Button>
+                </div>
+              )}
               <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                 <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-300">
                   Paso seleccionado
@@ -1190,16 +1273,29 @@ function WorkflowVisualEditorModal({
                   <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">
                     Condiciones
                   </p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => addRoute(activeSelectedStepIndex)}
-                    disabled={selectedFields.length === 0 || Boolean(selectedStep.finishWorkflowOnComplete)}
-                    className="h-8 rounded-xl bg-indigo-500 px-3 text-[10px] font-black text-white hover:bg-indigo-400 disabled:opacity-40"
-                  >
-                    <Plus size={12} className="mr-1" />
-                    Condicion
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {(selectedStep.decisionNodeEnabled || selectedRoutes.length > 0) && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => removeDecisionNode(activeSelectedStepIndex)}
+                        className="h-8 rounded-xl border border-red-400/25 bg-red-500/10 px-3 text-[10px] font-black text-red-100 hover:bg-red-500/20"
+                      >
+                        <Trash2 size={12} className="mr-1" />
+                        Eliminar rombo
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => addRoute(activeSelectedStepIndex)}
+                      disabled={selectedFields.length === 0 || Boolean(selectedStep.finishWorkflowOnComplete)}
+                      className="h-8 rounded-xl bg-indigo-500 px-3 text-[10px] font-black text-white hover:bg-indigo-400 disabled:opacity-40"
+                    >
+                      <Plus size={12} className="mr-1" />
+                      Condicion
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="mt-3 space-y-3">
@@ -1319,6 +1415,16 @@ function WorkflowVisualEditorModal({
                     Nodo
                   </Button>
                 </div>
+                {(selectedStep.parallelNodeEnabled || selectedParallelRoutes.length > 0) && (
+                  <Button
+                    type="button"
+                    onClick={() => removeParallelNode(activeSelectedStepIndex)}
+                    className="mt-3 h-9 w-full rounded-xl border border-red-400/25 bg-red-500/10 text-[10px] font-black uppercase tracking-wider text-red-100 hover:bg-red-500/20"
+                  >
+                    <Trash2 size={13} className="mr-2" />
+                    Eliminar nodo paralelo y todas sus ramas
+                  </Button>
+                )}
 
                 <div className="mt-3 space-y-2">
                   {selectedParallelRoutes.length === 0 && (
