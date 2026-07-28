@@ -804,9 +804,11 @@ export default function ProjectsPage() {
               tone="indigo"
             />
             <PortfolioMetric
-              label="Control"
-              value="2 niveles"
-              detail="Organización primero, proyectos después"
+              label="Cobertura"
+              value={`${compactNumber(organizationOverviewStats.organizations)} ${
+                organizationOverviewStats.organizations === 1 ? 'organización' : 'organizaciones'
+              }`}
+              detail={`${compactNumber(organizationOverviewStats.projects)} proyectos visibles`}
               icon={<Layers3 size={20} />}
               tone="orange"
             />
