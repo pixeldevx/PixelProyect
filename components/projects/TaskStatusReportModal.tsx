@@ -222,6 +222,15 @@ const getCurrentWorkflowStepIndex = (task: any) => {
   return firstOpenIndex >= 0 ? firstOpenIndex : steps.length - 1;
 };
 
+const getCurrentWorkflowStepSummary = (task: any) => {
+  if (!isWorkflowTask(task)) return "No aplica";
+  const index = getCurrentWorkflowStepIndex(task);
+  const step = task.workflowSteps?.[index];
+  const stepLabel = getWorkflowStepLabel(task, index);
+  const stepStatus = getTaskStatusLabel(step?.status || task.status);
+  return `Paso ${index + 1}: ${stepLabel} · ${stepStatus}`;
+};
+
 const getStepStatusBucket = (step: any) => {
   const status = step?.status || "not_started";
   if (status === "listo") return "approved";
@@ -788,6 +797,7 @@ export function TaskStatusReportModal({
       "Tipo",
       "Responsable",
       "Estado",
+      "Paso actual",
       "Prioridad",
       "Cronograma inicio",
       "Cronograma fin",
@@ -813,6 +823,7 @@ export function TaskStatusReportModal({
         isWorkflowTaskType(task.type) ? getWorkflowTaskTypeLabel(task.type) : "Tarea",
         getAssigneeName(task, teamMembers),
         getTaskStatusLabel(task.status),
+        getCurrentWorkflowStepSummary(task),
         getPriorityLabel(task.priority),
         formatReportDate(task.startDate || task.start),
         formatReportDate(task.endDate || task.end),
@@ -1485,12 +1496,13 @@ export function TaskStatusReportModal({
                           </div>
                         ) : (
                           <div className="max-h-[56vh] overflow-auto rounded-xl border border-slate-100">
-                            <table className="w-full min-w-[1080px] text-left text-xs">
+                            <table className="w-full min-w-[1240px] text-left text-xs">
                               <thead className="sticky top-0 z-10 bg-white">
                                 <tr className="border-b border-slate-100 text-[10px] uppercase tracking-wider text-slate-400">
                                   <th className="py-2 pr-3">Subtarea</th>
                                   <th className="px-3 py-2">Responsable</th>
                                   <th className="px-3 py-2">Estado</th>
+                                  <th className="px-3 py-2">Paso actual</th>
                                   <th className="px-3 py-2">Condición</th>
                                   <th className="px-3 py-2">Cronograma</th>
                                   <th className="px-3 py-2">Cierre / edad</th>
@@ -1541,6 +1553,11 @@ export function TaskStatusReportModal({
                                         <span className={`rounded-full px-2 py-1 text-[10px] font-black ${statusClass}`}>
                                           {getTaskStatusLabel(task.status)}
                                         </span>
+                                      </td>
+                                      <td className="max-w-[220px] px-3 py-2">
+                                        <p className="truncate font-bold text-slate-700" title={getCurrentWorkflowStepSummary(task)}>
+                                          {getCurrentWorkflowStepSummary(task)}
+                                        </p>
                                       </td>
                                       <td className="px-3 py-2">
                                         <span className={`rounded-full px-2 py-1 text-[10px] font-black ${scheduleClass}`}>
