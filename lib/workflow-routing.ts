@@ -82,11 +82,19 @@ const normalizeTarget = (value: any): WorkflowRouteTarget | undefined => {
   return Number.isFinite(numeric) ? numeric : undefined;
 };
 
+export const normalizeWorkflowRouteTarget = normalizeTarget;
+
 export const normalizeWorkflowRoutes = (routes: any[] = []): WorkflowConditionalRoute[] =>
   routes
     .map((route) => {
       const operator = normalizeRouteOperator(route?.operator);
-      const targetStepIndex = normalizeTarget(route?.targetStepIndex ?? route?.target);
+      const targetStepIndex = normalizeTarget(
+        route?.targetStepIndex ??
+          route?.target ??
+          route?.nextStepIndex ??
+          route?.nextStep ??
+          route?.targetIndex
+      );
 
       return {
         id: route?.id || createWorkflowRouteId(),
@@ -106,7 +114,11 @@ export const normalizeWorkflowParallelRoutes = (routes: any[] = []): WorkflowPar
       const rawTarget =
         typeof route === "number" || route === "complete"
           ? route
-          : route?.targetStepIndex ?? route?.target;
+          : route?.targetStepIndex ??
+            route?.target ??
+            route?.nextStepIndex ??
+            route?.nextStep ??
+            route?.targetIndex;
 
       return {
         id: route?.id || createWorkflowRouteId(),
@@ -115,6 +127,53 @@ export const normalizeWorkflowParallelRoutes = (routes: any[] = []): WorkflowPar
       };
     })
     .filter((route) => route.targetStepIndex !== null);
+
+const remapWorkflowRouteTarget = (
+  target: any,
+  indexMap: Map<number, number>
+): WorkflowRouteTarget => {
+  const normalized = normalizeTarget(target);
+  if (normalized === "complete") return "complete";
+  if (normalized === null || normalized === undefined) return null;
+  return indexMap.has(normalized) ? indexMap.get(normalized)! : null;
+};
+
+export const remapWorkflowStepRouteTargets = <T extends Record<string, any>>(
+  steps: T[],
+  oldIndexByNewIndex: number[]
+): T[] => {
+  const indexMap = new Map<number, number>();
+  oldIndexByNewIndex.forEach((oldIndex, newIndex) => {
+    if (Number.isFinite(oldIndex)) indexMap.set(oldIndex, newIndex);
+  });
+
+  return steps.map((step) => {
+    const conditionalRoutes = normalizeWorkflowRoutes(step.conditionalRoutes || step.routes || []).map((route) => ({
+      ...route,
+      targetStepIndex: remapWorkflowRouteTarget(route.targetStepIndex, indexMap),
+    }));
+    const parallelRoutes = normalizeWorkflowParallelRoutes(
+      step.parallelRoutes || step.parallelNextStepIndexes || step.parallelTargets || []
+    )
+      .map((route) => ({
+        ...route,
+        targetStepIndex: remapWorkflowRouteTarget(route.targetStepIndex, indexMap),
+      }))
+      .filter((route) => route.targetStepIndex !== null);
+    const defaultNextStepIndex = remapWorkflowRouteTarget(
+      step.defaultNextStepIndex ?? step.defaultNextStepTarget,
+      indexMap
+    );
+
+    return {
+      ...step,
+      conditionalRoutes,
+      parallelRoutes,
+      parallelNextStepIndexes: null,
+      defaultNextStepIndex,
+    };
+  });
+};
 
 export const normalizeWorkflowParallelTargets = (
   value: any,

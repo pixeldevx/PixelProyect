@@ -26,8 +26,10 @@ import {
 import {
   isVariableWorkflowTaskType,
   isWorkflowTaskType,
+  normalizeWorkflowDefaultTarget,
   normalizeWorkflowParallelRoutes,
   normalizeWorkflowRoutes,
+  remapWorkflowStepRouteTargets,
   routeOperatorNeedsValue,
   type WorkflowConditionalRoute,
   type WorkflowParallelRoute,
@@ -215,6 +217,7 @@ export function CreateTaskModal({
       decisionPosition?: { x: number; y: number } | null;
       parallelPosition?: { x: number; y: number } | null;
       workflowCompletePosition?: { x: number; y: number } | null;
+      visualPosition?: { x: number; y: number } | null;
       disableImplicitLinearRoute?: boolean;
       defaultNextStepIndex?: WorkflowRouteTarget;
     }[]
@@ -418,8 +421,13 @@ export function CreateTaskModal({
         decisionPosition: step.decisionPosition || null,
         parallelPosition: step.parallelPosition || null,
         workflowCompletePosition: step.workflowCompletePosition || null,
+        visualPosition: step.visualPosition || null,
         disableImplicitLinearRoute: Boolean(step.disableImplicitLinearRoute),
-        defaultNextStepIndex: step.defaultNextStepIndex ?? null,
+        defaultNextStepIndex: normalizeWorkflowDefaultTarget(
+          step.defaultNextStepIndex,
+          index,
+          steps.length
+        ) ?? null,
       };
     });
 
@@ -489,14 +497,26 @@ export function CreateTaskModal({
       return false;
     }
 
-    const hasInvalidConditionalRoute = workflowSteps.some((step) =>
+    const hasInvalidConditionalRoute = workflowSteps.some((step, stepIndex) =>
       normalizeWorkflowRoutes(step.conditionalRoutes || []).some((route) => {
-        if (!route.fieldId || route.targetStepIndex === undefined || route.targetStepIndex === null) return true;
+        const target = normalizeWorkflowDefaultTarget(route.targetStepIndex, stepIndex, workflowSteps.length);
+        if (!route.fieldId || target === undefined || target === null) return true;
         return routeOperatorNeedsValue(route.operator) && !String(route.value || "").trim();
       })
     );
     if (hasInvalidConditionalRoute) {
       toast.warning("Completa las condiciones del workflow: variable, valor y destino.");
+      return false;
+    }
+
+    const hasInvalidParallelRoute = workflowSteps.some((step, stepIndex) =>
+      normalizeWorkflowParallelRoutes(step.parallelRoutes || []).some((route) => {
+        const target = normalizeWorkflowDefaultTarget(route.targetStepIndex, stepIndex, workflowSteps.length);
+        return typeof target !== "number";
+      })
+    );
+    if (hasInvalidParallelRoute) {
+      toast.warning("Hay una rama paralela sin destino válido. Reconexiona esa rama antes de guardar.");
       return false;
     }
 
@@ -1597,11 +1617,15 @@ export function CreateTaskModal({
                             type="button"
                             onClick={() => {
                               const nextSteps = workflowSteps.filter((_, i) => i !== idx);
-                              if (nextSteps[0]?.isQualityGate) {
-                                nextSteps[0] = { ...nextSteps[0], isQualityGate: false };
+                              const oldIndexByNewIndex = workflowSteps
+                                .map((_, oldIndex) => oldIndex)
+                                .filter((oldIndex) => oldIndex !== idx);
+                              const remappedSteps = remapWorkflowStepRouteTargets(nextSteps, oldIndexByNewIndex);
+                              if (remappedSteps[0]?.isQualityGate) {
+                                remappedSteps[0] = { ...remappedSteps[0], isQualityGate: false };
                                 toast.warning("Se desmarcó calidad del primer paso porque necesita un paso anterior.");
                               }
-                              setWorkflowSteps(nextSteps);
+                              setWorkflowSteps(remappedSteps);
                             }}
                             className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
                           >

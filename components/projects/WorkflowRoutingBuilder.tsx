@@ -36,6 +36,7 @@ import {
   getWorkflowRouteDescription,
   getWorkflowStepFormFields,
   getWorkflowTargetLabel,
+  normalizeWorkflowDefaultTarget,
   normalizeWorkflowParallelRoutes,
   normalizeWorkflowRoutes,
   routeOperatorNeedsValue,
@@ -54,6 +55,7 @@ type WorkflowRoutingBuilderProps = {
   allowAnyTarget?: boolean;
   projectId?: string;
   project?: any;
+  onSaveView?: (steps: any[]) => Promise<void> | void;
 };
 
 const COMPLETE_NODE_ID = "workflow-complete";
@@ -304,6 +306,7 @@ export function WorkflowRoutingBuilder({
   allowAnyTarget = false,
   projectId = '',
   project,
+  onSaveView,
 }: WorkflowRoutingBuilderProps) {
   const [isVisualEditorOpen, setIsVisualEditorOpen] = useState(false);
 
@@ -376,6 +379,7 @@ export function WorkflowRoutingBuilder({
           steps={steps}
           onChange={onChange}
           onClose={() => setIsVisualEditorOpen(false)}
+          onSaveView={onSaveView}
           rateCards={rateCards}
           teamMembers={teamMembers}
           allowAnyTarget={allowAnyTarget}
@@ -396,6 +400,7 @@ function WorkflowVisualEditorModal({
   allowAnyTarget,
   projectId,
   project,
+  onSaveView,
 }: {
   steps: any[];
   onChange: (steps: any[]) => void;
@@ -405,11 +410,13 @@ function WorkflowVisualEditorModal({
   allowAnyTarget: boolean;
   projectId: string;
   project?: any;
+  onSaveView?: (steps: any[]) => Promise<void> | void;
 }) {
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [selectedNodeKind, setSelectedNodeKind] = useState<"step" | "decision" | "parallel">("step");
   const [formStepIndex, setFormStepIndex] = useState<number | null>(null);
   const [connectMode, setConnectMode] = useState<WorkflowConnectMode>("default");
+  const [isSavingView, setIsSavingView] = useState(false);
   const activeSelectedStepIndex = Math.min(selectedStepIndex, Math.max(0, steps.length - 1));
 
   const updateStep = (stepIndex: number, updates: Record<string, any>) => {
@@ -622,6 +629,24 @@ function WorkflowVisualEditorModal({
     });
   };
 
+  const handleSaveView = async () => {
+    if (!onSaveView) {
+      onClose();
+      return;
+    }
+
+    setIsSavingView(true);
+    try {
+      await onSaveView(steps);
+      onClose();
+    } catch (error: any) {
+      console.error("Error saving workflow visual view:", error);
+      toast.error(error?.message || "No se pudo guardar la vista del workflow.");
+    } finally {
+      setIsSavingView(false);
+    }
+  };
+
   const handleNodeDragStop: OnNodeDrag<Node> = (_event, node) => {
     const nodeId = String(node.id || "");
     const position = {
@@ -788,7 +813,11 @@ function WorkflowVisualEditorModal({
       const fields = getWorkflowStepFormFields(step);
       const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
       const parallelRoutes = normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []);
-      const explicitDefaultTarget = step.defaultNextStepIndex ?? step.defaultNextStepTarget;
+      const explicitDefaultTarget = normalizeWorkflowDefaultTarget(
+        step.defaultNextStepIndex ?? step.defaultNextStepTarget,
+        index,
+        steps.length
+      );
 
       return {
         id: `workflow-step-${index}`,
@@ -880,7 +909,11 @@ function WorkflowVisualEditorModal({
     steps.forEach((step, index) => {
       const routes = normalizeWorkflowRoutes(step.conditionalRoutes || []);
       const parallelRoutes = normalizeWorkflowParallelRoutes(step.parallelRoutes || step.parallelNextStepIndexes || []);
-      const defaultTarget = step.defaultNextStepIndex ?? step.defaultNextStepTarget;
+      const defaultTarget = normalizeWorkflowDefaultTarget(
+        step.defaultNextStepIndex ?? step.defaultNextStepTarget,
+        index,
+        steps.length
+      );
       const defaultTargetId = targetToNodeId(defaultTarget, index, steps.length);
       const hasDecisionNode = Boolean(step.decisionNodeEnabled || routes.length > 0);
       const hasParallelNode = Boolean(step.parallelNodeEnabled || parallelRoutes.length > 0);
@@ -995,7 +1028,11 @@ function WorkflowVisualEditorModal({
   const selectedFields = getWorkflowStepFormFields(selectedStep);
   const selectedRoutes = normalizeWorkflowRoutes(selectedStep?.conditionalRoutes || []);
   const selectedParallelRoutes = normalizeWorkflowParallelRoutes(selectedStep?.parallelRoutes || selectedStep?.parallelNextStepIndexes || []);
-  const selectedDefaultTarget = selectedStep?.defaultNextStepIndex ?? selectedStep?.defaultNextStepTarget;
+  const selectedDefaultTarget = normalizeWorkflowDefaultTarget(
+    selectedStep?.defaultNextStepIndex ?? selectedStep?.defaultNextStepTarget,
+    activeSelectedStepIndex,
+    steps.length
+  );
   const selectedTargetOptions = getTargetOptions(steps, activeSelectedStepIndex, allowAnyTarget);
 
   useEffect(() => {
@@ -1068,10 +1105,11 @@ function WorkflowVisualEditorModal({
           </Button>
           <Button
             type="button"
-            onClick={onClose}
+            onClick={() => void handleSaveView()}
+            disabled={isSavingView}
             className="h-10 rounded-xl bg-white text-xs font-black text-slate-950 hover:bg-slate-100"
           >
-            Guardar vista
+            {isSavingView ? "Guardando..." : onSaveView ? "Guardar vista" : "Aplicar vista"}
           </Button>
           <button
             type="button"

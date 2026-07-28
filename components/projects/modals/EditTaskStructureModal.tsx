@@ -28,8 +28,10 @@ import {
 import {
   isVariableWorkflowTaskType,
   isWorkflowTaskType,
+  normalizeWorkflowDefaultTarget,
   normalizeWorkflowParallelRoutes,
   normalizeWorkflowRoutes,
+  remapWorkflowStepRouteTargets,
   routeOperatorNeedsValue,
   type WorkflowConditionalRoute,
   type WorkflowParallelRoute,
@@ -63,6 +65,7 @@ type WorkflowStepDraft = {
   decisionPosition?: { x: number; y: number } | null;
   parallelPosition?: { x: number; y: number } | null;
   workflowCompletePosition?: { x: number; y: number } | null;
+  visualPosition?: { x: number; y: number } | null;
   disableImplicitLinearRoute?: boolean | null;
   defaultNextStepIndex?: WorkflowRouteTarget;
 };
@@ -237,8 +240,13 @@ const toDraftSteps = (steps: any[] = []): WorkflowStepDraft[] =>
     decisionPosition: step?.decisionPosition ?? null,
     parallelPosition: step?.parallelPosition ?? null,
     workflowCompletePosition: step?.workflowCompletePosition ?? step?.completeNodePosition ?? step?.workflowEndPosition ?? null,
+    visualPosition: step?.visualPosition ?? step?.workflowPosition ?? step?.nodePosition ?? null,
     disableImplicitLinearRoute: Boolean(step?.disableImplicitLinearRoute),
-    defaultNextStepIndex: step?.defaultNextStepIndex ?? step?.defaultNextStepTarget ?? null,
+    defaultNextStepIndex: normalizeWorkflowDefaultTarget(
+      step?.defaultNextStepIndex ?? step?.defaultNextStepTarget,
+      index,
+      steps.length
+    ) ?? null,
   }));
 
 export function EditTaskStructureModal({
@@ -278,6 +286,7 @@ export function EditTaskStructureModal({
   } | null>(null);
   const [isUpdatingSubtaskForm, setIsUpdatingSubtaskForm] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSavingWorkflowView, setIsSavingWorkflowView] = useState(false);
   const [isCreatingSubtask, setIsCreatingSubtask] = useState(false);
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const [workflowTemplates, setWorkflowTemplates] = useState<any[]>([]);
@@ -493,7 +502,13 @@ export function EditTaskStructureModal({
       return;
     }
 
-    setWorkflowSteps((currentSteps) => currentSteps.filter((_, stepIndex) => stepIndex !== index));
+    setWorkflowSteps((currentSteps) => {
+      const keptSteps = currentSteps.filter((_, stepIndex) => stepIndex !== index);
+      const oldIndexByNewIndex = currentSteps
+        .map((_, oldIndex) => oldIndex)
+        .filter((oldIndex) => oldIndex !== index);
+      return remapWorkflowStepRouteTargets(keptSteps, oldIndexByNewIndex);
+    });
   };
 
   const moveStep = (index: number, direction: -1 | 1) => {
@@ -514,7 +529,8 @@ export function EditTaskStructureModal({
       const nextSteps = [...currentSteps];
       const [movedStep] = nextSteps.splice(index, 1);
       nextSteps.splice(targetIndex, 0, movedStep);
-      return nextSteps;
+      const oldIndexByNewIndex = nextSteps.map((step) => currentSteps.indexOf(step));
+      return remapWorkflowStepRouteTargets(nextSteps, oldIndexByNewIndex);
     });
   };
 
@@ -635,8 +651,8 @@ export function EditTaskStructureModal({
     }
   };
 
-  const getCleanWorkflowSteps = (): WorkflowStepDraft[] =>
-    workflowSteps.map((step, index) => {
+  const getCleanWorkflowSteps = (sourceSteps: WorkflowStepDraft[] = workflowSteps): WorkflowStepDraft[] =>
+    sourceSteps.map((step, index) => {
       const staticRateCards = step.dynamicRateCard ? [] : cleanStepRateCards(step);
       const firstRateCard = staticRateCards[0];
 
@@ -689,8 +705,13 @@ export function EditTaskStructureModal({
         decisionPosition: step.decisionPosition || null,
         parallelPosition: step.parallelPosition || null,
         workflowCompletePosition: step.workflowCompletePosition || null,
+        visualPosition: step.visualPosition || null,
         disableImplicitLinearRoute: Boolean(step.disableImplicitLinearRoute),
-        defaultNextStepIndex: step.defaultNextStepIndex ?? null,
+        defaultNextStepIndex: normalizeWorkflowDefaultTarget(
+          step.defaultNextStepIndex,
+          index,
+          sourceSteps.length
+        ) ?? null,
       };
     });
 
@@ -755,23 +776,23 @@ export function EditTaskStructureModal({
 
   const normalizeTemplateName = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
 
-  const validateWorkflowSteps = () => {
-    if (workflowSteps.length === 0) {
+  const validateWorkflowSteps = (sourceSteps: WorkflowStepDraft[] = workflowSteps) => {
+    if (sourceSteps.length === 0) {
       toast.warning("Esta tarea necesita al menos un paso de workflow.");
       return false;
     }
 
-    if (workflowSteps.some((step) => !step.label.trim())) {
+    if (sourceSteps.some((step) => !step.label.trim())) {
       toast.warning("Todos los pasos deben tener nombre.");
       return false;
     }
 
-    if (workflowSteps[0]?.isQualityGate) {
+    if (sourceSteps[0]?.isQualityGate) {
       toast.warning("El primer paso no puede ser control de calidad; debe existir un paso anterior que envíe a revisión.");
       return false;
     }
 
-    const hasStaticStepWithoutRateCard = workflowSteps.some(
+    const hasStaticStepWithoutRateCard = sourceSteps.some(
       (step) => step.rateCardMode === "static" && cleanStepRateCards(step).length === 0
     );
     if (hasStaticStepWithoutRateCard) {
@@ -779,7 +800,7 @@ export function EditTaskStructureModal({
       return false;
     }
 
-    const hasInvalidStepUnits = workflowSteps.some(
+    const hasInvalidStepUnits = sourceSteps.some(
       (step) => {
         if (step.dynamicRateCard) return isInvalidRateCardUnits(step.unitsToAdd);
         return cleanStepRateCards(step).some((item) => isInvalidRateCardUnits(item.unitsToAdd));
@@ -790,7 +811,7 @@ export function EditTaskStructureModal({
       return false;
     }
 
-    const hasMissingStepRateCardAssignee = workflowSteps.some((step) =>
+    const hasMissingStepRateCardAssignee = sourceSteps.some((step) =>
       cleanStepRateCards(step).some((item) => item.assigneeMode === "fixed" && !item.assignedTo)
     );
     if (hasMissingStepRateCardAssignee) {
@@ -798,7 +819,7 @@ export function EditTaskStructureModal({
       return false;
     }
 
-    const hasDuplicatedStaticRateCardAssignments = workflowSteps.some((step) => {
+    const hasDuplicatedStaticRateCardAssignments = sourceSteps.some((step) => {
       const cards = cleanStepRateCards(step);
       return cards.some(
         (item, itemIndex) =>
@@ -813,7 +834,7 @@ export function EditTaskStructureModal({
       return false;
     }
 
-    const hasInvalidDuration = workflowSteps.some(
+    const hasInvalidDuration = sourceSteps.some(
       (step) => !Number.isFinite(Number(step.plannedDurationDays ?? 1)) || Number(step.plannedDurationDays ?? 1) <= 0
     );
     if (hasInvalidDuration) {
@@ -821,9 +842,10 @@ export function EditTaskStructureModal({
       return false;
     }
 
-    const hasInvalidConditionalRoute = workflowSteps.some((step) =>
+    const hasInvalidConditionalRoute = sourceSteps.some((step, stepIndex) =>
       normalizeWorkflowRoutes(step.conditionalRoutes || []).some((route) => {
-        if (!route.fieldId || route.targetStepIndex === undefined || route.targetStepIndex === null) return true;
+        const target = normalizeWorkflowDefaultTarget(route.targetStepIndex, stepIndex, sourceSteps.length);
+        if (!route.fieldId || target === undefined || target === null) return true;
         return routeOperatorNeedsValue(route.operator) && !String(route.value || "").trim();
       })
     );
@@ -832,7 +854,37 @@ export function EditTaskStructureModal({
       return false;
     }
 
+    const hasInvalidParallelRoute = sourceSteps.some((step, stepIndex) =>
+      normalizeWorkflowParallelRoutes(step.parallelRoutes || []).some((route) => {
+        const target = normalizeWorkflowDefaultTarget(route.targetStepIndex, stepIndex, sourceSteps.length);
+        return typeof target !== "number";
+      })
+    );
+    if (hasInvalidParallelRoute) {
+      toast.warning("Hay una rama paralela sin destino válido. Reconexiona esa rama antes de guardar.");
+      return false;
+    }
+
     return true;
+  };
+
+  const handleSaveWorkflowView = async (nextSteps: WorkflowStepDraft[]) => {
+    if (!validateWorkflowSteps(nextSteps)) return;
+
+    const cleanSteps = getCleanWorkflowSteps(nextSteps);
+    setIsSavingWorkflowView(true);
+    try {
+      await updateDoc(doc(db, "projects", projectId, "tasks", task.id), {
+        workflowSteps: cleanSteps,
+        workflowScheduleMode,
+        workflowDayCountingEnabled,
+        updatedAt: serverTimestamp(),
+      });
+      setWorkflowSteps(cleanSteps);
+      toast.success("Vista y rutas del workflow guardadas.");
+    } finally {
+      setIsSavingWorkflowView(false);
+    }
   };
 
   const handleSaveTemplate = async () => {
@@ -1434,6 +1486,9 @@ export function EditTaskStructureModal({
 
               {workflowSteps.length > 0 && (
                 <div className="mb-4">
+                  {isSavingWorkflowView && (
+                    <p className="mb-2 text-xs font-bold text-indigo-600">Guardando vista del workflow...</p>
+                  )}
                   <WorkflowRoutingBuilder
                     steps={workflowSteps}
                     rateCards={rateCards}
@@ -1442,6 +1497,7 @@ export function EditTaskStructureModal({
                     project={project}
                     allowAnyTarget={isVariableWorkflow}
                     onChange={(nextSteps) => setWorkflowSteps(nextSteps)}
+                    onSaveView={(nextSteps) => handleSaveWorkflowView(nextSteps)}
                   />
                 </div>
               )}
