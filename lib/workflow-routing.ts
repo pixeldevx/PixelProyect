@@ -433,7 +433,18 @@ export const resolveWorkflowQualitySourceStepIndex = ({
   return sourceStepIndex === currentIndex ? null : sourceStepIndex;
 };
 
-const ACTIVE_WORKFLOW_STEP_STATUSES = new Set(["en_curso", "reproceso", "detenido"]);
+const ACTIVE_WORKFLOW_STEP_STATUSES = new Set(["en_curso", "reproceso", "detenido", "pending"]);
+
+export const isActiveWorkflowStepStatus = (status: any) =>
+  ACTIVE_WORKFLOW_STEP_STATUSES.has(String(status || ""));
+
+export const resolveWorkflowActiveStepIndexes = ({ steps }: { steps: any[] }) =>
+  Array.isArray(steps)
+    ? steps
+        .map((step, index) => ({ step, index }))
+        .filter(({ step }) => isActiveWorkflowStepStatus(step?.status))
+        .map(({ index }) => index)
+    : [];
 
 export const resolveWorkflowActiveStepIndex = ({
   steps,
@@ -446,9 +457,7 @@ export const resolveWorkflowActiveStepIndex = ({
   if (stepCount === 0) return 0;
 
   const boundedCurrentIndex = Math.min(Math.max(0, Number(currentIndex) || 0), stepCount - 1);
-  const explicitActiveIndex = steps.findIndex((step) =>
-    ACTIVE_WORKFLOW_STEP_STATUSES.has(String(step?.status || ""))
-  );
+  const explicitActiveIndex = resolveWorkflowActiveStepIndexes({ steps })[0] ?? -1;
 
   if (explicitActiveIndex !== -1) return explicitActiveIndex;
   if (String(steps[boundedCurrentIndex]?.status || "") !== "listo") return boundedCurrentIndex;

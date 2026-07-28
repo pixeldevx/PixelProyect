@@ -51,7 +51,9 @@ import {
   isDynamicWorkflowAssignee,
   isVariableWorkflowTaskType,
   isWorkflowTaskType,
-  resolveWorkflowNextStepIndex,
+  isActiveWorkflowStepStatus,
+  resolveWorkflowActiveStepIndexes,
+  resolveWorkflowNextStepIndexes,
   resolveWorkflowQualitySourceStepIndex,
   resolveWorkflowPreviousStepIndex,
 } from '@/lib/workflow-routing';
@@ -670,6 +672,24 @@ const getWorkflowDynamicRateCardSource = (task: any, action: string) => {
 const isQualityGateStep = (step: any) =>
   Boolean(step?.isQualityGate || step?.type === 'quality_gate' || step?.taskType === 'quality_gate');
 
+const getWorkflowCurrentStepIndexForActor = (task: any, actorIds: string[] = []) => {
+  const steps = Array.isArray(task?.workflowSteps) ? task.workflowSteps : [];
+  if (steps.length === 0) return Number(task?.currentStepIndex) || 0;
+
+  const boundedStoredIndex = Math.min(
+    Math.max(0, Number(task?.currentStepIndex) || 0),
+    steps.length - 1
+  );
+  const activeStepIndexes = resolveWorkflowActiveStepIndexes({ steps });
+  const actorActiveIndex = activeStepIndexes.find((stepIndex) => {
+    const assignee = steps[stepIndex]?.assignedTo;
+    return assignee && actorIds.includes(assignee);
+  });
+
+  if (typeof actorActiveIndex === 'number') return actorActiveIndex;
+  return activeStepIndexes[0] ?? boundedStoredIndex;
+};
+
 const getQualityParticipantIds = (
   task: any,
   currentIndex: number,
@@ -1052,9 +1072,14 @@ export default function WorkflowTray() {
                   .map((task: any) => {
                     const parentTask = task.parentTaskId ? tasksById.get(task.parentTaskId) : null;
                     const parentTaskTitle = parentTask?.title || parentTask?.name || task.originalTitle || null;
+                    const actorCurrentStepIndex = isWorkflowItem(task)
+                      ? getWorkflowCurrentStepIndexForActor(task, allMemberIds)
+                      : task.currentStepIndex;
 
                     return {
                       ...task,
+                      currentStepIndex: actorCurrentStepIndex,
+                      actorCurrentStepIndex,
                       parentTaskTitle,
                     };
                   })
@@ -1281,21 +1306,22 @@ export default function WorkflowTray() {
           ? formData
           : currentStep?.formData || {}
         : {};
-    const approveNextIndex =
+    const approveNextIndexes =
       action === 'approve'
-        ? resolveWorkflowNextStepIndex({
+        ? resolveWorkflowNextStepIndexes({
             steps: workflowStepsForRouting,
             currentIndex,
             formData: approveFormData,
           })
-        : null;
+        : [];
     const approveNextStepRequiresDynamicAssignee = Boolean(
-      approveNextIndex !== null &&
-        isDynamicWorkflowAssignee(workflowStepsForRouting[approveNextIndex]?.assignedTo)
+      approveNextIndexes.some((nextIndex) =>
+        isDynamicWorkflowAssignee(workflowStepsForRouting[nextIndex]?.assignedTo)
+      )
     );
     const approveNeedsNextAssignee = Boolean(
       action === 'approve' &&
-        approveNextIndex !== null &&
+        approveNextIndexes.length > 0 &&
         (currentStep?.assignsNextStep || approveNextStepRequiresDynamicAssignee)
     );
     const returnTargetIndex = action === 'return'
@@ -1409,7 +1435,7 @@ export default function WorkflowTray() {
       let newStatus = task.status;
       let progress = task.progress || 0;
       const rateCardChargesToSync: any[] = [];
-      let assignedNextWorkflowIndex: number | null = null;
+      let assignedNextWorkflowIndexes: number[] = [];
 
       const hasBeenActedUpon = task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex && (h.action === 'approve' || h.action === 'return'));
 
@@ -1532,38 +1558,57 @@ export default function WorkflowTray() {
           steps[currentIndex].formData = preparedApproveFormData;
         }
 
-        const resolvedNextIndex = resolveWorkflowNextStepIndex({
+        const resolvedNextIndexes = resolveWorkflowNextStepIndexes({
           steps,
           currentIndex,
           formData: Object.keys(preparedApproveFormData).length > 0 ? preparedApproveFormData : steps[currentIndex]?.formData || {},
         });
 
-        if (resolvedNextIndex !== null) {
-          nextIndex = resolvedNextIndex;
-          assignedNextWorkflowIndex = resolvedNextIndex;
-          const nextStepWasCompleted = steps[nextIndex]?.status === 'listo';
-          steps[nextIndex] = {
-            ...steps[nextIndex],
-            status: isVariableWorkflow && nextStepWasCompleted ? 'reproceso' : nextStepWasCompleted ? 'listo' : 'en_curso',
-            completedAt: isVariableWorkflow && nextStepWasCompleted ? null : steps[nextIndex]?.completedAt,
-            completedBy: isVariableWorkflow && nextStepWasCompleted ? null : steps[nextIndex]?.completedBy,
-            completedByMemberId: isVariableWorkflow && nextStepWasCompleted ? null : steps[nextIndex]?.completedByMemberId,
-            completedByIds: isVariableWorkflow && nextStepWasCompleted ? [] : steps[nextIndex]?.completedByIds,
-            startedAt: isVariableWorkflow && nextStepWasCompleted ? actionTimestamp : steps[nextIndex]?.startedAt || actionTimestamp,
-            startedBy: isVariableWorkflow && nextStepWasCompleted ? user.uid : steps[nextIndex]?.startedBy || user.uid,
-            startedByMemberId: isVariableWorkflow && nextStepWasCompleted ? memberId : steps[nextIndex]?.startedByMemberId || memberId,
-            assignedAt: actionTimestamp,
-          };
-          newStatus = 'in_progress';
+        if (resolvedNextIndexes.length > 0) {
+          assignedNextWorkflowIndexes = resolvedNextIndexes;
+          nextIndex = resolvedNextIndexes[0];
 
-          if ((currentStep.assignsNextStep || isDynamicWorkflowAssignee(steps[nextIndex]?.assignedTo)) && nextStepAssignee) {
-            steps[nextIndex].assignedTo = nextStepAssignee;
-          }
+          resolvedNextIndexes.forEach((resolvedNextIndex) => {
+            const nextStepWasCompleted = steps[resolvedNextIndex]?.status === 'listo';
+            const shouldReopenCompletedStep = Boolean(isVariableWorkflow && nextStepWasCompleted);
+            const nextStepAlreadyActive = isActiveWorkflowStepStatus(steps[resolvedNextIndex]?.status);
+
+            steps[resolvedNextIndex] = {
+              ...steps[resolvedNextIndex],
+              status: shouldReopenCompletedStep
+                ? 'reproceso'
+                : nextStepWasCompleted
+                  ? 'listo'
+                  : nextStepAlreadyActive
+                    ? steps[resolvedNextIndex]?.status
+                    : 'en_curso',
+              completedAt: shouldReopenCompletedStep ? null : steps[resolvedNextIndex]?.completedAt,
+              completedBy: shouldReopenCompletedStep ? null : steps[resolvedNextIndex]?.completedBy,
+              completedByMemberId: shouldReopenCompletedStep ? null : steps[resolvedNextIndex]?.completedByMemberId,
+              completedByIds: shouldReopenCompletedStep ? [] : steps[resolvedNextIndex]?.completedByIds,
+              restartedAt: shouldReopenCompletedStep ? actionTimestamp : steps[resolvedNextIndex]?.restartedAt,
+              startedAt: shouldReopenCompletedStep ? actionTimestamp : steps[resolvedNextIndex]?.startedAt || actionTimestamp,
+              startedBy: shouldReopenCompletedStep ? user.uid : steps[resolvedNextIndex]?.startedBy || user.uid,
+              startedByMemberId: shouldReopenCompletedStep ? memberId : steps[resolvedNextIndex]?.startedByMemberId || memberId,
+              assignedAt: actionTimestamp,
+            };
+
+            if ((currentStep.assignsNextStep || isDynamicWorkflowAssignee(steps[resolvedNextIndex]?.assignedTo)) && nextStepAssignee) {
+              steps[resolvedNextIndex].assignedTo = nextStepAssignee;
+            }
+          });
+          newStatus = 'in_progress';
         } else {
-          newStatus = normalizeCompletionStatus('completed', task);
-          
+          const remainingActiveStepIndexes = resolveWorkflowActiveStepIndexes({ steps });
+          if (remainingActiveStepIndexes.length > 0) {
+            nextIndex = remainingActiveStepIndexes[0];
+            newStatus = 'in_progress';
+          } else {
+            newStatus = normalizeCompletionStatus('completed', task);
+          }
+
           // Task-level rate card update if whole workflow completes
-          if (task.isRateCardTask && task.rateCardId) {
+          if ((newStatus === 'completed' || newStatus === 'completed_late') && task.isRateCardTask && task.rateCardId) {
             const units = normalizeRateCardUnits(task.unitsToAdd);
             const assignedUser = task.assignedTo || user?.uid;
             
@@ -1659,8 +1704,9 @@ export default function WorkflowTray() {
           action: action,
           comment: actionComment,
           formData: action === 'approve' ? preparedApproveFormData : null,
-          nextStepAssignee: action === 'approve' && approveNeedsNextAssignee && assignedNextWorkflowIndex !== null ? nextStepAssignee : null,
-          nextStepIndex: action === 'return' ? nextIndex : assignedNextWorkflowIndex,
+          nextStepAssignee: action === 'approve' && approveNeedsNextAssignee && assignedNextWorkflowIndexes.length > 0 ? nextStepAssignee : null,
+          nextStepIndex: action === 'return' ? nextIndex : assignedNextWorkflowIndexes[0] ?? null,
+          nextStepIndexes: action === 'approve' ? assignedNextWorkflowIndexes : action === 'return' ? [nextIndex] : [],
           dynamicRateCard: dynamicRateCardCharge,
           qualityEvent,
           performanceEntryId: workflowPerformanceEntry?.id || null,
@@ -1698,19 +1744,22 @@ export default function WorkflowTray() {
         await updateParentTaskStatus(task.projectId, task.parentTaskId);
       }
 
-      const shouldNotifyNextAssignee =
-        (action === 'approve' && assignedNextWorkflowIndex !== null) ||
-        (action === 'return' && returnTargetIndex !== null);
-      if (shouldNotifyNextAssignee) {
+      const notificationStepIndexes =
+        action === 'approve'
+          ? assignedNextWorkflowIndexes
+          : action === 'return' && returnTargetIndex !== null
+            ? [returnTargetIndex]
+            : [];
+      Array.from(new Set(notificationStepIndexes)).forEach((stepIndex) => {
         void notifyTaskAssignment({
           projectId: task.projectId,
           taskId: task.id,
-          assigneeId: steps[nextIndex]?.assignedTo,
-          stepIndex: nextIndex,
+          assigneeId: steps[stepIndex]?.assignedTo,
+          stepIndex,
           eventType: 'workflow_step_assigned',
           source: `workflow_${action}`,
         });
-      }
+      });
 
       setActionModal({ isOpen: false, task: null, type: 'approve' });
       setActionComment('');
@@ -2341,7 +2390,10 @@ export default function WorkflowTray() {
 
   const isPendingTaskForMe = (task: any) => {
     const taskIsWorkflow = isWorkflowItem(task);
-    const currentStep = taskIsWorkflow ? task.workflowSteps?.[task.currentStepIndex || 0] : null;
+    const workflowCurrentIndex = taskIsWorkflow
+      ? getWorkflowCurrentStepIndexForActor(task, assignedIdsForInbox as string[])
+      : 0;
+    const currentStep = taskIsWorkflow ? task.workflowSteps?.[workflowCurrentIndex] : null;
     if (!taskIsWorkflow && isMeetingTask(task)) {
       return isOpenTask(task) &&
         isAssignedToCurrentUser(task, assignedIdsForInbox as string[]) &&
@@ -2519,24 +2571,26 @@ export default function WorkflowTray() {
   const activeQualityGateStep = actionModal.isOpen
     ? actionModal.task?.workflowSteps?.[actionModal.task.currentStepIndex || 0]
     : null;
-  const activeWorkflowNextIndex =
+  const activeWorkflowNextIndexes =
     actionModal.isOpen && actionModal.type === 'approve' && Array.isArray(actionModal.task?.workflowSteps)
-      ? resolveWorkflowNextStepIndex({
+      ? resolveWorkflowNextStepIndexes({
           steps: actionModal.task.workflowSteps,
           currentIndex: actionModal.task.currentStepIndex || 0,
           formData: Object.keys(formData).length > 0 ? formData : activeQualityGateStep?.formData || {},
         })
-      : null;
+      : [];
+  const activeWorkflowNextIndex = activeWorkflowNextIndexes[0] ?? null;
   const activeApproveNextStepRequiresDynamicAssignee = Boolean(
     actionModal.isOpen &&
-      activeWorkflowNextIndex !== null &&
-      isDynamicWorkflowAssignee(actionModal.task?.workflowSteps?.[activeWorkflowNextIndex]?.assignedTo)
+      activeWorkflowNextIndexes.some((nextIndex) =>
+        isDynamicWorkflowAssignee(actionModal.task?.workflowSteps?.[nextIndex]?.assignedTo)
+      )
   );
   const activeApproveNeedsNextAssignee = Boolean(
     actionModal.isOpen &&
       actionModal.type === 'approve' &&
       (activeQualityGateStep?.assignsNextStep || activeApproveNextStepRequiresDynamicAssignee) &&
-      activeWorkflowNextIndex !== null
+      activeWorkflowNextIndexes.length > 0
   );
   const activeQualityGateRequiresCause =
     isQualityGateStep(activeQualityGateStep) && actionModal.type === 'return';

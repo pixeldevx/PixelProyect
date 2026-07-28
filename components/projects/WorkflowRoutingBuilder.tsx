@@ -109,7 +109,12 @@ const getTargetOptions = (steps: any[], currentIndex: number, allowAnyTarget = f
   return [
     ...targetSteps.map(({ step, index }) => ({
       value: String(index),
-      label: `Paso ${index + 1}: ${step.label || "Sin nombre"}`,
+      label:
+        allowAnyTarget && index < currentIndex
+          ? `↩ Devolver a paso ${index + 1}: ${step.label || "Sin nombre"}`
+          : allowAnyTarget && index > currentIndex
+            ? `Avanzar a paso ${index + 1}: ${step.label || "Sin nombre"}`
+            : `Paso ${index + 1}: ${step.label || "Sin nombre"}`,
     })),
     { value: "complete", label: "Finalizar workflow" },
   ];

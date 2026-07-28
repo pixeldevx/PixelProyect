@@ -27,6 +27,8 @@ import {
 } from '@/lib/calendar-utils';
 import {
   isDynamicWorkflowAssignee,
+  isActiveWorkflowStepStatus,
+  isVariableWorkflowTaskType,
   isWorkflowTaskType,
   normalizeWorkflowParallelRoutes,
   resolveWorkflowActiveStepIndex,
@@ -473,11 +475,24 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
 
     if (nextStatus === "listo") {
       resolvedNextIndexes.forEach((nextIndex) => {
-        if (newSteps[nextIndex]?.status === "listo") return;
+        const nextStepWasCompleted = newSteps[nextIndex]?.status === "listo";
+        const shouldReopenCompletedStep = Boolean(isVariableWorkflowTaskType(task.type) && nextStepWasCompleted);
+        const nextStepAlreadyActive = isActiveWorkflowStepStatus(newSteps[nextIndex]?.status);
         newSteps[nextIndex] = {
           ...newSteps[nextIndex],
-          status: "en_curso",
-          startedAt: newSteps[nextIndex]?.startedAt || new Date(),
+          status: shouldReopenCompletedStep
+            ? "reproceso"
+            : nextStepWasCompleted
+              ? "listo"
+              : nextStepAlreadyActive
+                ? newSteps[nextIndex]?.status
+                : "en_curso",
+          completedAt: shouldReopenCompletedStep ? null : newSteps[nextIndex]?.completedAt,
+          completedBy: shouldReopenCompletedStep ? null : newSteps[nextIndex]?.completedBy,
+          completedByMemberId: shouldReopenCompletedStep ? null : newSteps[nextIndex]?.completedByMemberId,
+          completedByIds: shouldReopenCompletedStep ? [] : newSteps[nextIndex]?.completedByIds,
+          restartedAt: shouldReopenCompletedStep ? new Date() : newSteps[nextIndex]?.restartedAt,
+          startedAt: shouldReopenCompletedStep ? new Date() : newSteps[nextIndex]?.startedAt || new Date(),
           assignedAt: new Date(),
         };
       });
@@ -581,11 +596,25 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
           stepUnitPrompt.nextAssignee &&
           (currentStep.assignsNextStep || isDynamicWorkflowAssignee(newSteps[nextIndex]?.assignedTo))
         );
+        const nextStepWasCompleted = newSteps[nextIndex]?.status === "listo";
+        const shouldReopenCompletedStep = Boolean(isVariableWorkflowTaskType(task.type) && nextStepWasCompleted);
+        const nextStepAlreadyActive = isActiveWorkflowStepStatus(newSteps[nextIndex]?.status);
 
         newSteps[nextIndex] = {
           ...newSteps[nextIndex],
-          status: newSteps[nextIndex]?.status === "listo" ? "listo" : "en_curso",
-          startedAt: newSteps[nextIndex]?.startedAt || new Date(),
+          status: shouldReopenCompletedStep
+            ? "reproceso"
+            : nextStepWasCompleted
+              ? "listo"
+              : nextStepAlreadyActive
+                ? newSteps[nextIndex]?.status
+                : "en_curso",
+          completedAt: shouldReopenCompletedStep ? null : newSteps[nextIndex]?.completedAt,
+          completedBy: shouldReopenCompletedStep ? null : newSteps[nextIndex]?.completedBy,
+          completedByMemberId: shouldReopenCompletedStep ? null : newSteps[nextIndex]?.completedByMemberId,
+          completedByIds: shouldReopenCompletedStep ? [] : newSteps[nextIndex]?.completedByIds,
+          restartedAt: shouldReopenCompletedStep ? new Date() : newSteps[nextIndex]?.restartedAt,
+          startedAt: shouldReopenCompletedStep ? new Date() : newSteps[nextIndex]?.startedAt || new Date(),
           assignedAt: new Date(),
           ...(shouldAssignRuntimeOwner
             ? { assignedTo: stepUnitPrompt.nextAssignee }
