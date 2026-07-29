@@ -81,7 +81,7 @@ export const getRateCardBusinessMovementKey = (entry: any) => {
   const titleLooksHistoricalBalance =
     normalizedTitle === 'produccion historica sin detalle' ||
     normalizedTitle === 'reproceso historico sin detalle';
-  const taskKey = entry?.taskId || entry?.externalWorkflowId || (titleLooksHistoricalBalance ? '' : normalizedTitle);
+  const taskKey = entry?.externalWorkflowId || (titleLooksHistoricalBalance ? '' : normalizedTitle) || entry?.taskId;
   if (!taskKey) return '';
 
   return [
