@@ -104,6 +104,17 @@ const normalizeCsvHeader = (value: any) =>
 
 const escapeCsvCell = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
+const dedupeRateCardEntriesByTraceKey = (entries: any[]) => {
+  const seenTraceKeys = new Set<string>();
+  return entries.filter((entry) => {
+    const traceKey = typeof entry?.traceKey === 'string' ? entry.traceKey.trim() : '';
+    if (!traceKey) return true;
+    if (seenTraceKeys.has(traceKey)) return false;
+    seenTraceKeys.add(traceKey);
+    return true;
+  });
+};
+
 const parseDelimitedRows = (text: string) => {
   const cleanText = text.replace(/^\uFEFF/, '');
   const firstLine = cleanText.split(/\r?\n/, 1)[0] || '';
@@ -243,7 +254,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
         const left = a.createdAt?.toMillis?.() || Date.parse(a.createdAt || a.dateKey || '') || 0;
         return right - left;
       });
-      setRateCardEntries(data);
+      setRateCardEntries(dedupeRateCardEntriesByTraceKey(data));
     });
     return () => unsubscribe();
   }, [projectId]);
@@ -2605,6 +2616,26 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   </p>
                 </div>
               </div>
+
+              <div className="mt-4 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-indigo-700">
+                      Instructivo de saneamiento masivo
+                    </p>
+                    <p className="mt-1 text-sm font-semibold leading-6 text-slate-700">
+                      Descarga el CSV, edita únicamente las columnas de fecha, persona, tarea/origen,
+                      cantidad y comentario, y vuelve a cargarlo desde este panel.
+                    </p>
+                  </div>
+                  <div className="grid gap-2 text-xs font-bold text-slate-600 sm:grid-cols-2 lg:min-w-[520px]">
+                    <span className="rounded-xl bg-white px-3 py-2">Fecha: usa AAAA-MM-DD.</span>
+                    <span className="rounded-xl bg-white px-3 py-2">Cantidad: se aceptan 0,051 o 0.051.</span>
+                    <span className="rounded-xl bg-white px-3 py-2">No uses separadores de miles.</span>
+                    <span className="rounded-xl bg-white px-3 py-2">Cada fila debe representar un movimiento único.</span>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-auto bg-slate-50/70 p-5">
@@ -2751,7 +2782,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                                 className="h-9 w-full rounded-lg border border-slate-200 px-2 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500/20"
                               />
                               <p className="mt-1 text-[10px] font-bold text-slate-400">
-                                Actual: {formatRateCardUnits(entry.units || 0, maintenanceRateCard, 1)}
+                                Guardado: {formatRateCardUnits(entry.units || 0, maintenanceRateCard, 6)}
                               </p>
                             </TableCell>
                             <TableCell className="text-sm">

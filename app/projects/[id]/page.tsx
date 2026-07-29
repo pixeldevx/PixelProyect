@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ArrowLeft, Upload, File, FileText, Download, Trash2, Clock, AlertCircle, Folder, Users, Plus, X, Calendar, CreditCard, RefreshCw, Loader2, Search, ClipboardList, DollarSign, Link2, ShieldCheck, BookOpen, BarChart3, Package, Map as MapIcon, BriefcaseBusiness } from 'lucide-react';
-import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, setDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, increment, Timestamp } from '@/lib/supabase/document-store';
+import { doc, getDoc, collection, query, where, onSnapshot, addDoc, deleteDoc, serverTimestamp, updateDoc, setDoc, arrayUnion, arrayRemove, orderBy, writeBatch, getDocs, Timestamp } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, storage } from '@/lib/backend';
 import { isBootstrapAdminEmail } from '@/lib/bootstrap-admins';
@@ -929,17 +929,27 @@ export default function ProjectDetailsPage() {
           // Proportional for non-workflow
           const oldProgress = task.progress || 0;
           const deltaProgress = newProgress - oldProgress;
-          const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
+          const unitsDelta = (deltaProgress / 100) * normalizeRateCardUnits(task.unitsToAdd, 0);
 
           if (unitsDelta !== 0) {
-            const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
-            const updateData: any = {
-              currentValue: increment(unitsDelta)
-            };
-            if (task.assignedTo) {
-              updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
-            }
-            batch.update(rcRef, updateData);
+            addTraceableRateCardMovementToBatch(batch, {
+              projectId,
+              task,
+              rateCardId: task.rateCardId,
+              assignedTo: task.assignedTo || null,
+              units: Math.abs(unitsDelta),
+              source: 'task_progress_update',
+              rateCardSourceKey: `task_progress:${oldProgress}->${newProgress}`,
+              comment: `Avance de tarea actualizado de ${oldProgress}% a ${newProgress}%.`,
+              occurredAt: new Date(),
+              actor: {
+                id: user?.uid || null,
+                email: user?.email || null,
+                name: user?.displayName || user?.email || null,
+              },
+              reversal: unitsDelta < 0,
+              completionMode: 'task_progress_update',
+            });
           }
         } else {
           // For workflow, only if completing/reverting the whole task
@@ -947,35 +957,57 @@ export default function ProjectDetailsPage() {
           const isCompleted = status === 'completed' || status === 'completed_late';
 
           if (wasCompleted !== isCompleted) {
-            const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
             const units = normalizeRateCardUnits(task.unitsToAdd);
-            const updateData: any = {
-              currentValue: increment(isCompleted ? units : -units)
-            };
-            if (task.assignedTo) {
-              updateData[`userStats.${task.assignedTo}`] = increment(isCompleted ? units : -units);
-            }
-            batch.update(rcRef, updateData);
+            addTraceableRateCardMovementToBatch(batch, {
+              projectId,
+              task,
+              rateCardId: task.rateCardId,
+              assignedTo: task.assignedTo || null,
+              units,
+              source: 'workflow_task_status_update',
+              rateCardSourceKey: 'workflow_task_completion',
+              comment: isCompleted ? 'Workflow marcado como completado.' : 'Workflow devuelto desde completado.',
+              occurredAt: new Date(),
+              actor: {
+                id: user?.uid || null,
+                email: user?.email || null,
+                name: user?.displayName || user?.email || null,
+              },
+              reversal: !isCompleted,
+              completionMode: 'workflow_task_status_update',
+            });
 
             // Also update all steps if completing/reverting the whole task
             if (task.workflowSteps) {
-              const updatedSteps = task.workflowSteps.map((step: any) => {
+              const updatedSteps = task.workflowSteps.map((step: any, stepIndex: number) => {
                 const stepWasApproved = step.status === 'listo';
                 const stepIsApproved = isCompleted;
 
                 const stepRateCardSources = getStaticRateCardSources(step);
                 if (stepWasApproved !== stepIsApproved && stepRateCardSources.length > 0) {
                   stepRateCardSources.forEach((stepRateCardSource) => {
-                    const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
                     const stepUnits = normalizeRateCardUnits(stepRateCardSource.unitsToAdd);
-                    const stepUpdateData: any = {
-                      currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
-                    };
                     const stepAssignee = getStaticRateCardAssignee(stepRateCardSource, step.assignedTo);
-                    if (stepAssignee) {
-                      stepUpdateData[`userStats.${stepAssignee}`] = increment(stepIsApproved ? stepUnits : -stepUnits);
-                    }
-                    batch.update(stepRcRef, stepUpdateData);
+                    addTraceableRateCardMovementToBatch(batch, {
+                      projectId,
+                      task,
+                      rateCardId: stepRateCardSource.rateCardId,
+                      assignedTo: stepAssignee || null,
+                      units: stepUnits,
+                      source: 'workflow_step_status_update',
+                      rateCardSourceKey: stepRateCardSource.key || `workflow_step:${stepIndex}`,
+                      stepIndex,
+                      stepName: step?.name || step?.title || `Paso ${stepIndex + 1}`,
+                      comment: stepIsApproved ? 'Paso marcado como listo desde el cierre del workflow.' : 'Paso revertido desde el estado del workflow.',
+                      occurredAt: new Date(),
+                      actor: {
+                        id: user?.uid || null,
+                        email: user?.email || null,
+                        name: user?.displayName || user?.email || null,
+                      },
+                      reversal: !stepIsApproved,
+                      completionMode: 'workflow_step_status_update',
+                    });
                   });
                 }
                 return { ...step, status: stepIsApproved ? 'listo' : 'not_started' };
@@ -1036,30 +1068,49 @@ export default function ProjectDetailsPage() {
       if (!isWorkflowTaskType(task.type) && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
         const oldProgress = task.progress || 0;
         const deltaProgress = progress - oldProgress;
-        const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
+        const unitsDelta = (deltaProgress / 100) * normalizeRateCardUnits(task.unitsToAdd, 0);
 
         if (unitsDelta !== 0) {
-          const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
-          const updateData: any = {
-            currentValue: increment(unitsDelta)
-          };
-          if (task.assignedTo) {
-            updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
-          }
-          batch.update(rcRef, updateData);
+          addTraceableRateCardMovementToBatch(batch, {
+            projectId,
+            task,
+            rateCardId: task.rateCardId,
+            assignedTo: task.assignedTo || null,
+            units: Math.abs(unitsDelta),
+            source: 'task_value_progress_update',
+            rateCardSourceKey: `task_value_progress:${oldProgress}->${progress}`,
+            comment: `Avance cuantitativo actualizado de ${oldProgress}% a ${progress}%.`,
+            occurredAt: new Date(),
+            actor: {
+              id: user?.uid || null,
+              email: user?.email || null,
+              name: user?.displayName || user?.email || null,
+            },
+            reversal: unitsDelta < 0,
+            completionMode: 'task_value_progress_update',
+          });
         }
       }
 
       if (task.incrementForm?.rateCardId) {
         const units = normalizeRateCardUnits(task.incrementForm.unitsToAdd);
-        const rcRef = doc(db, 'projects', projectId, 'rateCards', task.incrementForm.rateCardId);
-        const updateData: any = {
-          currentValue: increment(units),
-        };
-        if (task.assignedTo) {
-          updateData[`userStats.${task.assignedTo}`] = increment(units);
-        }
-        batch.update(rcRef, updateData);
+        addTraceableRateCardMovementToBatch(batch, {
+          projectId,
+          task,
+          rateCardId: task.incrementForm.rateCardId,
+          assignedTo: task.assignedTo || null,
+          units,
+          source: 'increment_form_update',
+          rateCardSourceKey: `increment_form:${task.currentValue || 0}->${safeValue}`,
+          comment: 'Movimiento registrado desde formulario incremental de tarea.',
+          occurredAt: new Date(),
+          actor: {
+            id: user?.uid || null,
+            email: user?.email || null,
+            name: user?.displayName || user?.email || null,
+          },
+          completionMode: 'increment_form_update',
+        });
       }
 
       batch.update(taskRef, {
@@ -1153,17 +1204,27 @@ export default function ProjectDetailsPage() {
       if (!isWorkflowTaskType(task.type) && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
         const oldProgress = task.progress || 0;
         const deltaProgress = progress - oldProgress;
-        const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
+        const unitsDelta = (deltaProgress / 100) * normalizeRateCardUnits(task.unitsToAdd, 0);
 
         if (unitsDelta !== 0) {
-          const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
-          const updateData: any = {
-            currentValue: increment(unitsDelta)
-          };
-          if (task.assignedTo) {
-            updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
-          }
-          batch.update(rcRef, updateData);
+          addTraceableRateCardMovementToBatch(batch, {
+            projectId,
+            task,
+            rateCardId: task.rateCardId,
+            assignedTo: task.assignedTo || null,
+            units: Math.abs(unitsDelta),
+            source: 'incremental_task_progress_update',
+            rateCardSourceKey: `incremental_task_progress:${oldProgress}->${progress}`,
+            comment: `Avance incremental actualizado de ${oldProgress}% a ${progress}%.`,
+            occurredAt: new Date(),
+            actor: {
+              id: user?.uid || null,
+              email: user?.email || null,
+              name: user?.displayName || user?.email || null,
+            },
+            reversal: unitsDelta < 0,
+            completionMode: 'incremental_task_progress_update',
+          });
         }
       }
 
@@ -1248,35 +1309,32 @@ export default function ProjectDetailsPage() {
     const amount = Number(params.units);
     if (!params.rateCardId || !params.assigneeId || !Number.isFinite(amount)) return null;
 
-    const rcRef = doc(db, 'projects', projectId, 'rateCards', params.rateCardId);
-    batch.update(rcRef, {
-      currentValue: increment(amount),
-      [`userStats.${params.assigneeId}`]: increment(amount),
-    });
-
-    const entryRef = doc(collection(db, 'projects', projectId, 'rateCardEntries'));
     const now = new Date();
-    batch.set(entryRef, {
+    const entry = addTraceableRateCardMovementToBatch(batch, {
       projectId,
-      taskId: params.task.id,
-      taskTitle: params.task.title || params.task.name || 'Tarea',
+      task: params.task,
       rateCardId: params.rateCardId,
       assignedTo: params.assigneeId,
-      units: amount,
+      units: params.reversal ? Math.abs(amount) : amount,
       source: params.source,
+      rateCardSourceKey: params.source,
       comment: params.comment || null,
+      occurredAt: now,
+      actor: {
+        id: user?.uid || null,
+        email: user?.email || null,
+        name: user?.displayName || user?.email || null,
+      },
       reversal: Boolean(params.reversal),
-      ...getRateCardDateKeys(now),
-      createdAt: serverTimestamp(),
-      createdBy: user?.uid || null,
-      createdByEmail: user?.email || null,
+      completionMode: 'project_dynamic_rate_charge',
     });
+    if (!entry) return null;
 
     return {
-      entryId: entryRef.id,
+      entryId: entry.id,
       rateCardId: params.rateCardId,
       assignedTo: params.assigneeId,
-      units: amount,
+      units: entry.units,
       source: params.source,
       reversal: Boolean(params.reversal),
       createdAt: now.toISOString(),
@@ -1467,17 +1525,27 @@ export default function ProjectDetailsPage() {
             // Proportional for non-workflow tasks with automatic units.
             const oldProgress = task.progress || 0;
             const deltaProgress = progress - oldProgress;
-            const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
+            const unitsDelta = (deltaProgress / 100) * normalizeRateCardUnits(task.unitsToAdd, 0);
 
             if (unitsDelta !== 0) {
-              const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
-              const updateData: any = {
-                currentValue: increment(unitsDelta)
-              };
-              if (task.assignedTo) {
-                updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
-              }
-              batch.update(rcRef, updateData);
+              addTraceableRateCardMovementToBatch(batch, {
+                projectId,
+                task,
+                rateCardId: task.rateCardId,
+                assignedTo: task.assignedTo || null,
+                units: Math.abs(unitsDelta),
+                source: 'task_status_form_progress_update',
+                rateCardSourceKey: `task_status_form_progress:${oldProgress}->${progress}`,
+                comment: `Avance actualizado de ${oldProgress}% a ${progress}% desde formulario de estado.`,
+                occurredAt: new Date(),
+                actor: {
+                  id: user?.uid || null,
+                  email: user?.email || null,
+                  name: user?.displayName || user?.email || null,
+                },
+                reversal: unitsDelta < 0,
+                completionMode: 'task_status_form_progress_update',
+              });
             }
           }
         } else {
@@ -1486,35 +1554,57 @@ export default function ProjectDetailsPage() {
           const isCompleted = finalStatus === 'completed' || finalStatus === 'completed_late';
 
           if (wasCompleted !== isCompleted) {
-            const rcRef = doc(db, 'projects', projectId, 'rateCards', task.rateCardId);
             const units = normalizeRateCardUnits(task.unitsToAdd);
-            const updateData: any = {
-              currentValue: increment(isCompleted ? units : -units)
-            };
-            if (task.assignedTo) {
-              updateData[`userStats.${task.assignedTo}`] = increment(isCompleted ? units : -units);
-            }
-            batch.update(rcRef, updateData);
+            addTraceableRateCardMovementToBatch(batch, {
+              projectId,
+              task,
+              rateCardId: task.rateCardId,
+              assignedTo: task.assignedTo || null,
+              units,
+              source: 'workflow_status_form_update',
+              rateCardSourceKey: 'workflow_status_form_completion',
+              comment: isCompleted ? 'Workflow completado desde formulario de estado.' : 'Workflow revertido desde formulario de estado.',
+              occurredAt: new Date(),
+              actor: {
+                id: user?.uid || null,
+                email: user?.email || null,
+                name: user?.displayName || user?.email || null,
+              },
+              reversal: !isCompleted,
+              completionMode: 'workflow_status_form_update',
+            });
 
             // Also update all steps if completing/reverting the whole task
             if (task.workflowSteps) {
-              const updatedSteps = task.workflowSteps.map((step: any) => {
+              const updatedSteps = task.workflowSteps.map((step: any, stepIndex: number) => {
                 const stepWasApproved = step.status === 'listo';
                 const stepIsApproved = isCompleted;
 
                 const stepRateCardSources = getStaticRateCardSources(step);
                 if (stepWasApproved !== stepIsApproved && stepRateCardSources.length > 0) {
                   stepRateCardSources.forEach((stepRateCardSource) => {
-                    const stepRcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
                     const stepUnits = normalizeRateCardUnits(stepRateCardSource.unitsToAdd);
-                    const stepUpdateData: any = {
-                      currentValue: increment(stepIsApproved ? stepUnits : -stepUnits)
-                    };
                     const stepAssignee = getStaticRateCardAssignee(stepRateCardSource, step.assignedTo);
-                    if (stepAssignee) {
-                      stepUpdateData[`userStats.${stepAssignee}`] = increment(stepIsApproved ? stepUnits : -stepUnits);
-                    }
-                    batch.update(stepRcRef, stepUpdateData);
+                    addTraceableRateCardMovementToBatch(batch, {
+                      projectId,
+                      task,
+                      rateCardId: stepRateCardSource.rateCardId,
+                      assignedTo: stepAssignee || null,
+                      units: stepUnits,
+                      source: 'workflow_step_status_form_update',
+                      rateCardSourceKey: stepRateCardSource.key || `workflow_step_status_form:${stepIndex}`,
+                      stepIndex,
+                      stepName: step?.name || step?.title || `Paso ${stepIndex + 1}`,
+                      comment: stepIsApproved ? 'Paso marcado como listo desde formulario de estado.' : 'Paso revertido desde formulario de estado.',
+                      occurredAt: new Date(),
+                      actor: {
+                        id: user?.uid || null,
+                        email: user?.email || null,
+                        name: user?.displayName || user?.email || null,
+                      },
+                      reversal: !stepIsApproved,
+                      completionMode: 'workflow_step_status_form_update',
+                    });
                   });
                 }
                 return { ...step, status: stepIsApproved ? 'listo' : 'not_started' };
@@ -1953,34 +2043,79 @@ export default function ProjectDetailsPage() {
 
       const revertRateCard = (t: any, batchToUse: ReturnType<typeof writeBatch>) => {
         if (t.isRateCardTask && t.rateCardId && t.unitsToAdd) {
-          const rcRef = doc(db, 'projects', projectId, 'rateCards', t.rateCardId);
           if (!isWorkflowTaskType(t.type)) {
-            const units = (t.progress / 100) * t.unitsToAdd;
+            const units = (t.progress / 100) * normalizeRateCardUnits(t.unitsToAdd, 0);
             if (units !== 0) {
-              const updateData: any = { currentValue: increment(-units) };
-              if (t.assignedTo) updateData[`userStats.${t.assignedTo}`] = increment(-units);
-              batchToUse.update(rcRef, updateData);
+              addTraceableRateCardMovementToBatch(batchToUse, {
+                projectId,
+                task: t,
+                rateCardId: t.rateCardId,
+                assignedTo: t.assignedTo || null,
+                units,
+                source: 'task_delete_reversal',
+                rateCardSourceKey: `task_delete_reversal:${t.progress || 0}`,
+                comment: 'Reverso registrado al eliminar o limpiar la tarea.',
+                occurredAt: new Date(),
+                actor: {
+                  id: user?.uid || null,
+                  email: user?.email || null,
+                  name: user?.displayName || user?.email || null,
+                },
+                reversal: true,
+                completionMode: 'task_delete_reversal',
+              });
             }
           } else if (t.status === 'completed' || t.status === 'completed_late') {
             const units = normalizeRateCardUnits(t.unitsToAdd);
-            const updateData: any = { currentValue: increment(-units) };
-            if (t.assignedTo) updateData[`userStats.${t.assignedTo}`] = increment(-units);
-            batchToUse.update(rcRef, updateData);
+            addTraceableRateCardMovementToBatch(batchToUse, {
+              projectId,
+              task: t,
+              rateCardId: t.rateCardId,
+              assignedTo: t.assignedTo || null,
+              units,
+              source: 'workflow_task_delete_reversal',
+              rateCardSourceKey: 'workflow_task_delete_reversal',
+              comment: 'Reverso registrado al eliminar o limpiar el workflow.',
+              occurredAt: new Date(),
+              actor: {
+                id: user?.uid || null,
+                email: user?.email || null,
+                name: user?.displayName || user?.email || null,
+              },
+              reversal: true,
+              completionMode: 'workflow_task_delete_reversal',
+            });
           }
         }
 
         // Revert step-level rate cards
         if (isWorkflowTaskType(t.type) && t.workflowSteps) {
-          t.workflowSteps.forEach((step: any) => {
+          t.workflowSteps.forEach((step: any, stepIndex: number) => {
             const stepRateCardSources = getStaticRateCardSources(step);
             if (step.completed && stepRateCardSources.length > 0) {
               stepRateCardSources.forEach((stepRateCardSource) => {
-                const rcRef = doc(db, 'projects', projectId, 'rateCards', stepRateCardSource.rateCardId);
                 const units = normalizeRateCardUnits(stepRateCardSource.unitsToAdd);
-                const updateData: any = { currentValue: increment(-units) };
                 const stepAssignee = getStaticRateCardAssignee(stepRateCardSource, step.assignedTo);
-                if (stepAssignee) updateData[`userStats.${stepAssignee}`] = increment(-units);
-                batchToUse.update(rcRef, updateData);
+                addTraceableRateCardMovementToBatch(batchToUse, {
+                  projectId,
+                  task: t,
+                  rateCardId: stepRateCardSource.rateCardId,
+                  assignedTo: stepAssignee || null,
+                  units,
+                  source: 'workflow_step_delete_reversal',
+                  rateCardSourceKey: stepRateCardSource.key || `workflow_step_delete_reversal:${stepIndex}`,
+                  stepIndex,
+                  stepName: step?.name || step?.title || null,
+                  comment: 'Reverso de paso registrado al eliminar o limpiar el workflow.',
+                  occurredAt: new Date(),
+                  actor: {
+                    id: user?.uid || null,
+                    email: user?.email || null,
+                    name: user?.displayName || user?.email || null,
+                  },
+                  reversal: true,
+                  completionMode: 'workflow_step_delete_reversal',
+                });
               });
             }
           });

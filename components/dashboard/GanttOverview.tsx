@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, doc, updateDoc, addDoc, serverTimestamp, orderBy, where, getDocs, writeBatch, arrayUnion, increment } from '@/lib/supabase/document-store';
+import { collection, query, onSnapshot, doc, updateDoc, addDoc, serverTimestamp, orderBy, where, getDocs, writeBatch, arrayUnion } from '@/lib/supabase/document-store';
 import { ref, deleteObject } from '@/lib/supabase/storage-shim';
 import { db, auth, storage } from '@/lib/backend';
 import { ProjectGantt } from '@/components/projects/ProjectGantt';
@@ -14,6 +14,7 @@ import { toast } from 'sonner';
 import { belongsToAnyOrganization } from '@/lib/organizations';
 import { getCompletionStatusForTask, getProgressForTaskStatus } from '@/lib/taskProgress';
 import { normalizeRateCardUnits } from '@/lib/rate-card-config';
+import { addTraceableRateCardMovementToBatch } from '@/lib/rate-card-trace';
 import {
   getIncrementalRateBinding,
   isRateDrivenIncrementalTask,
@@ -338,30 +339,49 @@ export const GanttOverview: React.FC = () => {
       if (!isWorkflowTaskType(task.type) && task.isRateCardTask && task.rateCardId && task.unitsToAdd) {
         const oldProgress = task.progress || 0;
         const deltaProgress = progress - oldProgress;
-        const unitsDelta = (deltaProgress / 100) * task.unitsToAdd;
+        const unitsDelta = (deltaProgress / 100) * normalizeRateCardUnits(task.unitsToAdd, 0);
 
         if (unitsDelta !== 0) {
-          const rcRef = doc(db, 'projects', selectedProjectId, 'rateCards', task.rateCardId);
-          const updateData: any = {
-            currentValue: increment(unitsDelta)
-          };
-          if (task.assignedTo) {
-            updateData[`userStats.${task.assignedTo}`] = increment(unitsDelta);
-          }
-          batch.update(rcRef, updateData);
+          addTraceableRateCardMovementToBatch(batch, {
+            projectId: selectedProjectId,
+            task,
+            rateCardId: task.rateCardId,
+            assignedTo: task.assignedTo || null,
+            units: Math.abs(unitsDelta),
+            source: 'gantt_incremental_task_progress_update',
+            rateCardSourceKey: `gantt_incremental_task_progress:${oldProgress}->${progress}`,
+            comment: `Avance incremental actualizado desde Gantt de ${oldProgress}% a ${progress}%.`,
+            occurredAt: new Date(),
+            actor: {
+              id: user?.uid || null,
+              email: user?.email || null,
+              name: user?.displayName || user?.email || null,
+            },
+            reversal: unitsDelta < 0,
+            completionMode: 'gantt_incremental_task_progress_update',
+          });
         }
       }
 
       if (task.incrementForm?.rateCardId) {
         const units = normalizeRateCardUnits(task.incrementForm.unitsToAdd);
-        const rcRef = doc(db, 'projects', selectedProjectId, 'rateCards', task.incrementForm.rateCardId);
-        const updateData: any = {
-          currentValue: increment(units),
-        };
-        if (task.assignedTo) {
-          updateData[`userStats.${task.assignedTo}`] = increment(units);
-        }
-        batch.update(rcRef, updateData);
+        addTraceableRateCardMovementToBatch(batch, {
+          projectId: selectedProjectId,
+          task,
+          rateCardId: task.incrementForm.rateCardId,
+          assignedTo: task.assignedTo || null,
+          units,
+          source: 'gantt_increment_form_update',
+          rateCardSourceKey: `gantt_increment_form:${task.currentValue || 0}->${nextValue}`,
+          comment: 'Movimiento registrado desde incremento de Gantt.',
+          occurredAt: new Date(),
+          actor: {
+            id: user?.uid || null,
+            email: user?.email || null,
+            name: user?.displayName || user?.email || null,
+          },
+          completionMode: 'gantt_increment_form_update',
+        });
       }
 
       batch.update(taskRef, {

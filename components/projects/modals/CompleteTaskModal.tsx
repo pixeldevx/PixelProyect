@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import { FileText, X, File, Upload, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { db, storage } from '@/lib/backend';
-import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, getDoc } from '@/lib/supabase/document-store';
+import { doc, collection, addDoc, writeBatch, serverTimestamp, getDoc } from '@/lib/supabase/document-store';
 import { ref, uploadBytes, getDownloadURL } from '@/lib/supabase/storage-shim';
 import { toast } from 'sonner';
 import { getCompletionStatusForTask } from '@/lib/taskProgress';
 import { normalizeRateCardUnits } from '@/lib/rate-card-config';
+import { addTraceableRateCardMovementToBatch } from '@/lib/rate-card-trace';
 import { isWorkflowTaskType } from '@/lib/workflow-routing';
 import { buildDocumentStoragePath, getTaskStorageFolderSegments } from '@/lib/document-storage';
 import { getTaskDisplayTitle } from '@/lib/task-title';
@@ -85,28 +86,44 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
           const deltaProgress = 100 - oldProgress;
           const unitsDelta = (deltaProgress / 100) * normalizeRateCardUnits(taskForCompletion.unitsToAdd, 0);
           
-          if (unitsDelta !== 0) {
-            const rcRef = doc(db, 'projects', projectId, 'rateCards', taskForCompletion.rateCardId);
-            const updateData: any = {
-              currentValue: increment(unitsDelta)
-            };
-            if (taskForCompletion.assignedTo) {
-              updateData[`userStats.${taskForCompletion.assignedTo}`] = increment(unitsDelta);
-            }
-            batch.update(rcRef, updateData);
-          }
+          addTraceableRateCardMovementToBatch(batch, {
+            projectId,
+            task: taskForCompletion,
+            rateCardId: taskForCompletion.rateCardId,
+            assignedTo: taskForCompletion.assignedTo || null,
+            units: unitsDelta,
+            source: 'task_completion_document',
+            rateCardSourceKey: 'task_completion',
+            comment: 'Movimiento registrado al completar la tarea con documento.',
+            occurredAt: new Date(),
+            actor: {
+              id: user?.uid || null,
+              email: user?.email || null,
+              name: user?.displayName || user?.email || null,
+            },
+            completionMode: 'task_completion_with_document',
+          });
         } else {
           // Workflow: only if completing the whole task
           if (taskForCompletion.status !== 'completed' && taskForCompletion.status !== 'completed_late') {
-            const rcRef = doc(db, 'projects', projectId, 'rateCards', taskForCompletion.rateCardId);
             const units = normalizeRateCardUnits(taskForCompletion.unitsToAdd);
-            const updateData: any = {
-              currentValue: increment(units)
-            };
-            if (taskForCompletion.assignedTo) {
-              updateData[`userStats.${taskForCompletion.assignedTo}`] = increment(units);
-            }
-            batch.update(rcRef, updateData);
+            addTraceableRateCardMovementToBatch(batch, {
+              projectId,
+              task: taskForCompletion,
+              rateCardId: taskForCompletion.rateCardId,
+              assignedTo: taskForCompletion.assignedTo || null,
+              units,
+              source: 'workflow_task_completion_document',
+              rateCardSourceKey: 'workflow_task_completion',
+              comment: 'Movimiento registrado al cerrar el workflow con documento.',
+              occurredAt: new Date(),
+              actor: {
+                id: user?.uid || null,
+                email: user?.email || null,
+                name: user?.displayName || user?.email || null,
+              },
+              completionMode: 'workflow_task_completion_with_document',
+            });
           }
         }
       }

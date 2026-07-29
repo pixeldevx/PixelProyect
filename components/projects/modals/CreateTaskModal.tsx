@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, ListTodo, Plus, ClipboardList, CreditCard, Loader2, Trash2, CalendarDays } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { doc, collection, addDoc, writeBatch, serverTimestamp, increment, updateDoc, deleteDoc } from '@/lib/supabase/document-store';
+import { doc, collection, addDoc, writeBatch, serverTimestamp, updateDoc, deleteDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { WorkflowStepFormBuilderModal, CustomForm, FormRateCardItem } from '@/components/projects/WorkflowStepFormBuilderModal';
@@ -13,6 +13,7 @@ import {
   loadWorkflowTemplatesForScope,
 } from '@/lib/workflow-templates';
 import { getStaticRateCardAssignmentKey, isInvalidRateCardUnits, normalizeRateCardUnits } from '@/lib/rate-card-config';
+import { addTraceableRateCardMovementToBatch } from '@/lib/rate-card-trace';
 import { syncRateDrivenIncrementalTasksForRate } from '@/lib/incremental-rate-tasks';
 import {
   applyWorkflowStepReferenceDurations,
@@ -1007,21 +1008,24 @@ export function CreateTaskModal({
         taskData.progress > 0 &&
         !isWorkflowTaskType(taskData.type)
       ) {
-        const rcRef = doc(
-          db,
-          "projects",
+        const units = (taskData.progress / 100) * normalizeRateCardUnits(taskData.unitsToAdd, 0);
+        addTraceableRateCardMovementToBatch(batch, {
           projectId,
-          "rateCards",
-          taskData.rateCardId,
-        );
-        const units = (taskData.progress / 100) * taskData.unitsToAdd;
-        const updateData: any = {
-          currentValue: increment(units),
-        };
-        if (taskData.assignedTo) {
-          updateData[`userStats.${taskData.assignedTo}`] = increment(units);
-        }
-        batch.update(rcRef, updateData);
+          task: { ...taskData, id: taskRef.id },
+          rateCardId: taskData.rateCardId,
+          assignedTo: taskData.assignedTo || null,
+          units,
+          source: "task_initial_progress",
+          rateCardSourceKey: "task_initial_progress",
+          comment: "Movimiento registrado desde el avance inicial de la tarea.",
+          occurredAt: new Date(),
+          actor: {
+            id: user?.uid || null,
+            email: user?.email || null,
+            name: user?.displayName || user?.email || null,
+          },
+          completionMode: "task_created_with_initial_progress",
+        });
       }
 
       if (isWorkflowTypeSelected) {

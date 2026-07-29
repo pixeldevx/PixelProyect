@@ -1,5 +1,4 @@
 import {
-  collection,
   doc,
   increment,
   serverTimestamp,
@@ -16,6 +15,39 @@ import { getTaskTitle } from '@/lib/task-title';
 import { getTaskDateValue, isCompletedTaskStatus } from '@/lib/taskProgress';
 
 const EPSILON = 0.000001;
+
+const hashTraceKey = (value: string) => {
+  let hash = 5381;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) + hash) ^ value.charCodeAt(index);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+export const buildRateCardTraceKey = ({
+  taskId,
+  stepIndex,
+  rateCardId,
+  assignedTo,
+  sourceKey,
+  operation = 'charge',
+}: {
+  taskId?: string | null;
+  stepIndex?: number | string | null;
+  rateCardId?: string | null;
+  assignedTo?: string | null;
+  sourceKey?: string | null;
+  operation?: 'charge' | 'reversal';
+}) => [
+  taskId || 'sin-tarea',
+  stepIndex ?? 'task',
+  rateCardId || 'sin-rate-card',
+  assignedTo || 'sin-profesional',
+  sourceKey || 'sin-origen',
+  operation,
+].join('::');
+
+export const getRateCardTraceEntryId = (traceKey: string) => `trace_${hashTraceKey(traceKey)}`;
 
 export const getRateCardPeriodKeys = (date = new Date()) => {
   const year = date.getFullYear();
@@ -89,16 +121,17 @@ export const addTraceableRateCardMovementToBatch = (
     batch.update(rateCardRef, aggregateUpdate);
   }
 
-  const entryRef = doc(collection(db, 'projects', params.projectId, 'rateCardEntries'));
   const stepIndex = typeof params.stepIndex === 'number' ? params.stepIndex : null;
-  const traceKey = [
-    params.task?.id || 'sin-tarea',
-    stepIndex ?? 'task',
-    params.rateCardId,
-    assignedTo || 'sin-profesional',
-    params.rateCardSourceKey || params.source,
-    params.reversal ? 'reversal' : 'charge',
-  ].join('::');
+  const overrideTraceKey = typeof params.extra?.traceKey === 'string' ? params.extra.traceKey : '';
+  const traceKey = overrideTraceKey || buildRateCardTraceKey({
+    taskId: params.task?.id || null,
+    stepIndex,
+    rateCardId: params.rateCardId,
+    assignedTo,
+    sourceKey: params.rateCardSourceKey || params.source,
+    operation: params.reversal ? 'reversal' : 'charge',
+  });
+  const entryRef = doc(db, 'projects', params.projectId, 'rateCardEntries', getRateCardTraceEntryId(traceKey));
 
   const entryData = {
     projectId: params.projectId,
@@ -117,7 +150,6 @@ export const addTraceableRateCardMovementToBatch = (
     isRework: Boolean(params.isRework),
     reversal: Boolean(params.reversal),
     completionMode: params.completionMode || null,
-    traceKey,
     ...getRateCardPeriodKeys(occurredAt),
     completedAt: Timestamp.fromDate(occurredAt),
     createdAt: Timestamp.fromDate(occurredAt),
@@ -126,6 +158,7 @@ export const addTraceableRateCardMovementToBatch = (
     createdByEmail: params.actor?.email || null,
     createdByName: params.actor?.name || null,
     ...(params.extra || {}),
+    traceKey,
   };
 
   batch.set(entryRef, entryData);
@@ -320,6 +353,11 @@ export const buildHistoricalRateCardRepairPlan = ({
   const productionGaps = gaps.filter(gap => !gap.isRework && gap.units > EPSILON);
   const gapUsers = new Set(productionGaps.map(gap => gap.assignedTo).filter(Boolean));
   const existingByOrigin = new Map<string, number>();
+  const existingTraceKeys = new Set(
+    entries
+      .map(entry => typeof entry?.traceKey === 'string' ? entry.traceKey : '')
+      .filter(Boolean),
+  );
 
   entries
     .filter(entry => entry?.rateCardId === rateCard?.id && !entry?.isRework)
@@ -437,6 +475,16 @@ export const buildHistoricalRateCardRepairPlan = ({
       if (missingUnits <= EPSILON || missingUnits - remainingGap > EPSILON) return;
 
       const sourceKeys = Array.from(new Set(candidate.sourceKeys)).sort();
+      const traceKey = buildRateCardTraceKey({
+        taskId: candidate.taskId,
+        stepIndex: candidate.stepIndex,
+        rateCardId: rateCard.id,
+        assignedTo: candidate.assignedTo,
+        sourceKey: sourceKeys.join('|'),
+        operation: 'charge',
+      });
+      if (existingTraceKeys.has(traceKey)) return;
+
       matches.push({
         taskId: candidate.taskId,
         taskTitle: candidate.taskTitle,
@@ -450,7 +498,7 @@ export const buildHistoricalRateCardRepairPlan = ({
         completionEvidence: candidate.completionEvidence,
         originalCompletedBy: candidate.originalCompletedBy,
         rateCardSourceKeys: sourceKeys,
-        traceKey: [candidate.taskId, candidate.stepIndex ?? 'task', rateCard.id, candidate.assignedTo, sourceKeys.join('|'), 'repair'].join('::'),
+        traceKey,
       });
       remainingByUser.set(candidate.assignedTo, Math.max(0, remainingGap - missingUnits));
     });
