@@ -58,6 +58,11 @@ import {
   AdvanceDossierReport,
   generateAdvanceDossierPdf,
 } from '@/lib/advance-dossier-pdf';
+import {
+  getRateCardCostValue,
+  getRateCardIncomeValue,
+  normalizeDecimalInput,
+} from '@/lib/rate-card-config';
 
 type ColombiaDepartment = {
   department: string;
@@ -368,6 +373,31 @@ type ContractorPaymentRequest = {
   taskIds: string[];
   taskTitles: string[];
   activitySummary?: string;
+  activitySnapshot?: {
+    totalTasks: number;
+    completedTasks: number;
+    activeTasks: number;
+    overdueTasks: number;
+    onTimeTasks: number;
+    qualitySummary: string;
+    rateIncome: number;
+    rateCost: number;
+    rateMargin: number;
+    rateMovements: number;
+  };
+  requesterSignature?: AdvanceSignatureSnapshot;
+  generatedDocuments?: Array<{
+    kind: 'chargeAccount' | 'activityReport';
+    label: string;
+    generatedAt: string;
+  }>;
+  parafiscalsValidation?: {
+    baseAmount: number;
+    minimumWage: number;
+    estimatedMinimumWages: number;
+    status: 'pending_manual_review';
+    note: string;
+  };
   status: ContractorAccountStatus;
   documents: ContractorAccountDocument[];
   approvals?: ContractorAccountApproval[];
@@ -525,9 +555,14 @@ const DEFAULT_COST_CENTERS: Array<Omit<CostCenterDomain, 'id'>> = [
   },
 ];
 
-const CONTRACTOR_ACCOUNT_DOCUMENTS: Array<{ kind: ContractorAccountDocumentKind; label: string; required: boolean }> = [
-  { kind: 'chargeAccount', label: 'Cuenta de cobro', required: true },
-  { kind: 'activityReport', label: 'Informe de actividades', required: true },
+const COLOMBIA_LEGAL_MINIMUM_WAGE = 1750000;
+
+const CONTRACTOR_ACCOUNT_GENERATED_DOCUMENTS: Array<{ kind: 'chargeAccount' | 'activityReport'; label: string }> = [
+  { kind: 'chargeAccount', label: 'Cuenta de cobro generada por Pixel' },
+  { kind: 'activityReport', label: 'Informe de actividades generado por Pixel' },
+];
+
+const CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS: Array<{ kind: ContractorAccountDocumentKind; label: string; required: boolean }> = [
   { kind: 'parafiscals', label: 'Soporte de parafiscales', required: true },
 ];
 
@@ -779,6 +814,58 @@ const downloadBlob = (fileName: string, blob: Blob) => {
   URL.revokeObjectURL(url);
 };
 
+const downloadContractorGeneratedDocument = (
+  account: ContractorPaymentRequest,
+  kind: 'chargeAccount' | 'activityReport'
+) => {
+  const safeToken = getSafeFileToken(`${account.customId || account.id}-${account.contractorName}`);
+  const isChargeAccount = kind === 'chargeAccount';
+  const title = isChargeAccount ? 'Cuenta de cobro' : 'Informe de actividades';
+  const activityRows = (account.taskTitles || [])
+    .map((title, index) => `<tr><td>${index + 1}</td><td>${title}</td></tr>`)
+    .join('');
+  const html = `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>${title}</title>
+  <style>
+    body { font-family: Arial, sans-serif; color: #0f172a; margin: 40px; }
+    h1 { font-size: 24px; margin-bottom: 4px; }
+    .muted { color: #64748b; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 18px; }
+    th, td { border: 1px solid #cbd5e1; padding: 10px; text-align: left; vertical-align: top; }
+    th { background: #f1f5f9; text-transform: uppercase; font-size: 11px; letter-spacing: .12em; }
+    .signature { margin-top: 32px; border-top: 1px solid #94a3b8; padding-top: 8px; width: 320px; }
+  </style>
+</head>
+<body>
+  <h1>${title}</h1>
+  <p class="muted">Generado por Pixel Project · ${new Date().toLocaleDateString('es-CO')}</p>
+  <table>
+    <tbody>
+      <tr><th>Contratista</th><td>${account.contractorName}</td></tr>
+      <tr><th>Correo</th><td>${account.contractorEmail || 'Sin correo'}</td></tr>
+      <tr><th>Periodo</th><td>${formatDate(account.periodStart)} - ${formatDate(account.periodEnd)}</td></tr>
+      <tr><th>Honorarios</th><td>${formatMoney(account.honorariumAmount)}</td></tr>
+      <tr><th>Base parafiscales 40%</th><td>${formatMoney(account.socialSecurityBase)}</td></tr>
+      <tr><th>Salario mínimo usado</th><td>${formatMoney(account.parafiscalsValidation?.minimumWage || COLOMBIA_LEGAL_MINIMUM_WAGE)}</td></tr>
+    </tbody>
+  </table>
+  ${
+    isChargeAccount
+      ? `<p style="margin-top:24px;line-height:1.6">Por medio de la presente solicito el pago de los honorarios causados durante el periodo indicado.</p>`
+      : `<h2>Actividades relacionadas</h2><p>${account.activitySummary || account.activitySnapshot?.qualitySummary || ''}</p><table><thead><tr><th>#</th><th>Actividad / tarea Pixel</th></tr></thead><tbody>${activityRows || '<tr><td colspan="2">Sin actividades registradas</td></tr>'}</tbody></table>`
+  }
+  <div class="signature">
+    <strong>${account.requesterSignature?.name || account.contractorName}</strong><br/>
+    <span class="muted">${account.requesterSignature?.jobTitle || 'Contratista'} · ${account.requesterSignature?.email || account.contractorEmail || ''}</span>
+  </div>
+</body>
+</html>`;
+  downloadBlob(`${isChargeAccount ? 'cuenta-de-cobro' : 'informe-actividades'}-${safeToken}.html`, new Blob([html], { type: 'text/html;charset=utf-8' }));
+};
+
 const getDateValue = (value: any): Date | null => {
   if (!value) return null;
   if (value instanceof Date) return value;
@@ -825,6 +912,93 @@ const getCurrentUserName = (user: any) =>
 
 const getTaskTitle = (task: any) =>
   task?.title || task?.name || task?.displayName || task?.externalWorkflowId || task?.id || 'Tarea sin nombre';
+
+const toDateInputValue = (value: any) => {
+  const date = getDateValue(value);
+  if (!date) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const isDateWithinRange = (value: any, start: string, end: string) => {
+  const dateKey = toDateInputValue(value);
+  if (!dateKey || !start || !end) return false;
+  return dateKey >= start && dateKey <= end;
+};
+
+const collectTaskActorTokens = (task: any) => {
+  const tokens = new Set<string>();
+  const add = (value: any) => {
+    if (value === undefined || value === null || value === '') return;
+    if (typeof value === 'object') {
+      ['id', 'uid', 'userId', 'memberId', 'authUserId', 'email'].forEach((key) => add(value[key]));
+      return;
+    }
+    tokens.add(String(value).trim().toLowerCase());
+  };
+
+  [
+    task?.assignedTo,
+    task?.assigneeId,
+    task?.assignee,
+    task?.responsibleId,
+    task?.responsible,
+    task?.ownerId,
+    task?.owner,
+    task?.createdBy,
+    task?.createdByEmail,
+    task?.assignedToEmail,
+    task?.assigneeEmail,
+    task?.responsibleEmail,
+    task?.assignedToName,
+    task?.assigneeName,
+    task?.responsibleName,
+    task?.ownerName,
+  ].forEach(add);
+
+  ['assignees', 'assignedUsers', 'assignedMembers', 'responsibles', 'team', 'participants'].forEach((key) => {
+    const value = task?.[key];
+    if (Array.isArray(value)) value.forEach(add);
+  });
+
+  return tokens;
+};
+
+const getTaskBillingDate = (task: any) =>
+  task?.completedAt ||
+  task?.closedAt ||
+  task?.finishedAt ||
+  task?.updatedAt ||
+  task?.createdAt ||
+  task?.startDate ||
+  task?.dueDate ||
+  task?.date;
+
+const summarizeContractorActivities = (tasks: any[], rateSummary: { income: number; cost: number; movements: number }) => {
+  const completedTasks = tasks.filter((task) => isCompletedTaskStatus(String(task?.status || '').toLowerCase())).length;
+  const overdueTasks = tasks.filter((task) => {
+    const due = getDateValue(task?.dueDate || task?.endDate || task?.deadline);
+    return due && due.getTime() < Date.now() && !isCompletedTaskStatus(String(task?.status || '').toLowerCase());
+  }).length;
+  const activeTasks = Math.max(0, tasks.length - completedTasks);
+  const onTimeTasks = Math.max(0, tasks.length - overdueTasks);
+  const rateMargin = roundCurrency(rateSummary.income - rateSummary.cost);
+
+  return {
+    totalTasks: tasks.length,
+    completedTasks,
+    activeTasks,
+    overdueTasks,
+    onTimeTasks,
+    qualitySummary: `${completedTasks} finalizadas, ${activeTasks} abiertas, ${overdueTasks} con alerta de vencimiento en el periodo.`,
+    rateIncome: roundCurrency(rateSummary.income),
+    rateCost: roundCurrency(rateSummary.cost),
+    rateMargin,
+    rateMovements: rateSummary.movements,
+  };
+};
 
 const statusConfig: Record<TravelAdvance['status'], { label: string; className: string }> = {
   submitted: { label: 'Por validar', className: 'bg-amber-50 text-amber-700 ring-amber-100' },
@@ -1013,6 +1187,8 @@ export function ProjectAdministration({
   const [advances, setAdvances] = useState<TravelAdvance[]>([]);
   const [adminWorkspace, setAdminWorkspace] = useState<'advances' | 'contractorAccounts'>('advances');
   const [contractorAccounts, setContractorAccounts] = useState<ContractorPaymentRequest[]>([]);
+  const [contractorRateCards, setContractorRateCards] = useState<any[]>([]);
+  const [contractorRateEntries, setContractorRateEntries] = useState<any[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [costCenterDomains, setCostCenterDomains] = useState<CostCenterDomain[]>([]);
   const [payments, setPayments] = useState<BillingPayment[]>([]);
@@ -1025,6 +1201,7 @@ export function ProjectAdministration({
   const [contractorAccountSearch, setContractorAccountSearch] = useState('');
   const [showPaidContractorAccounts, setShowPaidContractorAccounts] = useState(false);
   const [isContractorAccountModalOpen, setIsContractorAccountModalOpen] = useState(false);
+  const [contractorAccountStep, setContractorAccountStep] = useState<1 | 2 | 3>(1);
   const [contractorAccountForm, setContractorAccountForm] = useState(() => buildEmptyContractorAccountForm());
   const [contractorDocumentFiles, setContractorDocumentFiles] = useState<Partial<Record<ContractorAccountDocumentKind, File | null>>>({});
   const [contractorPaymentFile, setContractorPaymentFile] = useState<File | null>(null);
@@ -1143,6 +1320,24 @@ export function ProjectAdministration({
         (error) => {
           console.error('Error loading contractor payment requests:', error);
           toast.error('No se pudieron cargar las cuentas de cobro.');
+        }
+      ),
+      onSnapshot(
+        query(collection(db, 'projects', projectId, 'rateCards')),
+        (snapshot) => {
+          setContractorRateCards(snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() })));
+        },
+        (error) => {
+          console.error('Error loading rate cards for contractor accounts:', error);
+        }
+      ),
+      onSnapshot(
+        query(collection(db, 'projects', projectId, 'rateCardEntries')),
+        (snapshot) => {
+          setContractorRateEntries(snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() })));
+        },
+        (error) => {
+          console.error('Error loading rate card entries for contractor accounts:', error);
         }
       ),
       onSnapshot(
@@ -2098,6 +2293,94 @@ export function ProjectAdministration({
     };
   }, [currentSignerMember, currentUser]);
 
+  const currentContractorTokens = useMemo(() => {
+    const tokens = new Set<string>();
+    const add = (value: any) => {
+      if (value === undefined || value === null || value === '') return;
+      tokens.add(String(value).trim().toLowerCase());
+    };
+    add(currentUser?.uid);
+    add(currentUser?.email);
+    add(currentSignerMember?.id);
+    add(currentSignerMember?.authUserId);
+    add(currentSignerMember?.email);
+    add(currentSignerMember?.displayName);
+    add(currentSignerMember?.name);
+    add(getCurrentUserName(currentUser));
+    return tokens;
+  }, [currentSignerMember, currentUser?.email, currentUser?.uid]);
+
+  const contractorUsedTaskIds = useMemo(() => {
+    const used = new Set<string>();
+    contractorAccounts
+      .filter((account) => !['rejected'].includes(account.status))
+      .forEach((account) => (account.taskIds || []).forEach((taskId) => used.add(String(taskId))));
+    return used;
+  }, [contractorAccounts]);
+
+  const contractorPeriodTasks = useMemo(() => {
+    const start = contractorAccountForm.periodStart;
+    const end = contractorAccountForm.periodEnd;
+    if (!start || !end) return [];
+
+    return tasks
+      .filter((task) => {
+        if (!task?.id || contractorUsedTaskIds.has(String(task.id))) return false;
+        const taskTokens = collectTaskActorTokens(task);
+        const matchesContractor =
+          taskTokens.size === 0
+            ? false
+            : Array.from(currentContractorTokens).some((token) => taskTokens.has(token));
+        if (!matchesContractor) return false;
+        return isDateWithinRange(getTaskBillingDate(task), start, end);
+      })
+      .sort((left, right) => {
+        const leftDate = getDateValue(getTaskBillingDate(left))?.getTime() || 0;
+        const rightDate = getDateValue(getTaskBillingDate(right))?.getTime() || 0;
+        return rightDate - leftDate || getTaskTitle(left).localeCompare(getTaskTitle(right), 'es', { sensitivity: 'base' });
+      });
+  }, [contractorAccountForm.periodEnd, contractorAccountForm.periodStart, contractorUsedTaskIds, currentContractorTokens, tasks]);
+
+  const contractorRateCardById = useMemo(
+    () => new Map(contractorRateCards.map((card) => [String(card.id), card])),
+    [contractorRateCards]
+  );
+
+  const contractorPeriodRateSummary = useMemo(() => {
+    return contractorRateEntries.reduce((summary, entry) => {
+      const assignedTo = String(entry?.assignedTo || entry?.userId || entry?.memberId || '').trim().toLowerCase();
+      if (!assignedTo || !currentContractorTokens.has(assignedTo)) return summary;
+      if (!isDateWithinRange(entry?.date || entry?.dateKey || entry?.createdAt, contractorAccountForm.periodStart, contractorAccountForm.periodEnd)) return summary;
+      const rateCard = contractorRateCardById.get(String(entry?.rateCardId || ''));
+      if (!rateCard) return summary;
+      const units = Math.abs(normalizeDecimalInput(entry?.units ?? entry?.amount ?? entry?.quantity, 0));
+      summary.income += getRateCardIncomeValue(units, rateCard);
+      summary.cost += getRateCardCostValue(units, rateCard);
+      summary.movements += 1;
+      return summary;
+    }, { income: 0, cost: 0, movements: 0 });
+  }, [contractorAccountForm.periodEnd, contractorAccountForm.periodStart, contractorRateCardById, contractorRateEntries, currentContractorTokens]);
+
+  const contractorActivitySnapshot = useMemo(
+    () => summarizeContractorActivities(selectedContractorAccountTasks, contractorPeriodRateSummary),
+    [contractorPeriodRateSummary, selectedContractorAccountTasks]
+  );
+
+  useEffect(() => {
+    if (!isContractorAccountModalOpen) return;
+    setContractorAccountForm((current) => {
+      const eligibleIds = contractorPeriodTasks.map((task) => task.id).filter(Boolean);
+      const currentIds = current.taskIds.filter((taskId) => eligibleIds.includes(taskId));
+      const nextIds = Array.from(new Set([...currentIds, ...eligibleIds]));
+      if (nextIds.length === current.taskIds.length && nextIds.every((taskId, index) => taskId === current.taskIds[index])) return current;
+      return {
+        ...current,
+        taskIds: nextIds,
+        activitySummary: current.activitySummary || summarizeContractorActivities(contractorPeriodTasks, contractorPeriodRateSummary).qualitySummary,
+      };
+    });
+  }, [contractorPeriodRateSummary, contractorPeriodTasks, isContractorAccountModalOpen]);
+
   const requesterMatchesCurrentActor = useCallback(
     (requesterId: string, requesterEmail?: string) => {
       const emailMatches =
@@ -2112,6 +2395,7 @@ export function ProjectAdministration({
   const openNewContractorAccount = () => {
     setContractorAccountForm(buildEmptyContractorAccountForm());
     setContractorDocumentFiles({});
+    setContractorAccountStep(1);
     setIsContractorAccountModalOpen(true);
   };
 
@@ -2219,7 +2503,12 @@ export function ProjectAdministration({
       toast.warning('Relaciona al menos una tarea de Pixel al informe de actividades.');
       return;
     }
-    const missingDocument = CONTRACTOR_ACCOUNT_DOCUMENTS.find((document) => !contractorDocumentFiles[document.kind]);
+    const requesterSignature = buildCurrentSignatureSnapshot();
+    if (!requesterSignature) {
+      toast.warning('Carga tu firma en el perfil antes de enviar la cuenta de cobro.');
+      return;
+    }
+    const missingDocument = CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS.find((document) => !contractorDocumentFiles[document.kind]);
     if (missingDocument) {
       toast.warning(`Adjunta el documento obligatorio: ${missingDocument.label}.`);
       return;
@@ -2231,12 +2520,12 @@ export function ProjectAdministration({
       const contractorName = currentMember ? getMemberLabel(currentMember) : getCurrentUserName(currentUser);
       const contractorEmail = String(currentMember?.email || currentUser.email || '');
       const socialSecurityBase = roundCurrency(honorariumAmount * 0.4);
-      const estimatedMinimumWages = Math.max(1, Math.ceil(socialSecurityBase / 1423500));
+      const estimatedMinimumWages = Math.max(1, Math.ceil(socialSecurityBase / COLOMBIA_LEGAL_MINIMUM_WAGE));
       const taskTitles = selectedContractorAccountTasks.map((task) => getTaskTitle(task));
       const accountRef = doc(collection(db, 'projects', projectId, 'contractorPaymentRequests'));
       const accountLabel = `${contractorName} · ${contractorAccountForm.periodStart} - ${contractorAccountForm.periodEnd}`;
       const documents = await Promise.all(
-        CONTRACTOR_ACCOUNT_DOCUMENTS.map((document) =>
+        CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS.map((document) =>
           uploadContractorAccountDocument({
             accountId: accountRef.id,
             accountLabel,
@@ -2260,7 +2549,20 @@ export function ProjectAdministration({
         estimatedMinimumWages,
         taskIds: contractorAccountForm.taskIds,
         taskTitles,
-        activitySummary: contractorAccountForm.activitySummary.trim(),
+        activitySummary: contractorAccountForm.activitySummary.trim() || contractorActivitySnapshot.qualitySummary,
+        activitySnapshot: contractorActivitySnapshot,
+        requesterSignature,
+        generatedDocuments: CONTRACTOR_ACCOUNT_GENERATED_DOCUMENTS.map((document) => ({
+          ...document,
+          generatedAt: new Date().toISOString(),
+        })),
+        parafiscalsValidation: {
+          baseAmount: socialSecurityBase,
+          minimumWage: COLOMBIA_LEGAL_MINIMUM_WAGE,
+          estimatedMinimumWages,
+          status: 'pending_manual_review',
+          note: 'Pixel calcula la base sobre el 40% de los honorarios. El soporte queda pendiente de revisión administrativa contra el periodo cobrado.',
+        },
         status: 'submitted',
         documents,
         approvals: [],
@@ -2274,6 +2576,7 @@ export function ProjectAdministration({
       toast.success('Cuenta de cobro enviada para aprobación del jefe inmediato.');
       setIsContractorAccountModalOpen(false);
       setContractorDocumentFiles({});
+      setContractorAccountStep(1);
       setContractorAccountForm(buildEmptyContractorAccountForm());
       setAdminWorkspace('contractorAccounts');
       setContractorAccountView('approvals');
@@ -5852,135 +6155,203 @@ export function ProjectAdministration({
       )}
 
       {isContractorAccountModalOpen && (
-        <ModalShell title="Nueva cuenta de cobro" subtitle="Radicación administrativa de honorarios de contratista." onClose={() => setIsContractorAccountModalOpen(false)} wide>
+        <ModalShell title="Nueva cuenta de cobro" subtitle="Pixel genera la cuenta y el informe; el contratista firma y adjunta parafiscales." onClose={() => setIsContractorAccountModalOpen(false)} wide>
+          <div className="mb-4 grid gap-2 md:grid-cols-3">
+            {[
+              [1, 'Cuenta y firma', 'Monto, periodo y firma del contratista'],
+              [2, 'Actividades del mes', 'Tareas precargadas por periodo'],
+              [3, 'Parafiscales', 'Soporte contra base del 40%'],
+            ].map(([step, title, detail]) => (
+              <button
+                key={String(step)}
+                type="button"
+                onClick={() => setContractorAccountStep(step as 1 | 2 | 3)}
+                className={`rounded-xl border p-3 text-left transition ${
+                  contractorAccountStep === step
+                    ? 'border-cyan-300 bg-cyan-50 text-cyan-900 shadow-sm'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <span className="text-[10px] font-black uppercase tracking-[0.22em]">Paso {step}</span>
+                <span className="mt-1 block text-sm font-black">{title}</span>
+                <span className="mt-1 block text-xs font-semibold">{detail}</span>
+              </button>
+            ))}
+          </div>
+
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
             <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-2">
-                <Field label="ID o consecutivo (opcional)">
-                  <input
-                    className={inputClass}
-                    value={contractorAccountForm.customId}
-                    onChange={(event) => setContractorAccountForm((current) => ({ ...current, customId: event.target.value }))}
-                    placeholder="Ej: CC-2026-001"
-                  />
-                </Field>
-                <Field label="Contratista">
-                  <input className={`${inputClass} bg-slate-50`} value={currentSignerMember ? getMemberLabel(currentSignerMember) : getCurrentUserName(currentUser)} disabled />
-                </Field>
-                <Field label="Periodo inicio">
-                  <input
-                    type="date"
-                    className={inputClass}
-                    value={contractorAccountForm.periodStart}
-                    onChange={(event) => setContractorAccountForm((current) => ({ ...current, periodStart: event.target.value }))}
-                  />
-                </Field>
-                <Field label="Periodo fin">
-                  <input
-                    type="date"
-                    className={inputClass}
-                    value={contractorAccountForm.periodEnd}
-                    onChange={(event) => setContractorAccountForm((current) => ({ ...current, periodEnd: event.target.value }))}
-                  />
-                </Field>
-                <div className="md:col-span-2">
-                  <Field label="Honorarios devengados">
-                    <input
-                      type="number"
-                      min="0"
-                      className={inputClass}
-                      value={contractorAccountForm.honorariumAmount}
-                      onChange={(event) => setContractorAccountForm((current) => ({ ...current, honorariumAmount: event.target.value }))}
-                      placeholder="Ingresa solo el monto de honorarios"
-                    />
-                  </Field>
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h3 className="font-black text-slate-950">Tareas relacionadas al informe de actividades</h3>
-                    <p className="text-xs font-semibold text-slate-500">La cuenta de cobro debe relacionar una o varias tareas de Pixel.</p>
-                  </div>
-                  <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-black text-indigo-700 ring-1 ring-indigo-100">
-                    {selectedContractorAccountTasks.length} seleccionada{selectedContractorAccountTasks.length === 1 ? '' : 's'}
-                  </span>
-                </div>
-                <div className="grid gap-2 border-b border-slate-200 pb-3 lg:grid-cols-[minmax(0,1fr)_180px_210px]">
-                  <div className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
-                    <Search size={16} className="shrink-0 text-slate-400" />
-                    <input
-                      type="search"
-                      value={advanceTaskSearch}
-                      onChange={(event) => setAdvanceTaskSearch(event.target.value)}
-                      placeholder="Buscar tarea para el informe..."
-                      className="min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none"
-                    />
-                  </div>
-                  <select value={advanceTaskStatusFilter} onChange={(event) => setAdvanceTaskStatusFilter(event.target.value as AdvanceTaskStatusFilter)} className={inputClass}>
-                    <option value="active">Tareas activas</option>
-                    <option value="pending">Pendientes</option>
-                    <option value="in_progress">En curso</option>
-                    <option value="blocked">Pausadas o bloqueadas</option>
-                    <option value="completed">Finalizadas</option>
-                    <option value="all">Todos los estados</option>
-                  </select>
-                  <select value={advanceTaskGroupFilter} onChange={(event) => setAdvanceTaskGroupFilter(event.target.value)} className={inputClass}>
-                    <option value="all">Todos los grupos</option>
-                    {advanceTaskGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
-                  </select>
-                </div>
-                <div className="mt-3 max-h-56 overflow-y-auto rounded-lg bg-white p-2 ring-1 ring-slate-200">
-                  {filteredAdvanceTasks.length === 0 ? (
-                    <p className="p-4 text-center text-sm font-bold text-slate-400">No encontramos tareas con esos filtros.</p>
-                  ) : (
-                    <div className="space-y-1">
-                      {filteredAdvanceTasks.map((task) => {
-                        const selected = contractorAccountForm.taskIds.includes(task.id);
-                        const group = advanceTaskGroupById.get(getAdvanceTaskGroupId(task));
-                        return (
-                          <label key={task.id} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 ${selected ? 'border-cyan-200 bg-cyan-50' : 'border-transparent hover:bg-slate-50'}`}>
-                            <input type="checkbox" checked={selected} onChange={() => toggleContractorAccountTask(task.id)} className="mt-1 h-4 w-4 rounded border-slate-300 text-cyan-600" />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-sm font-black text-slate-800">{getTaskTitle(task)}</span>
-                              <span className="mt-1 flex items-center gap-2 text-[11px] font-semibold text-slate-400">
-                                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: group?.color || '#94a3b8' }} />
-                                {group?.name || 'Sin grupo'}
-                              </span>
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <Field label="Resumen de actividades">
-                <textarea
-                  className={textareaClass}
-                  value={contractorAccountForm.activitySummary}
-                  onChange={(event) => setContractorAccountForm((current) => ({ ...current, activitySummary: event.target.value }))}
-                  placeholder="Describe brevemente las actividades ejecutadas en el periodo."
-                />
-              </Field>
-
-              <div className="grid gap-3 md:grid-cols-3">
-                {CONTRACTOR_ACCOUNT_DOCUMENTS.map((document) => (
-                  <Field key={document.kind} label={document.label}>
-                    <input
-                      type="file"
-                      className={inputClass}
-                      accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
-                      onChange={(event) => setContractorDocumentFiles((current) => ({ ...current, [document.kind]: event.target.files?.[0] || null }))}
-                    />
-                    <p className="mt-1 text-[11px] font-semibold text-slate-400">
-                      {contractorDocumentFiles[document.kind]?.name || 'Documento obligatorio'}
+              {contractorAccountStep === 1 && (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-cyan-200 bg-gradient-to-r from-cyan-50 to-white p-4">
+                    <p className="text-[11px] font-black uppercase tracking-[0.28em] text-cyan-700">Cuenta de cobro generada</p>
+                    <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">
+                      No adjuntes la cuenta de cobro como archivo. Pixel la arma con tu nombre, correo, cargo, firma, periodo y valor de honorarios.
                     </p>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field label="ID o consecutivo (opcional)">
+                      <input
+                        className={inputClass}
+                        value={contractorAccountForm.customId}
+                        onChange={(event) => setContractorAccountForm((current) => ({ ...current, customId: event.target.value }))}
+                        placeholder="Ej: CC-2026-001"
+                      />
+                    </Field>
+                    <Field label="Contratista">
+                      <input className={`${inputClass} bg-slate-50`} value={currentSignerMember ? getMemberLabel(currentSignerMember) : getCurrentUserName(currentUser)} disabled />
+                    </Field>
+                    <Field label="Periodo inicio">
+                      <input
+                        type="date"
+                        className={inputClass}
+                        value={contractorAccountForm.periodStart}
+                        onChange={(event) => setContractorAccountForm((current) => ({ ...current, periodStart: event.target.value }))}
+                      />
+                    </Field>
+                    <Field label="Periodo fin">
+                      <input
+                        type="date"
+                        className={inputClass}
+                        value={contractorAccountForm.periodEnd}
+                        onChange={(event) => setContractorAccountForm((current) => ({ ...current, periodEnd: event.target.value }))}
+                      />
+                    </Field>
+                    <div className="md:col-span-2">
+                      <Field label="Honorarios devengados">
+                        <input
+                          type="number"
+                          min="0"
+                          className={inputClass}
+                          value={contractorAccountForm.honorariumAmount}
+                          onChange={(event) => setContractorAccountForm((current) => ({ ...current, honorariumAmount: event.target.value }))}
+                          placeholder="Ingresa solo el monto de honorarios"
+                        />
+                      </Field>
+                    </div>
+                  </div>
+
+                  <SignatureSummary title="Firma del contratista para radicar" signature={buildCurrentSignatureSnapshot() || undefined} />
+                </div>
+              )}
+
+              {contractorAccountStep === 2 && (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="font-black text-slate-950">Actividades precargadas del periodo</h3>
+                        <p className="text-xs font-semibold text-slate-500">
+                          Pixel filtra tareas de la persona entre {formatDate(contractorAccountForm.periodStart)} y {formatDate(contractorAccountForm.periodEnd)} y bloquea las que ya estén en otra cuenta de cobro.
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-black text-indigo-700 ring-1 ring-indigo-100">
+                        {selectedContractorAccountTasks.length} seleccionada{selectedContractorAccountTasks.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <div className="grid gap-2 border-b border-slate-200 pb-3 lg:grid-cols-[minmax(0,1fr)_180px_210px]">
+                      <div className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
+                        <Search size={16} className="shrink-0 text-slate-400" />
+                        <input
+                          type="search"
+                          value={advanceTaskSearch}
+                          onChange={(event) => setAdvanceTaskSearch(event.target.value)}
+                          placeholder="Buscar dentro de las tareas del periodo..."
+                          className="min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none"
+                        />
+                      </div>
+                      <select value={advanceTaskStatusFilter} onChange={(event) => setAdvanceTaskStatusFilter(event.target.value as AdvanceTaskStatusFilter)} className={inputClass}>
+                        <option value="all">Todos los estados</option>
+                        <option value="active">Tareas activas</option>
+                        <option value="pending">Pendientes</option>
+                        <option value="in_progress">En curso</option>
+                        <option value="blocked">Pausadas o bloqueadas</option>
+                        <option value="completed">Finalizadas</option>
+                      </select>
+                      <select value={advanceTaskGroupFilter} onChange={(event) => setAdvanceTaskGroupFilter(event.target.value)} className={inputClass}>
+                        <option value="all">Todos los grupos</option>
+                        {advanceTaskGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="mt-3 max-h-72 overflow-y-auto rounded-lg bg-white p-2 ring-1 ring-slate-200">
+                      {contractorPeriodTasks.length === 0 ? (
+                        <p className="p-4 text-center text-sm font-bold text-slate-400">No hay actividades disponibles de este contratista en el periodo, o ya fueron usadas en otra cuenta de cobro.</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {contractorPeriodTasks
+                            .filter((task) => filteredAdvanceTasks.some((candidate) => candidate.id === task.id))
+                            .map((task) => {
+                              const selected = contractorAccountForm.taskIds.includes(task.id);
+                              const group = advanceTaskGroupById.get(getAdvanceTaskGroupId(task));
+                              const status = getTaskStatusMeta(task);
+                              return (
+                                <label key={task.id} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 ${selected ? 'border-cyan-200 bg-cyan-50' : 'border-transparent hover:bg-slate-50'}`}>
+                                  <input type="checkbox" checked={selected} onChange={() => toggleContractorAccountTask(task.id)} className="mt-1 h-4 w-4 rounded border-slate-300 text-cyan-600" />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-sm font-black text-slate-800">{getTaskTitle(task)}</span>
+                                    <span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-400">
+                                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: group?.color || '#94a3b8' }} />
+                                      {group?.name || 'Sin grupo'}
+                                      <span className={`rounded-full px-2 py-0.5 ring-1 ${status.className}`}>{status.label}</span>
+                                      <span>{formatDate(getTaskBillingDate(task))}</span>
+                                    </span>
+                                  </span>
+                                </label>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <ReceiptGroupMetric label="Actividades" value={`${contractorActivitySnapshot.totalTasks}`} tone="slate" />
+                    <ReceiptGroupMetric label="Finalizadas" value={`${contractorActivitySnapshot.completedTasks}`} tone="emerald" />
+                    <ReceiptGroupMetric label="Alertas" value={`${contractorActivitySnapshot.overdueTasks}`} tone="amber" />
+                    <ReceiptGroupMetric label="Mov. rate cards" value={`${contractorActivitySnapshot.rateMovements}`} tone="indigo" />
+                  </div>
+
+                  <Field label="Resumen automático del informe de actividades">
+                    <textarea
+                      className={textareaClass}
+                      value={contractorAccountForm.activitySummary}
+                      onChange={(event) => setContractorAccountForm((current) => ({ ...current, activitySummary: event.target.value }))}
+                      placeholder={contractorActivitySnapshot.qualitySummary}
+                    />
                   </Field>
-                ))}
-              </div>
+                </div>
+              )}
+
+              {contractorAccountStep === 3 && (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+                    <p className="text-[11px] font-black uppercase tracking-[0.24em] text-amber-700">Validación de parafiscales</p>
+                    <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">
+                      Pixel calcula la base sobre el 40% de los honorarios. La revisión documental confirma que el soporte corresponda al periodo cobrado y a la base calculada.
+                    </p>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                      <SummaryLine label="Base 40%" value={formatMoney(asNumber(contractorAccountForm.honorariumAmount) * 0.4)} />
+                      <SummaryLine label="Salario mínimo" value={formatMoney(COLOMBIA_LEGAL_MINIMUM_WAGE)} />
+                      <SummaryLine label="Mínimos estimados" value={`${Math.max(1, Math.ceil((asNumber(contractorAccountForm.honorariumAmount) * 0.4) / COLOMBIA_LEGAL_MINIMUM_WAGE))}`} />
+                    </div>
+                  </div>
+
+                  {CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS.map((document) => (
+                    <Field key={document.kind} label={document.label}>
+                      <input
+                        type="file"
+                        className={inputClass}
+                        accept=".pdf,.png,.jpg,.jpeg"
+                        onChange={(event) => setContractorDocumentFiles((current) => ({ ...current, [document.kind]: event.target.files?.[0] || null }))}
+                      />
+                      <p className="mt-1 text-[11px] font-semibold text-slate-400">
+                        {contractorDocumentFiles[document.kind]?.name || 'Documento obligatorio del periodo'}
+                      </p>
+                    </Field>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="rounded-xl border border-cyan-100 bg-cyan-50/70 p-4">
@@ -5988,22 +6359,41 @@ export function ProjectAdministration({
               <div className="mt-4 space-y-3">
                 <SummaryLine label="Honorarios" value={formatMoney(contractorAccountForm.honorariumAmount)} strong />
                 <SummaryLine label="Base parafiscales 40%" value={formatMoney(asNumber(contractorAccountForm.honorariumAmount) * 0.4)} />
-                <SummaryLine label="Mínimos estimados" value={`${Math.max(1, Math.ceil((asNumber(contractorAccountForm.honorariumAmount) * 0.4) / 1423500))}`} />
+                <SummaryLine label="Salario mínimo" value={formatMoney(COLOMBIA_LEGAL_MINIMUM_WAGE)} />
+                <SummaryLine label="Mínimos estimados" value={`${Math.max(1, Math.ceil((asNumber(contractorAccountForm.honorariumAmount) * 0.4) / COLOMBIA_LEGAL_MINIMUM_WAGE))}`} />
                 <SummaryLine label="Periodo" value={`${formatDate(contractorAccountForm.periodStart)} - ${formatDate(contractorAccountForm.periodEnd)}`} />
-                <SummaryLine label="Tareas relacionadas" value={`${selectedContractorAccountTasks.length}`} />
-                <SummaryLine label="Documentos" value={`${Object.values(contractorDocumentFiles).filter(Boolean).length} de 3`} />
+                <SummaryLine label="Actividades disponibles" value={`${contractorPeriodTasks.length}`} />
+                <SummaryLine label="Tareas seleccionadas" value={`${selectedContractorAccountTasks.length}`} />
+                <SummaryLine label="Ingreso rate cards" value={formatMoney(contractorActivitySnapshot.rateIncome)} />
+                <SummaryLine label="Costo rate cards" value={formatMoney(contractorActivitySnapshot.rateCost)} />
+                <SummaryLine label="Documentos cargados" value={`${Object.values(contractorDocumentFiles).filter(Boolean).length} de 1`} />
               </div>
-              <p className="mt-4 rounded-lg bg-white p-3 text-xs font-semibold leading-5 text-slate-600 ring-1 ring-cyan-100">
-                La cuenta inicia en aprobación del jefe inmediato y avanzará por gerencia de operaciones, calidad/cumplimiento, talento humano y administración.
-              </p>
+              <div className="mt-4 rounded-lg bg-white p-3 text-xs font-semibold leading-5 text-slate-600 ring-1 ring-cyan-100">
+                <p className="font-black text-slate-800">Documentos del expediente</p>
+                <ul className="mt-2 space-y-1">
+                  <li>• Cuenta de cobro: generada y firmada en Pixel.</li>
+                  <li>• Informe de actividades: generado con tareas del periodo.</li>
+                  <li>• Parafiscales: soporte externo obligatorio.</li>
+                </ul>
+              </div>
             </div>
           </div>
           <ModalFooter>
             <Button type="button" variant="outline" onClick={() => setIsContractorAccountModalOpen(false)}>Cancelar</Button>
-            <Button type="button" disabled={submitting} onClick={handleCreateContractorAccount} className="bg-cyan-600 font-bold text-white hover:bg-cyan-700">
-              {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
-              Enviar cuenta de cobro
-            </Button>
+            {contractorAccountStep > 1 && (
+              <Button type="button" variant="outline" onClick={() => setContractorAccountStep((current) => Math.max(1, current - 1) as 1 | 2 | 3)}>Atrás</Button>
+            )}
+            {contractorAccountStep < 3 ? (
+              <Button type="button" onClick={() => setContractorAccountStep((current) => Math.min(3, current + 1) as 1 | 2 | 3)} className="bg-cyan-600 font-bold text-white hover:bg-cyan-700">
+                Siguiente
+                <ArrowRight size={16} className="ml-2" />
+              </Button>
+            ) : (
+              <Button type="button" disabled={submitting} onClick={handleCreateContractorAccount} className="bg-cyan-600 font-bold text-white hover:bg-cyan-700">
+                {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
+                Enviar cuenta de cobro
+              </Button>
+            )}
           </ModalFooter>
         </ModalShell>
       )}
@@ -7666,7 +8056,7 @@ function ContractorAccountsWorkspace({
                       </span>
                       {account.customId && <span className="rounded-md bg-slate-900 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">ID {account.customId}</span>}
                       <span className="rounded-md bg-cyan-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-cyan-700 ring-1 ring-cyan-100">
-                        {account.documents?.length || 0} documentos
+                        {(account.documents?.length || 0) + (account.generatedDocuments?.length || 0)} documentos
                       </span>
                     </div>
                     <h4 className="mt-2 truncate text-lg font-black text-slate-950">{account.contractorName}</h4>
@@ -7707,11 +8097,12 @@ function ContractorAccountsWorkspace({
                   </div>
                 </div>
 
-                <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
+                <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-6">
                   <ReceiptGroupMetric label="Honorarios" value={formatMoney(account.honorariumAmount)} tone="slate" />
                   <ReceiptGroupMetric label="Base 40%" value={formatMoney(account.socialSecurityBase)} tone="indigo" />
                   <ReceiptGroupMetric label="Mínimos estimados" value={`${account.estimatedMinimumWages || 1}`} tone="amber" />
                   <ReceiptGroupMetric label="Tareas" value={`${account.taskIds?.length || 0}`} tone="emerald" />
+                  <ReceiptGroupMetric label="Ingreso rate" value={formatMoney(account.activitySnapshot?.rateIncome || 0)} tone="indigo" />
                   <ReceiptGroupMetric label="Aprobaciones" value={`${account.approvals?.length || 0}`} tone="slate" />
                 </div>
 
@@ -7727,10 +8118,22 @@ function ContractorAccountsWorkspace({
                         ))}
                       </div>
                       {account.activitySummary && <p className="mt-3 rounded-lg bg-slate-50 p-3 text-sm font-semibold leading-6 text-slate-600">{account.activitySummary}</p>}
+                      {account.requesterSignature && <div className="mt-3 max-w-md"><SignatureSummary title="Firma del contratista" signature={account.requesterSignature} /></div>}
                     </div>
                     <div>
                       <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Documentos soporte</p>
                       <div className="mt-2 space-y-2">
+                        {(account.generatedDocuments || []).map((document) => (
+                          <button
+                            key={`${account.id}-${document.kind}`}
+                            type="button"
+                            onClick={() => downloadContractorGeneratedDocument(account, document.kind)}
+                            className="flex w-full items-center justify-between gap-3 rounded-lg bg-cyan-50 px-3 py-2 text-left text-xs font-black text-cyan-700 ring-1 ring-cyan-100 hover:bg-cyan-100"
+                          >
+                            <span className="min-w-0 truncate">{document.label}</span>
+                            <span className="shrink-0 text-cyan-500">Descargar</span>
+                          </button>
+                        ))}
                         {(account.documents || []).map((document) => (
                           <SecureDocumentLink key={document.documentId} storagePath={document.storagePath} fallbackUrl={document.fileUrl} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-xs font-black text-indigo-700 ring-1 ring-slate-200 hover:bg-indigo-50">
                             <span className="min-w-0 truncate">{document.label}</span>
