@@ -266,6 +266,7 @@ export function ProjectOrgChart({ projectId, project, teamMembers }: ProjectOrgC
   const [isLoading, setIsLoading] = useState(true);
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isApprovalRouteModalOpen, setIsApprovalRouteModalOpen] = useState(false);
   const loadedOrgChartProjectRef = useRef<string | null>(null);
 
   const nodeTypes = useMemo(() => ({ orgChartNode: OrgChartNode }), []);
@@ -286,6 +287,10 @@ export function ProjectOrgChart({ projectId, project, teamMembers }: ProjectOrgC
   const effectiveContractorApprovalConfig = useMemo(
     () => (hasProjectApprovalConfig ? contractorApprovalConfig : organizationApprovalConfig),
     [contractorApprovalConfig, hasProjectApprovalConfig, organizationApprovalConfig]
+  );
+  const activeApproverCount = useMemo(
+    () => CONTRACTOR_APPROVAL_FIELDS.filter((field) => String(effectiveContractorApprovalConfig[field.key] || '').trim()).length,
+    [effectiveContractorApprovalConfig]
   );
   const memberOptionId = useCallback((member: any) => (
     String(member?.id || member?.authUserId || member?.uid || member?.email || '').trim()
@@ -493,6 +498,7 @@ export function ProjectOrgChart({ projectId, project, teamMembers }: ProjectOrgC
           ? 'Ruta particular del proyecto guardada.'
           : 'Ruta particular vacía. Pixel usará la configuración global.'
       );
+      setIsApprovalRouteModalOpen(false);
     } catch (error: any) {
       console.error('Error saving project contractor approval config:', error);
       toast.error(`No se pudo guardar la ruta de aprobaciones: ${error.message || 'error desconocido'}`);
@@ -708,87 +714,35 @@ export function ProjectOrgChart({ projectId, project, teamMembers }: ProjectOrgC
         {flowCanvas}
 
         <aside className="space-y-4">
-          <section className="overflow-hidden rounded-2xl border border-cyan-200 bg-white shadow-sm">
-            <div className="border-b border-cyan-100 bg-cyan-50/70 p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-cyan-700">
-                    <GitBranch size={14} /> Ruta de cuentas de cobro
-                  </p>
-                  <h3 className="mt-1 text-lg font-black text-slate-950">Aprobaciones del proyecto</h3>
-                  <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
-                    Esta ruta prima sobre la global. Si queda vacía, Pixel hereda la configuración de la organización.
-                  </p>
-                </div>
-                <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${
-                  hasProjectApprovalConfig
-                    ? 'bg-cyan-100 text-cyan-800 ring-cyan-200'
-                    : 'bg-slate-100 text-slate-600 ring-slate-200'
-                }`}>
-                  {hasProjectApprovalConfig ? 'Proyecto' : 'Global'}
-                </span>
+          <section className="rounded-2xl border border-cyan-200 bg-cyan-50/70 p-4 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-cyan-700 ring-1 ring-cyan-100">
+                <GitBranch size={20} />
               </div>
-            </div>
-
-            <div className="space-y-3 p-4">
-              {CONTRACTOR_APPROVAL_FIELDS.map((field, index) => {
-                const localValue = contractorApprovalConfig[field.key] || '';
-                const inheritedValue = organizationApprovalConfig[field.key] || '';
-                const effectiveValue = effectiveContractorApprovalConfig[field.key] || '';
-                const isInherited = !localValue && Boolean(inheritedValue);
-                return (
-                  <div key={field.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Paso {index + 1}</p>
-                        <p className="truncate text-sm font-black text-slate-950">{field.label}</p>
-                        <p className="text-[11px] font-semibold text-slate-500">{field.detail}</p>
-                      </div>
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-cyan-700 ring-1 ring-cyan-100">
-                        {index + 1}
-                      </div>
-                    </div>
-                    <select
-                      value={localValue}
-                      onChange={(event) => setContractorApprovalConfig((current) => ({
-                        ...current,
-                        [field.key]: event.target.value,
-                      }))}
-                      disabled={!canEdit}
-                      className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 outline-none transition focus:border-cyan-400 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100 disabled:text-slate-500"
-                    >
-                      <option value="">{inheritedValue ? 'Usar heredado global' : 'Sin responsable'}</option>
-                      {teamMembers.map((member) => {
-                        const optionId = memberOptionId(member);
-                        if (!optionId) return null;
-                        return (
-                          <option key={optionId} value={optionId}>
-                            {memberName(member)} · {member.role || member.systemRole || 'Miembro'}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <p className="mt-2 flex items-center gap-1 text-[11px] font-bold text-slate-500">
-                      {isInherited ? <Building2 size={12} /> : <Users size={12} />}
-                      {isInherited
-                        ? `Heredado: ${memberNameById(inheritedValue)}`
-                        : effectiveValue
-                          ? `Activo: ${memberNameById(effectiveValue)}`
-                          : 'Este paso aún no tiene responsable configurado.'}
-                    </p>
-                  </div>
-                );
-              })}
-
-              <Button
-                type="button"
-                onClick={saveContractorApprovalConfig}
-                disabled={!canEdit || isSavingContractorApprovalConfig}
-                className="w-full bg-cyan-600 font-black text-white hover:bg-cyan-700 disabled:bg-slate-200 disabled:text-slate-500"
-              >
-                <Save size={16} className="mr-2" />
-                {isSavingContractorApprovalConfig ? 'Guardando ruta...' : canEdit ? 'Guardar ruta del proyecto' : 'Solo lectura'}
-              </Button>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate text-[10px] font-black uppercase tracking-[0.2em] text-cyan-700">Ruta cuentas</p>
+                  <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${
+                    hasProjectApprovalConfig
+                      ? 'bg-cyan-100 text-cyan-800 ring-cyan-200'
+                      : 'bg-white text-slate-600 ring-slate-200'
+                  }`}>
+                    {hasProjectApprovalConfig ? 'Proyecto' : 'Global'}
+                  </span>
+                </div>
+                <h3 className="mt-1 text-base font-black text-slate-950">Aprobaciones de cuentas</h3>
+                <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                  {activeApproverCount} de {CONTRACTOR_APPROVAL_FIELDS.length} responsables configurados.
+                </p>
+                <Button
+                  type="button"
+                  onClick={() => setIsApprovalRouteModalOpen(true)}
+                  variant="outline"
+                  className="mt-3 h-9 w-full border-cyan-200 bg-white text-xs font-black text-cyan-800 hover:bg-cyan-100"
+                >
+                  Configurar ruta
+                </Button>
+              </div>
             </div>
           </section>
 
@@ -846,6 +800,116 @@ export function ProjectOrgChart({ projectId, project, teamMembers }: ProjectOrgC
           </section>
         </aside>
       </section>
+
+      {isApprovalRouteModalOpen && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl shadow-slate-950/30">
+            <div className="flex items-start justify-between gap-4 border-b border-cyan-100 bg-cyan-50/80 p-5">
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.22em] text-cyan-700">
+                  <GitBranch size={15} /> Ruta de cuentas de cobro
+                </p>
+                <h3 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Aprobaciones del proyecto</h3>
+                <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-slate-600">
+                  Configura una ruta particular para este proyecto. Si todos los campos quedan vacíos, Pixel usa la ruta global de la organización.
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className={`rounded-full px-3 py-1.5 text-[10px] font-black uppercase tracking-wider ring-1 ${
+                  hasProjectApprovalConfig
+                    ? 'bg-cyan-100 text-cyan-800 ring-cyan-200'
+                    : 'bg-white text-slate-600 ring-slate-200'
+                }`}>
+                  {hasProjectApprovalConfig ? 'Configuración del proyecto' : 'Heredando global'}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setIsApprovalRouteModalOpen(false)}
+                  className="h-9 w-9 rounded-full text-slate-500 hover:bg-white hover:text-slate-900"
+                  aria-label="Cerrar configuración de ruta"
+                >
+                  <X size={18} />
+                </Button>
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              <div className="grid gap-3 md:grid-cols-2">
+                {CONTRACTOR_APPROVAL_FIELDS.map((field, index) => {
+                  const localValue = contractorApprovalConfig[field.key] || '';
+                  const inheritedValue = organizationApprovalConfig[field.key] || '';
+                  const effectiveValue = effectiveContractorApprovalConfig[field.key] || '';
+                  const isInherited = !localValue && Boolean(inheritedValue);
+                  return (
+                    <div key={field.key} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Paso {index + 1}</p>
+                          <p className="truncate text-base font-black text-slate-950">{field.label}</p>
+                          <p className="text-xs font-semibold text-slate-500">{field.detail}</p>
+                        </div>
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-cyan-700 ring-1 ring-cyan-100">
+                          {index + 1}
+                        </div>
+                      </div>
+                      <select
+                        value={localValue}
+                        onChange={(event) => setContractorApprovalConfig((current) => ({
+                          ...current,
+                          [field.key]: event.target.value,
+                        }))}
+                        disabled={!canEdit}
+                        className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 outline-none transition focus:border-cyan-400 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100 disabled:text-slate-500"
+                      >
+                        <option value="">{inheritedValue ? 'Usar heredado global' : 'Sin responsable'}</option>
+                        {teamMembers.map((member) => {
+                          const optionId = memberOptionId(member);
+                          if (!optionId) return null;
+                          return (
+                            <option key={optionId} value={optionId}>
+                              {memberName(member)} · {member.role || member.systemRole || 'Miembro'}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      <p className="mt-2 flex items-center gap-1 text-xs font-bold text-slate-500">
+                        {isInherited ? <Building2 size={13} /> : <Users size={13} />}
+                        {isInherited
+                          ? `Heredado: ${memberNameById(inheritedValue)}`
+                          : effectiveValue
+                            ? `Activo: ${memberNameById(effectiveValue)}`
+                            : 'Este paso aún no tiene responsable configurado.'}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse gap-3 border-t border-slate-100 bg-white p-5 sm:flex-row sm:justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsApprovalRouteModalOpen(false)}
+                className="font-bold"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                onClick={saveContractorApprovalConfig}
+                disabled={!canEdit || isSavingContractorApprovalConfig}
+                className="bg-cyan-600 font-black text-white hover:bg-cyan-700 disabled:bg-slate-200 disabled:text-slate-500"
+              >
+                <Save size={16} className="mr-2" />
+                {isSavingContractorApprovalConfig ? 'Guardando ruta...' : canEdit ? 'Guardar ruta del proyecto' : 'Solo lectura'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
