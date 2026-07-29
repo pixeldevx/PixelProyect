@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users, FileText, Download, Upload, DollarSign, WalletCards, Target, Wrench, RefreshCw, Save, CalendarRange } from 'lucide-react';
+import { CreditCard, Plus, Trash2, AlertCircle, X, TrendingUp, Users, FileText, Download, Upload, DollarSign, WalletCards, Target, Wrench, RefreshCw, Save, CalendarRange, ChevronDown } from 'lucide-react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, updateDoc, writeBatch } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
@@ -210,6 +210,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [budgetLineId, setBudgetLineId] = useState('');
   const [currentValue, setCurrentValue] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showDetailedMovements, setShowDetailedMovements] = useState(false);
   const [rateCardToDelete, setRateCardToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -2310,68 +2311,91 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                 </div>
               )}
 
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
-                      <TableHead className="font-semibold text-slate-600">Día</TableHead>
-                      <TableHead className="font-semibold text-slate-600">Persona</TableHead>
-                      <TableHead className="font-semibold text-slate-600">Rate Card</TableHead>
-                      <TableHead className="font-semibold text-slate-600">Tarea</TableHead>
-                      <TableHead className="font-semibold text-slate-600">Unidades</TableHead>
-                      <TableHead className="font-semibold text-slate-600 text-right">Ingreso</TableHead>
-                      <TableHead className="font-semibold text-slate-600 text-right">Costo</TableHead>
-                      <TableHead className="font-semibold text-slate-600 text-right">Margen / resultado</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {reportRows.map((entry: any) => (
-                      <TableRow key={entry.id}>
-                        <TableCell className="whitespace-nowrap text-slate-700">
-                          <div>{entry.displayDate || formatReportDate(entry.dateKey)}</div>
-                          {isHistoricalBalanceEntry(entry) && (
-                            <span className="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
-                              {entry.dateOrigin === 'task_origin'
-                                ? 'Fecha de tarea'
-                                : entry.dateOrigin === 'manual_sanitation'
-                                  ? 'Fecha saneada'
-                                  : 'Fecha de incorporación'}
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell className="font-medium text-slate-900">{entry.personName}</TableCell>
-                        <TableCell className="text-slate-700">{entry.rateCardName}</TableCell>
-                        <TableCell className="max-w-[260px] truncate text-slate-600" title={entry.taskTitle || ''}>
-                          {entry.taskTitle || 'Sin tarea'}
-                        </TableCell>
-                        <TableCell className={entry.units < 0 ? 'font-medium text-red-600' : 'font-medium text-emerald-700'}>
-                          {formatRateCardUnits(entry.units, entry)}
-                        </TableCell>
-                        <TableCell className="text-right font-semibold text-emerald-700">
-                          <div>{formatMoney(entry.income, entry.currency || 'USD')}</div>
-                          {entry.isRework && (
-                            <div className="mt-0.5 text-[10px] font-bold text-slate-400">
-                              Ingreso de la tarea · no se duplica
-                            </div>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right font-semibold text-rose-700">
-                          {formatMoney(entry.cost, entry.currency || 'USD')}
-                        </TableCell>
-                        <TableCell className={`text-right font-semibold ${entry.value < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
-                          {formatRateCardValue(entry.value, entry)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {reportRows.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={8} className="py-8 text-center text-sm text-slate-500">
-                          No hay movimientos registrados en el rango seleccionado.
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
+              <div className="rounded-xl border border-slate-200 bg-white">
+                <button
+                  type="button"
+                  onClick={() => setShowDetailedMovements(previous => !previous)}
+                  className="flex w-full flex-col gap-3 px-4 py-3 text-left transition hover:bg-slate-50 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900">Detalle de movimientos individuales</h3>
+                    <p className="mt-0.5 text-xs font-semibold text-slate-500">
+                      {showDetailedMovements
+                        ? 'Oculta esta tabla para volver rápido al panel de saneamiento.'
+                        : `${reportRows.length} movimiento${reportRows.length === 1 ? '' : 's'} oculto${reportRows.length === 1 ? '' : 's'} para mantener la vista compacta.`}
+                    </p>
+                  </div>
+                  <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">
+                    {showDetailedMovements ? 'Ocultar detalle' : 'Mostrar detalle'}
+                    <ChevronDown size={14} className={`transition ${showDetailedMovements ? 'rotate-180' : ''}`} />
+                  </span>
+                </button>
+
+                {showDetailedMovements && (
+                  <div className="overflow-x-auto border-t border-slate-200">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
+                          <TableHead className="font-semibold text-slate-600">Día</TableHead>
+                          <TableHead className="font-semibold text-slate-600">Persona</TableHead>
+                          <TableHead className="font-semibold text-slate-600">Rate Card</TableHead>
+                          <TableHead className="font-semibold text-slate-600">Tarea</TableHead>
+                          <TableHead className="font-semibold text-slate-600">Unidades</TableHead>
+                          <TableHead className="font-semibold text-slate-600 text-right">Ingreso</TableHead>
+                          <TableHead className="font-semibold text-slate-600 text-right">Costo</TableHead>
+                          <TableHead className="font-semibold text-slate-600 text-right">Margen / resultado</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {reportRows.map((entry: any) => (
+                          <TableRow key={entry.id}>
+                            <TableCell className="whitespace-nowrap text-slate-700">
+                              <div>{entry.displayDate || formatReportDate(entry.dateKey)}</div>
+                              {isHistoricalBalanceEntry(entry) && (
+                                <span className="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                                  {entry.dateOrigin === 'task_origin'
+                                    ? 'Fecha de tarea'
+                                    : entry.dateOrigin === 'manual_sanitation'
+                                      ? 'Fecha saneada'
+                                      : 'Fecha de incorporación'}
+                                </span>
+                              )}
+                            </TableCell>
+                            <TableCell className="font-medium text-slate-900">{entry.personName}</TableCell>
+                            <TableCell className="text-slate-700">{entry.rateCardName}</TableCell>
+                            <TableCell className="max-w-[260px] truncate text-slate-600" title={entry.taskTitle || ''}>
+                              {entry.taskTitle || 'Sin tarea'}
+                            </TableCell>
+                            <TableCell className={entry.units < 0 ? 'font-medium text-red-600' : 'font-medium text-emerald-700'}>
+                              {formatRateCardUnits(entry.units, entry)}
+                            </TableCell>
+                            <TableCell className="text-right font-semibold text-emerald-700">
+                              <div>{formatMoney(entry.income, entry.currency || 'USD')}</div>
+                              {entry.isRework && (
+                                <div className="mt-0.5 text-[10px] font-bold text-slate-400">
+                                  Ingreso de la tarea · no se duplica
+                                </div>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right font-semibold text-rose-700">
+                              {formatMoney(entry.cost, entry.currency || 'USD')}
+                            </TableCell>
+                            <TableCell className={`text-right font-semibold ${entry.value < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                              {formatRateCardValue(entry.value, entry)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                        {reportRows.length === 0 && (
+                          <TableRow>
+                            <TableCell colSpan={8} className="py-8 text-center text-sm text-slate-500">
+                              No hay movimientos registrados en el rango seleccionado.
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
               </div>
         </CardContent>
       </Card>
