@@ -1206,6 +1206,7 @@ export default function WorkflowTray() {
       assigneeId: string;
       units: number;
       source: string;
+      rateCardSourceKey?: string | null;
       stepIndex?: number | null;
       comment?: string | null;
       isRework?: boolean;
@@ -1222,6 +1223,7 @@ export default function WorkflowTray() {
       assignedTo: params.assigneeId,
       units: params.reversal ? Math.abs(amount) : amount,
       source: params.source,
+      rateCardSourceKey: params.rateCardSourceKey || params.source,
       stepIndex: params.stepIndex ?? null,
       comment: params.comment || null,
       occurredAt: now,
@@ -1243,6 +1245,7 @@ export default function WorkflowTray() {
       assignedTo: params.assigneeId,
       units: entry.units,
       source: params.source,
+      rateCardSourceKey: entry.rateCardSourceKey || params.rateCardSourceKey || params.source,
       stepIndex: params.stepIndex ?? null,
       reversal: Boolean(params.reversal),
       createdAt: now.toISOString(),
@@ -1461,11 +1464,13 @@ export default function WorkflowTray() {
       const rateCardChargesToSync: any[] = [];
       let assignedNextWorkflowIndexes: number[] = [];
 
+      const currentStepWasApprovedBefore = Boolean(task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex && h.action === 'approve'));
       const hasBeenActedUpon = task.workflowHistory?.some((h: any) => h.stepIndex === currentIndex && (h.action === 'approve' || h.action === 'return'));
 
       // Rate Card Update for the current step (whether approved or returned)
-      if (staticRateCardSources.length > 0 && (action === 'approve' || action === 'return')) {
+      if (staticRateCardSources.length > 0 && (action === 'approve' || (action === 'return' && currentStepWasApprovedBefore))) {
         staticRateCardSources.forEach((staticRateCardSource) => {
+          const isReturnAction = action === 'return';
           const units = staticRateCardSource.autoAddUnits === false
             ? normalizeRateCardUnits(staticRateCardUnits[staticRateCardSource.key], 0)
             : normalizeRateCardUnits(staticRateCardSource.unitsToAdd);
@@ -1483,10 +1488,14 @@ export default function WorkflowTray() {
             rateCardId: staticRateCardSource.rateCardId,
             assigneeId: assignedUser,
             units,
-            source: staticRateCardSource.source === 'form' ? 'workflow_step_form_static' : 'workflow_step_static',
+            source: isReturnAction
+              ? (staticRateCardSource.source === 'form' ? 'workflow_step_form_static_reversal' : 'workflow_step_static_reversal')
+              : (staticRateCardSource.source === 'form' ? 'workflow_step_form_static' : 'workflow_step_static'),
+            rateCardSourceKey: staticRateCardSource.key,
             stepIndex: currentIndex,
-            comment: actionComment,
-            isRework: hasBeenActedUpon,
+            comment: actionComment || (isReturnAction ? 'Reverso del Rate Card por devolución del paso.' : null),
+            isRework: !isReturnAction && hasBeenActedUpon,
+            reversal: isReturnAction,
           });
           if (charge) rateCardChargesToSync.push(charge);
         });
@@ -1497,7 +1506,7 @@ export default function WorkflowTray() {
       }
 
       let dynamicRateCardCharge: any = null;
-      if (workflowDynamicRateCardSource) {
+      if (workflowDynamicRateCardSource && (action === 'approve' || currentStepWasApprovedBefore)) {
         const taskWasCompletedBefore = task.workflowHistory?.some((h: any) => h.stepIndex === task.workflowSteps.length - 1 && h.action === 'approve');
         dynamicRateCardCharge = addDynamicRateCardChargeToBatch(batch, {
           projectId: task.projectId,
@@ -1507,10 +1516,14 @@ export default function WorkflowTray() {
           units: workflowDynamicRateCardRequestsUnits
             ? normalizeRateCardUnits(dynamicRateCardUnits, 0)
             : getDynamicRateCardUnits(workflowDynamicRateCardSource.sourceConfig),
-          source: workflowDynamicRateCardSource.source,
+          source: action === 'return'
+            ? `${workflowDynamicRateCardSource.source}_reversal`
+            : workflowDynamicRateCardSource.source,
+          rateCardSourceKey: `dynamic:${workflowDynamicRateCardSource.source}:${workflowDynamicRateCardSource.stepIndex ?? currentIndex}`,
           stepIndex: workflowDynamicRateCardSource.stepIndex,
-          comment: actionComment,
-          isRework: workflowDynamicRateCardSource.source === 'workflow_step' ? hasBeenActedUpon : taskWasCompletedBefore,
+          comment: actionComment || (action === 'return' ? 'Reverso del Rate Card dinámico por devolución.' : null),
+          isRework: action !== 'return' && (workflowDynamicRateCardSource.source === 'workflow_step' ? hasBeenActedUpon : taskWasCompletedBefore),
+          reversal: action === 'return',
         });
         if (dynamicRateCardCharge) rateCardChargesToSync.push(dynamicRateCardCharge);
       }
@@ -2003,6 +2016,7 @@ export default function WorkflowTray() {
             assigneeId,
             units,
             source: source.source === 'form' ? 'assigned_subtask_completion_form' : 'assigned_subtask_completion_step',
+            rateCardSourceKey: source.key,
             comment: completionSubmission.comment,
           });
 
@@ -2017,6 +2031,7 @@ export default function WorkflowTray() {
             assigneeId: completionSubmission.dynamicRateCard.assigneeId,
             units: completionSubmission.dynamicRateCard.units,
             source: 'assigned_subtask_completion_form_dynamic',
+            rateCardSourceKey: `dynamic:${completionSubmission.dynamicRateCard.rateCardId}`,
             comment: completionSubmission.comment,
           });
 
@@ -2034,6 +2049,7 @@ export default function WorkflowTray() {
             assigneeId: lastCharge.assignedTo,
             units: -Math.abs(Number(lastCharge.units || 0)),
             source: 'assigned_subtask_completion_form_reversal',
+            rateCardSourceKey: lastCharge.rateCardSourceKey || lastCharge.source || 'assigned_subtask_completion_form',
             comment: 'Reverso automático por cambio de estado desde finalizada.',
             reversal: true,
           });
@@ -2056,6 +2072,7 @@ export default function WorkflowTray() {
               assigneeId: assignedUser,
               units: unitsDelta,
               source: 'assigned_task_progress',
+              rateCardSourceKey: `assigned_task_progress:${oldProgress}->${progress}`,
               comment: completionSubmission?.comment || statusComment || 'Ajuste por cambio de progreso de la tarea.',
               reversal: unitsDelta < 0,
             });
@@ -2072,6 +2089,7 @@ export default function WorkflowTray() {
           assigneeId: dynamicCharge.assigneeId,
           units: dynamicCharge.units,
           source: 'assigned_task',
+          rateCardSourceKey: `assigned_task:${dynamicCharge.rateCardId}`,
           comment: dynamicCharge.comment || null,
         });
       }
@@ -2085,6 +2103,7 @@ export default function WorkflowTray() {
           assigneeId: lastCharge.assignedTo,
           units: -Math.abs(Number(lastCharge.units || 0)),
           source: 'assigned_task_reversal',
+          rateCardSourceKey: lastCharge.rateCardSourceKey || lastCharge.source || `assigned_task:${lastCharge.rateCardId}`,
           comment: 'Reverso automático por cambio de estado desde finalizada.',
           reversal: true,
         });

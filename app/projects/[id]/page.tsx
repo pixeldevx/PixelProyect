@@ -1302,6 +1302,7 @@ export default function ProjectDetailsPage() {
       assigneeId: string;
       units: number;
       source: string;
+      rateCardSourceKey?: string | null;
       comment?: string | null;
       reversal?: boolean;
     },
@@ -1317,7 +1318,7 @@ export default function ProjectDetailsPage() {
       assignedTo: params.assigneeId,
       units: params.reversal ? Math.abs(amount) : amount,
       source: params.source,
-      rateCardSourceKey: params.source,
+      rateCardSourceKey: params.rateCardSourceKey || params.source,
       comment: params.comment || null,
       occurredAt: now,
       actor: {
@@ -1336,6 +1337,7 @@ export default function ProjectDetailsPage() {
       assignedTo: params.assigneeId,
       units: entry.units,
       source: params.source,
+      rateCardSourceKey: entry.rateCardSourceKey || params.rateCardSourceKey || params.source,
       reversal: Boolean(params.reversal),
       createdAt: now.toISOString(),
     };
@@ -1477,6 +1479,7 @@ export default function ProjectDetailsPage() {
             assigneeId,
             units,
             source: source.source === 'form' ? 'subtask_completion_form' : 'subtask_completion_step',
+            rateCardSourceKey: source.key,
             comment: completionSubmission.comment,
           });
 
@@ -1490,6 +1493,7 @@ export default function ProjectDetailsPage() {
             assigneeId: completionSubmission.dynamicRateCard.assigneeId,
             units: completionSubmission.dynamicRateCard.units,
             source: 'subtask_completion_form_dynamic',
+            rateCardSourceKey: `dynamic:${completionSubmission.dynamicRateCard.rateCardId}`,
             comment: completionSubmission.comment,
           });
 
@@ -1511,6 +1515,7 @@ export default function ProjectDetailsPage() {
             assigneeId: lastCharge.assignedTo,
             units: -Math.abs(Number(lastCharge.units || 0)),
             source: 'subtask_completion_form_reversal',
+            rateCardSourceKey: lastCharge.rateCardSourceKey || lastCharge.source || 'subtask_completion_form',
             comment: 'Reverso automático por cambio de estado desde finalizada.',
             reversal: true,
           });
@@ -1623,6 +1628,7 @@ export default function ProjectDetailsPage() {
           assigneeId: taskHasManualStaticRateCard ? (task.assignedTo || dynamicCharge.assigneeId) : dynamicCharge.assigneeId,
           units: dynamicCharge.units,
           source: taskHasManualStaticRateCard ? 'project_task_status_manual_units' : 'project_task_status',
+          rateCardSourceKey: taskHasManualStaticRateCard ? `project_task_status_manual_units:${task.rateCardId}` : `project_task_status:${dynamicCharge.rateCardId}`,
           comment: dynamicCharge.comment || null,
         });
       }
@@ -1635,6 +1641,7 @@ export default function ProjectDetailsPage() {
           assigneeId: lastCharge.assignedTo,
           units: -Math.abs(Number(lastCharge.units || 0)),
           source: 'project_task_status_reversal',
+          rateCardSourceKey: lastCharge.rateCardSourceKey || lastCharge.source || `project_task_status:${lastCharge.rateCardId}`,
           comment: 'Reverso automático por cambio de estado desde finalizada.',
           reversal: true,
         });

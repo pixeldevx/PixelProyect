@@ -49,6 +49,33 @@ export const buildRateCardTraceKey = ({
 
 export const getRateCardTraceEntryId = (traceKey: string) => `trace_${hashTraceKey(traceKey)}`;
 
+export const buildRateCardMovementKey = ({
+  taskId,
+  stepIndex,
+  rateCardId,
+  assignedTo,
+  sourceKey,
+}: {
+  taskId?: string | null;
+  stepIndex?: number | string | null;
+  rateCardId?: string | null;
+  assignedTo?: string | null;
+  sourceKey?: string | null;
+}) => [
+  taskId || 'sin-tarea',
+  stepIndex ?? 'task',
+  rateCardId || 'sin-rate-card',
+  assignedTo || 'sin-profesional',
+  sourceKey || 'sin-origen',
+].join('::');
+
+const getMovementKeyFromTraceKey = (traceKey: any) => {
+  if (typeof traceKey !== 'string') return '';
+  const parts = traceKey.split('::');
+  if (parts.length < 6) return '';
+  return parts.slice(0, 5).join('::');
+};
+
 export const getRateCardPeriodKeys = (date = new Date()) => {
   const year = date.getFullYear();
   const dateKey = `${year}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -131,6 +158,13 @@ export const addTraceableRateCardMovementToBatch = (
     sourceKey: params.rateCardSourceKey || params.source,
     operation: params.reversal ? 'reversal' : 'charge',
   });
+  const movementKey = buildRateCardMovementKey({
+    taskId: params.task?.id || null,
+    stepIndex,
+    rateCardId: params.rateCardId,
+    assignedTo,
+    sourceKey: params.rateCardSourceKey || params.source,
+  });
   const entryRef = doc(db, 'projects', params.projectId, 'rateCardEntries', getRateCardTraceEntryId(traceKey));
 
   const entryData = {
@@ -144,6 +178,7 @@ export const addTraceableRateCardMovementToBatch = (
     units: signedUnits,
     source: params.source,
     rateCardSourceKey: params.rateCardSourceKey || null,
+    rateCardMovementKey: movementKey,
     stepIndex,
     stepName: params.stepName || null,
     comment: params.comment || null,
@@ -358,6 +393,11 @@ export const buildHistoricalRateCardRepairPlan = ({
       .map(entry => typeof entry?.traceKey === 'string' ? entry.traceKey : '')
       .filter(Boolean),
   );
+  const existingMovementKeys = new Set(
+    entries
+      .map(entry => String(entry?.rateCardMovementKey || getMovementKeyFromTraceKey(entry?.traceKey) || ''))
+      .filter(Boolean),
+  );
 
   entries
     .filter(entry => entry?.rateCardId === rateCard?.id && !entry?.isRework)
@@ -483,7 +523,14 @@ export const buildHistoricalRateCardRepairPlan = ({
         sourceKey: sourceKeys.join('|'),
         operation: 'charge',
       });
-      if (existingTraceKeys.has(traceKey)) return;
+      const movementKey = buildRateCardMovementKey({
+        taskId: candidate.taskId,
+        stepIndex: candidate.stepIndex,
+        rateCardId: rateCard.id,
+        assignedTo: candidate.assignedTo,
+        sourceKey: sourceKeys.join('|'),
+      });
+      if (existingTraceKeys.has(traceKey) || existingMovementKeys.has(movementKey)) return;
 
       matches.push({
         taskId: candidate.taskId,

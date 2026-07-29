@@ -104,15 +104,88 @@ const normalizeCsvHeader = (value: any) =>
 
 const escapeCsvCell = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
-const dedupeRateCardEntriesByTraceKey = (entries: any[]) => {
-  const seenTraceKeys = new Set<string>();
-  return entries.filter((entry) => {
-    const traceKey = typeof entry?.traceKey === 'string' ? entry.traceKey.trim() : '';
-    if (!traceKey) return true;
-    if (seenTraceKeys.has(traceKey)) return false;
-    seenTraceKeys.add(traceKey);
-    return true;
+const getTraceMovementKey = (traceKey: any) => {
+  if (typeof traceKey !== 'string') return '';
+  const parts = traceKey.split('::');
+  if (parts.length < 6) return '';
+  return parts.slice(0, 5).join('::');
+};
+
+const isTraceRepairEntry = (entry: any) =>
+  String(entry?.source || '').includes('trace_repair') ||
+  String(entry?.source || '').includes('manual_trace_repair') ||
+  Boolean(entry?.repairedFromHistoricalBalance);
+
+const getEntrySortMillis = (entry: any) => {
+  const dates = [
+    parseDateLike(entry?.recordedAt),
+    parseDateLike(entry?.updatedAt),
+    parseDateLike(entry?.adjustedAt),
+    parseDateLike(entry?.createdAt),
+    parseDateLike(entry?.completedAt),
+    parseDateLike(entry?.dateKey ? `${entry.dateKey}T12:00:00` : null),
+  ].filter(Boolean) as Date[];
+  return dates[0]?.getTime() || 0;
+};
+
+const getRateCardEntryMovementKey = (entry: any) => {
+  const storedKey = String(entry?.rateCardMovementKey || '').trim();
+  if (storedKey) return storedKey;
+
+  const traceKey = getTraceMovementKey(entry?.traceKey);
+  if (traceKey) return traceKey;
+
+  const taskKey = entry?.taskId || entry?.externalWorkflowId || normalizeLookupText(entry?.taskTitle) || 'sin-tarea';
+  const stepKey = typeof entry?.stepIndex === 'number' ? entry.stepIndex : 'task';
+  const sourceKey = String(entry?.rateCardSourceKey || '').trim();
+  if (sourceKey) {
+    return [
+      taskKey,
+      stepKey,
+      entry?.rateCardId || 'sin-rate-card',
+      entry?.assignedTo || 'sin-profesional',
+      sourceKey,
+    ].join('::');
+  }
+
+  return [
+    taskKey,
+    entry?.rateCardId || 'sin-rate-card',
+    entry?.assignedTo || 'sin-profesional',
+    getEntryDateKey(entry) || 'sin-fecha',
+    entry?.isRework ? 'rework' : 'production',
+    Math.abs(normalizeDecimalInput(entry?.units, 0)).toFixed(6),
+  ].join('::');
+};
+
+const dedupeRateCardEntriesByMovement = (entries: any[]) => {
+  const traceSeen = new Set<string>();
+  const groups = new Map<string, any[]>();
+
+  entries.forEach((entry) => {
+    const traceKey = String(entry?.traceKey || '').trim();
+    if (traceKey) {
+      if (traceSeen.has(traceKey)) return;
+      traceSeen.add(traceKey);
+    }
+
+    const movementKey = getRateCardEntryMovementKey(entry);
+    const current = groups.get(movementKey) || [];
+    current.push(entry);
+    groups.set(movementKey, current);
   });
+
+  return Array.from(groups.values())
+    .map((group) => {
+      const ordered = [...group].sort((left, right) => getEntrySortMillis(right) - getEntrySortMillis(left));
+      const latest = ordered[0];
+      if (latest?.reversal) return null;
+
+      const chargeEntries = ordered.filter(entry => !entry?.reversal);
+      const preferredCharge = chargeEntries.find(entry => !isTraceRepairEntry(entry)) || chargeEntries[0];
+      return preferredCharge || null;
+    })
+    .filter(Boolean);
 };
 
 const parseDelimitedRows = (text: string) => {
@@ -255,7 +328,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
         const left = a.createdAt?.toMillis?.() || Date.parse(a.createdAt || a.dateKey || '') || 0;
         return right - left;
       });
-      setRateCardEntries(dedupeRateCardEntriesByTraceKey(data));
+      setRateCardEntries(dedupeRateCardEntriesByMovement(data));
     });
     return () => unsubscribe();
   }, [projectId]);
@@ -727,7 +800,8 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   };
 
   const buildRateCardStateFromEntries = (card: any, entries: any[]) => {
-    const stats = entries.reduce((acc: {
+    const effectiveEntries = dedupeRateCardEntriesByMovement(entries);
+    const stats = effectiveEntries.reduce((acc: {
       currentValue: number;
       reworkValue: number;
       userStats: Record<string, number>;
