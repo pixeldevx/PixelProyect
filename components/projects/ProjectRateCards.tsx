@@ -25,6 +25,7 @@ import { getTaskTitle } from '@/lib/task-title';
 import {
   addTraceableRateCardMovementToBatch,
   buildHistoricalRateCardRepairPlan,
+  getRateCardBusinessMovementKey,
   resolveHistoricalRateCardEntryDate,
 } from '@/lib/rate-card-trace';
 
@@ -130,15 +131,8 @@ const getEntrySortMillis = (entry: any) => {
 };
 
 const getRateCardEntryMovementKey = (entry: any) => {
-  const taskKey = entry?.taskId || entry?.externalWorkflowId || normalizeLookupText(entry?.taskTitle);
-  if (taskKey) {
-    return [
-      taskKey,
-      entry?.rateCardId || 'sin-rate-card',
-      entry?.assignedTo || 'sin-profesional',
-      entry?.isRework ? 'rework' : 'production',
-    ].join('::');
-  }
+  const businessKey = getRateCardBusinessMovementKey(entry);
+  if (businessKey) return businessKey;
 
   const storedKey = String(entry?.rateCardMovementKey || '').trim();
   if (storedKey) return storedKey;
@@ -778,12 +772,12 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     ...maintenanceStoredHistoricalRows,
     ...maintenanceHistoricalRows,
   ];
-  const maintenanceDetailedEntries = maintenanceEntries.filter(entry => !isHistoricalBalanceEntry(entry));
+  const maintenanceRawDetailedEntries = maintenanceRawEntries.filter(entry => !isHistoricalBalanceEntry(entry));
   const maintenanceRepairPlan = maintenanceRateCard
     ? buildHistoricalRateCardRepairPlan({
         rateCard: maintenanceRateCard,
         gaps: maintenanceHistoricalGaps,
-        entries: maintenanceDetailedEntries,
+        entries: maintenanceRawDetailedEntries,
         tasks,
       })
     : { matches: [], unresolved: [], recoverableUnits: 0, unresolvedUnits: 0 };
@@ -1427,11 +1421,35 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     setMaintenanceLoading(true);
     try {
       const existingTraceKeys = new Set(
-        maintenanceEntries.map(entry => entry.traceKey).filter(Boolean),
+        maintenanceRawEntries.map(entry => entry.traceKey).filter(Boolean),
       );
-      const repairableMatches = maintenanceRepairPlan.matches.filter(
-        match => !existingTraceKeys.has(match.traceKey),
+      const existingBusinessMovementKeys = new Set(
+        maintenanceRawEntries
+          .filter(entry =>
+            entry?.rateCardId === maintenanceRateCard.id &&
+            !entry?.isRework &&
+            !entry?.reversal &&
+            !isHistoricalBalanceEntry(entry)
+          )
+          .map(getRateCardBusinessMovementKey)
+          .filter(Boolean),
       );
+      const queuedBusinessMovementKeys = new Set<string>();
+      const repairableMatches = maintenanceRepairPlan.matches.filter(match => {
+        const businessKey = getRateCardBusinessMovementKey({
+          taskId: match.taskId,
+          externalWorkflowId: match.externalWorkflowId,
+          taskTitle: match.taskTitle,
+          rateCardId: maintenanceRateCard.id,
+          assignedTo: match.assignedTo,
+          isRework: false,
+        });
+        if (!businessKey || existingTraceKeys.has(match.traceKey) || existingBusinessMovementKeys.has(businessKey) || queuedBusinessMovementKeys.has(businessKey)) {
+          return false;
+        }
+        queuedBusinessMovementKeys.add(businessKey);
+        return true;
+      });
 
       if (repairableMatches.length === 0) {
         toast.info('La trazabilidad recuperable ya fue registrada.');

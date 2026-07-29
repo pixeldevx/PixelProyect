@@ -16,6 +16,13 @@ import { getTaskDateValue, isCompletedTaskStatus } from '@/lib/taskProgress';
 
 const EPSILON = 0.000001;
 
+const normalizeTraceLookupText = (value: any) =>
+  String(value ?? '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
 const hashTraceKey = (value: string) => {
   let hash = 5381;
   for (let index = 0; index < value.length; index += 1) {
@@ -68,6 +75,22 @@ export const buildRateCardMovementKey = ({
   assignedTo || 'sin-profesional',
   sourceKey || 'sin-origen',
 ].join('::');
+
+export const getRateCardBusinessMovementKey = (entry: any) => {
+  const normalizedTitle = normalizeTraceLookupText(entry?.taskTitle);
+  const titleLooksHistoricalBalance =
+    normalizedTitle === 'produccion historica sin detalle' ||
+    normalizedTitle === 'reproceso historico sin detalle';
+  const taskKey = entry?.taskId || entry?.externalWorkflowId || (titleLooksHistoricalBalance ? '' : normalizedTitle);
+  if (!taskKey) return '';
+
+  return [
+    taskKey,
+    entry?.rateCardId || 'sin-rate-card',
+    entry?.assignedTo || 'sin-profesional',
+    entry?.isRework ? 'rework' : 'production',
+  ].join('::');
+};
 
 const getMovementKeyFromTraceKey = (traceKey: any) => {
   if (typeof traceKey !== 'string') return '';
@@ -388,6 +411,12 @@ export const buildHistoricalRateCardRepairPlan = ({
   const productionGaps = gaps.filter(gap => !gap.isRework && gap.units > EPSILON);
   const gapUsers = new Set(productionGaps.map(gap => gap.assignedTo).filter(Boolean));
   const existingByOrigin = new Map<string, number>();
+  const existingBusinessMovementKeys = new Set(
+    entries
+      .filter(entry => entry?.rateCardId === rateCard?.id && !entry?.isRework && !entry?.reversal)
+      .map(getRateCardBusinessMovementKey)
+      .filter(Boolean),
+  );
   const existingTraceKeys = new Set(
     entries
       .map(entry => typeof entry?.traceKey === 'string' ? entry.traceKey : '')
@@ -411,6 +440,7 @@ export const buildHistoricalRateCardRepairPlan = ({
     });
 
   const groupedCandidates = new Map<string, Omit<HistoricalRateCardRepairMatch, 'units' | 'rateCardSourceKeys' | 'traceKey'> & {
+    businessKey: string;
     expectedUnits: number;
     sourceKeys: string[];
   }>();
@@ -428,6 +458,15 @@ export const buildHistoricalRateCardRepairPlan = ({
         const units = normalizeRateCardUnits(source.unitsToAdd, 0);
         const assignedTo = resolveRepairAssignee(source, step, task, gapUsers);
         if (units <= EPSILON || !assignedTo) return;
+        const businessKey = getRateCardBusinessMovementKey({
+          taskId: task.id,
+          externalWorkflowId: task.externalWorkflowId || null,
+          taskTitle: getTaskTitle(task, 'Tarea'),
+          rateCardId: rateCard?.id,
+          assignedTo,
+          isRework: false,
+        });
+        if (!businessKey || existingBusinessMovementKeys.has(businessKey)) return;
 
         const stepDate = parseRateCardTraceDate(step?.completedAt);
         const historyDate = getWorkflowHistoryDate(task, stepIndex);
@@ -441,15 +480,22 @@ export const buildHistoricalRateCardRepairPlan = ({
             : null);
         if (!completion) return;
 
-        const originKey = [task.id, stepIndex, assignedTo].join('::');
-        const current = groupedCandidates.get(originKey);
+        const current = groupedCandidates.get(businessKey);
         if (current) {
-          current.expectedUnits += units;
           current.sourceKeys.push(source.key);
+          if (units > current.expectedUnits + EPSILON) {
+            current.expectedUnits = units;
+            current.stepIndex = stepIndex;
+            current.stepName = step?.name || step?.title || `Paso ${stepIndex + 1}`;
+            current.occurredAt = completion.date;
+            current.completionEvidence = completion.evidence;
+            current.originalCompletedBy = step?.completedBy || null;
+          }
           return;
         }
 
-        groupedCandidates.set(originKey, {
+        groupedCandidates.set(businessKey, {
+          businessKey,
           taskId: task.id,
           taskTitle: getTaskTitle(task, 'Tarea'),
           externalWorkflowId: task.externalWorkflowId || null,
@@ -478,8 +524,19 @@ export const buildHistoricalRateCardRepairPlan = ({
         : null;
       const units = normalizeRateCardUnits(task.unitsToAdd, 0);
       if (assignedTo && units > EPSILON) {
-        const originKey = [task.id, 'task', assignedTo].join('::');
-        groupedCandidates.set(originKey, {
+        const businessKey = getRateCardBusinessMovementKey({
+          taskId: task.id,
+          externalWorkflowId: task.externalWorkflowId || null,
+          taskTitle: getTaskTitle(task, 'Tarea'),
+          rateCardId: rateCard?.id,
+          assignedTo,
+          isRework: false,
+        });
+        if (!businessKey || existingBusinessMovementKeys.has(businessKey)) return;
+        const current = groupedCandidates.get(businessKey);
+        if (current && current.expectedUnits >= units - EPSILON) return;
+        groupedCandidates.set(businessKey, {
+          businessKey,
           taskId: task.id,
           taskTitle: getTaskTitle(task, 'Tarea'),
           externalWorkflowId: task.externalWorkflowId || null,
@@ -509,6 +566,7 @@ export const buildHistoricalRateCardRepairPlan = ({
   Array.from(groupedCandidates.values())
     .sort((left, right) => left.occurredAt.getTime() - right.occurredAt.getTime())
     .forEach(candidate => {
+      if (existingBusinessMovementKeys.has(candidate.businessKey)) return;
       const originKey = [candidate.taskId, candidate.stepIndex ?? 'task', candidate.assignedTo].join('::');
       const missingUnits = candidate.expectedUnits - (existingByOrigin.get(originKey) || 0);
       const remainingGap = remainingByUser.get(candidate.assignedTo) || 0;
@@ -547,6 +605,7 @@ export const buildHistoricalRateCardRepairPlan = ({
         rateCardSourceKeys: sourceKeys,
         traceKey,
       });
+      existingBusinessMovementKeys.add(candidate.businessKey);
       remainingByUser.set(candidate.assignedTo, Math.max(0, remainingGap - missingUnits));
     });
 
