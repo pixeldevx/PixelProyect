@@ -33,6 +33,7 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  UploadCloud,
   WalletCards,
   X,
   XCircle,
@@ -58,6 +59,10 @@ import {
   AdvanceDossierReport,
   generateAdvanceDossierPdf,
 } from '@/lib/advance-dossier-pdf';
+import {
+  ContractorAccountPdfReport,
+  generateContractorAccountPdf,
+} from '@/lib/contractor-account-report-pdf';
 import {
   getRateCardCostValue,
   getRateCardIncomeValue,
@@ -370,6 +375,12 @@ type ContractorAccountActivityItem = {
   stepLabel?: string | null;
   status?: string;
   date?: string;
+  completedAt?: string;
+  dueDate?: string;
+  timing?: 'on_time' | 'late' | 'without_schedule';
+  daysLate?: number;
+  description?: string;
+  executionDetail?: string;
   groupId?: string;
   groupName?: string;
 };
@@ -407,6 +418,45 @@ type ContractorRateSnapshot = {
   }>;
 };
 
+type ContractorPerformanceSnapshot = {
+  selectedCompleted: number;
+  completedOnTime: number;
+  completedLate: number;
+  completedWithoutSchedule: number;
+  openOverdue: number;
+  alerts: Array<{
+    key: string;
+    taskTitle: string;
+    stepLabel?: string | null;
+    kind: 'open_overdue' | 'completed_late';
+    dueDate?: string;
+    completedAt?: string;
+    daysLate: number;
+  }>;
+};
+
+type ContractorProductivityComparison = {
+  roleLabel: string;
+  peerCount: number;
+  rows: Array<{
+    rateCardId: string;
+    name: string;
+    unitLabel: string;
+    contractorUnits: number;
+    peerAverageUnits: number;
+    peerTopUnits: number;
+    contractorRank: number;
+    professionalCount: number;
+    deltaVsAveragePct: number | null;
+    professionals: Array<{
+      memberId: string;
+      name: string;
+      units: number;
+      isContractor: boolean;
+    }>;
+  }>;
+};
+
 type ContractorPaymentRequest = {
   id: string;
   projectId: string;
@@ -438,6 +488,9 @@ type ContractorPaymentRequest = {
   };
   qualitySnapshot?: ContractorQualitySnapshot;
   rateSnapshot?: ContractorRateSnapshot;
+  performanceSnapshot?: ContractorPerformanceSnapshot;
+  productivityComparison?: ContractorProductivityComparison;
+  projectName?: string;
   requesterSignature?: AdvanceSignatureSnapshot;
   generatedDocuments?: Array<{
     kind: 'chargeAccount' | 'activityReport';
@@ -611,8 +664,8 @@ const DEFAULT_COST_CENTERS: Array<Omit<CostCenterDomain, 'id'>> = [
 const COLOMBIA_LEGAL_MINIMUM_WAGE = 1750000;
 
 const CONTRACTOR_ACCOUNT_GENERATED_DOCUMENTS: Array<{ kind: 'chargeAccount' | 'activityReport'; label: string }> = [
-  { kind: 'chargeAccount', label: 'Cuenta de cobro generada por Pixel' },
-  { kind: 'activityReport', label: 'Informe de actividades generado por Pixel' },
+  { kind: 'chargeAccount', label: 'Cuenta de cobro en PDF' },
+  { kind: 'activityReport', label: 'Informe contractual detallado en PDF' },
 ];
 
 const CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS: Array<{ kind: ContractorAccountDocumentKind; label: string; required: boolean }> = [
@@ -868,20 +921,19 @@ const downloadBlob = (fileName: string, blob: Blob) => {
   URL.revokeObjectURL(url);
 };
 
-const downloadContractorGeneratedDocument = (
+const downloadContractorGeneratedDocument = async (
   account: ContractorPaymentRequest,
-  kind: 'chargeAccount' | 'activityReport'
+  kind: 'chargeAccount' | 'activityReport',
+  fallbackProjectName?: string
 ) => {
-  const escapeHtml = (value: any) =>
-    String(value ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+  const toastId = toast.loading(
+    kind === 'chargeAccount'
+      ? 'Generando la cuenta de cobro en PDF...'
+      : 'Construyendo el informe contractual detallado...'
+  );
+  try {
   const safeToken = getSafeFileToken(`${account.customId || account.id}-${account.contractorName}`);
   const isChargeAccount = kind === 'chargeAccount';
-  const title = isChargeAccount ? 'Cuenta de cobro' : 'Informe de actividades';
   const activityItems: ContractorAccountActivityItem[] = (account.activityItems || []).length > 0
     ? account.activityItems || []
     : (account.taskTitles || []).map((taskTitle, index) => ({
@@ -891,118 +943,100 @@ const downloadContractorGeneratedDocument = (
       taskTitle,
       status: 'completed',
     }));
-  const qualitySnapshot = account.qualitySnapshot;
-  const rateSnapshot = account.rateSnapshot;
-  const activityRows = activityItems
-    .map((activity, index) => `<tr>
-      <td>${index + 1}</td>
-      <td>${escapeHtml(activity.taskTitle)}</td>
-      <td>${escapeHtml(activity.stepLabel || (activity.type === 'workflow_step' ? 'Paso workflow' : activity.type === 'subtask' ? 'Subtarea' : 'Tarea'))}</td>
-      <td>${escapeHtml(activity.groupName || 'Sin grupo')}</td>
-      <td>${escapeHtml(formatDate(activity.date))}</td>
-      <td>${escapeHtml(getTaskStatusMeta({ status: activity.status }).label)}</td>
-    </tr>`)
-    .join('');
-  const qualityRows = (qualitySnapshot?.events || [])
-    .map((event, index) => `<tr>
-      <td>${index + 1}</td>
-      <td>${escapeHtml(event.taskTitle)}</td>
-      <td>${escapeHtml(event.stepLabel || 'Sin paso')}</td>
-      <td>${escapeHtml(event.result === 'accepted' ? 'Aceptado' : event.result === 'rejected' ? 'Rechazado' : event.result || 'Revisado')}</td>
-      <td>${escapeHtml(event.causeLabel || '—')}</td>
-      <td>${escapeHtml(formatDate(event.date))}</td>
-      <td>${escapeHtml(event.comment || '—')}</td>
-    </tr>`)
-    .join('');
-  const rateRows = (rateSnapshot?.rows || [])
-    .map((row, index) => `<tr>
-      <td>${index + 1}</td>
-      <td>${escapeHtml(row.name)}</td>
-      <td>${escapeHtml(`${row.units} ${row.unitLabel || 'unidad'}`)}</td>
-      <td>${row.movements}</td>
-      <td>${escapeHtml(formatMoney(row.income))}</td>
-      <td>${escapeHtml(formatMoney(row.cost))}</td>
-      <td>${escapeHtml(formatMoney(row.margin))}</td>
-    </tr>`)
-    .join('');
-  const html = `<!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8" />
-  <title>${title}</title>
-  <style>
-    body { font-family: Arial, sans-serif; color: #0f172a; margin: 40px; }
-    h1 { font-size: 24px; margin-bottom: 4px; }
-    .muted { color: #64748b; font-size: 12px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 18px; }
-    th, td { border: 1px solid #cbd5e1; padding: 10px; text-align: left; vertical-align: top; }
-    th { background: #f1f5f9; text-transform: uppercase; font-size: 11px; letter-spacing: .12em; }
-    h2 { margin-top: 28px; font-size: 18px; }
-    .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
-    .card { border: 1px solid #cbd5e1; border-radius: 12px; padding: 12px; background: #f8fafc; }
-    .card span { display: block; color: #64748b; font-size: 10px; text-transform: uppercase; letter-spacing: .14em; font-weight: 700; }
-    .card strong { display: block; margin-top: 6px; font-size: 18px; }
-    .signature { margin-top: 32px; border-top: 1px solid #94a3b8; padding-top: 8px; width: 320px; }
-  </style>
-</head>
-<body>
-  <h1>${escapeHtml(title)}</h1>
-  <p class="muted">Generado por Pixel Project · ${new Date().toLocaleDateString('es-CO')}</p>
-  <table>
-    <tbody>
-      <tr><th>Contratista</th><td>${escapeHtml(account.contractorName)}</td></tr>
-      <tr><th>Correo</th><td>${escapeHtml(account.contractorEmail || 'Sin correo')}</td></tr>
-      <tr><th>Periodo</th><td>${escapeHtml(formatDate(account.periodStart))} - ${escapeHtml(formatDate(account.periodEnd))}</td></tr>
-      <tr><th>Honorarios</th><td>${escapeHtml(formatMoney(account.honorariumAmount))}</td></tr>
-      <tr><th>Base parafiscales 40%</th><td>${escapeHtml(formatMoney(account.socialSecurityBase))}</td></tr>
-      <tr><th>Salario mínimo usado</th><td>${escapeHtml(formatMoney(account.parafiscalsValidation?.minimumWage || COLOMBIA_LEGAL_MINIMUM_WAGE))}</td></tr>
-    </tbody>
-  </table>
-  ${
-    isChargeAccount
-      ? `<p style="margin-top:24px;line-height:1.6">Por medio de la presente solicito el pago de los honorarios causados durante el periodo indicado.</p>`
-      : `<h2>Actividades finalizadas relacionadas</h2>
-        <p>${escapeHtml(account.activitySummary || account.activitySnapshot?.qualitySummary || '')}</p>
-        <div class="cards">
-          <div class="card"><span>Actividades</span><strong>${activityItems.length}</strong></div>
-          <div class="card"><span>Calidad</span><strong>${qualitySnapshot?.score === null || qualitySnapshot?.score === undefined ? 'Sin dato' : `${qualitySnapshot.score}%`}</strong></div>
-          <div class="card"><span>Ingreso rates</span><strong>${escapeHtml(formatMoney(rateSnapshot?.income || account.activitySnapshot?.rateIncome || 0))}</strong></div>
-          <div class="card"><span>Margen rates</span><strong>${escapeHtml(formatMoney(rateSnapshot?.margin || account.activitySnapshot?.rateMargin || 0))}</strong></div>
-        </div>
-        <table>
-          <thead><tr><th>#</th><th>Actividad / tarea Pixel</th><th>Paso o tipo</th><th>Grupo</th><th>Fecha</th><th>Estado</th></tr></thead>
-          <tbody>${activityRows || '<tr><td colspan="6">Sin actividades registradas</td></tr>'}</tbody>
-        </table>
-        <h2>Informe de calidad del periodo</h2>
-        <div class="cards">
-          <div class="card"><span>Revisadas</span><strong>${qualitySnapshot?.reviewed || 0}</strong></div>
-          <div class="card"><span>Aceptadas</span><strong>${qualitySnapshot?.accepted || 0}</strong></div>
-          <div class="card"><span>Rechazadas</span><strong>${qualitySnapshot?.rejected || 0}</strong></div>
-          <div class="card"><span>Resultado</span><strong>${qualitySnapshot?.score === null || qualitySnapshot?.score === undefined ? 'Sin dato' : `${qualitySnapshot.score}%`}</strong></div>
-        </div>
-        <table>
-          <thead><tr><th>#</th><th>Tarea</th><th>Paso</th><th>Resultado</th><th>Causa</th><th>Fecha</th><th>Comentario</th></tr></thead>
-          <tbody>${qualityRows || '<tr><td colspan="7">Sin eventos de calidad registrados para el contratista en el periodo.</td></tr>'}</tbody>
-        </table>
-        <h2>Informe de rates del periodo</h2>
-        <div class="cards">
-          <div class="card"><span>Movimientos</span><strong>${rateSnapshot?.movements || account.activitySnapshot?.rateMovements || 0}</strong></div>
-          <div class="card"><span>Ingreso</span><strong>${escapeHtml(formatMoney(rateSnapshot?.income || account.activitySnapshot?.rateIncome || 0))}</strong></div>
-          <div class="card"><span>Costo</span><strong>${escapeHtml(formatMoney(rateSnapshot?.cost || account.activitySnapshot?.rateCost || 0))}</strong></div>
-          <div class="card"><span>Margen</span><strong>${escapeHtml(formatMoney(rateSnapshot?.margin || account.activitySnapshot?.rateMargin || 0))}</strong></div>
-        </div>
-        <table>
-          <thead><tr><th>#</th><th>Rate card</th><th>Unidades</th><th>Movimientos</th><th>Ingreso</th><th>Costo</th><th>Margen</th></tr></thead>
-          <tbody>${rateRows || '<tr><td colspan="7">Sin movimientos de rate cards para el contratista en el periodo.</td></tr>'}</tbody>
-        </table>`
+  let signatureAsset: { imageBlob?: Blob; imageUrl?: string; imageFileName?: string } = {};
+  const signaturePath =
+    account.requesterSignature?.signatureStoragePath ||
+    getStoragePathFromDownloadUrl(account.requesterSignature?.signatureUrl);
+  try {
+    if (signaturePath) {
+      signatureAsset = {
+        imageBlob: await getAuthorizedDownloadBlob(ref(storage, signaturePath)),
+        imageFileName: signaturePath.split('/').pop() || 'firma.png',
+      };
+    } else if (account.requesterSignature?.signatureUrl) {
+      signatureAsset = { imageUrl: account.requesterSignature.signatureUrl };
+    }
+  } catch (error) {
+    console.warn('La firma no pudo descargarse; el informe conservará los datos del firmante.', error);
   }
-  <div class="signature">
-    <strong>${escapeHtml(account.requesterSignature?.name || account.contractorName)}</strong><br/>
-    <span class="muted">${escapeHtml(account.requesterSignature?.jobTitle || 'Contratista')} · ${escapeHtml(account.requesterSignature?.email || account.contractorEmail || '')}</span>
-  </div>
-</body>
-</html>`;
-  downloadBlob(`${isChargeAccount ? 'cuenta-de-cobro' : 'informe-actividades'}-${safeToken}.html`, new Blob([html], { type: 'text/html;charset=utf-8' }));
+  const report: ContractorAccountPdfReport = {
+    documentKind: kind,
+    title: isChargeAccount ? 'Cuenta de cobro' : 'Informe contractual de actividades',
+    accountId: account.customId || account.id,
+    projectName: account.projectName || fallbackProjectName || 'Proyecto Pixel',
+    status: CONTRACTOR_ACCOUNT_STATUS_META[account.status]?.label || account.status,
+    generatedAt: new Date().toISOString(),
+    contractor: {
+      name: account.contractorName,
+      email: account.contractorEmail,
+      jobTitle: account.requesterSignature?.jobTitle,
+    },
+    periodStart: account.periodStart,
+    periodEnd: account.periodEnd,
+    honorariumAmount: account.honorariumAmount,
+    socialSecurityBase: account.socialSecurityBase,
+    minimumWage: account.parafiscalsValidation?.minimumWage || COLOMBIA_LEGAL_MINIMUM_WAGE,
+    estimatedMinimumWages: account.estimatedMinimumWages || 1,
+    activitySummary: account.activitySummary || account.activitySnapshot?.qualitySummary,
+    activities: activityItems.map((activity) => ({
+      title: activity.taskTitle,
+      type: activity.type === 'workflow_step' ? 'Paso de workflow' : activity.type === 'subtask' ? 'Subtarea' : 'Tarea',
+      stepLabel: activity.stepLabel,
+      groupName: activity.groupName,
+      status: getTaskStatusMeta({ status: activity.status }).label,
+      completedAt: activity.completedAt || activity.date,
+      dueDate: activity.dueDate,
+      timing: activity.timing,
+      daysLate: activity.daysLate,
+      description: activity.description,
+      executionDetail: activity.executionDetail,
+    })),
+    performance: account.performanceSnapshot,
+    quality: account.qualitySnapshot,
+    rates: account.rateSnapshot,
+    productivity: account.productivityComparison,
+    supportDocuments: [
+      ...(account.documents || []).map((document) => ({
+        label: document.label,
+        fileName: document.fileName,
+        uploadedAt: document.uploadedAt,
+      })),
+      ...(account.paymentSupport ? [{
+        label: 'Soporte de pago',
+        fileName: account.paymentSupport.fileName,
+        uploadedAt: account.paymentSupport.uploadedAt,
+      }] : []),
+    ],
+    approvals: (account.approvals || []).map((approval) => ({
+      stage: CONTRACTOR_ACCOUNT_STATUS_META[approval.stage]?.label || approval.stage,
+      actorName: approval.actorName,
+      at: approval.at,
+      comment: approval.comment,
+    })),
+    signature: {
+      name: account.requesterSignature?.name || account.contractorName,
+      email: account.requesterSignature?.email || account.contractorEmail,
+      jobTitle: account.requesterSignature?.jobTitle || 'Contratista',
+      signedAt: account.requesterSignature?.signedAt,
+      ...signatureAsset,
+    },
+  };
+  const { bytes } = await generateContractorAccountPdf(report);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  downloadBlob(
+    `${isChargeAccount ? 'cuenta-de-cobro' : 'informe-contractual'}-${safeToken}.pdf`,
+    new Blob([buffer], { type: 'application/pdf' })
+  );
+  toast.success(
+    isChargeAccount
+      ? 'Cuenta de cobro PDF generada.'
+      : 'Informe contractual PDF generado con actividades, calidad, rates y comparativos.',
+    { id: toastId }
+  );
+  } catch (error: any) {
+    console.error('Error generating contractor account PDF:', error);
+    toast.error(error?.message || 'No se pudo generar el informe PDF de la cuenta de cobro.', { id: toastId });
+  }
 };
 
 const getDateValue = (value: any): Date | null => {
@@ -1045,6 +1079,16 @@ const inclusiveDays = (start: string, end: string) => {
 
 const getMemberLabel = (member: any) =>
   member?.displayName || member?.name || member?.email || member?.id || 'Profesional';
+
+const getMemberRoleLabel = (member: any) =>
+  String(
+    member?.roleName ||
+    member?.position ||
+    member?.jobTitle ||
+    member?.profileRole ||
+    member?.systemRole ||
+    'Sin cargo configurado'
+  ).trim();
 
 const getCurrentUserName = (user: any) =>
   user?.displayName || user?.name || user?.email?.split('@')[0] || 'Usuario';
@@ -1160,6 +1204,97 @@ const getStepBillingDate = (task: any, step: any) =>
   step?.endDate ||
   getTaskBillingDate(task);
 
+const getTaskCompletedDate = (task: any) =>
+  task?.completedAt ||
+  task?.closedAt ||
+  task?.finishedAt ||
+  task?.completionDate ||
+  null;
+
+const getTaskDueDate = (task: any) =>
+  task?.dueDate ||
+  task?.endDate ||
+  task?.plannedEndAt ||
+  task?.plannedEndDate ||
+  task?.expectedEndDate ||
+  task?.deadline ||
+  null;
+
+const getStepCompletedDate = (task: any, step: any) =>
+  step?.completedAt ||
+  step?.finishedAt ||
+  step?.completionDate ||
+  getTaskCompletedDate(task);
+
+const getStepDueDate = (task: any, step: any) =>
+  step?.dueDate ||
+  step?.plannedEndAt ||
+  step?.plannedEndDate ||
+  step?.endDate ||
+  step?.expectedEndDate ||
+  step?.deadline ||
+  getTaskDueDate(task);
+
+const getCalendarDaysLate = (completedValue: any, dueValue: any) => {
+  const completed = getDateValue(completedValue);
+  const due = getDateValue(dueValue);
+  if (!completed || !due) return 0;
+  const completedDay = new Date(completed.getFullYear(), completed.getMonth(), completed.getDate()).getTime();
+  const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate()).getTime();
+  return Math.max(0, Math.ceil((completedDay - dueDay) / 86400000));
+};
+
+const getReadableFormValue = (value: any): string => {
+  if (value === undefined || value === null || value === '') return '';
+  if (Array.isArray(value)) {
+    return value.map(getReadableFormValue).filter(Boolean).join(', ');
+  }
+  if (typeof value === 'object') {
+    const fileName = value.fileName || value.name || value.documentName;
+    if (fileName) return `Documento: ${fileName}`;
+    return Object.entries(value)
+      .map(([key, nested]) => `${key}: ${getReadableFormValue(nested)}`)
+      .filter((entry) => !entry.endsWith(': '))
+      .join('; ');
+  }
+  if (typeof value === 'boolean') return value ? 'Sí' : 'No';
+  return String(value);
+};
+
+const buildActivityExecutionDetail = (task: any, step?: any) => {
+  const source = step || task;
+  const fields = Array.isArray(step?.form?.fields)
+    ? step.form.fields
+    : Array.isArray(task?.completionForm?.fields)
+      ? task.completionForm.fields
+      : [];
+  const formData = step?.formData || task?.completionFormData || {};
+  const fieldById = new Map(fields.map((field: any) => [String(field.id), field]));
+  const formDetails = Object.entries(formData)
+    .map(([fieldId, value]) => {
+      const readable = getReadableFormValue(value);
+      if (!readable) return '';
+      const field = fieldById.get(String(fieldId)) as any;
+      return `${field?.label || fieldId}: ${readable}`;
+    })
+    .filter(Boolean);
+  const narrative = [
+    source?.completionComment,
+    source?.result,
+    source?.outcome,
+    source?.comment,
+    source?.observations,
+    source?.observation,
+    source?.notes,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  const details = Array.from(new Set([...narrative, ...formDetails]));
+  return details.length > 0
+    ? details.join(' | ').slice(0, 2400)
+    : 'Actividad finalizada en Pixel sin detalle adicional diligenciado.';
+};
+
 const getWorkflowStepLabel = (step: any, index: number) =>
   step?.label || step?.title || step?.name || step?.description || `Paso ${index + 1}`;
 
@@ -1175,12 +1310,28 @@ const contractorTokensMatch = (tokens: Set<string>, value: any): boolean => {
   return tokens.has(String(value).trim().toLowerCase());
 };
 
+const buildMemberIdentityTokens = (member: any) => {
+  const tokens = new Set<string>();
+  [
+    member?.id,
+    member?.uid,
+    member?.userId,
+    member?.memberId,
+    member?.authUserId,
+    member?.email,
+    member?.displayName,
+    member?.name,
+  ].forEach((value) => {
+    if (value !== undefined && value !== null && value !== '') {
+      tokens.add(String(value).trim().toLowerCase());
+    }
+  });
+  return tokens;
+};
+
 const summarizeContractorActivities = (activities: ContractorAccountActivityItem[], rateSummary: { income: number; cost: number; movements: number }) => {
   const completedTasks = activities.filter((activity) => isCompletedTaskStatus(getActivityStatus(activity))).length;
-  const overdueTasks = activities.filter((activity) => {
-    const due = getDateValue(activity.date);
-    return due && due.getTime() < Date.now() && !isCompletedTaskStatus(getActivityStatus(activity));
-  }).length;
+  const overdueTasks = activities.filter((activity) => activity.timing === 'late').length;
   const activeTasks = Math.max(0, activities.length - completedTasks);
   const onTimeTasks = Math.max(0, activities.length - overdueTasks);
   const rateMargin = roundCurrency(rateSummary.income - rateSummary.cost);
@@ -1428,6 +1579,7 @@ export function ProjectAdministration({
   const [contractorAccountStep, setContractorAccountStep] = useState<1 | 2 | 3>(1);
   const [contractorAccountForm, setContractorAccountForm] = useState(() => buildEmptyContractorAccountForm());
   const [contractorDocumentFiles, setContractorDocumentFiles] = useState<Partial<Record<ContractorAccountDocumentKind, File | null>>>({});
+  const [isContractorParafiscalsDragging, setIsContractorParafiscalsDragging] = useState(false);
   const [contractorPaymentFile, setContractorPaymentFile] = useState<File | null>(null);
   const [contractorAccountAction, setContractorAccountAction] = useState<{
     type: 'approve' | 'return' | 'reject' | 'account' | 'pay';
@@ -1709,6 +1861,9 @@ export function ProjectAdministration({
       if (steps.length > 0) {
         return steps.map((step: any, index: number) => {
           const stepLabel = getWorkflowStepLabel(step, index);
+          const completedAt = toDateInputValue(getStepCompletedDate(task, step));
+          const dueDate = toDateInputValue(getStepDueDate(task, step));
+          const daysLate = getCalendarDaysLate(getStepCompletedDate(task, step), getStepDueDate(task, step));
           return {
             ...base,
             key: `workflow-step:${task.id}:${index}`,
@@ -1718,6 +1873,12 @@ export function ProjectAdministration({
             stepLabel,
             status: step?.status || task.status,
             date: toDateInputValue(getStepBillingDate(task, step)),
+            completedAt,
+            dueDate,
+            timing: !dueDate ? 'without_schedule' as const : daysLate > 0 ? 'late' as const : 'on_time' as const,
+            daysLate,
+            description: String(step?.description || step?.instructions || task?.description || '').trim(),
+            executionDetail: buildActivityExecutionDetail(task, step),
             actorTokens: collectStepActorTokens(task, step),
           };
         });
@@ -1725,6 +1886,9 @@ export function ProjectAdministration({
 
       if (taskIdsWithChildren.has(String(task.id))) return [];
 
+      const completedAt = toDateInputValue(getTaskCompletedDate(task));
+      const dueDate = toDateInputValue(getTaskDueDate(task));
+      const daysLate = getCalendarDaysLate(getTaskCompletedDate(task), getTaskDueDate(task));
       return [{
         ...base,
         key: `task:${task.id}`,
@@ -1734,6 +1898,12 @@ export function ProjectAdministration({
         stepLabel: null,
         status: task.status,
         date: toDateInputValue(getTaskBillingDate(task)),
+        completedAt,
+        dueDate,
+        timing: !dueDate ? 'without_schedule' as const : daysLate > 0 ? 'late' as const : 'on_time' as const,
+        daysLate,
+        description: String(task?.description || task?.instructions || '').trim(),
+        executionDetail: buildActivityExecutionDetail(task),
         actorTokens: collectTaskActorTokens(task),
       }];
     });
@@ -2713,6 +2883,135 @@ export function ProjectAdministration({
     };
   }, [contractorAccountForm.periodEnd, contractorAccountForm.periodStart, contractorRateCardById, contractorRateEntries, currentContractorTokens]);
 
+  const contractorPerformanceSnapshot = useMemo((): ContractorPerformanceSnapshot => {
+    const completedOnTime = selectedContractorActivities.filter((activity) => activity.timing === 'on_time').length;
+    const completedLate = selectedContractorActivities.filter((activity) => activity.timing === 'late').length;
+    const completedWithoutSchedule = selectedContractorActivities.filter((activity) => activity.timing === 'without_schedule').length;
+    const endBoundary = contractorAccountForm.periodEnd;
+    const today = todayInputValue();
+    const openOverdueActivities = contractorBillableActivities.filter((activity) => {
+      const activityTokens = (activity as any).actorTokens as Set<string> | undefined;
+      if (!activityTokens || !Array.from(currentContractorTokens).some((token) => activityTokens.has(token))) return false;
+      if (isCompletedTaskStatus(getActivityStatus(activity))) return false;
+      if (!activity.dueDate || activity.dueDate > endBoundary || activity.dueDate >= today) return false;
+      return activity.dueDate >= contractorAccountForm.periodStart;
+    });
+    const lateAlerts = selectedContractorActivities
+      .filter((activity) => activity.timing === 'late')
+      .map((activity) => ({
+        key: activity.key,
+        taskTitle: activity.taskTitle,
+        stepLabel: activity.stepLabel,
+        kind: 'completed_late' as const,
+        dueDate: activity.dueDate,
+        completedAt: activity.completedAt || activity.date,
+        daysLate: activity.daysLate || 0,
+      }));
+    const overdueAlerts = openOverdueActivities.map((activity) => ({
+      key: activity.key,
+      taskTitle: activity.taskTitle,
+      stepLabel: activity.stepLabel,
+      kind: 'open_overdue' as const,
+      dueDate: activity.dueDate,
+      completedAt: activity.completedAt,
+      daysLate: getCalendarDaysLate(new Date(), activity.dueDate),
+    }));
+    return {
+      selectedCompleted: selectedContractorActivities.length,
+      completedOnTime,
+      completedLate,
+      completedWithoutSchedule,
+      openOverdue: openOverdueActivities.length,
+      alerts: [...overdueAlerts, ...lateAlerts]
+        .sort((left, right) => right.daysLate - left.daysLate)
+        .slice(0, 30),
+    };
+  }, [
+    contractorAccountForm.periodEnd,
+    contractorAccountForm.periodStart,
+    contractorBillableActivities,
+    currentContractorTokens,
+    selectedContractorActivities,
+  ]);
+
+  const contractorProductivityComparison = useMemo((): ContractorProductivityComparison => {
+    const roleLabel = getMemberRoleLabel(currentSignerMember);
+    const normalizedRole = normalizeTaskSearchText(roleLabel);
+    const comparableMembers = teamMembers.filter(
+      (member) => normalizeTaskSearchText(getMemberRoleLabel(member)) === normalizedRole
+    );
+    const members = comparableMembers.length > 0
+      ? comparableMembers
+      : currentSignerMember
+        ? [currentSignerMember]
+        : [];
+    const memberRows = members.map((member) => ({
+      member,
+      memberId: String(member?.id || member?.authUserId || member?.email || getMemberLabel(member)),
+      name: getMemberLabel(member),
+      tokens: buildMemberIdentityTokens(member),
+      isContractor: contractorTokensMatch(currentContractorTokens, member),
+    }));
+    const rows = contractorPeriodRateSummary.rows.map((contractorRate) => {
+      const professionals = memberRows.map((memberRow) => {
+        const units = contractorRateEntries.reduce((sum, entry) => {
+          if (String(entry?.rateCardId || '') !== contractorRate.rateCardId) return sum;
+          if (entry?.isRework) return sum;
+          if (!isDateWithinRange(entry?.date || entry?.dateKey || entry?.createdAt, contractorAccountForm.periodStart, contractorAccountForm.periodEnd)) return sum;
+          if (!contractorTokensMatch(memberRow.tokens, entry?.assignedTo || entry?.userId || entry?.memberId)) return sum;
+          return sum + Math.abs(normalizeDecimalInput(entry?.units ?? entry?.amount ?? entry?.quantity, 0));
+        }, 0);
+        return {
+          memberId: memberRow.memberId,
+          name: memberRow.name,
+          units: roundCurrency(units),
+          isContractor: memberRow.isContractor,
+        };
+      }).sort((left, right) => right.units - left.units || left.name.localeCompare(right.name, 'es', { sensitivity: 'base' }));
+      const contractorIndex = professionals.findIndex((professional) => professional.isContractor);
+      const contractorUnits = contractorIndex >= 0 ? professionals[contractorIndex].units : contractorRate.units;
+      const peerValues = professionals.filter((professional) => !professional.isContractor).map((professional) => professional.units);
+      const peerAverageUnits = peerValues.length > 0
+        ? roundCurrency(peerValues.reduce((sum, units) => sum + units, 0) / peerValues.length)
+        : 0;
+      return {
+        rateCardId: contractorRate.rateCardId,
+        name: contractorRate.name,
+        unitLabel: contractorRate.unitLabel || 'unidad',
+        contractorUnits,
+        peerAverageUnits,
+        peerTopUnits: peerValues.length > 0 ? Math.max(...peerValues) : 0,
+        contractorRank: contractorIndex >= 0 ? contractorIndex + 1 : 1,
+        professionalCount: professionals.length || 1,
+        deltaVsAveragePct: peerAverageUnits > 0
+          ? Math.round(((contractorUnits - peerAverageUnits) / peerAverageUnits) * 100)
+          : null,
+        professionals: professionals.length > 0
+          ? professionals
+          : [{
+              memberId: String(currentSignerMember?.id || currentUser?.uid || 'contratista'),
+              name: getMemberLabel(currentSignerMember) || getCurrentUserName(currentUser),
+              units: contractorUnits,
+              isContractor: true,
+            }],
+      };
+    });
+    return {
+      roleLabel,
+      peerCount: Math.max(0, memberRows.length - 1),
+      rows,
+    };
+  }, [
+    contractorAccountForm.periodEnd,
+    contractorAccountForm.periodStart,
+    contractorPeriodRateSummary.rows,
+    contractorRateEntries,
+    currentContractorTokens,
+    currentSignerMember,
+    currentUser,
+    teamMembers,
+  ]);
+
   const contractorPeriodQualityEvents = useMemo(() => {
     return contractorQualityEvents
       .filter((event) => {
@@ -2771,11 +3070,26 @@ export function ProjectAdministration({
   const openNewContractorAccount = () => {
     setContractorAccountForm(buildEmptyContractorAccountForm());
     setContractorDocumentFiles({});
+    setIsContractorParafiscalsDragging(false);
     setContractorAccountStep(1);
     setAdvanceTaskSearch('');
     setAdvanceTaskStatusFilter('all');
     setAdvanceTaskGroupFilter('all');
     setIsContractorAccountModalOpen(true);
+  };
+
+  const selectContractorParafiscalsFile = (file?: File | null) => {
+    if (!file) return;
+    const extension = file.name.toLowerCase().split('.').pop() || '';
+    if (!['pdf', 'png', 'jpg', 'jpeg'].includes(extension)) {
+      toast.warning('El soporte debe ser PDF, PNG, JPG o JPEG.');
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      toast.warning('El soporte de parafiscales no puede superar 15 MB.');
+      return;
+    }
+    setContractorDocumentFiles((current) => ({ ...current, parafiscals: file }));
   };
 
   const toggleContractorAccountTask = (activityKey: string) => {
@@ -2947,6 +3261,9 @@ export function ProjectAdministration({
         activitySnapshot: contractorActivitySnapshot,
         qualitySnapshot: contractorQualitySnapshot,
         rateSnapshot: contractorPeriodRateSummary,
+        performanceSnapshot: contractorPerformanceSnapshot,
+        productivityComparison: contractorProductivityComparison,
+        projectName: project?.name || 'Proyecto Pixel',
         requesterSignature,
         generatedDocuments: CONTRACTOR_ACCOUNT_GENERATED_DOCUMENTS.map((document) => ({
           ...document,
@@ -6534,6 +6851,7 @@ export function ProjectAdministration({
       </>
       ) : (
         <ContractorAccountsWorkspace
+          projectName={project?.name || 'Proyecto Pixel'}
           accounts={filteredContractorAccounts}
           allAccounts={contractorAccounts}
           view={contractorAccountView}
@@ -6775,6 +7093,66 @@ export function ProjectAdministration({
                     </div>
                   </div>
 
+                  <div className="grid gap-3 xl:grid-cols-2">
+                    <div className={`rounded-xl border p-4 ${
+                      contractorPerformanceSnapshot.alerts.length > 0
+                        ? 'border-amber-200 bg-amber-50/70'
+                        : 'border-teal-100 bg-teal-50/60'
+                    }`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className={`text-[10px] font-black uppercase tracking-[0.24em] ${
+                            contractorPerformanceSnapshot.alerts.length > 0 ? 'text-amber-700' : 'text-teal-700'
+                          }`}>Cumplimiento del cronograma</p>
+                          <p className="mt-1 text-xs font-semibold text-slate-600">Pixel contrasta fecha programada, fecha real y pendientes vencidos.</p>
+                        </div>
+                        <span className={`rounded-full bg-white px-2.5 py-1 text-xs font-black ring-1 ${
+                          contractorPerformanceSnapshot.alerts.length > 0
+                            ? 'text-amber-700 ring-amber-200'
+                            : 'text-teal-700 ring-teal-100'
+                        }`}>
+                          {contractorPerformanceSnapshot.alerts.length} alerta{contractorPerformanceSnapshot.alerts.length === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <ReceiptGroupMetric label="A tiempo" value={`${contractorPerformanceSnapshot.completedOnTime}`} tone="emerald" />
+                        <ReceiptGroupMetric label="Fuera de tiempo" value={`${contractorPerformanceSnapshot.completedLate}`} tone={contractorPerformanceSnapshot.completedLate ? 'amber' : 'slate'} />
+                        <ReceiptGroupMetric label="Sin cronograma" value={`${contractorPerformanceSnapshot.completedWithoutSchedule}`} tone="slate" />
+                        <ReceiptGroupMetric label="Vencidas abiertas" value={`${contractorPerformanceSnapshot.openOverdue}`} tone={contractorPerformanceSnapshot.openOverdue ? 'rose' : 'slate'} />
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-[0.24em] text-violet-700">Comparativo de productividad</p>
+                          <p className="mt-1 text-xs font-semibold text-slate-600">Comparación contra profesionales con el mismo cargo dentro del proyecto.</p>
+                        </div>
+                        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-violet-700 ring-1 ring-violet-100">
+                          {contractorProductivityComparison.peerCount} comparable{contractorProductivityComparison.peerCount === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <p className="mt-3 text-xs font-black text-slate-800">{contractorProductivityComparison.roleLabel}</p>
+                      <div className="mt-2 space-y-2">
+                        {contractorProductivityComparison.rows.length === 0 ? (
+                          <p className="rounded-lg bg-white/80 p-3 text-xs font-semibold text-slate-500 ring-1 ring-violet-100">Sin rates del contratista para construir el comparativo.</p>
+                        ) : (
+                          contractorProductivityComparison.rows.slice(0, 4).map((row) => (
+                            <div key={row.rateCardId} className="rounded-lg bg-white/90 p-3 text-xs ring-1 ring-violet-100">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate font-black text-slate-800">{row.name}</p>
+                                <span className="shrink-0 font-black text-violet-700">#{row.contractorRank} de {row.professionalCount}</span>
+                              </div>
+                              <p className="mt-1 font-semibold text-slate-500">
+                                Profesional {row.contractorUnits} · promedio comparable {row.peerAverageUnits} {row.unitLabel}
+                              </p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
                   <Field label="Resumen automático del informe de actividades">
                     <textarea
                       className={textareaClass}
@@ -6801,17 +7179,97 @@ export function ProjectAdministration({
                   </div>
 
                   {CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS.map((document) => (
-                    <Field key={document.kind} label={document.label}>
+                    <div key={document.kind}>
+                      <p className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">{document.label}</p>
                       <input
+                        id={`contractor-document-${document.kind}`}
                         type="file"
-                        className={inputClass}
+                        className="sr-only"
                         accept=".pdf,.png,.jpg,.jpeg"
-                        onChange={(event) => setContractorDocumentFiles((current) => ({ ...current, [document.kind]: event.target.files?.[0] || null }))}
+                        onChange={(event) => {
+                          selectContractorParafiscalsFile(event.target.files?.[0] || null);
+                          event.target.value = '';
+                        }}
                       />
-                      <p className="mt-1 text-[11px] font-semibold text-slate-400">
-                        {contractorDocumentFiles[document.kind]?.name || 'Documento obligatorio del periodo'}
+                      {contractorDocumentFiles[document.kind] ? (
+                        <div className="flex flex-col gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 sm:flex-row sm:items-center">
+                          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white text-emerald-600 shadow-sm ring-1 ring-emerald-100">
+                            <FileText size={24} />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-black text-slate-900">{contractorDocumentFiles[document.kind]?.name}</p>
+                            <p className="mt-1 text-xs font-semibold text-emerald-700">
+                              Archivo listo · {formatSupportFileSize(contractorDocumentFiles[document.kind]?.size || 0)}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 gap-2">
+                            <label
+                              htmlFor={`contractor-document-${document.kind}`}
+                              className="inline-flex h-9 cursor-pointer items-center justify-center rounded-lg bg-white px-3 text-xs font-black text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+                            >
+                              Reemplazar
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => setContractorDocumentFiles((current) => ({ ...current, [document.kind]: null }))}
+                              className="inline-flex h-9 items-center justify-center rounded-lg bg-white px-3 text-xs font-black text-rose-600 ring-1 ring-rose-200 hover:bg-rose-50"
+                            >
+                              <Trash2 size={14} className="mr-1.5" />
+                              Quitar
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <label
+                          htmlFor={`contractor-document-${document.kind}`}
+                          onDragEnter={(event) => {
+                            event.preventDefault();
+                            setIsContractorParafiscalsDragging(true);
+                          }}
+                          onDragOver={(event) => {
+                            event.preventDefault();
+                            setIsContractorParafiscalsDragging(true);
+                          }}
+                          onDragLeave={(event) => {
+                            event.preventDefault();
+                            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                              setIsContractorParafiscalsDragging(false);
+                            }
+                          }}
+                          onDrop={(event) => {
+                            event.preventDefault();
+                            setIsContractorParafiscalsDragging(false);
+                            selectContractorParafiscalsFile(event.dataTransfer.files?.[0] || null);
+                          }}
+                          className={`group flex min-h-44 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-8 text-center transition ${
+                            isContractorParafiscalsDragging
+                              ? 'border-cyan-500 bg-cyan-50 shadow-lg shadow-cyan-500/10'
+                              : 'border-slate-300 bg-slate-50/70 hover:border-cyan-400 hover:bg-cyan-50/60'
+                          }`}
+                        >
+                          <span className={`flex h-14 w-14 items-center justify-center rounded-2xl bg-white shadow-sm ring-1 transition ${
+                            isContractorParafiscalsDragging
+                              ? 'scale-105 text-cyan-600 ring-cyan-200'
+                              : 'text-slate-500 ring-slate-200 group-hover:text-cyan-600 group-hover:ring-cyan-200'
+                          }`}>
+                            <UploadCloud size={28} />
+                          </span>
+                          <span className="mt-4 text-base font-black text-slate-900">
+                            {isContractorParafiscalsDragging ? 'Suelta el soporte aquí' : 'Arrastra aquí el soporte de parafiscales'}
+                          </span>
+                          <span className="mt-1 text-sm font-semibold text-slate-500">
+                            o haz clic para seleccionarlo desde tu computador
+                          </span>
+                          <span className="mt-3 rounded-full bg-white px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-slate-500 ring-1 ring-slate-200">
+                            PDF, PNG o JPG · máximo 15 MB
+                          </span>
+                        </label>
+                      )}
+                      <p className="mt-2 flex items-center gap-2 text-xs font-semibold text-slate-500">
+                        <ShieldCheck size={14} className="text-emerald-600" />
+                        Documento obligatorio; quedará protegido dentro del expediente de la cuenta.
                       </p>
-                    </Field>
+                    </div>
                   ))}
                 </div>
               )}
@@ -6829,9 +7287,11 @@ export function ProjectAdministration({
                 <SummaryLine label="Actividades seleccionadas" value={`${selectedContractorActivities.length}`} />
                 <SummaryLine label="Calidad del mes" value={contractorQualitySnapshot.score === null ? 'Sin dato' : `${contractorQualitySnapshot.score}%`} />
                 <SummaryLine label="Revisiones calidad" value={`${contractorQualitySnapshot.reviewed}`} />
+                <SummaryLine label="Alertas de cronograma" value={`${contractorPerformanceSnapshot.alerts.length}`} />
                 <SummaryLine label="Ingreso rate cards" value={formatMoney(contractorActivitySnapshot.rateIncome)} />
                 <SummaryLine label="Costo rate cards" value={formatMoney(contractorActivitySnapshot.rateCost)} />
                 <SummaryLine label="Rates distintos" value={`${contractorPeriodRateSummary.rows.length}`} />
+                <SummaryLine label="Profesionales comparables" value={`${contractorProductivityComparison.peerCount}`} />
                 <SummaryLine label="Documentos cargados" value={`${Object.values(contractorDocumentFiles).filter(Boolean).length} de 1`} />
               </div>
               <div className="mt-4 rounded-lg bg-white p-3 text-xs font-semibold leading-5 text-slate-600 ring-1 ring-cyan-100">
@@ -8398,6 +8858,7 @@ export function ProjectAdministration({
 }
 
 function ContractorAccountsWorkspace({
+  projectName,
   accounts,
   allAccounts,
   view,
@@ -8412,6 +8873,7 @@ function ContractorAccountsWorkspace({
   onNew,
   onAction,
 }: {
+  projectName: string;
   accounts: ContractorPaymentRequest[];
   allAccounts: ContractorPaymentRequest[];
   view: 'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid';
@@ -8623,6 +9085,33 @@ function ContractorAccountsWorkspace({
                             </p>
                           )}
                         </div>
+                        <div className={`rounded-lg border p-3 ${
+                          account.performanceSnapshot?.alerts?.length
+                            ? 'border-amber-200 bg-amber-50/70'
+                            : 'border-teal-100 bg-teal-50/60'
+                        }`}>
+                          <p className={`text-[10px] font-black uppercase tracking-[0.18em] ${
+                            account.performanceSnapshot?.alerts?.length ? 'text-amber-700' : 'text-teal-700'
+                          }`}>Cumplimiento del cronograma</p>
+                          <div className="mt-2 grid grid-cols-3 gap-2">
+                            <ReceiptGroupMetric label="A tiempo" value={`${account.performanceSnapshot?.completedOnTime || 0}`} tone="emerald" />
+                            <ReceiptGroupMetric label="Tardías" value={`${account.performanceSnapshot?.completedLate || 0}`} tone={account.performanceSnapshot?.completedLate ? 'amber' : 'slate'} />
+                            <ReceiptGroupMetric label="Vencidas" value={`${account.performanceSnapshot?.openOverdue || 0}`} tone={account.performanceSnapshot?.openOverdue ? 'rose' : 'slate'} />
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-violet-100 bg-violet-50/60 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.18em] text-violet-700">Comparativo por cargo</p>
+                          <p className="mt-2 truncate text-xs font-black text-slate-700">
+                            {account.productivityComparison?.roleLabel || account.requesterSignature?.jobTitle || 'Sin cargo'}
+                          </p>
+                          {(account.productivityComparison?.rows || []).length > 0 ? (
+                            <p className="mt-1 truncate text-xs font-semibold text-slate-500">
+                              {account.productivityComparison?.rows?.[0]?.name}: puesto #{account.productivityComparison?.rows?.[0]?.contractorRank} de {account.productivityComparison?.rows?.[0]?.professionalCount}
+                            </p>
+                          ) : (
+                            <p className="mt-1 text-xs font-semibold text-slate-500">Sin rates para comparar en el periodo.</p>
+                          )}
+                        </div>
                       </div>
                       {account.requesterSignature && <div className="mt-3 max-w-md"><SignatureSummary title="Firma del contratista" signature={account.requesterSignature} /></div>}
                     </div>
@@ -8633,7 +9122,7 @@ function ContractorAccountsWorkspace({
                           <button
                             key={`${account.id}-${document.kind}`}
                             type="button"
-                            onClick={() => downloadContractorGeneratedDocument(account, document.kind)}
+                            onClick={() => downloadContractorGeneratedDocument(account, document.kind, projectName)}
                             className="flex w-full items-center justify-between gap-3 rounded-lg bg-cyan-50 px-3 py-2 text-left text-xs font-black text-cyan-700 ring-1 ring-cyan-100 hover:bg-cyan-100"
                           >
                             <span className="min-w-0 truncate">{document.label}</span>
