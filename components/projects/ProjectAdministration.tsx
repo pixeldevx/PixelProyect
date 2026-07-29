@@ -511,6 +511,9 @@ type ContractorPaymentRequest = {
   returnedAt?: any;
   returnedBy?: string | null;
   returnedByName?: string;
+  rejectedAt?: any;
+  rejectedBy?: string | null;
+  rejectedByName?: string;
   accountingReference?: string;
   accountingNote?: string;
   accountedAt?: any;
@@ -690,7 +693,7 @@ const CONTRACTOR_ACCOUNT_STATUS_META: Record<ContractorAccountStatus, { label: s
   accounted: { label: 'Contabilizada · por pagar', className: 'bg-cyan-50 text-cyan-700 ring-cyan-100' },
   paid: { label: 'Pagada', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
   returned: { label: 'Devuelta', className: 'bg-orange-50 text-orange-700 ring-orange-100' },
-  rejected: { label: 'Rechazada', className: 'bg-rose-50 text-rose-700 ring-rose-100' },
+  rejected: { label: 'Cuenta de cobro rechazada', className: 'bg-rose-50 text-rose-700 ring-rose-100' },
 };
 
 const getNextContractorAccountStatus = (status: ContractorAccountStatus): ContractorAccountStatus | null => {
@@ -1572,7 +1575,7 @@ export function ProjectAdministration({
   const [locationsLoaded, setLocationsLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'requests' | 'approvals' | 'payables' | 'receipts' | 'conciliation' | 'payments' | 'settings'>('requests');
-  const [contractorAccountView, setContractorAccountView] = useState<'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid'>('all');
+  const [contractorAccountView, setContractorAccountView] = useState<'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid' | 'rejected'>('all');
   const [contractorAccountSearch, setContractorAccountSearch] = useState('');
   const [showPaidContractorAccounts, setShowPaidContractorAccounts] = useState(false);
   const [isContractorAccountModalOpen, setIsContractorAccountModalOpen] = useState(false);
@@ -1582,7 +1585,7 @@ export function ProjectAdministration({
   const [isContractorParafiscalsDragging, setIsContractorParafiscalsDragging] = useState(false);
   const [contractorPaymentFile, setContractorPaymentFile] = useState<File | null>(null);
   const [contractorAccountAction, setContractorAccountAction] = useState<{
-    type: 'approve' | 'return' | 'reject' | 'account' | 'pay';
+    type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete';
     account: ContractorPaymentRequest;
   } | null>(null);
   const [contractorAccountActionComment, setContractorAccountActionComment] = useState('');
@@ -2063,6 +2066,7 @@ export function ProjectAdministration({
         if (contractorAccountView === 'humanTalent') return account.status === 'quality_approved';
         if (contractorAccountView === 'accounting') return ['hr_approved', 'accounted'].includes(account.status);
         if (contractorAccountView === 'paid') return account.status === 'paid';
+        if (contractorAccountView === 'rejected') return account.status === 'rejected';
         return account.status !== 'rejected';
       })
       .filter((account) => {
@@ -2091,6 +2095,7 @@ export function ProjectAdministration({
       pendingAccounting: activeAccounts.filter((account) => account.status === 'hr_approved').length,
       pendingPayment: activeAccounts.filter((account) => account.status === 'accounted').length,
       paid: activeAccounts.filter((account) => account.status === 'paid').length,
+      rejected: contractorAccounts.filter((account) => account.status === 'rejected').length,
       totalHonorarium: activeAccounts.reduce((sum, account) => sum + asNumber(account.honorariumAmount), 0),
       socialSecurityBase: activeAccounts.reduce((sum, account) => sum + asNumber(account.socialSecurityBase), 0),
     };
@@ -3532,7 +3537,7 @@ export function ProjectAdministration({
   };
 
   const openContractorAccountAction = (
-    type: 'approve' | 'return' | 'reject' | 'account' | 'pay',
+    type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete',
     account: ContractorPaymentRequest
   ) => {
     setContractorPaymentFile(null);
@@ -3548,7 +3553,11 @@ export function ProjectAdministration({
   const applyContractorAccountAction = async () => {
     if (!contractorAccountAction) return;
     const { type, account } = contractorAccountAction;
-    if (!canValidate && type !== 'return') return;
+    if (type === 'delete' && !canManage) {
+      toast.error('Solo administradores o coordinadores pueden eliminar cuentas de cobro.');
+      return;
+    }
+    if (type !== 'delete' && !canValidate && type !== 'return') return;
     const nextStatus = type === 'approve' ? getNextContractorAccountStatus(account.status) : null;
     if (type === 'approve' && !nextStatus) {
       toast.warning('Esta cuenta de cobro no tiene una siguiente aprobación disponible.');
@@ -3566,6 +3575,15 @@ export function ProjectAdministration({
     setSubmitting(true);
     try {
       const refDoc = doc(db, 'projects', projectId, 'contractorPaymentRequests', account.id);
+      if (type === 'delete') {
+        await removeContractorAccountDocumentArtifacts(account);
+        await deleteDoc(refDoc);
+        toast.success('Cuenta de cobro eliminada junto con sus documentos asociados.');
+        setContractorAccountAction(null);
+        setContractorPaymentFile(null);
+        return;
+      }
+
       const actorName = getCurrentUserName(currentUser);
       const signature = buildCurrentSignatureSnapshot() || undefined;
       const actionStamp = new Date().toISOString();
@@ -3616,9 +3634,9 @@ export function ProjectAdministration({
       } else if (type === 'reject') {
         payload.status = 'rejected';
         payload.returnComment = contractorAccountActionComment.trim();
-        payload.returnedAt = serverTimestamp();
-        payload.returnedBy = currentUser?.uid || null;
-        payload.returnedByName = actorName;
+        payload.rejectedAt = serverTimestamp();
+        payload.rejectedBy = currentUser?.uid || null;
+        payload.rejectedByName = actorName;
       }
 
       await updateDoc(refDoc, payload);
@@ -3669,6 +3687,36 @@ export function ProjectAdministration({
     results.forEach((result) => {
       if (result.status === 'rejected') {
         console.warn('No se pudo limpiar un artefacto del soporte eliminado:', result.reason);
+      }
+    });
+  };
+
+  const removeContractorAccountDocumentArtifacts = async (account: ContractorPaymentRequest) => {
+    const documents = [
+      ...(account.documents || []),
+      ...(account.paymentSupport ? [account.paymentSupport] : []),
+    ].filter(Boolean);
+    const seenDocumentIds = new Set<string>();
+    const seenStoragePaths = new Set<string>();
+    const cleanupTasks: Promise<unknown>[] = [];
+
+    documents.forEach((document) => {
+      if (document.documentId && !seenDocumentIds.has(document.documentId)) {
+        seenDocumentIds.add(document.documentId);
+        cleanupTasks.push(deleteDoc(doc(db, 'projects', projectId, 'documents', document.documentId)));
+      }
+      if (document.storagePath && !seenStoragePaths.has(document.storagePath)) {
+        seenStoragePaths.add(document.storagePath);
+        cleanupTasks.push(deleteObject(ref(storage, document.storagePath)));
+      }
+    });
+
+    if (cleanupTasks.length === 0) return;
+
+    const results = await Promise.allSettled(cleanupTasks);
+    results.forEach((result) => {
+      if (result.status === 'rejected') {
+        console.warn('No se pudo limpiar un artefacto de la cuenta de cobro eliminada:', result.reason);
       }
     });
   };
@@ -7561,11 +7609,13 @@ export function ProjectAdministration({
               ? 'Registrar pago de cuenta de cobro'
               : contractorAccountAction.type === 'account'
                 ? 'Contabilizar cuenta de cobro'
-                : contractorAccountAction.type === 'return'
-                  ? 'Devolver cuenta de cobro'
-                  : contractorAccountAction.type === 'reject'
-                    ? 'Rechazar cuenta de cobro'
-                    : 'Aprobar cuenta de cobro'
+                : contractorAccountAction.type === 'delete'
+                  ? 'Eliminar cuenta de cobro'
+                  : contractorAccountAction.type === 'return'
+                    ? 'Devolver cuenta de cobro'
+                    : contractorAccountAction.type === 'reject'
+                      ? 'Rechazar cuenta de cobro'
+                      : 'Aprobar cuenta de cobro'
           }
           subtitle={`${contractorAccountAction.account.contractorName} · ${formatMoney(contractorAccountAction.account.honorariumAmount)}`}
           onClose={() => setContractorAccountAction(null)}
@@ -7591,18 +7641,34 @@ export function ProjectAdministration({
                 <input type="file" className={inputClass} accept=".pdf,.png,.jpg,.jpeg" onChange={(event) => setContractorPaymentFile(event.target.files?.[0] || null)} />
               </Field>
             )}
-            <Field label={contractorAccountAction.type === 'return' || contractorAccountAction.type === 'reject' ? 'Observación obligatoria' : 'Comentario'}>
-              <textarea className={textareaClass} value={contractorAccountActionComment} onChange={(event) => setContractorAccountActionComment(event.target.value)} placeholder="Deja una nota para la trazabilidad del flujo." />
-            </Field>
+            {contractorAccountAction.type === 'delete' && (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold leading-6 text-rose-800">
+                Se eliminará la cuenta de cobro y se intentarán borrar sus soportes del repositorio documental. Esta acción no se puede deshacer.
+              </div>
+            )}
+            {contractorAccountAction.type !== 'delete' && (
+              <Field label={contractorAccountAction.type === 'return' || contractorAccountAction.type === 'reject' ? 'Observación obligatoria' : 'Comentario'}>
+                <textarea className={textareaClass} value={contractorAccountActionComment} onChange={(event) => setContractorAccountActionComment(event.target.value)} placeholder="Deja una nota para la trazabilidad del flujo." />
+              </Field>
+            )}
             {contractorAccountAction.type === 'approve' && (
               <SignatureSummary title="Tu firma de aprobación" signature={buildCurrentSignatureSnapshot() || undefined} />
             )}
           </div>
           <ModalFooter>
             <Button type="button" variant="outline" onClick={() => setContractorAccountAction(null)}>Cancelar</Button>
-            <Button type="button" onClick={applyContractorAccountAction} disabled={submitting} className="bg-indigo-600 font-bold text-white hover:bg-indigo-700">
+            <Button
+              type="button"
+              onClick={applyContractorAccountAction}
+              disabled={submitting}
+              className={`font-bold text-white ${
+                contractorAccountAction.type === 'delete'
+                  ? 'bg-rose-600 hover:bg-rose-700'
+                  : 'bg-indigo-600 hover:bg-indigo-700'
+              }`}
+            >
               {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
-              Confirmar
+              {contractorAccountAction.type === 'delete' ? 'Sí, eliminar cuenta' : 'Confirmar'}
             </Button>
           </ModalFooter>
         </ModalShell>
@@ -9105,8 +9171,8 @@ function ContractorAccountsWorkspace({
 }: {
   accounts: ContractorPaymentRequest[];
   allAccounts: ContractorPaymentRequest[];
-  view: 'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid';
-  onViewChange: (view: 'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid') => void;
+  view: 'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid' | 'rejected';
+  onViewChange: (view: 'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid' | 'rejected') => void;
   search: string;
   onSearchChange: (value: string) => void;
   showPaid: boolean;
@@ -9115,7 +9181,7 @@ function ContractorAccountsWorkspace({
   canValidate: boolean;
   canManage: boolean;
   onNew: () => void;
-  onAction: (type: 'approve' | 'return' | 'reject' | 'account' | 'pay', account: ContractorPaymentRequest) => void;
+  onAction: (type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete', account: ContractorPaymentRequest) => void;
   onDownloadGenerated: (account: ContractorPaymentRequest, kind: 'chargeAccount' | 'activityReport') => Promise<void>;
 }) {
   const counts = {
@@ -9124,6 +9190,7 @@ function ContractorAccountsWorkspace({
     humanTalent: allAccounts.filter((account) => account.status === 'quality_approved').length,
     accounting: allAccounts.filter((account) => ['hr_approved', 'accounted'].includes(account.status)).length,
     paid: allAccounts.filter((account) => account.status === 'paid').length,
+    rejected: allAccounts.filter((account) => account.status === 'rejected').length,
   };
 
   return (
@@ -9136,6 +9203,7 @@ function ContractorAccountsWorkspace({
             ['humanTalent', 'Talento humano', counts.humanTalent],
             ['accounting', 'Contabilidad y pago', counts.accounting],
             ['paid', 'Pagadas', counts.paid],
+            ['rejected', 'Rechazadas', counts.rejected],
           ].map(([id, label, count]) => (
             <button
               key={String(id)}
@@ -9221,6 +9289,16 @@ function ContractorAccountsWorkspace({
                     <p className="mt-1 text-xs font-bold text-slate-500">
                       {formatDate(account.periodStart)} - {formatDate(account.periodEnd)} · {account.contractorEmail || 'Sin correo'}
                     </p>
+                    {account.returnComment && ['returned', 'rejected'].includes(account.status) && (
+                      <p className={`mt-2 rounded-lg px-3 py-2 text-xs font-bold ${
+                        account.status === 'rejected'
+                          ? 'bg-rose-50 text-rose-700 ring-1 ring-rose-100'
+                          : 'bg-orange-50 text-orange-700 ring-1 ring-orange-100'
+                      }`}>
+                        {account.status === 'rejected' ? 'Motivo del rechazo: ' : 'Observación de devolución: '}
+                        {account.returnComment}
+                      </p>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {canApprove && (
@@ -9251,6 +9329,12 @@ function ContractorAccountsWorkspace({
                           Rechazar
                         </Button>
                       </>
+                    )}
+                    {canManage && (
+                      <Button type="button" size="sm" variant="outline" onClick={() => onAction('delete', account)} className="border-rose-200 text-rose-700 hover:bg-rose-50">
+                        <Trash2 size={14} className="mr-2" />
+                        Eliminar
+                      </Button>
                     )}
                   </div>
                 </div>
