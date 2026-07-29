@@ -17,6 +17,7 @@ export function OrganizationManagement() {
   const { user, userRole } = useAuth();
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -60,11 +61,17 @@ export function OrganizationManagement() {
       (snapshot) => setTeamMembers(snapshot.docs.map((memberDoc) => ({ id: memberDoc.id, ...memberDoc.data() }))),
       (error) => handleDataError(error, OperationType.LIST, 'team_members')
     );
+    const unsubscribeUsers = onSnapshot(
+      query(collection(db, 'users')),
+      (snapshot) => setUsers(snapshot.docs.map((userDoc) => ({ id: userDoc.id, ...userDoc.data() }))),
+      (error) => handleDataError(error, OperationType.LIST, 'users')
+    );
 
     return () => {
       active = false;
       unsubscribe();
       unsubscribeMembers();
+      unsubscribeUsers();
     };
   }, [userRole]);
 
@@ -74,19 +81,62 @@ export function OrganizationManagement() {
   const getMemberOptionId = (member: any) =>
     String(member?.id || member?.authUserId || member?.email || '').trim();
 
+  const isGlobalAdminCandidate = (person: any) => {
+    const values = [
+      person?.role,
+      person?.userRole,
+      person?.systemRole,
+      person?.profileRole,
+      person?.position,
+      person?.cargo,
+    ].map((value) => String(value || '').trim().toLowerCase());
+
+    return values.some((value) =>
+      value === 'admin' ||
+      value === 'administrador global' ||
+      value === 'global_admin' ||
+      value === 'global-admin' ||
+      value.includes('administrador global')
+    );
+  };
+
+  const selectableMembers = useMemo(() => {
+    const byKey = new Map<string, any>();
+    const addPerson = (person: any, source: 'team' | 'user') => {
+      const optionId = getMemberOptionId(person);
+      if (!optionId) return;
+      const key = optionId.toLowerCase();
+      if (byKey.has(key)) return;
+      byKey.set(key, {
+        ...person,
+        selectableSource: source,
+        systemRole: person?.systemRole || person?.role || person?.userRole,
+      });
+    };
+
+    teamMembers.forEach((member) => addPerson(member, 'team'));
+    users.filter(isGlobalAdminCandidate).forEach((adminUser) => addPerson(adminUser, 'user'));
+
+    return Array.from(byKey.values()).sort((left, right) =>
+      getMemberLabel(left).localeCompare(getMemberLabel(right), 'es')
+    );
+  }, [teamMembers, users]);
+
   const memberNameById = (memberId?: string) => {
     if (!memberId) return 'Sin asignar';
     const normalized = String(memberId).trim().toLowerCase();
-    const member = teamMembers.find((item) =>
+    const member = selectableMembers.find((item) =>
       [item.id, item.authUserId, item.uid, item.email].some((value) => String(value || '').trim().toLowerCase() === normalized)
     );
     return member ? getMemberLabel(member) : memberId;
   };
 
   const scopedMembers = useMemo(() => {
-    if (!editingOrg?.id) return teamMembers;
-    return teamMembers.filter((member) => belongsToAnyOrganization(member, [editingOrg.id]));
-  }, [editingOrg?.id, teamMembers]);
+    if (!editingOrg?.id) return selectableMembers;
+    return selectableMembers.filter((member) =>
+      belongsToAnyOrganization(member, [editingOrg.id]) || isGlobalAdminCandidate(member)
+    );
+  }, [editingOrg?.id, selectableMembers]);
 
   const handleOpenModal = (org?: any) => {
     if (org) {
