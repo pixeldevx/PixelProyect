@@ -374,6 +374,39 @@ type ContractorAccountActivityItem = {
   groupName?: string;
 };
 
+type ContractorQualitySnapshot = {
+  reviewed: number;
+  accepted: number;
+  rejected: number;
+  score: number | null;
+  events: Array<{
+    id: string;
+    taskTitle: string;
+    stepLabel?: string | null;
+    result?: string;
+    causeLabel?: string | null;
+    comment?: string;
+    date?: string;
+  }>;
+};
+
+type ContractorRateSnapshot = {
+  income: number;
+  cost: number;
+  margin: number;
+  movements: number;
+  rows: Array<{
+    rateCardId: string;
+    name: string;
+    units: number;
+    income: number;
+    cost: number;
+    margin: number;
+    movements: number;
+    unitLabel?: string;
+  }>;
+};
+
 type ContractorPaymentRequest = {
   id: string;
   projectId: string;
@@ -403,6 +436,8 @@ type ContractorPaymentRequest = {
     rateMargin: number;
     rateMovements: number;
   };
+  qualitySnapshot?: ContractorQualitySnapshot;
+  rateSnapshot?: ContractorRateSnapshot;
   requesterSignature?: AdvanceSignatureSnapshot;
   generatedDocuments?: Array<{
     kind: 'chargeAccount' | 'activityReport';
@@ -837,11 +872,58 @@ const downloadContractorGeneratedDocument = (
   account: ContractorPaymentRequest,
   kind: 'chargeAccount' | 'activityReport'
 ) => {
+  const escapeHtml = (value: any) =>
+    String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   const safeToken = getSafeFileToken(`${account.customId || account.id}-${account.contractorName}`);
   const isChargeAccount = kind === 'chargeAccount';
   const title = isChargeAccount ? 'Cuenta de cobro' : 'Informe de actividades';
-  const activityRows = (account.taskTitles || [])
-    .map((title, index) => `<tr><td>${index + 1}</td><td>${title}</td></tr>`)
+  const activityItems: ContractorAccountActivityItem[] = (account.activityItems || []).length > 0
+    ? account.activityItems || []
+    : (account.taskTitles || []).map((taskTitle, index) => ({
+      key: `legacy-${index}`,
+      type: 'task' as const,
+      taskId: '',
+      taskTitle,
+      status: 'completed',
+    }));
+  const qualitySnapshot = account.qualitySnapshot;
+  const rateSnapshot = account.rateSnapshot;
+  const activityRows = activityItems
+    .map((activity, index) => `<tr>
+      <td>${index + 1}</td>
+      <td>${escapeHtml(activity.taskTitle)}</td>
+      <td>${escapeHtml(activity.stepLabel || (activity.type === 'workflow_step' ? 'Paso workflow' : activity.type === 'subtask' ? 'Subtarea' : 'Tarea'))}</td>
+      <td>${escapeHtml(activity.groupName || 'Sin grupo')}</td>
+      <td>${escapeHtml(formatDate(activity.date))}</td>
+      <td>${escapeHtml(getTaskStatusMeta({ status: activity.status }).label)}</td>
+    </tr>`)
+    .join('');
+  const qualityRows = (qualitySnapshot?.events || [])
+    .map((event, index) => `<tr>
+      <td>${index + 1}</td>
+      <td>${escapeHtml(event.taskTitle)}</td>
+      <td>${escapeHtml(event.stepLabel || 'Sin paso')}</td>
+      <td>${escapeHtml(event.result === 'accepted' ? 'Aceptado' : event.result === 'rejected' ? 'Rechazado' : event.result || 'Revisado')}</td>
+      <td>${escapeHtml(event.causeLabel || '—')}</td>
+      <td>${escapeHtml(formatDate(event.date))}</td>
+      <td>${escapeHtml(event.comment || '—')}</td>
+    </tr>`)
+    .join('');
+  const rateRows = (rateSnapshot?.rows || [])
+    .map((row, index) => `<tr>
+      <td>${index + 1}</td>
+      <td>${escapeHtml(row.name)}</td>
+      <td>${escapeHtml(`${row.units} ${row.unitLabel || 'unidad'}`)}</td>
+      <td>${row.movements}</td>
+      <td>${escapeHtml(formatMoney(row.income))}</td>
+      <td>${escapeHtml(formatMoney(row.cost))}</td>
+      <td>${escapeHtml(formatMoney(row.margin))}</td>
+    </tr>`)
     .join('');
   const html = `<!doctype html>
 <html lang="es">
@@ -855,30 +937,68 @@ const downloadContractorGeneratedDocument = (
     table { width: 100%; border-collapse: collapse; margin-top: 18px; }
     th, td { border: 1px solid #cbd5e1; padding: 10px; text-align: left; vertical-align: top; }
     th { background: #f1f5f9; text-transform: uppercase; font-size: 11px; letter-spacing: .12em; }
+    h2 { margin-top: 28px; font-size: 18px; }
+    .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
+    .card { border: 1px solid #cbd5e1; border-radius: 12px; padding: 12px; background: #f8fafc; }
+    .card span { display: block; color: #64748b; font-size: 10px; text-transform: uppercase; letter-spacing: .14em; font-weight: 700; }
+    .card strong { display: block; margin-top: 6px; font-size: 18px; }
     .signature { margin-top: 32px; border-top: 1px solid #94a3b8; padding-top: 8px; width: 320px; }
   </style>
 </head>
 <body>
-  <h1>${title}</h1>
+  <h1>${escapeHtml(title)}</h1>
   <p class="muted">Generado por Pixel Project · ${new Date().toLocaleDateString('es-CO')}</p>
   <table>
     <tbody>
-      <tr><th>Contratista</th><td>${account.contractorName}</td></tr>
-      <tr><th>Correo</th><td>${account.contractorEmail || 'Sin correo'}</td></tr>
-      <tr><th>Periodo</th><td>${formatDate(account.periodStart)} - ${formatDate(account.periodEnd)}</td></tr>
-      <tr><th>Honorarios</th><td>${formatMoney(account.honorariumAmount)}</td></tr>
-      <tr><th>Base parafiscales 40%</th><td>${formatMoney(account.socialSecurityBase)}</td></tr>
-      <tr><th>Salario mínimo usado</th><td>${formatMoney(account.parafiscalsValidation?.minimumWage || COLOMBIA_LEGAL_MINIMUM_WAGE)}</td></tr>
+      <tr><th>Contratista</th><td>${escapeHtml(account.contractorName)}</td></tr>
+      <tr><th>Correo</th><td>${escapeHtml(account.contractorEmail || 'Sin correo')}</td></tr>
+      <tr><th>Periodo</th><td>${escapeHtml(formatDate(account.periodStart))} - ${escapeHtml(formatDate(account.periodEnd))}</td></tr>
+      <tr><th>Honorarios</th><td>${escapeHtml(formatMoney(account.honorariumAmount))}</td></tr>
+      <tr><th>Base parafiscales 40%</th><td>${escapeHtml(formatMoney(account.socialSecurityBase))}</td></tr>
+      <tr><th>Salario mínimo usado</th><td>${escapeHtml(formatMoney(account.parafiscalsValidation?.minimumWage || COLOMBIA_LEGAL_MINIMUM_WAGE))}</td></tr>
     </tbody>
   </table>
   ${
     isChargeAccount
       ? `<p style="margin-top:24px;line-height:1.6">Por medio de la presente solicito el pago de los honorarios causados durante el periodo indicado.</p>`
-      : `<h2>Actividades relacionadas</h2><p>${account.activitySummary || account.activitySnapshot?.qualitySummary || ''}</p><table><thead><tr><th>#</th><th>Actividad / tarea Pixel</th></tr></thead><tbody>${activityRows || '<tr><td colspan="2">Sin actividades registradas</td></tr>'}</tbody></table>`
+      : `<h2>Actividades finalizadas relacionadas</h2>
+        <p>${escapeHtml(account.activitySummary || account.activitySnapshot?.qualitySummary || '')}</p>
+        <div class="cards">
+          <div class="card"><span>Actividades</span><strong>${activityItems.length}</strong></div>
+          <div class="card"><span>Calidad</span><strong>${qualitySnapshot?.score === null || qualitySnapshot?.score === undefined ? 'Sin dato' : `${qualitySnapshot.score}%`}</strong></div>
+          <div class="card"><span>Ingreso rates</span><strong>${escapeHtml(formatMoney(rateSnapshot?.income || account.activitySnapshot?.rateIncome || 0))}</strong></div>
+          <div class="card"><span>Margen rates</span><strong>${escapeHtml(formatMoney(rateSnapshot?.margin || account.activitySnapshot?.rateMargin || 0))}</strong></div>
+        </div>
+        <table>
+          <thead><tr><th>#</th><th>Actividad / tarea Pixel</th><th>Paso o tipo</th><th>Grupo</th><th>Fecha</th><th>Estado</th></tr></thead>
+          <tbody>${activityRows || '<tr><td colspan="6">Sin actividades registradas</td></tr>'}</tbody>
+        </table>
+        <h2>Informe de calidad del periodo</h2>
+        <div class="cards">
+          <div class="card"><span>Revisadas</span><strong>${qualitySnapshot?.reviewed || 0}</strong></div>
+          <div class="card"><span>Aceptadas</span><strong>${qualitySnapshot?.accepted || 0}</strong></div>
+          <div class="card"><span>Rechazadas</span><strong>${qualitySnapshot?.rejected || 0}</strong></div>
+          <div class="card"><span>Resultado</span><strong>${qualitySnapshot?.score === null || qualitySnapshot?.score === undefined ? 'Sin dato' : `${qualitySnapshot.score}%`}</strong></div>
+        </div>
+        <table>
+          <thead><tr><th>#</th><th>Tarea</th><th>Paso</th><th>Resultado</th><th>Causa</th><th>Fecha</th><th>Comentario</th></tr></thead>
+          <tbody>${qualityRows || '<tr><td colspan="7">Sin eventos de calidad registrados para el contratista en el periodo.</td></tr>'}</tbody>
+        </table>
+        <h2>Informe de rates del periodo</h2>
+        <div class="cards">
+          <div class="card"><span>Movimientos</span><strong>${rateSnapshot?.movements || account.activitySnapshot?.rateMovements || 0}</strong></div>
+          <div class="card"><span>Ingreso</span><strong>${escapeHtml(formatMoney(rateSnapshot?.income || account.activitySnapshot?.rateIncome || 0))}</strong></div>
+          <div class="card"><span>Costo</span><strong>${escapeHtml(formatMoney(rateSnapshot?.cost || account.activitySnapshot?.rateCost || 0))}</strong></div>
+          <div class="card"><span>Margen</span><strong>${escapeHtml(formatMoney(rateSnapshot?.margin || account.activitySnapshot?.rateMargin || 0))}</strong></div>
+        </div>
+        <table>
+          <thead><tr><th>#</th><th>Rate card</th><th>Unidades</th><th>Movimientos</th><th>Ingreso</th><th>Costo</th><th>Margen</th></tr></thead>
+          <tbody>${rateRows || '<tr><td colspan="7">Sin movimientos de rate cards para el contratista en el periodo.</td></tr>'}</tbody>
+        </table>`
   }
   <div class="signature">
-    <strong>${account.requesterSignature?.name || account.contractorName}</strong><br/>
-    <span class="muted">${account.requesterSignature?.jobTitle || 'Contratista'} · ${account.requesterSignature?.email || account.contractorEmail || ''}</span>
+    <strong>${escapeHtml(account.requesterSignature?.name || account.contractorName)}</strong><br/>
+    <span class="muted">${escapeHtml(account.requesterSignature?.jobTitle || 'Contratista')} · ${escapeHtml(account.requesterSignature?.email || account.contractorEmail || '')}</span>
   </div>
 </body>
 </html>`;
@@ -986,7 +1106,7 @@ const collectTaskActorTokens = (task: any) => {
 };
 
 const collectStepActorTokens = (task: any, step: any) => {
-  const tokens = collectTaskActorTokens(task);
+  const tokens = new Set<string>();
   const add = (value: any) => {
     if (value === undefined || value === null || value === '') return;
     if (typeof value === 'object') {
@@ -1017,7 +1137,7 @@ const collectStepActorTokens = (task: any, step: any) => {
     if (Array.isArray(value)) value.forEach(add);
   });
 
-  return tokens;
+  return tokens.size > 0 ? tokens : collectTaskActorTokens(task);
 };
 
 const getTaskBillingDate = (task: any) =>
@@ -1046,6 +1166,15 @@ const getWorkflowStepLabel = (step: any, index: number) =>
 const getActivityStatus = (activity: ContractorAccountActivityItem) =>
   String(activity.status || '').toLowerCase();
 
+const contractorTokensMatch = (tokens: Set<string>, value: any): boolean => {
+  if (value === undefined || value === null || value === '') return false;
+  if (Array.isArray(value)) return value.some((item) => contractorTokensMatch(tokens, item));
+  if (typeof value === 'object') {
+    return ['id', 'uid', 'userId', 'memberId', 'authUserId', 'email', 'name', 'displayName'].some((key) => contractorTokensMatch(tokens, value[key]));
+  }
+  return tokens.has(String(value).trim().toLowerCase());
+};
+
 const summarizeContractorActivities = (activities: ContractorAccountActivityItem[], rateSummary: { income: number; cost: number; movements: number }) => {
   const completedTasks = activities.filter((activity) => isCompletedTaskStatus(getActivityStatus(activity))).length;
   const overdueTasks = activities.filter((activity) => {
@@ -1069,6 +1198,30 @@ const summarizeContractorActivities = (activities: ContractorAccountActivityItem
     rateMovements: rateSummary.movements,
   };
 };
+
+const summarizeContractorQuality = (events: any[]): ContractorQualitySnapshot => {
+  const accepted = events.filter((event) => event.result === 'accepted').length;
+  const rejected = events.filter((event) => event.result === 'rejected').length;
+  const reviewed = accepted + rejected;
+  return {
+    reviewed,
+    accepted,
+    rejected,
+    score: reviewed > 0 ? Math.round((accepted / reviewed) * 100) : null,
+    events: events.slice(0, 12).map((event) => ({
+      id: String(event.id || `${event.taskId || 'quality'}-${event.createdAt || ''}`),
+      taskTitle: event.taskTitle || 'Tarea sin título',
+      stepLabel: event.sourceStepLabel || event.stepLabel || null,
+      result: event.result,
+      causeLabel: event.causeLabel || null,
+      comment: event.comment || '',
+      date: toDateInputValue(event.createdAt || event.dateKey),
+    })),
+  };
+};
+
+const getRateCardName = (rateCard: any, rateCardId: string) =>
+  rateCard?.name || rateCard?.title || rateCard?.indicator || rateCardId || 'Rate card';
 
 const statusConfig: Record<TravelAdvance['status'], { label: string; className: string }> = {
   submitted: { label: 'Por validar', className: 'bg-amber-50 text-amber-700 ring-amber-100' },
@@ -1259,6 +1412,7 @@ export function ProjectAdministration({
   const [contractorAccounts, setContractorAccounts] = useState<ContractorPaymentRequest[]>([]);
   const [contractorRateCards, setContractorRateCards] = useState<any[]>([]);
   const [contractorRateEntries, setContractorRateEntries] = useState<any[]>([]);
+  const [contractorQualityEvents, setContractorQualityEvents] = useState<any[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [costCenterDomains, setCostCenterDomains] = useState<CostCenterDomain[]>([]);
   const [payments, setPayments] = useState<BillingPayment[]>([]);
@@ -1408,6 +1562,15 @@ export function ProjectAdministration({
         },
         (error) => {
           console.error('Error loading rate card entries for contractor accounts:', error);
+        }
+      ),
+      onSnapshot(
+        query(collection(db, 'projects', projectId, 'qualityEvents')),
+        (snapshot) => {
+          setContractorQualityEvents(snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() })));
+        },
+        (error) => {
+          console.error('Error loading quality events for contractor accounts:', error);
         }
       ),
       onSnapshot(
@@ -2464,6 +2627,7 @@ export function ProjectAdministration({
             ? false
             : Array.from(currentContractorTokens).some((token) => activityTokens.has(token));
         if (!matchesContractor) return false;
+        if (!isCompletedTaskStatus(getActivityStatus(activity))) return false;
         return isDateWithinRange(activity.date, start, end);
       })
       .sort((left, right) => {
@@ -2506,19 +2670,62 @@ export function ProjectAdministration({
   );
 
   const contractorPeriodRateSummary = useMemo(() => {
-    return contractorRateEntries.reduce((summary, entry) => {
+    const rowsByRate = new Map<string, ContractorRateSnapshot['rows'][number]>();
+    const summary = contractorRateEntries.reduce((currentSummary, entry) => {
       const assignedTo = String(entry?.assignedTo || entry?.userId || entry?.memberId || '').trim().toLowerCase();
-      if (!assignedTo || !currentContractorTokens.has(assignedTo)) return summary;
-      if (!isDateWithinRange(entry?.date || entry?.dateKey || entry?.createdAt, contractorAccountForm.periodStart, contractorAccountForm.periodEnd)) return summary;
+      if (!assignedTo || !currentContractorTokens.has(assignedTo)) return currentSummary;
+      if (!isDateWithinRange(entry?.date || entry?.dateKey || entry?.createdAt, contractorAccountForm.periodStart, contractorAccountForm.periodEnd)) return currentSummary;
       const rateCard = contractorRateCardById.get(String(entry?.rateCardId || ''));
-      if (!rateCard) return summary;
+      if (!rateCard) return currentSummary;
       const units = Math.abs(normalizeDecimalInput(entry?.units ?? entry?.amount ?? entry?.quantity, 0));
-      summary.income += getRateCardIncomeValue(units, rateCard);
-      summary.cost += getRateCardCostValue(units, rateCard);
-      summary.movements += 1;
-      return summary;
+      const income = getRateCardIncomeValue(units, rateCard);
+      const cost = getRateCardCostValue(units, rateCard);
+      const rateCardId = String(entry.rateCardId || 'sin-rate');
+      const row = rowsByRate.get(rateCardId) || {
+        rateCardId,
+        name: getRateCardName(rateCard, rateCardId),
+        units: 0,
+        income: 0,
+        cost: 0,
+        margin: 0,
+        movements: 0,
+        unitLabel: rateCard?.indicator || rateCard?.unitLabel || rateCard?.inputUnit || 'unidad',
+      };
+      row.units += units;
+      row.income += income;
+      row.cost += cost;
+      row.margin = row.income - row.cost;
+      row.movements += 1;
+      rowsByRate.set(rateCardId, row);
+      currentSummary.income += income;
+      currentSummary.cost += cost;
+      currentSummary.movements += 1;
+      return currentSummary;
     }, { income: 0, cost: 0, movements: 0 });
+    return {
+      income: roundCurrency(summary.income),
+      cost: roundCurrency(summary.cost),
+      margin: roundCurrency(summary.income - summary.cost),
+      movements: summary.movements,
+      rows: [...rowsByRate.values()]
+        .map((row) => ({ ...row, income: roundCurrency(row.income), cost: roundCurrency(row.cost), margin: roundCurrency(row.margin), units: roundCurrency(row.units) }))
+        .sort((left, right) => Math.abs(right.income) - Math.abs(left.income) || right.movements - left.movements),
+    };
   }, [contractorAccountForm.periodEnd, contractorAccountForm.periodStart, contractorRateCardById, contractorRateEntries, currentContractorTokens]);
+
+  const contractorPeriodQualityEvents = useMemo(() => {
+    return contractorQualityEvents
+      .filter((event) => {
+        if (!isDateWithinRange(event.createdAt || event.dateKey, contractorAccountForm.periodStart, contractorAccountForm.periodEnd)) return false;
+        return contractorTokensMatch(currentContractorTokens, event.professionalId || event.sourceStepAssignee || event.assigneeId || event.memberId || event.userId);
+      })
+      .sort((left, right) => (getDateValue(right.createdAt || right.dateKey)?.getTime() || 0) - (getDateValue(left.createdAt || left.dateKey)?.getTime() || 0));
+  }, [contractorAccountForm.periodEnd, contractorAccountForm.periodStart, contractorQualityEvents, currentContractorTokens]);
+
+  const contractorQualitySnapshot = useMemo(
+    () => summarizeContractorQuality(contractorPeriodQualityEvents),
+    [contractorPeriodQualityEvents]
+  );
 
   const contractorActivitySnapshot = useMemo(
     () => summarizeContractorActivities(selectedContractorActivities, contractorPeriodRateSummary),
@@ -2565,6 +2772,9 @@ export function ProjectAdministration({
     setContractorAccountForm(buildEmptyContractorAccountForm());
     setContractorDocumentFiles({});
     setContractorAccountStep(1);
+    setAdvanceTaskSearch('');
+    setAdvanceTaskStatusFilter('all');
+    setAdvanceTaskGroupFilter('all');
     setIsContractorAccountModalOpen(true);
   };
 
@@ -2735,6 +2945,8 @@ export function ProjectAdministration({
         activityItems,
         activitySummary: contractorAccountForm.activitySummary.trim() || contractorActivitySnapshot.qualitySummary,
         activitySnapshot: contractorActivitySnapshot,
+        qualitySnapshot: contractorQualitySnapshot,
+        rateSnapshot: contractorPeriodRateSummary,
         requesterSignature,
         generatedDocuments: CONTRACTOR_ACCOUNT_GENERATED_DOCUMENTS.map((document) => ({
           ...document,
@@ -6427,7 +6639,7 @@ export function ProjectAdministration({
                       <div>
                         <h3 className="font-black text-slate-950">Actividades precargadas del periodo</h3>
                         <p className="text-xs font-semibold text-slate-500">
-                          Pixel filtra subtareas y pasos de workflow entre {formatDate(contractorAccountForm.periodStart)} y {formatDate(contractorAccountForm.periodEnd)}. Solo bloquea el paso ya cobrado, no la tarea raíz completa.
+                          Pixel filtra únicamente tareas, subtareas y pasos finalizados por el contratista entre {formatDate(contractorAccountForm.periodStart)} y {formatDate(contractorAccountForm.periodEnd)}. Solo bloquea el paso ya cobrado, no la tarea raíz completa.
                         </p>
                       </div>
                       <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-black text-indigo-700 ring-1 ring-indigo-100">
@@ -6446,12 +6658,8 @@ export function ProjectAdministration({
                         />
                       </div>
                       <select value={advanceTaskStatusFilter} onChange={(event) => setAdvanceTaskStatusFilter(event.target.value as AdvanceTaskStatusFilter)} className={inputClass}>
-                        <option value="all">Todos los estados</option>
-                        <option value="active">Tareas activas</option>
-                        <option value="pending">Pendientes</option>
-                        <option value="in_progress">En curso</option>
-                        <option value="blocked">Pausadas o bloqueadas</option>
-                        <option value="completed">Finalizadas</option>
+                        <option value="all">Finalizadas cobrables</option>
+                        <option value="completed">Solo finalizadas</option>
                       </select>
                       <select value={advanceTaskGroupFilter} onChange={(event) => setAdvanceTaskGroupFilter(event.target.value)} className={inputClass}>
                         <option value="all">Todos los grupos</option>
@@ -6460,7 +6668,7 @@ export function ProjectAdministration({
                     </div>
                     <div className="mt-3 max-h-72 overflow-y-auto rounded-lg bg-white p-2 ring-1 ring-slate-200">
                       {contractorPeriodActivities.length === 0 ? (
-                        <p className="p-4 text-center text-sm font-bold text-slate-400">No hay pasos o subtareas disponibles de este contratista en el periodo, o ya fueron usados en otra cuenta de cobro.</p>
+                        <p className="p-4 text-center text-sm font-bold text-slate-400">No hay tareas, subtareas o pasos finalizados disponibles de este contratista en el periodo, o ya fueron usados en otra cuenta de cobro.</p>
                       ) : (
                         <div className="space-y-1">
                           {filteredContractorPeriodActivities.map((activity) => {
@@ -6495,6 +6703,76 @@ export function ProjectAdministration({
                     <ReceiptGroupMetric label="Finalizadas" value={`${contractorActivitySnapshot.completedTasks}`} tone="emerald" />
                     <ReceiptGroupMetric label="Alertas" value={`${contractorActivitySnapshot.overdueTasks}`} tone="amber" />
                     <ReceiptGroupMetric label="Mov. rate cards" value={`${contractorActivitySnapshot.rateMovements}`} tone="indigo" />
+                  </div>
+
+                  <div className="grid gap-3 xl:grid-cols-2">
+                    <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-[0.24em] text-emerald-700">Informe de calidad del mes</p>
+                          <p className="mt-1 text-xs font-semibold text-slate-600">Eventos de gestión de calidad asociados al contratista en el periodo.</p>
+                        </div>
+                        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-emerald-700 ring-1 ring-emerald-100">
+                          {contractorQualitySnapshot.score === null ? 'Sin dato' : `${contractorQualitySnapshot.score}%`}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                        <ReceiptGroupMetric label="Revisadas" value={`${contractorQualitySnapshot.reviewed}`} tone="slate" />
+                        <ReceiptGroupMetric label="Aceptadas" value={`${contractorQualitySnapshot.accepted}`} tone="emerald" />
+                        <ReceiptGroupMetric label="Rechazadas" value={`${contractorQualitySnapshot.rejected}`} tone={contractorQualitySnapshot.rejected > 0 ? 'rose' : 'slate'} />
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        {contractorQualitySnapshot.events.length === 0 ? (
+                          <p className="rounded-lg bg-white/80 p-3 text-xs font-semibold text-slate-500 ring-1 ring-emerald-100">Sin revisiones de calidad para este contratista en el periodo.</p>
+                        ) : (
+                          contractorQualitySnapshot.events.slice(0, 4).map((event) => (
+                            <div key={event.id} className="rounded-lg bg-white/90 p-3 text-xs ring-1 ring-emerald-100">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate font-black text-slate-800">{event.taskTitle}</p>
+                                <span className={`shrink-0 rounded-full px-2 py-0.5 font-black ${event.result === 'accepted' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                                  {event.result === 'accepted' ? 'Aceptada' : event.result === 'rejected' ? 'Rechazada' : 'Revisada'}
+                                </span>
+                              </div>
+                              <p className="mt-1 font-semibold text-slate-500">{event.stepLabel || 'Sin paso'} · {formatDate(event.date)}</p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-[0.24em] text-indigo-700">Informe de rates del periodo</p>
+                          <p className="mt-1 text-xs font-semibold text-slate-600">Producción, ingresos, costos y margen registrados a nombre del contratista.</p>
+                        </div>
+                        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-indigo-700 ring-1 ring-indigo-100">
+                          {contractorPeriodRateSummary.movements} mov.
+                        </span>
+                      </div>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                        <ReceiptGroupMetric label="Ingreso" value={formatMoney(contractorPeriodRateSummary.income)} tone="emerald" />
+                        <ReceiptGroupMetric label="Costo" value={formatMoney(contractorPeriodRateSummary.cost)} tone="rose" />
+                        <ReceiptGroupMetric label="Margen" value={formatMoney(contractorPeriodRateSummary.margin)} tone="indigo" />
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        {contractorPeriodRateSummary.rows.length === 0 ? (
+                          <p className="rounded-lg bg-white/80 p-3 text-xs font-semibold text-slate-500 ring-1 ring-indigo-100">Sin movimientos de rate cards para este contratista en el periodo.</p>
+                        ) : (
+                          contractorPeriodRateSummary.rows.slice(0, 5).map((row) => (
+                            <div key={row.rateCardId} className="rounded-lg bg-white/90 p-3 text-xs ring-1 ring-indigo-100">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate font-black text-slate-800">{row.name}</p>
+                                <span className="shrink-0 font-black text-indigo-700">{formatMoney(row.income)}</span>
+                              </div>
+                              <p className="mt-1 font-semibold text-slate-500">
+                                {row.units} {row.unitLabel || 'unidad'} · {row.movements} movimientos · margen {formatMoney(row.margin)}
+                              </p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
                   </div>
 
                   <Field label="Resumen automático del informe de actividades">
@@ -6549,8 +6827,11 @@ export function ProjectAdministration({
                 <SummaryLine label="Periodo" value={`${formatDate(contractorAccountForm.periodStart)} - ${formatDate(contractorAccountForm.periodEnd)}`} />
                 <SummaryLine label="Actividades disponibles" value={`${contractorPeriodActivities.length}`} />
                 <SummaryLine label="Actividades seleccionadas" value={`${selectedContractorActivities.length}`} />
+                <SummaryLine label="Calidad del mes" value={contractorQualitySnapshot.score === null ? 'Sin dato' : `${contractorQualitySnapshot.score}%`} />
+                <SummaryLine label="Revisiones calidad" value={`${contractorQualitySnapshot.reviewed}`} />
                 <SummaryLine label="Ingreso rate cards" value={formatMoney(contractorActivitySnapshot.rateIncome)} />
                 <SummaryLine label="Costo rate cards" value={formatMoney(contractorActivitySnapshot.rateCost)} />
+                <SummaryLine label="Rates distintos" value={`${contractorPeriodRateSummary.rows.length}`} />
                 <SummaryLine label="Documentos cargados" value={`${Object.values(contractorDocumentFiles).filter(Boolean).length} de 1`} />
               </div>
               <div className="mt-4 rounded-lg bg-white p-3 text-xs font-semibold leading-5 text-slate-600 ring-1 ring-cyan-100">
@@ -8282,12 +8563,14 @@ function ContractorAccountsWorkspace({
                   </div>
                 </div>
 
-                <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-6">
+                <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-8">
                   <ReceiptGroupMetric label="Honorarios" value={formatMoney(account.honorariumAmount)} tone="slate" />
                   <ReceiptGroupMetric label="Base 40%" value={formatMoney(account.socialSecurityBase)} tone="indigo" />
                   <ReceiptGroupMetric label="Mínimos estimados" value={`${account.estimatedMinimumWages || 1}`} tone="amber" />
                   <ReceiptGroupMetric label="Actividades" value={`${account.activityItems?.length || account.taskIds?.length || 0}`} tone="emerald" />
-                  <ReceiptGroupMetric label="Ingreso rate" value={formatMoney(account.activitySnapshot?.rateIncome || 0)} tone="indigo" />
+                  <ReceiptGroupMetric label="Calidad" value={account.qualitySnapshot?.score === null || account.qualitySnapshot?.score === undefined ? 'Sin dato' : `${account.qualitySnapshot.score}%`} tone={account.qualitySnapshot?.rejected ? 'rose' : 'emerald'} />
+                  <ReceiptGroupMetric label="Ingreso rate" value={formatMoney(account.rateSnapshot?.income || account.activitySnapshot?.rateIncome || 0)} tone="indigo" />
+                  <ReceiptGroupMetric label="Margen rate" value={formatMoney(account.rateSnapshot?.margin || account.activitySnapshot?.rateMargin || 0)} tone="slate" />
                   <ReceiptGroupMetric label="Aprobaciones" value={`${account.approvals?.length || 0}`} tone="slate" />
                 </div>
 
@@ -8313,6 +8596,34 @@ function ContractorAccountsWorkspace({
                         )}
                       </div>
                       {account.activitySummary && <p className="mt-3 rounded-lg bg-slate-50 p-3 text-sm font-semibold leading-6 text-slate-600">{account.activitySummary}</p>}
+                      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                        <div className="rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700">Calidad del periodo</p>
+                          <div className="mt-2 grid grid-cols-3 gap-2">
+                            <ReceiptGroupMetric label="Revisadas" value={`${account.qualitySnapshot?.reviewed || 0}`} tone="slate" />
+                            <ReceiptGroupMetric label="OK" value={`${account.qualitySnapshot?.accepted || 0}`} tone="emerald" />
+                            <ReceiptGroupMetric label="Rechazos" value={`${account.qualitySnapshot?.rejected || 0}`} tone={account.qualitySnapshot?.rejected ? 'rose' : 'slate'} />
+                          </div>
+                          {(account.qualitySnapshot?.events || []).length > 0 && (
+                            <p className="mt-2 truncate text-xs font-semibold text-slate-500">
+                              Última revisión: {account.qualitySnapshot?.events?.[0]?.taskTitle || 'Sin tarea'} · {formatDate(account.qualitySnapshot?.events?.[0]?.date)}
+                            </p>
+                          )}
+                        </div>
+                        <div className="rounded-lg border border-indigo-100 bg-indigo-50/60 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.18em] text-indigo-700">Rates del periodo</p>
+                          <div className="mt-2 grid grid-cols-3 gap-2">
+                            <ReceiptGroupMetric label="Mov." value={`${account.rateSnapshot?.movements || account.activitySnapshot?.rateMovements || 0}`} tone="slate" />
+                            <ReceiptGroupMetric label="Ingreso" value={formatMoney(account.rateSnapshot?.income || account.activitySnapshot?.rateIncome || 0)} tone="emerald" />
+                            <ReceiptGroupMetric label="Costo" value={formatMoney(account.rateSnapshot?.cost || account.activitySnapshot?.rateCost || 0)} tone="rose" />
+                          </div>
+                          {(account.rateSnapshot?.rows || []).length > 0 && (
+                            <p className="mt-2 truncate text-xs font-semibold text-slate-500">
+                              Principal: {account.rateSnapshot?.rows?.[0]?.name} · {formatMoney(account.rateSnapshot?.rows?.[0]?.income || 0)}
+                            </p>
+                          )}
+                        </div>
+                      </div>
                       {account.requesterSignature && <div className="mt-3 max-w-md"><SignatureSummary title="Firma del contratista" signature={account.requesterSignature} /></div>}
                     </div>
                     <div>
