@@ -358,6 +358,22 @@ type ContractorAccountApproval = {
   signature?: AdvanceSignatureSnapshot;
 };
 
+type ContractorAccountActivityItem = {
+  key: string;
+  type: 'task' | 'subtask' | 'workflow_step';
+  taskId: string;
+  taskTitle: string;
+  parentTaskId?: string | null;
+  rootTaskId?: string | null;
+  rootTaskTitle?: string;
+  stepIndex?: number | null;
+  stepLabel?: string | null;
+  status?: string;
+  date?: string;
+  groupId?: string;
+  groupName?: string;
+};
+
 type ContractorPaymentRequest = {
   id: string;
   projectId: string;
@@ -372,6 +388,8 @@ type ContractorPaymentRequest = {
   estimatedMinimumWages: number;
   taskIds: string[];
   taskTitles: string[];
+  activityKeys?: string[];
+  activityItems?: ContractorAccountActivityItem[];
   activitySummary?: string;
   activitySnapshot?: {
     totalTasks: number;
@@ -606,6 +624,7 @@ const buildEmptyContractorAccountForm = () => ({
   periodEnd: todayInputValue(),
   honorariumAmount: '',
   taskIds: [] as string[],
+  activityKeys: [] as string[],
   activitySummary: '',
   accountingReference: '',
   accountingNote: '',
@@ -966,6 +985,41 @@ const collectTaskActorTokens = (task: any) => {
   return tokens;
 };
 
+const collectStepActorTokens = (task: any, step: any) => {
+  const tokens = collectTaskActorTokens(task);
+  const add = (value: any) => {
+    if (value === undefined || value === null || value === '') return;
+    if (typeof value === 'object') {
+      ['id', 'uid', 'userId', 'memberId', 'authUserId', 'email', 'name', 'displayName'].forEach((key) => add(value[key]));
+      return;
+    }
+    tokens.add(String(value).trim().toLowerCase());
+  };
+
+  [
+    step?.assignedTo,
+    step?.assigneeId,
+    step?.assignee,
+    step?.responsibleId,
+    step?.responsible,
+    step?.completedBy,
+    step?.completedByMemberId,
+    step?.assignedToEmail,
+    step?.assigneeEmail,
+    step?.responsibleEmail,
+    step?.assignedToName,
+    step?.assigneeName,
+    step?.responsibleName,
+  ].forEach(add);
+
+  ['assignees', 'assignedUsers', 'assignedMembers', 'responsibles', 'completedByIds', 'userIds'].forEach((key) => {
+    const value = step?.[key];
+    if (Array.isArray(value)) value.forEach(add);
+  });
+
+  return tokens;
+};
+
 const getTaskBillingDate = (task: any) =>
   task?.completedAt ||
   task?.closedAt ||
@@ -976,18 +1030,34 @@ const getTaskBillingDate = (task: any) =>
   task?.dueDate ||
   task?.date;
 
-const summarizeContractorActivities = (tasks: any[], rateSummary: { income: number; cost: number; movements: number }) => {
-  const completedTasks = tasks.filter((task) => isCompletedTaskStatus(String(task?.status || '').toLowerCase())).length;
-  const overdueTasks = tasks.filter((task) => {
-    const due = getDateValue(task?.dueDate || task?.endDate || task?.deadline);
-    return due && due.getTime() < Date.now() && !isCompletedTaskStatus(String(task?.status || '').toLowerCase());
+const getStepBillingDate = (task: any, step: any) =>
+  step?.completedAt ||
+  step?.finishedAt ||
+  step?.updatedAt ||
+  step?.startedAt ||
+  step?.plannedEndAt ||
+  step?.plannedEndDate ||
+  step?.endDate ||
+  getTaskBillingDate(task);
+
+const getWorkflowStepLabel = (step: any, index: number) =>
+  step?.label || step?.title || step?.name || step?.description || `Paso ${index + 1}`;
+
+const getActivityStatus = (activity: ContractorAccountActivityItem) =>
+  String(activity.status || '').toLowerCase();
+
+const summarizeContractorActivities = (activities: ContractorAccountActivityItem[], rateSummary: { income: number; cost: number; movements: number }) => {
+  const completedTasks = activities.filter((activity) => isCompletedTaskStatus(getActivityStatus(activity))).length;
+  const overdueTasks = activities.filter((activity) => {
+    const due = getDateValue(activity.date);
+    return due && due.getTime() < Date.now() && !isCompletedTaskStatus(getActivityStatus(activity));
   }).length;
-  const activeTasks = Math.max(0, tasks.length - completedTasks);
-  const onTimeTasks = Math.max(0, tasks.length - overdueTasks);
+  const activeTasks = Math.max(0, activities.length - completedTasks);
+  const onTimeTasks = Math.max(0, activities.length - overdueTasks);
   const rateMargin = roundCurrency(rateSummary.income - rateSummary.cost);
 
   return {
-    totalTasks: tasks.length,
+    totalTasks: activities.length,
     completedTasks,
     activeTasks,
     overdueTasks,
@@ -1453,6 +1523,58 @@ export function ProjectAdministration({
     () => new Map(advanceTaskGroups.map((group) => [group.id, group])),
     [advanceTaskGroups]
   );
+  const taskIdsWithChildren = useMemo(
+    () => new Set(tasks.map((task) => task?.parentTaskId).filter(Boolean).map(String)),
+    [tasks]
+  );
+  const contractorBillableActivities = useMemo(() => {
+    return tasks.flatMap((task) => {
+      if (!task?.id) return [];
+      const groupId = getAdvanceTaskGroupId(task);
+      const group = advanceTaskGroupById.get(groupId);
+      const parentTask = task.parentTaskId ? taskById.get(task.parentTaskId) : null;
+      const base = {
+        taskId: String(task.id),
+        parentTaskId: task.parentTaskId || null,
+        rootTaskId: parentTask?.id ? String(parentTask.id) : String(task.id),
+        rootTaskTitle: parentTask ? getTaskTitle(parentTask) : getTaskTitle(task),
+        groupId,
+        groupName: group?.name || 'Sin grupo',
+      };
+
+      const steps = Array.isArray(task.workflowSteps) ? task.workflowSteps : [];
+      if (steps.length > 0) {
+        return steps.map((step: any, index: number) => {
+          const stepLabel = getWorkflowStepLabel(step, index);
+          return {
+            ...base,
+            key: `workflow-step:${task.id}:${index}`,
+            type: 'workflow_step' as const,
+            taskTitle: `${getTaskTitle(task)} · ${stepLabel}`,
+            stepIndex: index,
+            stepLabel,
+            status: step?.status || task.status,
+            date: toDateInputValue(getStepBillingDate(task, step)),
+            actorTokens: collectStepActorTokens(task, step),
+          };
+        });
+      }
+
+      if (taskIdsWithChildren.has(String(task.id))) return [];
+
+      return [{
+        ...base,
+        key: `task:${task.id}`,
+        type: task.parentTaskId ? 'subtask' as const : 'task' as const,
+        taskTitle: getTaskTitle(task),
+        stepIndex: null,
+        stepLabel: null,
+        status: task.status,
+        date: toDateInputValue(getTaskBillingDate(task)),
+        actorTokens: collectTaskActorTokens(task),
+      }];
+    });
+  }, [advanceTaskGroupById, getAdvanceTaskGroupId, taskById, taskIdsWithChildren, tasks]);
   const filteredAdvanceTasks = useMemo(() => {
     const search = normalizeTaskSearchText(advanceTaskSearch);
 
@@ -2310,36 +2432,73 @@ export function ProjectAdministration({
     return tokens;
   }, [currentSignerMember, currentUser?.email, currentUser?.uid]);
 
-  const contractorUsedTaskIds = useMemo(() => {
+  const contractorUsedActivityKeys = useMemo(() => {
     const used = new Set<string>();
     contractorAccounts
       .filter((account) => !['rejected'].includes(account.status))
-      .forEach((account) => (account.taskIds || []).forEach((taskId) => used.add(String(taskId))));
+      .forEach((account) => {
+        if (Array.isArray(account.activityKeys) && account.activityKeys.length > 0) {
+          account.activityKeys.forEach((key) => used.add(String(key)));
+          return;
+        }
+        if (Array.isArray(account.activityItems) && account.activityItems.length > 0) {
+          account.activityItems.forEach((activity) => activity?.key && used.add(String(activity.key)));
+          return;
+        }
+        (account.taskIds || []).forEach((taskId) => used.add(`task:${taskId}`));
+      });
     return used;
   }, [contractorAccounts]);
 
-  const contractorPeriodTasks = useMemo(() => {
+  const contractorPeriodActivities = useMemo(() => {
     const start = contractorAccountForm.periodStart;
     const end = contractorAccountForm.periodEnd;
     if (!start || !end) return [];
 
-    return tasks
-      .filter((task) => {
-        if (!task?.id || contractorUsedTaskIds.has(String(task.id))) return false;
-        const taskTokens = collectTaskActorTokens(task);
+    return contractorBillableActivities
+      .filter((activity) => {
+        if (!activity?.key || contractorUsedActivityKeys.has(String(activity.key))) return false;
+        const activityTokens = (activity as any).actorTokens as Set<string> | undefined;
         const matchesContractor =
-          taskTokens.size === 0
+          !activityTokens || activityTokens.size === 0
             ? false
-            : Array.from(currentContractorTokens).some((token) => taskTokens.has(token));
+            : Array.from(currentContractorTokens).some((token) => activityTokens.has(token));
         if (!matchesContractor) return false;
-        return isDateWithinRange(getTaskBillingDate(task), start, end);
+        return isDateWithinRange(activity.date, start, end);
       })
       .sort((left, right) => {
-        const leftDate = getDateValue(getTaskBillingDate(left))?.getTime() || 0;
-        const rightDate = getDateValue(getTaskBillingDate(right))?.getTime() || 0;
-        return rightDate - leftDate || getTaskTitle(left).localeCompare(getTaskTitle(right), 'es', { sensitivity: 'base' });
+        const leftDate = getDateValue(left.date)?.getTime() || 0;
+        const rightDate = getDateValue(right.date)?.getTime() || 0;
+        return rightDate - leftDate || left.taskTitle.localeCompare(right.taskTitle, 'es', { sensitivity: 'base' });
       });
-  }, [contractorAccountForm.periodEnd, contractorAccountForm.periodStart, contractorUsedTaskIds, currentContractorTokens, tasks]);
+  }, [contractorAccountForm.periodEnd, contractorAccountForm.periodStart, contractorBillableActivities, contractorUsedActivityKeys, currentContractorTokens]);
+
+  const filteredContractorPeriodActivities = useMemo(() => {
+    const search = normalizeTaskSearchText(advanceTaskSearch);
+    return contractorPeriodActivities.filter((activity) => {
+      const statusMeta = getTaskStatusMeta({ status: activity.status });
+      const isActive = !['completed', 'cancelled'].includes(statusMeta.key);
+      if (advanceTaskStatusFilter === 'active' && !isActive) return false;
+      if (advanceTaskStatusFilter !== 'active' && advanceTaskStatusFilter !== 'all' && statusMeta.key !== advanceTaskStatusFilter) {
+        return false;
+      }
+      if (advanceTaskGroupFilter !== 'all' && activity.groupId !== advanceTaskGroupFilter) return false;
+      if (!search) return true;
+      return normalizeTaskSearchText([
+        activity.taskTitle,
+        activity.rootTaskTitle,
+        activity.stepLabel,
+        activity.taskId,
+        activity.parentTaskId,
+        activity.groupName,
+      ].filter(Boolean).join(' ')).includes(search);
+    });
+  }, [advanceTaskGroupFilter, advanceTaskSearch, advanceTaskStatusFilter, contractorPeriodActivities]);
+
+  const selectedContractorActivities = useMemo(
+    () => contractorBillableActivities.filter((activity) => contractorAccountForm.activityKeys.includes(activity.key)),
+    [contractorAccountForm.activityKeys, contractorBillableActivities]
+  );
 
   const contractorRateCardById = useMemo(
     () => new Map(contractorRateCards.map((card) => [String(card.id), card])),
@@ -2362,24 +2521,34 @@ export function ProjectAdministration({
   }, [contractorAccountForm.periodEnd, contractorAccountForm.periodStart, contractorRateCardById, contractorRateEntries, currentContractorTokens]);
 
   const contractorActivitySnapshot = useMemo(
-    () => summarizeContractorActivities(selectedContractorAccountTasks, contractorPeriodRateSummary),
-    [contractorPeriodRateSummary, selectedContractorAccountTasks]
+    () => summarizeContractorActivities(selectedContractorActivities, contractorPeriodRateSummary),
+    [contractorPeriodRateSummary, selectedContractorActivities]
   );
 
   useEffect(() => {
     if (!isContractorAccountModalOpen) return;
     setContractorAccountForm((current) => {
-      const eligibleIds = contractorPeriodTasks.map((task) => task.id).filter(Boolean);
-      const currentIds = current.taskIds.filter((taskId) => eligibleIds.includes(taskId));
-      const nextIds = Array.from(new Set([...currentIds, ...eligibleIds]));
-      if (nextIds.length === current.taskIds.length && nextIds.every((taskId, index) => taskId === current.taskIds[index])) return current;
+      const eligibleKeys = contractorPeriodActivities.map((activity) => activity.key).filter(Boolean);
+      const currentKeys = current.activityKeys.filter((key) => eligibleKeys.includes(key));
+      const nextKeys = Array.from(new Set([...currentKeys, ...eligibleKeys]));
+      const nextTaskIds = Array.from(
+        new Set(
+          contractorPeriodActivities
+            .filter((activity) => nextKeys.includes(activity.key))
+            .map((activity) => activity.taskId)
+        )
+      );
+      const keysUnchanged = nextKeys.length === current.activityKeys.length && nextKeys.every((key, index) => key === current.activityKeys[index]);
+      const tasksUnchanged = nextTaskIds.length === current.taskIds.length && nextTaskIds.every((taskId, index) => taskId === current.taskIds[index]);
+      if (keysUnchanged && tasksUnchanged) return current;
       return {
         ...current,
-        taskIds: nextIds,
-        activitySummary: current.activitySummary || summarizeContractorActivities(contractorPeriodTasks, contractorPeriodRateSummary).qualitySummary,
+        activityKeys: nextKeys,
+        taskIds: nextTaskIds,
+        activitySummary: current.activitySummary || summarizeContractorActivities(contractorPeriodActivities, contractorPeriodRateSummary).qualitySummary,
       };
     });
-  }, [contractorPeriodRateSummary, contractorPeriodTasks, isContractorAccountModalOpen]);
+  }, [contractorPeriodActivities, contractorPeriodRateSummary, isContractorAccountModalOpen]);
 
   const requesterMatchesCurrentActor = useCallback(
     (requesterId: string, requesterEmail?: string) => {
@@ -2399,13 +2568,24 @@ export function ProjectAdministration({
     setIsContractorAccountModalOpen(true);
   };
 
-  const toggleContractorAccountTask = (taskId: string) => {
-    setContractorAccountForm((current) => ({
-      ...current,
-      taskIds: current.taskIds.includes(taskId)
-        ? current.taskIds.filter((id) => id !== taskId)
-        : [...current.taskIds, taskId],
-    }));
+  const toggleContractorAccountTask = (activityKey: string) => {
+    setContractorAccountForm((current) => {
+      const nextKeys = current.activityKeys.includes(activityKey)
+        ? current.activityKeys.filter((key) => key !== activityKey)
+        : [...current.activityKeys, activityKey];
+      const nextTaskIds = Array.from(
+        new Set(
+          contractorBillableActivities
+            .filter((activity) => nextKeys.includes(activity.key))
+            .map((activity) => activity.taskId)
+        )
+      );
+      return {
+        ...current,
+        activityKeys: nextKeys,
+        taskIds: nextTaskIds,
+      };
+    });
   };
 
   const uploadContractorAccountDocument = async ({
@@ -2499,8 +2679,8 @@ export function ProjectAdministration({
       toast.warning('Ingresa el monto de honorarios de la cuenta de cobro.');
       return;
     }
-    if (contractorAccountForm.taskIds.length === 0) {
-      toast.warning('Relaciona al menos una tarea de Pixel al informe de actividades.');
+    if (contractorAccountForm.activityKeys.length === 0) {
+      toast.warning('Relaciona al menos una actividad, subtarea o paso de Pixel al informe de actividades.');
       return;
     }
     const requesterSignature = buildCurrentSignatureSnapshot();
@@ -2521,7 +2701,9 @@ export function ProjectAdministration({
       const contractorEmail = String(currentMember?.email || currentUser.email || '');
       const socialSecurityBase = roundCurrency(honorariumAmount * 0.4);
       const estimatedMinimumWages = Math.max(1, Math.ceil(socialSecurityBase / COLOMBIA_LEGAL_MINIMUM_WAGE));
-      const taskTitles = selectedContractorAccountTasks.map((task) => getTaskTitle(task));
+      const activityItems = selectedContractorActivities.map(({ actorTokens, ...activity }: any) => activity as ContractorAccountActivityItem);
+      const taskIds = Array.from(new Set(activityItems.map((activity) => activity.taskId)));
+      const taskTitles = activityItems.map((activity) => activity.taskTitle);
       const accountRef = doc(collection(db, 'projects', projectId, 'contractorPaymentRequests'));
       const accountLabel = `${contractorName} · ${contractorAccountForm.periodStart} - ${contractorAccountForm.periodEnd}`;
       const documents = await Promise.all(
@@ -2547,8 +2729,10 @@ export function ProjectAdministration({
         honorariumAmount,
         socialSecurityBase,
         estimatedMinimumWages,
-        taskIds: contractorAccountForm.taskIds,
+        taskIds,
         taskTitles,
+        activityKeys: activityItems.map((activity) => activity.key),
+        activityItems,
         activitySummary: contractorAccountForm.activitySummary.trim() || contractorActivitySnapshot.qualitySummary,
         activitySnapshot: contractorActivitySnapshot,
         requesterSignature,
@@ -6243,11 +6427,11 @@ export function ProjectAdministration({
                       <div>
                         <h3 className="font-black text-slate-950">Actividades precargadas del periodo</h3>
                         <p className="text-xs font-semibold text-slate-500">
-                          Pixel filtra tareas de la persona entre {formatDate(contractorAccountForm.periodStart)} y {formatDate(contractorAccountForm.periodEnd)} y bloquea las que ya estén en otra cuenta de cobro.
+                          Pixel filtra subtareas y pasos de workflow entre {formatDate(contractorAccountForm.periodStart)} y {formatDate(contractorAccountForm.periodEnd)}. Solo bloquea el paso ya cobrado, no la tarea raíz completa.
                         </p>
                       </div>
                       <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-black text-indigo-700 ring-1 ring-indigo-100">
-                        {selectedContractorAccountTasks.length} seleccionada{selectedContractorAccountTasks.length === 1 ? '' : 's'}
+                        {selectedContractorActivities.length} seleccionada{selectedContractorActivities.length === 1 ? '' : 's'}
                       </span>
                     </div>
                     <div className="grid gap-2 border-b border-slate-200 pb-3 lg:grid-cols-[minmax(0,1fr)_180px_210px]">
@@ -6257,7 +6441,7 @@ export function ProjectAdministration({
                           type="search"
                           value={advanceTaskSearch}
                           onChange={(event) => setAdvanceTaskSearch(event.target.value)}
-                          placeholder="Buscar dentro de las tareas del periodo..."
+                          placeholder="Buscar actividad, subtarea o paso..."
                           className="min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none"
                         />
                       </div>
@@ -6275,26 +6459,27 @@ export function ProjectAdministration({
                       </select>
                     </div>
                     <div className="mt-3 max-h-72 overflow-y-auto rounded-lg bg-white p-2 ring-1 ring-slate-200">
-                      {contractorPeriodTasks.length === 0 ? (
-                        <p className="p-4 text-center text-sm font-bold text-slate-400">No hay actividades disponibles de este contratista en el periodo, o ya fueron usadas en otra cuenta de cobro.</p>
+                      {contractorPeriodActivities.length === 0 ? (
+                        <p className="p-4 text-center text-sm font-bold text-slate-400">No hay pasos o subtareas disponibles de este contratista en el periodo, o ya fueron usados en otra cuenta de cobro.</p>
                       ) : (
                         <div className="space-y-1">
-                          {contractorPeriodTasks
-                            .filter((task) => filteredAdvanceTasks.some((candidate) => candidate.id === task.id))
-                            .map((task) => {
-                              const selected = contractorAccountForm.taskIds.includes(task.id);
-                              const group = advanceTaskGroupById.get(getAdvanceTaskGroupId(task));
-                              const status = getTaskStatusMeta(task);
+                          {filteredContractorPeriodActivities.map((activity) => {
+                              const selected = contractorAccountForm.activityKeys.includes(activity.key);
+                              const status = getTaskStatusMeta({ status: activity.status });
                               return (
-                                <label key={task.id} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 ${selected ? 'border-cyan-200 bg-cyan-50' : 'border-transparent hover:bg-slate-50'}`}>
-                                  <input type="checkbox" checked={selected} onChange={() => toggleContractorAccountTask(task.id)} className="mt-1 h-4 w-4 rounded border-slate-300 text-cyan-600" />
+                                <label key={activity.key} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 ${selected ? 'border-cyan-200 bg-cyan-50' : 'border-transparent hover:bg-slate-50'}`}>
+                                  <input type="checkbox" checked={selected} onChange={() => toggleContractorAccountTask(activity.key)} className="mt-1 h-4 w-4 rounded border-slate-300 text-cyan-600" />
                                   <span className="min-w-0 flex-1">
-                                    <span className="block truncate text-sm font-black text-slate-800">{getTaskTitle(task)}</span>
+                                    <span className="block truncate text-sm font-black text-slate-800">{activity.taskTitle}</span>
                                     <span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-400">
-                                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: group?.color || '#94a3b8' }} />
-                                      {group?.name || 'Sin grupo'}
+                                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: advanceTaskGroupById.get(activity.groupId || '')?.color || '#94a3b8' }} />
+                                      {activity.groupName || 'Sin grupo'}
+                                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-600 ring-1 ring-slate-200">
+                                        {activity.type === 'workflow_step' ? 'Paso workflow' : activity.type === 'subtask' ? 'Subtarea' : 'Tarea'}
+                                      </span>
+                                      {activity.rootTaskTitle && activity.rootTaskTitle !== activity.taskTitle && <span className="truncate">Raíz: {activity.rootTaskTitle}</span>}
                                       <span className={`rounded-full px-2 py-0.5 ring-1 ${status.className}`}>{status.label}</span>
-                                      <span>{formatDate(getTaskBillingDate(task))}</span>
+                                      <span>{formatDate(activity.date)}</span>
                                     </span>
                                   </span>
                                 </label>
@@ -6362,8 +6547,8 @@ export function ProjectAdministration({
                 <SummaryLine label="Salario mínimo" value={formatMoney(COLOMBIA_LEGAL_MINIMUM_WAGE)} />
                 <SummaryLine label="Mínimos estimados" value={`${Math.max(1, Math.ceil((asNumber(contractorAccountForm.honorariumAmount) * 0.4) / COLOMBIA_LEGAL_MINIMUM_WAGE))}`} />
                 <SummaryLine label="Periodo" value={`${formatDate(contractorAccountForm.periodStart)} - ${formatDate(contractorAccountForm.periodEnd)}`} />
-                <SummaryLine label="Actividades disponibles" value={`${contractorPeriodTasks.length}`} />
-                <SummaryLine label="Tareas seleccionadas" value={`${selectedContractorAccountTasks.length}`} />
+                <SummaryLine label="Actividades disponibles" value={`${contractorPeriodActivities.length}`} />
+                <SummaryLine label="Actividades seleccionadas" value={`${selectedContractorActivities.length}`} />
                 <SummaryLine label="Ingreso rate cards" value={formatMoney(contractorActivitySnapshot.rateIncome)} />
                 <SummaryLine label="Costo rate cards" value={formatMoney(contractorActivitySnapshot.rateCost)} />
                 <SummaryLine label="Documentos cargados" value={`${Object.values(contractorDocumentFiles).filter(Boolean).length} de 1`} />
@@ -8101,7 +8286,7 @@ function ContractorAccountsWorkspace({
                   <ReceiptGroupMetric label="Honorarios" value={formatMoney(account.honorariumAmount)} tone="slate" />
                   <ReceiptGroupMetric label="Base 40%" value={formatMoney(account.socialSecurityBase)} tone="indigo" />
                   <ReceiptGroupMetric label="Mínimos estimados" value={`${account.estimatedMinimumWages || 1}`} tone="amber" />
-                  <ReceiptGroupMetric label="Tareas" value={`${account.taskIds?.length || 0}`} tone="emerald" />
+                  <ReceiptGroupMetric label="Actividades" value={`${account.activityItems?.length || account.taskIds?.length || 0}`} tone="emerald" />
                   <ReceiptGroupMetric label="Ingreso rate" value={formatMoney(account.activitySnapshot?.rateIncome || 0)} tone="indigo" />
                   <ReceiptGroupMetric label="Aprobaciones" value={`${account.approvals?.length || 0}`} tone="slate" />
                 </div>
@@ -8109,13 +8294,23 @@ function ContractorAccountsWorkspace({
                 <div className="border-t border-slate-100 p-4">
                   <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
                     <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Tareas relacionadas</p>
+                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Actividades cobradas</p>
                       <div className="mt-2 flex flex-wrap gap-2">
-                        {(account.taskTitles || []).length === 0 ? (
-                          <span className="text-sm font-semibold text-slate-400">Sin tareas registradas</span>
-                        ) : account.taskTitles.map((title, index) => (
-                          <span key={`${title}-${index}`} className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-black text-slate-700 ring-1 ring-slate-200">{title}</span>
-                        ))}
+                        {(account.activityItems || []).length > 0 ? (
+                          account.activityItems?.map((activity) => (
+                            <span key={activity.key} className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-black text-slate-700 ring-1 ring-slate-200">
+                              {activity.taskTitle}
+                              {activity.type === 'workflow_step' && <span className="ml-2 text-cyan-600">Paso</span>}
+                              {activity.type === 'subtask' && <span className="ml-2 text-emerald-600">Subtarea</span>}
+                            </span>
+                          ))
+                        ) : (account.taskTitles || []).length === 0 ? (
+                          <span className="text-sm font-semibold text-slate-400">Sin actividades registradas</span>
+                        ) : (
+                          account.taskTitles.map((title, index) => (
+                            <span key={`${title}-${index}`} className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-black text-slate-700 ring-1 ring-slate-200">{title}</span>
+                          ))
+                        )}
                       </div>
                       {account.activitySummary && <p className="mt-3 rounded-lg bg-slate-50 p-3 text-sm font-semibold leading-6 text-slate-600">{account.activitySummary}</p>}
                       {account.requesterSignature && <div className="mt-3 max-w-md"><SignatureSummary title="Firma del contratista" signature={account.requesterSignature} /></div>}
