@@ -389,6 +389,7 @@ type ContractorQualitySnapshot = {
   reviewed: number;
   accepted: number;
   rejected: number;
+  acceptedWithObservations?: number;
   score: number | null;
   events: Array<{
     id: string;
@@ -396,6 +397,9 @@ type ContractorQualitySnapshot = {
     stepLabel?: string | null;
     result?: string;
     causeLabel?: string | null;
+    causeLabels?: string[];
+    qualityStatus?: string;
+    approvedWithObservations?: boolean;
     comment?: string;
     date?: string;
   }>;
@@ -1373,18 +1377,32 @@ const summarizeContractorActivities = (activities: ContractorAccountActivityItem
 const summarizeContractorQuality = (events: any[]): ContractorQualitySnapshot => {
   const accepted = events.filter((event) => event.result === 'accepted').length;
   const rejected = events.filter((event) => event.result === 'rejected').length;
+  const acceptedWithObservations = events.filter((event) => event.approvedWithObservations || event.qualityStatus === 'accepted_with_observations').length;
   const reviewed = accepted + rejected;
   return {
     reviewed,
     accepted,
     rejected,
+    acceptedWithObservations,
     score: reviewed > 0 ? Math.round((accepted / reviewed) * 100) : null,
     events: events.slice(0, 12).map((event) => ({
+      ...(() => {
+        const causeLabels = Array.isArray(event.causeLabels) && event.causeLabels.length > 0
+          ? event.causeLabels.filter(Boolean).map(String)
+          : event.causeLabel
+            ? [String(event.causeLabel)]
+            : [];
+        return {
+          causeLabels,
+          causeLabel: causeLabels.join(', ') || null,
+        };
+      })(),
       id: String(event.id || `${event.taskId || 'quality'}-${event.createdAt || ''}`),
       taskTitle: event.taskTitle || 'Tarea sin título',
       stepLabel: event.sourceStepLabel || event.stepLabel || null,
       result: event.result,
-      causeLabel: event.causeLabel || null,
+      qualityStatus: event.qualityStatus,
+      approvedWithObservations: Boolean(event.approvedWithObservations || event.qualityStatus === 'accepted_with_observations'),
       comment: event.comment || '',
       date: toDateInputValue(event.createdAt || event.dateKey),
     })),
@@ -7491,9 +7509,10 @@ export function ProjectAdministration({
                           {contractorQualitySnapshot.score === null ? 'Sin dato' : `${contractorQualitySnapshot.score}%`}
                         </span>
                       </div>
-                      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                      <div className="mt-3 grid gap-2 sm:grid-cols-4">
                         <ReceiptGroupMetric label="Revisadas" value={`${contractorQualitySnapshot.reviewed}`} tone="slate" />
                         <ReceiptGroupMetric label="Aceptadas" value={`${contractorQualitySnapshot.accepted}`} tone="emerald" />
+                        <ReceiptGroupMetric label="Con obs." value={`${contractorQualitySnapshot.acceptedWithObservations || 0}`} tone={(contractorQualitySnapshot.acceptedWithObservations || 0) > 0 ? 'amber' : 'slate'} />
                         <ReceiptGroupMetric label="Rechazadas" value={`${contractorQualitySnapshot.rejected}`} tone={contractorQualitySnapshot.rejected > 0 ? 'rose' : 'slate'} />
                       </div>
                       <div className="mt-3 space-y-2">
@@ -7504,11 +7523,13 @@ export function ProjectAdministration({
                             <div key={event.id} className="rounded-lg bg-white/90 p-3 text-xs ring-1 ring-emerald-100">
                               <div className="flex items-center justify-between gap-2">
                                 <p className="truncate font-black text-slate-800">{event.taskTitle}</p>
-                                <span className={`shrink-0 rounded-full px-2 py-0.5 font-black ${event.result === 'accepted' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                                  {event.result === 'accepted' ? 'Aceptada' : event.result === 'rejected' ? 'Rechazada' : 'Revisada'}
+                                <span className={`shrink-0 rounded-full px-2 py-0.5 font-black ${event.approvedWithObservations ? 'bg-amber-50 text-amber-700' : event.result === 'accepted' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                                  {event.approvedWithObservations ? 'Con observaciones' : event.result === 'accepted' ? 'Aceptada' : event.result === 'rejected' ? 'Rechazada' : 'Revisada'}
                                 </span>
                               </div>
                               <p className="mt-1 font-semibold text-slate-500">{event.stepLabel || 'Sin paso'} · {formatDate(event.date)}</p>
+                              {event.causeLabel && <p className="mt-1 font-semibold text-amber-700">Errores: {event.causeLabel}</p>}
+                              {event.comment && <p className="mt-1 line-clamp-2 font-semibold text-slate-500">{event.comment}</p>}
                             </div>
                           ))
                         )}
@@ -9594,15 +9615,19 @@ function ContractorAccountsWorkspace({
                       <div className="mt-3 grid gap-3 lg:grid-cols-2">
                         <div className="rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
                           <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700">Calidad del periodo</p>
-                          <div className="mt-2 grid grid-cols-3 gap-2">
+                          <div className="mt-2 grid grid-cols-4 gap-2">
                             <ReceiptGroupMetric label="Revisadas" value={`${account.qualitySnapshot?.reviewed || 0}`} tone="slate" />
                             <ReceiptGroupMetric label="OK" value={`${account.qualitySnapshot?.accepted || 0}`} tone="emerald" />
+                            <ReceiptGroupMetric label="Obs." value={`${account.qualitySnapshot?.acceptedWithObservations || 0}`} tone={account.qualitySnapshot?.acceptedWithObservations ? 'amber' : 'slate'} />
                             <ReceiptGroupMetric label="Rechazos" value={`${account.qualitySnapshot?.rejected || 0}`} tone={account.qualitySnapshot?.rejected ? 'rose' : 'slate'} />
                           </div>
                           {(account.qualitySnapshot?.events || []).length > 0 && (
-                            <p className="mt-2 truncate text-xs font-semibold text-slate-500">
-                              Última revisión: {account.qualitySnapshot?.events?.[0]?.taskTitle || 'Sin tarea'} · {formatDate(account.qualitySnapshot?.events?.[0]?.date)}
-                            </p>
+                            <div className="mt-2 space-y-1 text-xs font-semibold text-slate-500">
+                              <p className="truncate">Última revisión: {account.qualitySnapshot?.events?.[0]?.taskTitle || 'Sin tarea'} · {formatDate(account.qualitySnapshot?.events?.[0]?.date)}</p>
+                              {account.qualitySnapshot?.events?.[0]?.causeLabel && (
+                                <p className="line-clamp-2 text-amber-700">Errores: {account.qualitySnapshot.events[0].causeLabel}</p>
+                              )}
+                            </div>
                           )}
                         </div>
                         <div className="rounded-lg border border-indigo-100 bg-indigo-50/60 p-3">

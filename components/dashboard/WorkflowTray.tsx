@@ -935,7 +935,9 @@ export default function WorkflowTray() {
   const [projectTeamMembers, setProjectTeamMembers] = useState<any[]>([]);
   const [projectRateCards, setProjectRateCards] = useState<any[]>([]);
   const [projectQualityCauses, setProjectQualityCauses] = useState<any[]>([]);
-  const [qualityCauseId, setQualityCauseId] = useState('');
+  const [qualityCauseIds, setQualityCauseIds] = useState<string[]>([]);
+  const [qualityApprovalMode, setQualityApprovalMode] = useState<'accepted' | 'accepted_with_observations'>('accepted');
+  const [qualityObservationComment, setQualityObservationComment] = useState('');
   const [dynamicRateCardAssignee, setDynamicRateCardAssignee] = useState('');
   const [dynamicRateCardId, setDynamicRateCardId] = useState('');
   const [dynamicRateCardUnits, setDynamicRateCardUnits] = useState('1');
@@ -1181,6 +1183,20 @@ export default function WorkflowTray() {
     setDynamicRateCardComment('');
   };
 
+  const resetQualityReviewFields = () => {
+    setQualityCauseIds([]);
+    setQualityApprovalMode('accepted');
+    setQualityObservationComment('');
+  };
+
+  const toggleQualityCause = (causeId: string) => {
+    setQualityCauseIds((current) =>
+      current.includes(causeId)
+        ? current.filter((id) => id !== causeId)
+        : [...current, causeId]
+    );
+  };
+
   const addDynamicRateCardChargeToBatch = (
     batch: ReturnType<typeof writeBatch>,
     params: {
@@ -1339,7 +1355,10 @@ export default function WorkflowTray() {
           history: task.workflowHistory || [],
         })
       : null;
-    const selectedQualityCause = projectQualityCauses.find((cause) => cause.id === qualityCauseId);
+    const selectedQualityCauses = projectQualityCauses.filter((cause) => qualityCauseIds.includes(String(cause.id)));
+    const selectedQualityCauseLabels = selectedQualityCauses.map((cause) => cause.name || cause.label || 'Causal sin nombre');
+    const isApprovalWithObservations =
+      currentStepIsQualityGate && action === 'approve' && qualityApprovalMode === 'accepted_with_observations';
     const staticRateCardSources = getStaticRateCardSources(currentStep);
     const runtimeStaticRateCardSources = staticRateCardSources.filter((source) => source.assigneeMode === 'runtime');
     const workflowDynamicRateCardSource = getWorkflowDynamicRateCardSource(task, action);
@@ -1396,8 +1415,13 @@ export default function WorkflowTray() {
       }
     }
 
-    if (currentStepIsQualityGate && action === 'return' && !qualityCauseId) {
-      toast.warning("Selecciona la causal de devolución de calidad.");
+    if (currentStepIsQualityGate && (action === 'return' || isApprovalWithObservations) && qualityCauseIds.length === 0) {
+      toast.warning("Selecciona al menos una causal de calidad.");
+      return;
+    }
+
+    if (isApprovalWithObservations && !qualityObservationComment.trim()) {
+      toast.warning("Escribe la observación general de los errores detectados.");
       return;
     }
 
@@ -1498,6 +1522,16 @@ export default function WorkflowTray() {
         const sourceStep = qualitySourceStepIndex !== null ? workflowStepsForRouting[qualitySourceStepIndex] : null;
         const participants = getQualityParticipantIds(task, currentIndex, currentStep, memberId, user.uid, qualitySourceStepIndex);
         const result = action === 'approve' ? 'accepted' : 'rejected';
+        const qualityStatus = result === 'accepted'
+          ? isApprovalWithObservations ? 'accepted_with_observations' : 'accepted'
+          : 'rejected';
+        const qualityComment = isApprovalWithObservations
+          ? qualityObservationComment.trim()
+          : action === 'return'
+            ? qualityObservationComment.trim() || actionComment.trim()
+            : actionComment.trim();
+        const qualityCauseIdList = action === 'return' || isApprovalWithObservations ? qualityCauseIds : [];
+        const qualityCauseLabelList = action === 'return' || isApprovalWithObservations ? selectedQualityCauseLabels : [];
         qualityEvent = {
           id: eventRef.id,
           projectId: task.projectId,
@@ -1512,9 +1546,14 @@ export default function WorkflowTray() {
           action: result,
           professionalId: participants.professionalId,
           reviewerId: participants.reviewerId,
-          causeId: result === 'rejected' ? (selectedQualityCause?.id || qualityCauseId || null) : null,
-          causeLabel: result === 'rejected' ? (selectedQualityCause?.name || selectedQualityCause?.label || 'Sin causal') : null,
-          comment: actionComment.trim(),
+          qualityStatus,
+          approvedWithObservations: isApprovalWithObservations,
+          causeIds: qualityCauseIdList,
+          causeLabels: qualityCauseLabelList,
+          causeId: qualityCauseIdList[0] || null,
+          causeLabel: qualityCauseLabelList.join(', ') || null,
+          comment: qualityComment,
+          workflowComment: actionComment.trim(),
           ...getDateKeys(now),
           createdAt: Timestamp.now(),
           createdBy: user.uid,
@@ -1766,7 +1805,7 @@ export default function WorkflowTray() {
       setFormData({});
       setWorkflowDocumentFiles({});
       setStaticRateCardAssignees({});
-      setQualityCauseId('');
+      resetQualityReviewFields();
       resetDynamicRateCardFields();
     } catch (error) {
       console.error('Error updating workflow:', error);
@@ -1787,7 +1826,7 @@ export default function WorkflowTray() {
     setFormData(initialFormData);
     setWorkflowDocumentFiles({});
     setNextStepAssignee('');
-    setQualityCauseId('');
+    resetQualityReviewFields();
     
     const staticRateCardSources = getStaticRateCardSources(currentStep);
     setStaticRateCardUnits(
@@ -2592,8 +2631,16 @@ export default function WorkflowTray() {
       (activeQualityGateStep?.assignsNextStep || activeApproveNextStepRequiresDynamicAssignee) &&
       activeWorkflowNextIndexes.length > 0
   );
-  const activeQualityGateRequiresCause =
-    isQualityGateStep(activeQualityGateStep) && actionModal.type === 'return';
+  const activeQualityGateIsApproveWithObservations =
+    isQualityGateStep(activeQualityGateStep) &&
+    actionModal.type === 'approve' &&
+    qualityApprovalMode === 'accepted_with_observations';
+  const activeQualityGateMissingCauses =
+    isQualityGateStep(activeQualityGateStep) &&
+    (actionModal.type === 'return' || activeQualityGateIsApproveWithObservations) &&
+    qualityCauseIds.length === 0;
+  const activeQualityGateMissingObservation =
+    activeQualityGateIsApproveWithObservations && !qualityObservationComment.trim();
   const assignedTaskDynamicRateCardRequestsUnits = dynamicRateCardModal.task
     ? shouldRequestDynamicRateCardUnits(dynamicRateCardModal.task)
     : false;
@@ -3555,33 +3602,79 @@ export default function WorkflowTray() {
                     <ShieldCheck size={14} />
                     Control de calidad
                   </p>
-                  {actionModal.type === 'return' ? (
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-slate-700">
-                        Causal de devolución <span className="text-red-500">*</span>
+                  {actionModal.type === 'approve' && (
+                    <div className="mb-3 grid gap-2 sm:grid-cols-2">
+                      <label className={`cursor-pointer rounded-lg border p-3 text-xs font-bold transition ${qualityApprovalMode === 'accepted' ? 'border-emerald-200 bg-white text-emerald-700 ring-2 ring-emerald-100' : 'border-amber-100 bg-white/70 text-slate-600 hover:bg-white'}`}>
+                        <input
+                          type="radio"
+                          checked={qualityApprovalMode === 'accepted'}
+                          onChange={() => {
+                            setQualityApprovalMode('accepted');
+                            setQualityCauseIds([]);
+                            setQualityObservationComment('');
+                          }}
+                          className="mr-2"
+                        />
+                        Aprobado
                       </label>
-                      <select
-                        value={qualityCauseId}
-                        onChange={(e) => setQualityCauseId(e.target.value)}
-                        className="w-full rounded-lg border border-amber-100 bg-white p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20"
-                      >
-                        <option value="">Seleccionar causal...</option>
-                        {projectQualityCauses.map((cause) => (
-                          <option key={cause.id} value={cause.id}>
-                            {cause.name || cause.label}
-                          </option>
-                        ))}
-                      </select>
-                      {projectQualityCauses.length === 0 && (
-                        <p className="mt-2 text-xs text-amber-700">
-                          Configura primero las causales en la pestaña Gestión de calidad del proyecto.
-                        </p>
+                      <label className={`cursor-pointer rounded-lg border p-3 text-xs font-bold transition ${qualityApprovalMode === 'accepted_with_observations' ? 'border-amber-300 bg-white text-amber-700 ring-2 ring-amber-100' : 'border-amber-100 bg-white/70 text-slate-600 hover:bg-white'}`}>
+                        <input
+                          type="radio"
+                          checked={qualityApprovalMode === 'accepted_with_observations'}
+                          onChange={() => setQualityApprovalMode('accepted_with_observations')}
+                          className="mr-2"
+                        />
+                        Aprobado con observaciones
+                      </label>
+                    </div>
+                  )}
+                  {actionModal.type === 'approve' && qualityApprovalMode === 'accepted' ? (
+                    <p className="text-xs text-amber-700">
+                      Se registrará como revisión aceptada sin errores asociados para el contratista.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="mb-2 block text-xs font-medium text-slate-700">
+                          {actionModal.type === 'return' ? 'Causales de devolución' : 'Errores observados'} <span className="text-red-500">*</span>
+                        </label>
+                        {projectQualityCauses.length === 0 ? (
+                          <p className="rounded-lg border border-dashed border-amber-200 bg-white/70 p-3 text-xs text-amber-700">
+                            Configura primero las causales en la pestaña Gestión de calidad del proyecto.
+                          </p>
+                        ) : (
+                          <div className="grid max-h-44 gap-2 overflow-y-auto rounded-lg border border-amber-100 bg-white p-2 sm:grid-cols-2">
+                            {projectQualityCauses.map((cause) => {
+                              const causeId = String(cause.id);
+                              return (
+                                <label key={causeId} className="flex cursor-pointer items-start gap-2 rounded-md p-2 text-xs font-semibold text-slate-700 hover:bg-amber-50">
+                                  <input
+                                    type="checkbox"
+                                    checked={qualityCauseIds.includes(causeId)}
+                                    onChange={() => toggleQualityCause(causeId)}
+                                    className="mt-0.5 h-4 w-4 rounded border-amber-200 text-amber-600 focus:ring-amber-500"
+                                  />
+                                  <span>{cause.name || cause.label || 'Causal sin nombre'}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      {actionModal.type === 'approve' && qualityApprovalMode === 'accepted_with_observations' && (
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-slate-700">
+                            Observación general de los errores <span className="text-red-500">*</span>
+                          </label>
+                          <textarea
+                            value={qualityObservationComment}
+                            onChange={(event) => setQualityObservationComment(event.target.value)}
+                            placeholder="Resume los errores encontrados para que queden visibles en la cuenta de cobro..."
+                            className="h-20 w-full resize-none rounded-lg border border-amber-100 bg-white p-3 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                          />
+                        </div>
                       )}
                     </div>
-                  ) : (
-                    <p className="text-xs text-amber-700">
-                      Al aprobar este paso se registrará un acierto para el profesional y una revisión para el revisor de calidad.
-                    </p>
                   )}
                 </div>
               )}
@@ -3845,13 +3938,14 @@ export default function WorkflowTray() {
                   setActionModal({ isOpen: false, task: null, type: 'approve' });
                   setWorkflowDocumentFiles({});
                   setStaticRateCardAssignees({});
+                  resetQualityReviewFields();
                 }}
               >
                 Cancelar
               </Button>
               <Button
                 onClick={confirmAction}
-                disabled={!actionComment.trim() || processingId === actionModal.task.id || (activeApproveNeedsNextAssignee && !nextStepAssignee) || activeQualityGateRequiresCause && !qualityCauseId || hasMissingManualStaticUnits || hasMissingRuntimeStaticAssignees || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && isInvalidRateCardUnits(dynamicRateCardUnits))))}
+                disabled={!actionComment.trim() || processingId === actionModal.task.id || (activeApproveNeedsNextAssignee && !nextStepAssignee) || activeQualityGateMissingCauses || activeQualityGateMissingObservation || hasMissingManualStaticUnits || hasMissingRuntimeStaticAssignees || (Boolean(activeDynamicRateCardSource) && (!dynamicRateCardAssignee || !dynamicRateCardId || (activeDynamicRateCardRequestsUnits && isInvalidRateCardUnits(dynamicRateCardUnits))))}
                 className={
                   actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 
                   actionModal.type === 'return' ? 'bg-red-600 hover:bg-red-700 text-white' :

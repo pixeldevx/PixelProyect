@@ -58,12 +58,16 @@ export type ContractorAccountPdfReport = {
     reviewed: number;
     accepted: number;
     rejected: number;
+    acceptedWithObservations?: number;
     score: number | null;
     events: Array<{
       taskTitle: string;
       stepLabel?: string | null;
       result?: string;
       causeLabel?: string | null;
+      causeLabels?: string[];
+      qualityStatus?: string;
+      approvedWithObservations?: boolean;
       comment?: string;
       date?: string;
     }>;
@@ -716,6 +720,7 @@ export const generateContractorAccountPdf = async (report: ContractorAccountPdfR
       { label: 'Sin cronograma', value: String(performance?.completedWithoutSchedule || 0), tone: 'indigo' },
       { label: 'Revisiones calidad', value: String(report.quality?.reviewed || 0), tone: 'indigo' },
       { label: 'Rechazos calidad', value: String(report.quality?.rejected || 0), tone: report.quality?.rejected ? 'rose' : 'teal' },
+      { label: 'Calidad con obs.', value: String(report.quality?.acceptedWithObservations || 0), tone: report.quality?.acceptedWithObservations ? 'amber' : 'teal' },
       { label: 'Ingreso rates', value: formatMoney(report.rates?.income || 0), tone: 'teal' },
       { label: 'Margen rates', value: formatMoney(report.rates?.margin || 0), tone: 'indigo' },
     ]);
@@ -762,14 +767,17 @@ export const generateContractorAccountPdf = async (report: ContractorAccountPdfR
     drawMetricGrid([
       { label: 'Revisadas', value: String(report.quality?.reviewed || 0), tone: 'indigo' },
       { label: 'Aceptadas', value: String(report.quality?.accepted || 0), tone: 'teal' },
+      { label: 'Con observaciones', value: String(report.quality?.acceptedWithObservations || 0), tone: report.quality?.acceptedWithObservations ? 'amber' : 'teal' },
       { label: 'Rechazadas', value: String(report.quality?.rejected || 0), tone: report.quality?.rejected ? 'rose' : 'teal' },
       { label: 'Resultado', value: report.quality?.score === null || report.quality?.score === undefined ? 'Sin dato' : `${report.quality.score}%`, tone: report.quality?.rejected ? 'amber' : 'teal' },
     ]);
     const qualityRows = (report.quality?.events || []).map((event) => [
       event.taskTitle,
       event.stepLabel || 'Sin paso',
-      event.result === 'accepted' ? 'Aceptada' : event.result === 'rejected' ? 'Rechazada' : event.result || 'Revisada',
-      event.causeLabel || 'Sin causa',
+      event.approvedWithObservations || event.qualityStatus === 'accepted_with_observations'
+        ? 'Aprobada con observaciones'
+        : event.result === 'accepted' ? 'Aceptada' : event.result === 'rejected' ? 'Rechazada' : event.result || 'Revisada',
+      (Array.isArray(event.causeLabels) && event.causeLabels.length > 0 ? event.causeLabels.join(', ') : event.causeLabel) || 'Sin causa',
       formatDate(event.date),
       event.comment || 'Sin comentario',
     ]);

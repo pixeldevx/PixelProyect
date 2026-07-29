@@ -34,7 +34,12 @@ type QualityEvent = {
   reviewerId?: string;
   causeId?: string;
   causeLabel?: string;
+  causeIds?: string[];
+  causeLabels?: string[];
+  qualityStatus?: string;
+  approvedWithObservations?: boolean;
   comment?: string;
+  workflowComment?: string;
   createdAt?: any;
   createdBy?: string;
   createdByEmail?: string;
@@ -91,6 +96,22 @@ const getTaskDeepLink = (event: QualityEvent) =>
   event.taskId
     ? `/projects/${event.projectId}?tab=tasks&taskId=${encodeURIComponent(event.taskId)}&focus=comments`
     : `/projects/${event.projectId}?tab=quality`;
+
+const getEventCauseLabels = (event: QualityEvent) => {
+  if (Array.isArray(event.causeLabels) && event.causeLabels.length > 0) {
+    return event.causeLabels.filter(Boolean).map(String);
+  }
+  return event.causeLabel ? [event.causeLabel] : [];
+};
+
+const getEventStatusLabel = (event: QualityEvent) => {
+  if (event.approvedWithObservations || event.qualityStatus === 'accepted_with_observations') {
+    return 'Aprobada con observaciones';
+  }
+  if (event.result === 'accepted') return 'Tarea aceptada';
+  if (event.result === 'rejected') return 'Devolución';
+  return 'Revisada';
+};
 
 const matchesMember = (member: any, value?: string | null) => {
   if (!value) return false;
@@ -286,6 +307,9 @@ function QualityOverviewContent() {
           project?.name,
           event.stepLabel,
           event.causeLabel,
+          ...getEventCauseLabels(event),
+          event.qualityStatus,
+          event.comment,
           memberName(scopedTeamMembers, event.professionalId),
           memberName(scopedTeamMembers, event.reviewerId),
         ]
@@ -297,6 +321,7 @@ function QualityOverviewContent() {
 
   const acceptedEvents = visibleEvents.filter((event) => event.result === 'accepted');
   const rejectedEvents = visibleEvents.filter((event) => event.result === 'rejected');
+  const acceptedWithObservationsEvents = visibleEvents.filter((event) => event.approvedWithObservations || event.qualityStatus === 'accepted_with_observations');
   const qualityScore = visibleEvents.length > 0 ? Math.round((acceptedEvents.length / visibleEvents.length) * 100) : null;
   const grade = getQualityGrade(qualityScore);
   const reviewerCount = new Set(visibleEvents.map((event) => event.reviewerId || event.createdBy).filter(Boolean)).size;
@@ -353,15 +378,19 @@ function QualityOverviewContent() {
 
   const causeRows = useMemo(() => {
     const rows = new Map<string, any>();
-    rejectedEvents.forEach((event) => {
-      const key = event.causeId || event.causeLabel || 'unknown';
-      const row = rows.get(key) || { id: key, name: event.causeLabel || 'Sin causal', count: 0 };
-      row.count += 1;
-      rows.set(key, row);
+    visibleEvents.forEach((event) => {
+      const labels = getEventCauseLabels(event);
+      if (labels.length === 0) return;
+      labels.forEach((label, index) => {
+        const key = Array.isArray(event.causeIds) && event.causeIds[index] ? event.causeIds[index] : label;
+        const row = rows.get(key) || { id: key, name: label || 'Sin causal', count: 0 };
+        row.count += 1;
+        rows.set(key, row);
+      });
     });
 
     return Array.from(rows.values()).sort((left, right) => right.count - left.count).slice(0, 8);
-  }, [rejectedEvents]);
+  }, [visibleEvents]);
 
   if (!canAccessQuality) {
     return (
@@ -409,7 +438,7 @@ function QualityOverviewContent() {
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           <ClockMetric label="Revisiones" value={visibleEvents.length} total={Math.max(visibleEvents.length, 1)} detail={`${compactNumber(professionalCount)} profesionales evaluados`} color="#4f46e5" />
-          <ClockMetric label="Aceptadas" value={acceptedEvents.length} total={Math.max(visibleEvents.length, 1)} detail="Tareas que pasaron control" color="#10b981" />
+          <ClockMetric label="Aceptadas" value={acceptedEvents.length} total={Math.max(visibleEvents.length, 1)} detail={`${compactNumber(acceptedWithObservationsEvents.length)} con observaciones`} color="#10b981" />
           <ClockMetric label="Devueltas" value={rejectedEvents.length} total={Math.max(visibleEvents.length, 1)} detail="Requieren corrección" color="#ef4444" />
           <ClockMetric label="Revisores" value={reviewerCount} total={Math.max(reviewerCount, professionalCount, 1)} detail="Personas revisando calidad" color="#06b6d4" />
         </div>
@@ -522,6 +551,8 @@ function QualityOverviewContent() {
                   const project = projectById.get(event.projectId);
                   const task = taskByKey.get(`${event.projectId}::${event.taskId}`);
                   const isAccepted = event.result === 'accepted';
+                  const isAcceptedWithObservations = event.approvedWithObservations || event.qualityStatus === 'accepted_with_observations';
+                  const causeLabels = getEventCauseLabels(event);
                   const progress = Number(task?.progress || 0);
 
                   return (
@@ -535,24 +566,27 @@ function QualityOverviewContent() {
                       <div className="min-w-0">
                         <div className="mb-1 flex flex-wrap items-center gap-2">
                           <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${
-                            isAccepted ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100' : 'bg-red-50 text-red-700 ring-1 ring-red-100'
+                            isAcceptedWithObservations ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-100' : isAccepted ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100' : 'bg-red-50 text-red-700 ring-1 ring-red-100'
                           }`}>
                             {isAccepted ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
-                            {isAccepted ? 'Tarea aceptada' : 'Devolución'}
+                            {getEventStatusLabel(event)}
                           </span>
                           <span className="rounded bg-indigo-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-indigo-700 ring-1 ring-indigo-100">
                             {project?.name || 'Proyecto'}
                           </span>
-                          {event.causeLabel && (
-                            <span className="rounded bg-orange-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-orange-700 ring-1 ring-orange-100">
-                              {event.causeLabel}
+                          {causeLabels.map((label) => (
+                            <span key={label} className="rounded bg-orange-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-orange-700 ring-1 ring-orange-100">
+                              {label}
                             </span>
-                          )}
+                          ))}
                         </div>
                         <p className="truncate text-sm font-black text-slate-950">{getTaskTitle(task, event)}</p>
                         <p className="mt-1 text-xs font-bold text-slate-500">
                           {event.stepLabel || 'Control de calidad'} · {memberName(scopedTeamMembers, event.professionalId)} · {formatDate(event.createdAt)}
                         </p>
+                        {event.comment && (
+                          <p className="mt-1 line-clamp-2 text-xs font-semibold text-slate-500">{event.comment}</p>
+                        )}
                       </div>
                       <div className="flex items-center gap-3">
                         <div className="w-28">
