@@ -16,17 +16,19 @@ import {
 import '@xyflow/react/dist/style.css';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { Save, Plus, Trash2, Users, ShieldCheck, WalletCards, AlertTriangle, BriefcaseBusiness, Maximize2, Minimize2, X } from 'lucide-react';
-import { collection, doc, getDoc, getDocs, setDoc } from '@/lib/supabase/document-store';
+import { Save, Plus, Trash2, Users, ShieldCheck, WalletCards, AlertTriangle, BriefcaseBusiness, Maximize2, Minimize2, X, GitBranch, Building2 } from 'lucide-react';
+import { collection, doc, getDoc, getDocs, serverTimestamp, setDoc, updateDoc } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { toast } from 'sonner';
 import { handleDataError, OperationType } from '@/lib/backend-utils';
 import { useAuth } from '@/hooks/useAuth';
 import { useRolePermissions } from '@/hooks/useRolePermissions';
+import { getOrganizationIds } from '@/lib/organizations';
 import { OrgChartNode } from './OrgChartNode';
 
 interface ProjectOrgChartProps {
   projectId: string;
+  project?: any;
   teamMembers: any[];
 }
 
@@ -59,6 +61,33 @@ type MemberCoverage = {
 const initialEdges: Edge[] = [];
 const MONTH_LABELS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 const COVERAGE_WINDOW = 12;
+const CONTRACTOR_APPROVAL_FIELDS = [
+  { key: 'immediateBossId', label: 'Jefe inmediato', detail: 'Primera revisión técnica' },
+  { key: 'operationsManagerId', label: 'Gerencia de operaciones', detail: 'Valida alcance operativo' },
+  { key: 'qualityComplianceId', label: 'Calidad y cumplimiento', detail: 'Control documental y calidad' },
+  { key: 'humanTalentId', label: 'Talento humano', detail: 'Revisión contractual' },
+  { key: 'accountingId', label: 'Contabilidad y pago', detail: 'Causación y pago' },
+] as const;
+
+const emptyContractorApprovalConfig = () => Object.fromEntries(
+  CONTRACTOR_APPROVAL_FIELDS.map((field) => [field.key, ''])
+) as Record<string, string>;
+
+const normalizeContractorApprovalConfig = (value: any) => {
+  const normalized = emptyContractorApprovalConfig();
+  CONTRACTOR_APPROVAL_FIELDS.forEach((field) => {
+    normalized[field.key] = String(value?.[field.key] || '').trim();
+  });
+  return normalized;
+};
+
+const hasContractorApprovalConfig = (value: any) =>
+  CONTRACTOR_APPROVAL_FIELDS.some((field) => String(value?.[field.key] || '').trim());
+
+const getNewNodePosition = (currentCount: number, columnWidth = 160, rowHeight = 120) => ({
+  x: 120 + (currentCount % 4) * columnWidth,
+  y: 80 + (Math.floor(currentCount / 4) % 4) * rowHeight,
+});
 
 const currencyFormatter = (value: number, currency = 'COP') =>
   new Intl.NumberFormat('es-CO', {
@@ -222,12 +251,17 @@ function PersonnelMetric({
   );
 }
 
-export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps) {
+export function ProjectOrgChart({ projectId, project, teamMembers }: ProjectOrgChartProps) {
   const { userRole } = useAuth();
   const { permissions } = useRolePermissions(userRole);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [budgetLines, setBudgetLines] = useState<BudgetLine[]>([]);
+  const [organizations, setOrganizations] = useState<any[]>([]);
+  const [contractorApprovalConfig, setContractorApprovalConfig] = useState<Record<string, string>>(
+    () => normalizeContractorApprovalConfig(project?.contractorAccountApprovalConfig)
+  );
+  const [isSavingContractorApprovalConfig, setIsSavingContractorApprovalConfig] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
@@ -239,6 +273,30 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
   const canEdit = Boolean(permissions.orgChartManage);
   const canViewBudget = Boolean(permissions.personnelBudgetView);
   const currentMonthNumber = new Date().getMonth() + 1;
+  const projectOrganizationIds = useMemo(() => getOrganizationIds(project), [project]);
+  const projectOrganization = useMemo(() => {
+    const organizationId = projectOrganizationIds[0];
+    return organizations.find((organization) => organization.id === organizationId) || null;
+  }, [organizations, projectOrganizationIds]);
+  const organizationApprovalConfig = useMemo(
+    () => normalizeContractorApprovalConfig(projectOrganization?.contractorAccountApprovalConfig),
+    [projectOrganization]
+  );
+  const hasProjectApprovalConfig = hasContractorApprovalConfig(contractorApprovalConfig);
+  const effectiveContractorApprovalConfig = useMemo(
+    () => (hasProjectApprovalConfig ? contractorApprovalConfig : organizationApprovalConfig),
+    [contractorApprovalConfig, hasProjectApprovalConfig, organizationApprovalConfig]
+  );
+  const memberOptionId = useCallback((member: any) => (
+    String(member?.id || member?.authUserId || member?.uid || member?.email || '').trim()
+  ), []);
+  const memberNameById = useCallback((value: string) => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) return 'Sin responsable';
+    const member = teamMembers.find((item) => [item?.id, item?.authUserId, item?.uid, item?.email]
+      .some((candidate) => String(candidate || '').trim().toLowerCase() === normalized));
+    return member ? memberName(member) : 'Responsable no vinculado';
+  }, [teamMembers]);
 
   const handleNodeLabelChange = useCallback((id: string, newLabel: string) => {
     setNodes((nds) =>
@@ -328,14 +386,16 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
     const fetchOrgChart = async () => {
       setIsLoading(true);
       try {
-        const [docSnap, budgetSnapshot] = await Promise.all([
+        const [docSnap, budgetSnapshot, organizationsSnapshot] = await Promise.all([
           getDoc(doc(db, 'projects', projectId, 'orgChart', 'data')),
           getDocs(collection(db, 'projects', projectId, 'budgetLines')),
+          getDocs(collection(db, 'organizations')),
         ]);
 
         const loadedBudgetLines = budgetSnapshot.docs.map((docSnapItem) => ({ id: docSnapItem.id, ...docSnapItem.data() } as BudgetLine));
         const loadedCoverageByMember = buildCoverageByMember(loadedBudgetLines, teamMembers, currentMonthNumber);
         setBudgetLines(loadedBudgetLines);
+        setOrganizations(organizationsSnapshot.docs.map((organizationDoc) => ({ id: organizationDoc.id, ...organizationDoc.data() })));
 
         if (docSnap.exists()) {
           const data = docSnap.data();
@@ -414,6 +474,34 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
     }
   }, [canEdit, projectId, nodes, edges]);
 
+  const saveContractorApprovalConfig = useCallback(async () => {
+    if (!canEdit) {
+      toast.error('No tienes permiso para configurar aprobaciones del proyecto.');
+      return;
+    }
+
+    setIsSavingContractorApprovalConfig(true);
+    try {
+      const configToSave = normalizeContractorApprovalConfig(contractorApprovalConfig);
+      await updateDoc(doc(db, 'projects', projectId), {
+        contractorAccountApprovalConfig: configToSave,
+        contractorAccountApprovalConfigSource: hasContractorApprovalConfig(configToSave) ? 'project' : 'organization',
+        contractorAccountApprovalConfigUpdatedAt: serverTimestamp(),
+      });
+      toast.success(
+        hasContractorApprovalConfig(configToSave)
+          ? 'Ruta particular del proyecto guardada.'
+          : 'Ruta particular vacía. Pixel usará la configuración global.'
+      );
+    } catch (error: any) {
+      console.error('Error saving project contractor approval config:', error);
+      toast.error(`No se pudo guardar la ruta de aprobaciones: ${error.message || 'error desconocido'}`);
+      handleDataError(error, OperationType.WRITE, `projects/${projectId}`);
+    } finally {
+      setIsSavingContractorApprovalConfig(false);
+    }
+  }, [canEdit, contractorApprovalConfig, projectId]);
+
   const addCustomNode = () => {
     if (!canEdit) return;
     const newId = `node_${new Date().getTime()}`;
@@ -421,7 +509,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
       id: newId,
       type: 'orgChartNode',
       data: { label: 'Doble clic para editar', alias: 'Cargo o alias' },
-      position: { x: Math.random() * 300, y: Math.random() * 300 },
+      position: getNewNodePosition(nodes.length, 150, 110),
     });
     setNodes((nds) => nds.concat(newNode));
     setIsAddMenuOpen(false);
@@ -440,7 +528,7 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
         memberId: member.id,
         photoURL: member.photoURL || null,
       },
-      position: { x: Math.random() * 420, y: Math.random() * 320 },
+      position: getNewNodePosition(nodes.length),
     });
     setNodes((nds) => nds.concat(newNode));
     setIsAddMenuOpen(false);
@@ -619,57 +707,143 @@ export function ProjectOrgChart({ projectId, teamMembers }: ProjectOrgChartProps
       <section className="grid gap-5 xl:grid-cols-[1fr_360px]">
         {flowCanvas}
 
-        <aside className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-100 p-4">
-            <h3 className="text-lg font-black text-slate-950">Personal del proyecto</h3>
-            <p className="text-sm font-semibold text-slate-500">Cobertura y alertas antes de ubicar a cada persona en el organigrama.</p>
-          </div>
-          <div className="max-h-[616px] divide-y divide-slate-100 overflow-y-auto">
-            {teamMembers.length === 0 ? (
-              <div className="p-6 text-center text-sm font-bold text-slate-500">No hay personas asignadas a este proyecto.</div>
-            ) : teamMembers.map((member) => {
-              const coverage = coverageByMember.get(member.id) || null;
-              const status = coverage?.status || 'uncovered';
-              return (
-                <div key={member.id} className="p-4 transition hover:bg-slate-50">
-                  <div className="flex items-start gap-3">
-                    <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full bg-indigo-100 text-indigo-700 ring-1 ring-indigo-100">
-                      {member.photoURL ? (
-                        <Image src={member.photoURL} alt={memberName(member)} fill className="object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <span className="flex h-full w-full items-center justify-center text-sm font-black">{memberName(member).charAt(0).toUpperCase()}</span>
-                      )}
+        <aside className="space-y-4">
+          <section className="overflow-hidden rounded-2xl border border-cyan-200 bg-white shadow-sm">
+            <div className="border-b border-cyan-100 bg-cyan-50/70 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-cyan-700">
+                    <GitBranch size={14} /> Ruta de cuentas de cobro
+                  </p>
+                  <h3 className="mt-1 text-lg font-black text-slate-950">Aprobaciones del proyecto</h3>
+                  <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                    Esta ruta prima sobre la global. Si queda vacía, Pixel hereda la configuración de la organización.
+                  </p>
+                </div>
+                <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${
+                  hasProjectApprovalConfig
+                    ? 'bg-cyan-100 text-cyan-800 ring-cyan-200'
+                    : 'bg-slate-100 text-slate-600 ring-slate-200'
+                }`}>
+                  {hasProjectApprovalConfig ? 'Proyecto' : 'Global'}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-3 p-4">
+              {CONTRACTOR_APPROVAL_FIELDS.map((field, index) => {
+                const localValue = contractorApprovalConfig[field.key] || '';
+                const inheritedValue = organizationApprovalConfig[field.key] || '';
+                const effectiveValue = effectiveContractorApprovalConfig[field.key] || '';
+                const isInherited = !localValue && Boolean(inheritedValue);
+                return (
+                  <div key={field.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Paso {index + 1}</p>
+                        <p className="truncate text-sm font-black text-slate-950">{field.label}</p>
+                        <p className="text-[11px] font-semibold text-slate-500">{field.detail}</p>
+                      </div>
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-cyan-700 ring-1 ring-cyan-100">
+                        {index + 1}
+                      </div>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-black text-slate-950">{memberName(member)}</p>
-                          <p className="truncate text-xs font-bold text-slate-500">{member.role || member.systemRole || 'Sin rol'}</p>
-                        </div>
-                        <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${statusClassName[status]}`}>
-                          {coverage?.statusLabel || 'Sin cobertura'}
-                        </span>
-                      </div>
-                      <div className="mt-3">
-                        <CoveragePixels coverage={coverage} startMonth={currentMonthNumber} />
-                      </div>
-                      <div className="mt-3 flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-xs font-black text-slate-900">{canViewBudget ? currencyFormatter(coverage?.allocated || 0) : 'Presupuesto protegido'}</p>
-                          <Progress value={coverage?.coveragePercent || 0} className="mt-1 h-1.5 bg-slate-100" />
-                        </div>
-                        {canEdit && (
-                          <Button type="button" variant="outline" size="sm" onClick={() => addTeamMemberNode(member)} className="h-8 shrink-0 border-slate-200 text-xs font-black">
-                            Agregar
-                          </Button>
+                    <select
+                      value={localValue}
+                      onChange={(event) => setContractorApprovalConfig((current) => ({
+                        ...current,
+                        [field.key]: event.target.value,
+                      }))}
+                      disabled={!canEdit}
+                      className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 outline-none transition focus:border-cyan-400 focus:ring-4 focus:ring-cyan-100 disabled:bg-slate-100 disabled:text-slate-500"
+                    >
+                      <option value="">{inheritedValue ? 'Usar heredado global' : 'Sin responsable'}</option>
+                      {teamMembers.map((member) => {
+                        const optionId = memberOptionId(member);
+                        if (!optionId) return null;
+                        return (
+                          <option key={optionId} value={optionId}>
+                            {memberName(member)} · {member.role || member.systemRole || 'Miembro'}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <p className="mt-2 flex items-center gap-1 text-[11px] font-bold text-slate-500">
+                      {isInherited ? <Building2 size={12} /> : <Users size={12} />}
+                      {isInherited
+                        ? `Heredado: ${memberNameById(inheritedValue)}`
+                        : effectiveValue
+                          ? `Activo: ${memberNameById(effectiveValue)}`
+                          : 'Este paso aún no tiene responsable configurado.'}
+                    </p>
+                  </div>
+                );
+              })}
+
+              <Button
+                type="button"
+                onClick={saveContractorApprovalConfig}
+                disabled={!canEdit || isSavingContractorApprovalConfig}
+                className="w-full bg-cyan-600 font-black text-white hover:bg-cyan-700 disabled:bg-slate-200 disabled:text-slate-500"
+              >
+                <Save size={16} className="mr-2" />
+                {isSavingContractorApprovalConfig ? 'Guardando ruta...' : canEdit ? 'Guardar ruta del proyecto' : 'Solo lectura'}
+              </Button>
+            </div>
+          </section>
+
+          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-100 p-4">
+              <h3 className="text-lg font-black text-slate-950">Personal del proyecto</h3>
+              <p className="text-sm font-semibold text-slate-500">Cobertura y alertas antes de ubicar a cada persona en el organigrama.</p>
+            </div>
+            <div className="max-h-[616px] divide-y divide-slate-100 overflow-y-auto">
+              {teamMembers.length === 0 ? (
+                <div className="p-6 text-center text-sm font-bold text-slate-500">No hay personas asignadas a este proyecto.</div>
+              ) : teamMembers.map((member) => {
+                const coverage = coverageByMember.get(member.id) || null;
+                const status = coverage?.status || 'uncovered';
+                return (
+                  <div key={member.id} className="p-4 transition hover:bg-slate-50">
+                    <div className="flex items-start gap-3">
+                      <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full bg-indigo-100 text-indigo-700 ring-1 ring-indigo-100">
+                        {member.photoURL ? (
+                          <Image src={member.photoURL} alt={memberName(member)} fill className="object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <span className="flex h-full w-full items-center justify-center text-sm font-black">{memberName(member).charAt(0).toUpperCase()}</span>
                         )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-black text-slate-950">{memberName(member)}</p>
+                            <p className="truncate text-xs font-bold text-slate-500">{member.role || member.systemRole || 'Sin rol'}</p>
+                          </div>
+                          <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-black uppercase tracking-wider ring-1 ${statusClassName[status]}`}>
+                            {coverage?.statusLabel || 'Sin cobertura'}
+                          </span>
+                        </div>
+                        <div className="mt-3">
+                          <CoveragePixels coverage={coverage} startMonth={currentMonthNumber} />
+                        </div>
+                        <div className="mt-3 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-xs font-black text-slate-900">{canViewBudget ? currencyFormatter(coverage?.allocated || 0) : 'Presupuesto protegido'}</p>
+                            <Progress value={coverage?.coveragePercent || 0} className="mt-1 h-1.5 bg-slate-100" />
+                          </div>
+                          {canEdit && (
+                            <Button type="button" variant="outline" size="sm" onClick={() => addTeamMemberNode(member)} className="h-8 shrink-0 border-slate-200 text-xs font-black">
+                              Agregar
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          </section>
         </aside>
       </section>
     </div>

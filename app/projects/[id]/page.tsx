@@ -3723,7 +3723,7 @@ export default function ProjectDetailsPage() {
               <p className="text-sm text-slate-500 mt-1">Visualiza y edita la estructura organizacional del equipo.</p>
             </div>
           </div>
-          <ProjectOrgChart projectId={projectId} teamMembers={projectOrgChartTeamMembers} />
+          <ProjectOrgChart projectId={projectId} project={project} teamMembers={projectOrgChartTeamMembers} />
         </div>
       )}
 

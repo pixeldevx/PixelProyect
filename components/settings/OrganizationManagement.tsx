@@ -206,7 +206,7 @@ export function OrganizationManagement() {
         <div>
           <CardTitle>Organizaciones / Espacios de Trabajo</CardTitle>
           <CardDescription>
-            Crea y gestiona diferentes organizaciones.
+            Crea organizaciones y define configuraciones globales que los proyectos pueden heredar.
           </CardDescription>
         </div>
         <Button onClick={() => handleOpenModal()} className="bg-indigo-600 hover:bg-indigo-700 text-white">
@@ -228,7 +228,7 @@ export function OrganizationManagement() {
             <TableHeader>
               <TableRow>
                 <TableHead>Nombre</TableHead>
-                <TableHead>Flujo cuentas de cobro</TableHead>
+                <TableHead>Flujo global cuentas de cobro</TableHead>
                 <TableHead>Fecha de Creación</TableHead>
                 <TableHead className="text-right">Acciones</TableHead>
               </TableRow>
@@ -302,10 +302,10 @@ export function OrganizationManagement() {
                 </div>
                 <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 p-4">
                   <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700">
-                    Responsables de cuentas de cobro
+                    Responsables globales de cuentas de cobro
                   </p>
                   <p className="mt-1 text-xs font-medium text-slate-500">
-                    Define quién recibe cada aprobación. Si un campo queda vacío, Pixel conserva la validación general por rol.
+                    Esta es la ruta por defecto de la organización. Cada proyecto puede sobrescribirla desde su Organigrama.
                   </p>
                   <div className="mt-3 grid gap-3">
                     {[

@@ -2205,7 +2205,22 @@ export function ProjectAdministration({
     const organizationId = projectOrganizationIds[0];
     return organizations.find((organization) => organization.id === organizationId) || null;
   }, [organizations, projectOrganizationIds]);
-  const contractorApprovalConfig = projectOrganization?.contractorAccountApprovalConfig || {};
+  const projectContractorApprovalConfig = useMemo(
+    () => project?.contractorAccountApprovalConfig || {},
+    [project?.contractorAccountApprovalConfig]
+  );
+  const hasProjectContractorApprovalConfig = useMemo(
+    () => Object.values(projectContractorApprovalConfig).some((value) => String(value || '').trim()),
+    [projectContractorApprovalConfig]
+  );
+  const contractorApprovalConfig = useMemo(
+    () => (
+      hasProjectContractorApprovalConfig
+        ? projectContractorApprovalConfig
+        : projectOrganization?.contractorAccountApprovalConfig || {}
+    ),
+    [hasProjectContractorApprovalConfig, projectContractorApprovalConfig, projectOrganization?.contractorAccountApprovalConfig]
+  );
   const currentContractorActorKeys = useMemo(() => {
     const keys = new Set<string>();
     const push = (value: unknown) => {
