@@ -103,6 +103,7 @@ const normalizeCsvHeader = (value: any) =>
   normalizeLookupText(value).replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
 const escapeCsvCell = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+const DEDUPE_UNITS_EPSILON = 0.000001;
 
 const getTraceMovementKey = (traceKey: any) => {
   if (typeof traceKey !== 'string') return '';
@@ -129,18 +130,28 @@ const getEntrySortMillis = (entry: any) => {
 };
 
 const getRateCardEntryMovementKey = (entry: any) => {
+  const taskKey = entry?.taskId || entry?.externalWorkflowId || normalizeLookupText(entry?.taskTitle);
+  if (taskKey) {
+    return [
+      taskKey,
+      entry?.rateCardId || 'sin-rate-card',
+      entry?.assignedTo || 'sin-profesional',
+      entry?.isRework ? 'rework' : 'production',
+    ].join('::');
+  }
+
   const storedKey = String(entry?.rateCardMovementKey || '').trim();
   if (storedKey) return storedKey;
 
   const traceKey = getTraceMovementKey(entry?.traceKey);
   if (traceKey) return traceKey;
 
-  const taskKey = entry?.taskId || entry?.externalWorkflowId || normalizeLookupText(entry?.taskTitle) || 'sin-tarea';
+  const fallbackTaskKey = 'sin-tarea';
   const stepKey = typeof entry?.stepIndex === 'number' ? entry.stepIndex : 'task';
   const sourceKey = String(entry?.rateCardSourceKey || '').trim();
   if (sourceKey) {
     return [
-      taskKey,
+      fallbackTaskKey,
       stepKey,
       entry?.rateCardId || 'sin-rate-card',
       entry?.assignedTo || 'sin-profesional',
@@ -149,7 +160,7 @@ const getRateCardEntryMovementKey = (entry: any) => {
   }
 
   return [
-    taskKey,
+    fallbackTaskKey,
     entry?.rateCardId || 'sin-rate-card',
     entry?.assignedTo || 'sin-profesional',
     getEntryDateKey(entry) || 'sin-fecha',
@@ -189,7 +200,13 @@ const buildRateCardEntryDedupePlan = (entries: any[]) => {
       }
 
       const chargeEntries = ordered.filter(entry => !entry?.reversal);
-      const preferredCharge = chargeEntries.find(entry => !isTraceRepairEntry(entry)) || chargeEntries[0];
+      const preferredCharge = [...chargeEntries].sort((left, right) => {
+        const repairScore = Number(isTraceRepairEntry(left)) - Number(isTraceRepairEntry(right));
+        if (repairScore !== 0) return repairScore;
+        const unitScore = Math.abs(normalizeDecimalInput(right?.units, 0)) - Math.abs(normalizeDecimalInput(left?.units, 0));
+        if (Math.abs(unitScore) > DEDUPE_UNITS_EPSILON) return unitScore;
+        return getEntrySortMillis(right) - getEntrySortMillis(left);
+      })[0];
       duplicateEntries.push(...ordered.filter(entry => entry?.id !== preferredCharge?.id));
       return preferredCharge || null;
     })
@@ -3168,7 +3185,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     : maintenanceConfirm.type === 'repairTrace'
                       ? `Se crearán ${maintenanceRepairPlan.matches.length} movimiento${maintenanceRepairPlan.matches.length === 1 ? '' : 's'} detallado${maintenanceRepairPlan.matches.length === 1 ? '' : 's'} con su tarea, paso, profesional y fecha de cierre. El acumulado de "${maintenanceRateCard.name}" no cambiará.`
                       : maintenanceConfirm.type === 'cleanupDuplicates'
-                        ? `Se eliminarán ${maintenanceDuplicateEntries.length} registro${maintenanceDuplicateEntries.length === 1 ? '' : 's'} repetido${maintenanceDuplicateEntries.length === 1 ? '' : 's'} de "${maintenanceRateCard.name}". Pixel conservará un solo movimiento efectivo por tarea, paso, persona y rate card, y recalculará los totales.`
+                        ? `Se eliminarán ${maintenanceDuplicateEntries.length} registro${maintenanceDuplicateEntries.length === 1 ? '' : 's'} repetido${maintenanceDuplicateEntries.length === 1 ? '' : 's'} de "${maintenanceRateCard.name}". Pixel conservará un solo movimiento efectivo por tarea, persona y rate card; si la tarea tiene movimientos de personas diferentes, se mantienen separados.`
                         : `Se eliminará este movimiento de "${maintenanceRateCard.name}" y se recalcularán sus totales.`}
                 </p>
               </div>
