@@ -490,6 +490,8 @@ export function CompleteSubtaskFormModal({
                             }))
                           }
                           className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                          placeholder="Ej. 0,051"
+                          title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
                         />
                       </label>
                     );
@@ -570,7 +572,12 @@ export function CompleteSubtaskFormModal({
                         value={dynamicRateCardUnits}
                         onChange={(event) => setDynamicRateCardUnits(event.target.value)}
                         className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                        placeholder="Ej. 0,051"
+                        title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
                       />
+                      <p className="mt-1 text-[10px] font-bold text-emerald-700">
+                        Puedes usar coma o punto decimal; Pixel guarda el decimal normalizado.
+                      </p>
                     </div>
                   ) : (
                     <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700 md:col-span-2">

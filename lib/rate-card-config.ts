@@ -13,8 +13,38 @@ export type StaticRateCardSource = {
 export type RateCardValueType = "currency" | "unit";
 
 export const normalizeDecimalInput = (value: any, fallback = 0) => {
-  const rawValue = value === undefined || value === null || value === "" ? fallback : value;
-  const normalizedValue = typeof rawValue === "string" ? rawValue.replace(",", ".") : rawValue;
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "number") return Number.isFinite(value) ? value : fallback;
+
+  const rawValue = String(value)
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[^\d,.\-]/g, "");
+
+  if (!rawValue || rawValue === "-" || rawValue === "." || rawValue === ",") return fallback;
+
+  const hasComma = rawValue.includes(",");
+  const hasDot = rawValue.includes(".");
+  let normalizedValue = rawValue;
+
+  if (hasComma && hasDot) {
+    const lastComma = rawValue.lastIndexOf(",");
+    const lastDot = rawValue.lastIndexOf(".");
+    const decimalSeparator = lastComma > lastDot ? "," : ".";
+    const thousandsSeparator = decimalSeparator === "," ? "." : ",";
+    normalizedValue = rawValue
+      .replace(new RegExp(`\\${thousandsSeparator}`, "g"), "")
+      .replace(decimalSeparator, ".");
+  } else if (hasComma) {
+    normalizedValue = rawValue.replace(",", ".");
+  } else if ((rawValue.match(/\./g) || []).length > 1) {
+    const parts = rawValue.split(".");
+    const looksLikeThousands = parts.slice(1).every((part) => part.length === 3);
+    normalizedValue = looksLikeThousands
+      ? parts.join("")
+      : `${parts.slice(0, -1).join("")}.${parts.at(-1)}`;
+  }
+
   const numberValue = Number(normalizedValue);
   return Number.isFinite(numberValue) ? numberValue : fallback;
 };

@@ -52,7 +52,7 @@ type WorkflowStepDraft = {
   } | null;
   rateCards?: FormRateCardItem[];
   rateCardId?: string | null;
-  unitsToAdd?: number | null;
+  unitsToAdd?: number | string | null;
   autoAddUnits?: boolean | null;
   assignsNextStep?: boolean | null;
   isQualityGate?: boolean | null;
@@ -181,7 +181,7 @@ const cleanStepRateCards = (step: any) =>
     .filter((item) => item.rateCardId)
     .map((item) => ({
       ...item,
-      unitsToAdd: Number(item.unitsToAdd),
+      unitsToAdd: normalizeRateCardUnits(item.unitsToAdd, 0),
       autoAddUnits: item.autoAddUnits !== false,
       assigneeMode: item.assigneeMode || (item.assignToProfessional ? "fixed" : "default"),
       assignToProfessional: (item.assigneeMode || (item.assignToProfessional ? "fixed" : "default")) !== "default",
@@ -297,7 +297,7 @@ export function EditTaskStructureModal({
   const [taskRateCardEnabled, setTaskRateCardEnabled] = useState(false);
   const [taskRateCardMode, setTaskRateCardMode] = useState<"static" | "dynamic">("static");
   const [taskRateCardId, setTaskRateCardId] = useState("");
-  const [taskUnitsToAdd, setTaskUnitsToAdd] = useState<number>(1);
+  const [taskUnitsToAdd, setTaskUnitsToAdd] = useState<string>("1");
   const [taskAutoAddUnits, setTaskAutoAddUnits] = useState(true);
   const [taskIndicator, setTaskIndicator] = useState("");
   const [taskIndicatorValue, setTaskIndicatorValue] = useState<number>(1);
@@ -359,7 +359,7 @@ export function EditTaskStructureModal({
     setTaskRateCardEnabled(Boolean(task.isRateCardTask || task.dynamicRateCard || task.rateCardId));
     setTaskRateCardMode(task.dynamicRateCard || task.rateCardMode === "dynamic" ? "dynamic" : "static");
     setTaskRateCardId(task.rateCardId || "");
-    setTaskUnitsToAdd(normalizeRateCardUnits(task.unitsToAdd ?? task.dynamicRateCardConfig?.defaultUnits));
+    setTaskUnitsToAdd(String(normalizeRateCardUnits(task.unitsToAdd ?? task.dynamicRateCardConfig?.defaultUnits)));
     setTaskAutoAddUnits(task.autoAddUnits !== false);
     const incrementalBinding = getIncrementalRateBinding(task);
     setIncrementRateBindingEnabled(Boolean(incrementalBinding));
@@ -1271,15 +1271,21 @@ export function EditTaskStructureModal({
                   </label>
 
                   {taskAutoAddUnits ? (
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={taskUnitsToAdd}
-                      onChange={(event) => setTaskUnitsToAdd(Number(event.target.value))}
-                      className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                      placeholder="Unidades"
-                    />
+                    <div className="space-y-1">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        pattern="[0-9]*[.,]?[0-9]*"
+                        value={taskUnitsToAdd}
+                        onChange={(event) => setTaskUnitsToAdd(event.target.value)}
+                        className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                        placeholder="Ej. 0,051"
+                        title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
+                      />
+                      <p className="text-[10px] font-bold text-emerald-700">
+                        Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051.
+                      </p>
+                    </div>
                   ) : (
                     <div className="h-10 rounded-lg border border-dashed border-emerald-200 bg-white px-3 py-2 text-[10px] font-medium text-emerald-700">
                       Pedirá unidades al completar.
@@ -1656,12 +1662,12 @@ export function EditTaskStructureModal({
                           </label>
                           {step.autoAddUnits !== false && (
                             <input
-                              type="number"
-                              min="0"
-                              step="any"
+                              type="text"
+                              inputMode="decimal"
+                              pattern="[0-9]*[.,]?[0-9]*"
                               value={step.unitsToAdd ?? 1}
                               onChange={(event) => {
-                                const unitsToAdd = Number(event.target.value);
+                                const unitsToAdd = event.target.value;
                                 updateStep(index, {
                                   unitsToAdd,
                                   dynamicRateCardConfig: step.dynamicRateCard
@@ -1675,13 +1681,17 @@ export function EditTaskStructureModal({
                                 });
                               }}
                               className="h-8 w-24 rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                              placeholder="Unid."
+                              placeholder="Ej. 0,051"
+                              title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
                             />
                           )}
                           <span className="min-w-0 flex-1 text-[10px] text-slate-500">
                             {step.autoAddUnits === false
                               ? "Pedirá persona, perfil y unidades al aprobar."
                               : "Pedirá persona y perfil; sumará estas unidades."}
+                          </span>
+                          <span className="basis-full text-[10px] font-bold text-emerald-700">
+                            Decimales: escribe 0,051 o 0.051; Pixel normaliza al guardar.
                           </span>
                         </div>
                       )}
@@ -1691,6 +1701,9 @@ export function EditTaskStructureModal({
                           <div className="flex items-center justify-between gap-2">
                             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                               Indicadores del paso
+                            </p>
+                            <p className="text-[10px] font-bold text-slate-400">
+                              Decimales: 0,051 o 0.051.
                             </p>
                             <button
                               type="button"
@@ -1745,21 +1758,22 @@ export function EditTaskStructureModal({
                                 </label>
                                 {rateCardItem.autoAddUnits !== false ? (
                                   <input
-                                    type="number"
-                                    min="0"
-                                    step="any"
+                                    type="text"
+                                    inputMode="decimal"
+                                    pattern="[0-9]*[.,]?[0-9]*"
                                     value={rateCardItem.unitsToAdd ?? 1}
                                     onChange={(event) =>
                                       updateStepStaticRateCards(index, (currentCards) =>
                                         currentCards.map((item) =>
                                           item.id === rateCardItem.id
-                                            ? { ...item, unitsToAdd: Number(event.target.value) }
+                                            ? { ...item, unitsToAdd: event.target.value }
                                             : item
                                         )
                                       )
                                     }
                                     className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 md:w-24"
-                                    placeholder="Unid."
+                                    placeholder="Ej. 0,051"
+                                    title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
                                   />
                                 ) : (
                                   <span className="text-xs font-medium text-slate-400">

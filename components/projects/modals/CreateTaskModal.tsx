@@ -86,7 +86,7 @@ const cleanStepRateCards = (step: any) =>
     .filter((item) => item.rateCardId)
     .map((item) => ({
       ...item,
-      unitsToAdd: Number(item.unitsToAdd),
+      unitsToAdd: normalizeRateCardUnits(item.unitsToAdd, 0),
       autoAddUnits: item.autoAddUnits !== false,
       assigneeMode: item.assigneeMode || (item.assignToProfessional ? "fixed" : "default"),
       assignToProfessional: (item.assigneeMode || (item.assignToProfessional ? "fixed" : "default")) !== "default",
@@ -204,7 +204,7 @@ export function CreateTaskModal({
       } | null;
       rateCards?: FormRateCardItem[];
       rateCardId?: string;
-      unitsToAdd?: number;
+      unitsToAdd?: number | string;
       autoAddUnits?: boolean;
       assignsNextStep?: boolean;
       isQualityGate?: boolean;
@@ -237,7 +237,7 @@ export function CreateTaskModal({
   const [newTaskDynamicAutoAddUnits, setNewTaskDynamicAutoAddUnits] =
     useState(true);
   const [newTaskRateCardId, setNewTaskRateCardId] = useState("");
-  const [newTaskUnitsToAdd, setNewTaskUnitsToAdd] = useState(1);
+  const [newTaskUnitsToAdd, setNewTaskUnitsToAdd] = useState("1");
   const [newTaskPriority, setNewTaskPriority] = useState("medium");
   const [newTaskGroupId, setNewTaskGroupId] = useState("");
   const [draftSubtasks, setDraftSubtasks] = useState<DraftSubtask[]>([]);
@@ -339,7 +339,7 @@ export function CreateTaskModal({
     setNewTaskRateCardMode("static");
     setNewTaskDynamicAutoAddUnits(true);
     setNewTaskRateCardId("");
-    setNewTaskUnitsToAdd(1);
+    setNewTaskUnitsToAdd("1");
     setDraftSubtasks([]);
     setIsSubtaskFormBuilderOpen(false);
     setCurrentSubtaskIndexForForm(null);
@@ -841,7 +841,7 @@ export function CreateTaskModal({
             }
           : null,
         rateCardId: usesStaticRateCard ? newTaskRateCardId : null,
-        unitsToAdd: taskUsesDirectRateCard ? Number(newTaskUnitsToAdd) : null,
+        unitsToAdd: taskUsesDirectRateCard ? normalizeRateCardUnits(newTaskUnitsToAdd, 0) : null,
         autoAddUnits: usesDynamicRateCard ? newTaskDynamicAutoAddUnits : true,
         syncExternal: usesStaticRateCard
           ? rateCards.find((rc) => rc.id === newTaskRateCardId)?.syncExternal ||
@@ -1756,13 +1756,13 @@ export function CreateTaskModal({
                                 </label>
                                 {step.autoAddUnits !== false && (
                                   <input
-                                    type="number"
-                                    min="0"
-                                    step="any"
+                                    type="text"
+                                    inputMode="decimal"
+                                    pattern="[0-9]*[.,]?[0-9]*"
                                     value={step.unitsToAdd ?? 1}
                                     onChange={(e) => {
                                       const newSteps = [...workflowSteps];
-                                      const units = Number(e.target.value);
+                                      const units = e.target.value;
                                       newSteps[idx].unitsToAdd = units;
                                       newSteps[idx].dynamicRateCardConfig = {
                                         defaultUnits: normalizeRateCardUnits(units),
@@ -1773,13 +1773,17 @@ export function CreateTaskModal({
                                       setWorkflowSteps(newSteps);
                                     }}
                                     className="h-8 w-24 px-2 text-[10px] border border-emerald-100 focus:ring-0 bg-white rounded"
-                                    placeholder="Unid."
+                                    placeholder="Ej. 0,051"
+                                    title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
                                   />
                                 )}
                                 <span className="min-w-0 flex-1 text-[9px] text-emerald-600">
                                   {step.autoAddUnits === false
                                     ? "Pedirá persona, perfil y unidades al aprobar."
                                     : "Pedirá persona y perfil; sumará estas unidades."}
+                                </span>
+                                <span className="basis-full text-[9px] font-bold text-emerald-700">
+                                  Decimales: escribe 0,051 o 0.051; Pixel normaliza al guardar.
                                 </span>
                               </div>
                             )}
@@ -1789,6 +1793,9 @@ export function CreateTaskModal({
                                 <div className="flex items-center justify-between gap-2">
                                   <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                                     Indicadores del paso
+                                  </p>
+                                  <p className="text-[9px] font-bold text-slate-400">
+                                    Decimales: 0,051 o 0.051.
                                   </p>
                                   <button
                                     type="button"
@@ -1842,21 +1849,22 @@ export function CreateTaskModal({
                                       </label>
                                       {rateCardItem.autoAddUnits !== false ? (
                                         <input
-                                          type="number"
-                                          min="0"
-                                          step="any"
+                                          type="text"
+                                          inputMode="decimal"
+                                          pattern="[0-9]*[.,]?[0-9]*"
                                           value={rateCardItem.unitsToAdd ?? 1}
                                           onChange={(e) =>
                                             updateStepStaticRateCards(idx, (currentCards) =>
                                               currentCards.map((item) =>
                                                 item.id === rateCardItem.id
-                                                  ? { ...item, unitsToAdd: Number(e.target.value) }
+                                                  ? { ...item, unitsToAdd: e.target.value }
                                                   : item
                                               )
                                             )
                                           }
                                           className="h-8 w-full px-2 text-[10px] border border-slate-100 focus:ring-0 bg-white rounded sm:w-20"
-                                          placeholder="Unid."
+                                          placeholder="Ej. 0,051"
+                                          title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
                                         />
                                       ) : (
                                         <span className="text-[9px] font-medium text-slate-400">
@@ -2586,16 +2594,21 @@ export function CreateTaskModal({
                     {newTaskRateCardMode === "dynamic" ? "Unidades sugeridas" : "Unidades a sumar"}
                   </label>
                   <input
-                    type="number"
-                    step="any"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
+                    pattern="[0-9]*[.,]?[0-9]*"
                     value={newTaskUnitsToAdd}
                     onChange={(e) =>
-                      setNewTaskUnitsToAdd(Number(e.target.value))
+                      setNewTaskUnitsToAdd(e.target.value)
                     }
                     className="w-full h-10 px-3 rounded-lg border border-emerald-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-sm"
+                    placeholder="Ej. 0,051"
+                    title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
                     required={newTaskIsRateCard}
                   />
+                  <p className="text-[10px] font-bold text-emerald-700">
+                    Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051.
+                  </p>
                 </div>
                 {newTaskRateCardMode === "dynamic" && (
                   <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-emerald-100 bg-white px-3 py-2">

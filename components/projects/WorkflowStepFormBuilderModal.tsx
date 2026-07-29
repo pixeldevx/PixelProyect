@@ -39,7 +39,7 @@ const normalizeDocumentKey = (value: string) =>
 export interface FormRateCardItem {
   id: string;
   rateCardId: string;
-  unitsToAdd: number;
+  unitsToAdd: number | string;
   autoAddUnits: boolean;
   assigneeMode?: 'default' | 'fixed' | 'runtime';
   assignToProfessional?: boolean;
@@ -59,7 +59,7 @@ export interface CustomForm {
     promptForUnits?: boolean;
   } | null;
   rateCardId?: string | null;
-  unitsToAdd?: number | null;
+  unitsToAdd?: number | string | null;
   autoAddUnits?: boolean | null;
   assigneeMode?: 'default' | 'fixed' | 'runtime' | null;
   assignToProfessional?: boolean | null;
@@ -135,7 +135,9 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
     []
   );
   const [formRateCards, setFormRateCards] = useState<FormRateCardItem[]>(() => getInitialStaticRateCards(initialForm));
-  const [formUnitsToAdd, setFormUnitsToAdd] = useState<number>(normalizeRateCardUnits(initialForm?.unitsToAdd ?? initialForm?.dynamicRateCardConfig?.defaultUnits));
+  const [formUnitsToAdd, setFormUnitsToAdd] = useState<string>(
+    String(normalizeRateCardUnits(initialForm?.unitsToAdd ?? initialForm?.dynamicRateCardConfig?.defaultUnits))
+  );
   const [formAutoAddUnits, setFormAutoAddUnits] = useState(initialForm?.autoAddUnits !== false);
   const [destinationFieldIndex, setDestinationFieldIndex] = useState<number | null>(null);
 
@@ -152,7 +154,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
             : 'none'
       );
       setFormRateCards(getInitialStaticRateCards(initialForm));
-      setFormUnitsToAdd(normalizeRateCardUnits(initialForm?.unitsToAdd ?? initialForm?.dynamicRateCardConfig?.defaultUnits));
+      setFormUnitsToAdd(String(normalizeRateCardUnits(initialForm?.unitsToAdd ?? initialForm?.dynamicRateCardConfig?.defaultUnits)));
       setFormAutoAddUnits(initialForm?.autoAddUnits !== false);
       setDestinationFieldIndex(null);
     });
@@ -361,7 +363,7 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
     const cleanedStaticRateCards = formRateCards
       .map((item) => ({
         ...item,
-        unitsToAdd: Number(item.unitsToAdd),
+        unitsToAdd: normalizeRateCardUnits(item.unitsToAdd, 0),
         autoAddUnits: item.autoAddUnits !== false,
         assigneeMode: item.assigneeMode || (item.assignToProfessional ? 'fixed' : 'default'),
         assignToProfessional: (item.assigneeMode || (item.assignToProfessional ? 'fixed' : 'default')) !== 'default',
@@ -521,15 +523,19 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                   </label>
                   {formAutoAddUnits && (
                     <input
-                      type="number"
-                      min="0"
-                      step="any"
+                      type="text"
+                      inputMode="decimal"
+                      pattern="[0-9]*[.,]?[0-9]*"
                       value={formUnitsToAdd}
-                      onChange={(event) => setFormUnitsToAdd(Number(event.target.value))}
+                      onChange={(event) => setFormUnitsToAdd(event.target.value)}
                       className="h-10 w-24 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                      placeholder="Unid."
+                      placeholder="Ej. 0,051"
+                      title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
                     />
                   )}
+                  <span className="basis-full text-[10px] font-bold text-emerald-700">
+                    Decimales: puedes escribir 0,051 o 0.051; Pixel guarda el valor decimal normalizado.
+                  </span>
                 </div>
               )}
             </div>
@@ -539,6 +545,9 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
                     Indicadores a sumar
+                  </p>
+                  <p className="text-[10px] font-bold text-slate-400">
+                    Decimales: 0,051 o 0.051.
                   </p>
                   <Button
                     type="button"
@@ -582,13 +591,14 @@ export const WorkflowStepFormBuilderModal: React.FC<WorkflowStepFormBuilderModal
                           Sumar auto.
                         </label>
                         <input
-                          type="number"
-                          min="0"
-                          step="any"
+                          type="text"
+                          inputMode="decimal"
+                          pattern="[0-9]*[.,]?[0-9]*"
                           value={item.unitsToAdd}
-                          onChange={(event) => updateFormRateCard(item.id, { unitsToAdd: Number(event.target.value) })}
+                          onChange={(event) => updateFormRateCard(item.id, { unitsToAdd: event.target.value })}
                           className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 md:w-24"
-                          placeholder="Unid."
+                          placeholder="Ej. 0,051"
+                          title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
                         />
                         <button
                           type="button"

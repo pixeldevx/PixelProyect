@@ -83,7 +83,7 @@ export function CompleteTaskModal({ isOpen, onClose, projectId, taskId, task, us
         if (!isWorkflowTaskType(taskForCompletion.type)) {
           const oldProgress = taskForCompletion.progress || 0;
           const deltaProgress = 100 - oldProgress;
-          const unitsDelta = (deltaProgress / 100) * taskForCompletion.unitsToAdd;
+          const unitsDelta = (deltaProgress / 100) * normalizeRateCardUnits(taskForCompletion.unitsToAdd, 0);
           
           if (unitsDelta !== 0) {
             const rcRef = doc(db, 'projects', projectId, 'rateCards', taskForCompletion.rateCardId);

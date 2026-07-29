@@ -974,8 +974,13 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                       })
                     }
                     className="w-full text-center text-lg h-10 px-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    placeholder="Ej. 0,051"
+                    title="Puedes usar coma o punto decimal. Ejemplo: 0,051 o 0.051"
                     autoFocus={sourceIndex === 0}
                   />
+                  <span className="mt-1 block text-[10px] font-bold text-indigo-600">
+                    Puedes usar coma o punto decimal; Pixel guarda el decimal normalizado.
+                  </span>
                 </label>
               ))}
               {getStaticRateCardSources(workflowSteps[stepUnitPrompt.index]).filter((source) => source.assigneeMode === "runtime").map((source) => (
