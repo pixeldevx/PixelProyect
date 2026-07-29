@@ -3031,6 +3031,236 @@ export function ProjectAdministration({
     [contractorPeriodRateSummary, selectedContractorActivities]
   );
 
+  const downloadContractorAccountReport = useCallback(async (
+    account: ContractorPaymentRequest,
+    kind: 'chargeAccount' | 'activityReport'
+  ) => {
+    const accountMember = teamMembers.find((member) => {
+      const accountEmail = String(account.contractorEmail || '').trim().toLowerCase();
+      const memberEmail = String(member?.email || '').trim().toLowerCase();
+      return (
+        String(member?.id || '') === String(account.contractorId || '') ||
+        String(member?.authUserId || '') === String(account.contractorId || '') ||
+        Boolean(accountEmail && accountEmail === memberEmail)
+      );
+    }) || null;
+    const accountTokens = buildMemberIdentityTokens(accountMember);
+    [account.contractorId, account.contractorEmail, account.contractorName].forEach((value) => {
+      if (value) accountTokens.add(String(value).trim().toLowerCase());
+    });
+    const liveActivityByKey = new Map(contractorBillableActivities.map((activity) => [activity.key, activity]));
+    const storedActivities: ContractorAccountActivityItem[] = (account.activityItems || []).length > 0
+      ? account.activityItems || []
+      : (account.taskTitles || []).map((taskTitle, index) => ({
+          key: `legacy-${index}`,
+          type: 'task' as const,
+          taskId: account.taskIds?.[index] || '',
+          taskTitle,
+          status: 'completed',
+        }));
+    const enrichedActivities = storedActivities.map((stored) => {
+      const live = liveActivityByKey.get(stored.key);
+      return {
+        ...(live || {}),
+        ...stored,
+        completedAt: stored.completedAt || live?.completedAt,
+        dueDate: stored.dueDate || live?.dueDate,
+        timing: stored.timing || live?.timing,
+        daysLate: stored.daysLate ?? live?.daysLate,
+        description: stored.description || live?.description,
+        executionDetail: stored.executionDetail || live?.executionDetail,
+      } as ContractorAccountActivityItem;
+    });
+
+    const fallbackRateSnapshot = (() => {
+      const rowsByRate = new Map<string, ContractorRateSnapshot['rows'][number]>();
+      const totals = { income: 0, cost: 0, movements: 0 };
+      contractorRateEntries.forEach((entry) => {
+        if (!contractorTokensMatch(accountTokens, entry?.assignedTo || entry?.userId || entry?.memberId)) return;
+        if (!isDateWithinRange(entry?.date || entry?.dateKey || entry?.createdAt, account.periodStart, account.periodEnd)) return;
+        const rateCardId = String(entry?.rateCardId || '');
+        const rateCard = contractorRateCardById.get(rateCardId);
+        if (!rateCard) return;
+        const units = Math.abs(normalizeDecimalInput(entry?.units ?? entry?.amount ?? entry?.quantity, 0));
+        const income = getRateCardIncomeValue(units, rateCard);
+        const cost = getRateCardCostValue(units, rateCard);
+        const row = rowsByRate.get(rateCardId) || {
+          rateCardId,
+          name: getRateCardName(rateCard, rateCardId),
+          units: 0,
+          income: 0,
+          cost: 0,
+          margin: 0,
+          movements: 0,
+          unitLabel: rateCard?.indicator || rateCard?.unitLabel || rateCard?.inputUnit || 'unidad',
+        };
+        row.units += units;
+        row.income += income;
+        row.cost += cost;
+        row.margin = row.income - row.cost;
+        row.movements += 1;
+        rowsByRate.set(rateCardId, row);
+        totals.income += income;
+        totals.cost += cost;
+        totals.movements += 1;
+      });
+      return {
+        income: roundCurrency(totals.income),
+        cost: roundCurrency(totals.cost),
+        margin: roundCurrency(totals.income - totals.cost),
+        movements: totals.movements,
+        rows: [...rowsByRate.values()]
+          .map((row) => ({
+            ...row,
+            units: roundCurrency(row.units),
+            income: roundCurrency(row.income),
+            cost: roundCurrency(row.cost),
+            margin: roundCurrency(row.margin),
+          }))
+          .sort((left, right) => Math.abs(right.income) - Math.abs(left.income)),
+      };
+    })();
+    const rateSnapshot = account.rateSnapshot || fallbackRateSnapshot;
+
+    const qualitySnapshot = account.qualitySnapshot || summarizeContractorQuality(
+      contractorQualityEvents
+        .filter((event) => {
+          if (!isDateWithinRange(event.createdAt || event.dateKey, account.periodStart, account.periodEnd)) return false;
+          return contractorTokensMatch(accountTokens, [
+            event.professionalId,
+            event.sourceStepAssignee,
+            event.assigneeId,
+            event.memberId,
+            event.userId,
+          ]);
+        })
+        .sort((left, right) => (getDateValue(right.createdAt || right.dateKey)?.getTime() || 0) - (getDateValue(left.createdAt || left.dateKey)?.getTime() || 0))
+    );
+
+    const performanceSnapshot = account.performanceSnapshot || (() => {
+      const completedOnTime = enrichedActivities.filter((activity) => activity.timing === 'on_time').length;
+      const completedLate = enrichedActivities.filter((activity) => activity.timing === 'late').length;
+      const completedWithoutSchedule = enrichedActivities.filter((activity) => !activity.timing || activity.timing === 'without_schedule').length;
+      const today = todayInputValue();
+      const openOverdueActivities = contractorBillableActivities.filter((activity) => {
+        const actorTokens = (activity as any).actorTokens as Set<string> | undefined;
+        if (!actorTokens || !Array.from(accountTokens).some((token) => actorTokens.has(token))) return false;
+        if (isCompletedTaskStatus(getActivityStatus(activity))) return false;
+        return Boolean(
+          activity.dueDate &&
+          activity.dueDate >= account.periodStart &&
+          activity.dueDate <= account.periodEnd &&
+          activity.dueDate < today
+        );
+      });
+      return {
+        selectedCompleted: enrichedActivities.length,
+        completedOnTime,
+        completedLate,
+        completedWithoutSchedule,
+        openOverdue: openOverdueActivities.length,
+        alerts: [
+          ...openOverdueActivities.map((activity) => ({
+            key: activity.key,
+            taskTitle: activity.taskTitle,
+            stepLabel: activity.stepLabel,
+            kind: 'open_overdue' as const,
+            dueDate: activity.dueDate,
+            completedAt: activity.completedAt,
+            daysLate: getCalendarDaysLate(new Date(), activity.dueDate),
+          })),
+          ...enrichedActivities.filter((activity) => activity.timing === 'late').map((activity) => ({
+            key: activity.key,
+            taskTitle: activity.taskTitle,
+            stepLabel: activity.stepLabel,
+            kind: 'completed_late' as const,
+            dueDate: activity.dueDate,
+            completedAt: activity.completedAt || activity.date,
+            daysLate: activity.daysLate || 0,
+          })),
+        ].sort((left, right) => right.daysLate - left.daysLate).slice(0, 30),
+      };
+    })();
+
+    const productivityComparison = account.productivityComparison || (() => {
+      const roleLabel = getMemberRoleLabel(accountMember) || account.requesterSignature?.jobTitle || 'Sin cargo configurado';
+      const normalizedRole = normalizeTaskSearchText(roleLabel);
+      const comparableMembers = teamMembers.filter(
+        (member) => normalizeTaskSearchText(getMemberRoleLabel(member)) === normalizedRole
+      );
+      const memberRows = (comparableMembers.length > 0 ? comparableMembers : accountMember ? [accountMember] : []).map((member) => ({
+        memberId: String(member?.id || member?.authUserId || member?.email || getMemberLabel(member)),
+        name: getMemberLabel(member),
+        tokens: buildMemberIdentityTokens(member),
+        isContractor: contractorTokensMatch(accountTokens, member),
+      }));
+      return {
+        roleLabel,
+        peerCount: Math.max(0, memberRows.length - 1),
+        rows: rateSnapshot.rows.map((contractorRate) => {
+          const professionals = memberRows.map((memberRow) => {
+            const units = contractorRateEntries.reduce((sum, entry) => {
+              if (String(entry?.rateCardId || '') !== contractorRate.rateCardId || entry?.isRework) return sum;
+              if (!isDateWithinRange(entry?.date || entry?.dateKey || entry?.createdAt, account.periodStart, account.periodEnd)) return sum;
+              if (!contractorTokensMatch(memberRow.tokens, entry?.assignedTo || entry?.userId || entry?.memberId)) return sum;
+              return sum + Math.abs(normalizeDecimalInput(entry?.units ?? entry?.amount ?? entry?.quantity, 0));
+            }, 0);
+            return {
+              memberId: memberRow.memberId,
+              name: memberRow.name,
+              units: roundCurrency(units),
+              isContractor: memberRow.isContractor,
+            };
+          }).sort((left, right) => right.units - left.units || left.name.localeCompare(right.name, 'es', { sensitivity: 'base' }));
+          const contractorIndex = professionals.findIndex((professional) => professional.isContractor);
+          const contractorUnits = contractorIndex >= 0 ? professionals[contractorIndex].units : contractorRate.units;
+          const peerValues = professionals.filter((professional) => !professional.isContractor).map((professional) => professional.units);
+          const peerAverageUnits = peerValues.length > 0
+            ? roundCurrency(peerValues.reduce((sum, units) => sum + units, 0) / peerValues.length)
+            : 0;
+          return {
+            rateCardId: contractorRate.rateCardId,
+            name: contractorRate.name,
+            unitLabel: contractorRate.unitLabel || 'unidad',
+            contractorUnits,
+            peerAverageUnits,
+            peerTopUnits: peerValues.length > 0 ? Math.max(...peerValues) : 0,
+            contractorRank: contractorIndex >= 0 ? contractorIndex + 1 : 1,
+            professionalCount: professionals.length || 1,
+            deltaVsAveragePct: peerAverageUnits > 0
+              ? Math.round(((contractorUnits - peerAverageUnits) / peerAverageUnits) * 100)
+              : null,
+            professionals: professionals.length > 0
+              ? professionals
+              : [{
+                  memberId: account.contractorId,
+                  name: account.contractorName,
+                  units: contractorUnits,
+                  isContractor: true,
+                }],
+          };
+        }),
+      };
+    })();
+
+    await downloadContractorGeneratedDocument({
+      ...account,
+      projectName: account.projectName || project?.name || 'Proyecto Pixel',
+      activityItems: enrichedActivities,
+      rateSnapshot,
+      qualitySnapshot,
+      performanceSnapshot,
+      productivityComparison,
+    }, kind, project?.name || 'Proyecto Pixel');
+  }, [
+    contractorBillableActivities,
+    contractorQualityEvents,
+    contractorRateCardById,
+    contractorRateEntries,
+    project?.name,
+    teamMembers,
+  ]);
+
   useEffect(() => {
     if (!isContractorAccountModalOpen) return;
     setContractorAccountForm((current) => {
@@ -6851,7 +7081,6 @@ export function ProjectAdministration({
       </>
       ) : (
         <ContractorAccountsWorkspace
-          projectName={project?.name || 'Proyecto Pixel'}
           accounts={filteredContractorAccounts}
           allAccounts={contractorAccounts}
           view={contractorAccountView}
@@ -6865,6 +7094,7 @@ export function ProjectAdministration({
           canManage={canManage}
           onNew={openNewContractorAccount}
           onAction={openContractorAccountAction}
+          onDownloadGenerated={downloadContractorAccountReport}
         />
       )}
 
@@ -8858,7 +9088,6 @@ export function ProjectAdministration({
 }
 
 function ContractorAccountsWorkspace({
-  projectName,
   accounts,
   allAccounts,
   view,
@@ -8872,8 +9101,8 @@ function ContractorAccountsWorkspace({
   canManage,
   onNew,
   onAction,
+  onDownloadGenerated,
 }: {
-  projectName: string;
   accounts: ContractorPaymentRequest[];
   allAccounts: ContractorPaymentRequest[];
   view: 'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid';
@@ -8887,6 +9116,7 @@ function ContractorAccountsWorkspace({
   canManage: boolean;
   onNew: () => void;
   onAction: (type: 'approve' | 'return' | 'reject' | 'account' | 'pay', account: ContractorPaymentRequest) => void;
+  onDownloadGenerated: (account: ContractorPaymentRequest, kind: 'chargeAccount' | 'activityReport') => Promise<void>;
 }) {
   const counts = {
     all: allAccounts.filter((account) => account.status !== 'rejected').length,
@@ -9122,7 +9352,7 @@ function ContractorAccountsWorkspace({
                           <button
                             key={`${account.id}-${document.kind}`}
                             type="button"
-                            onClick={() => downloadContractorGeneratedDocument(account, document.kind, projectName)}
+                            onClick={() => onDownloadGenerated(account, document.kind)}
                             className="flex w-full items-center justify-between gap-3 rounded-lg bg-cyan-50 px-3 py-2 text-left text-xs font-black text-cyan-700 ring-1 ring-cyan-100 hover:bg-cyan-100"
                           >
                             <span className="min-w-0 truncate">{document.label}</span>
