@@ -214,12 +214,29 @@ const formatMoney = (value: number) =>
 const formatNumber = (value: number) =>
   new Intl.NumberFormat('es-CO', { maximumFractionDigits: 2 }).format(Number(value || 0));
 
-const formatDate = (value?: string) => {
+const formatDate = (value?: unknown) => {
   if (!value) return 'Sin fecha';
+  if (value instanceof Date) {
+    return value.toLocaleDateString('es-CO', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  }
+  if (typeof (value as any)?.toDate === 'function') {
+    return formatDate((value as any).toDate());
+  }
+  if (typeof value === 'object') {
+    const candidate = (value as any).seconds
+      ? new Date((value as any).seconds * 1000)
+      : (value as any).date || (value as any).value || null;
+    if (candidate) return formatDate(candidate);
+    return 'Sin fecha';
+  }
   const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
   const date = match
     ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
-    : new Date(value);
+    : new Date(String(value));
   if (Number.isNaN(date.getTime())) return normalizePdfText(value);
   return date.toLocaleDateString('es-CO', {
     day: 'numeric',

@@ -39,6 +39,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { Button } from '@/components/ui/button';
 import { SecureDocumentLink } from '@/components/projects/SecureDocumentLink';
 import { addDoc, arrayUnion, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where } from '@/lib/supabase/document-store';
@@ -949,17 +950,19 @@ const downloadBlob = (fileName: string, blob: Blob) => {
   URL.revokeObjectURL(url);
 };
 
-const downloadContractorGeneratedDocument = async (
+type ContractorGeneratedDocumentKind = 'chargeAccount' | 'activityReport';
+type ContractorDownloadKind = ContractorGeneratedDocumentKind | 'completeDossier';
+
+const bytesToPdfBlob = (bytes: Uint8Array) => {
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return new Blob([buffer], { type: 'application/pdf' });
+};
+
+const buildContractorGeneratedDocumentBlob = async (
   account: ContractorPaymentRequest,
-  kind: 'chargeAccount' | 'activityReport',
+  kind: ContractorGeneratedDocumentKind,
   fallbackProjectName?: string
 ) => {
-  const toastId = toast.loading(
-    kind === 'chargeAccount'
-      ? 'Generando la cuenta de cobro en PDF...'
-      : 'Construyendo el informe contractual detallado...'
-  );
-  try {
   const safeToken = getSafeFileToken(`${account.customId || account.id}-${account.contractorName}`);
   const isChargeAccount = kind === 'chargeAccount';
   const activityItems: ContractorAccountActivityItem[] = (account.activityItems || []).length > 0
@@ -1050,20 +1053,109 @@ const downloadContractorGeneratedDocument = async (
     },
   };
   const { bytes } = await generateContractorAccountPdf(report);
-  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  downloadBlob(
-    `${isChargeAccount ? 'cuenta-de-cobro' : 'informe-contractual'}-${safeToken}.pdf`,
-    new Blob([buffer], { type: 'application/pdf' })
+  return {
+    blob: bytesToPdfBlob(bytes),
+    fileName: `${isChargeAccount ? 'cuenta-de-cobro' : 'informe-contractual'}-${safeToken}.pdf`,
+  };
+};
+
+const downloadContractorGeneratedDocument = async (
+  account: ContractorPaymentRequest,
+  kind: ContractorGeneratedDocumentKind,
+  fallbackProjectName?: string
+) => {
+  const toastId = toast.loading(
+    kind === 'chargeAccount'
+      ? 'Generando la cuenta de cobro en PDF...'
+      : 'Construyendo el informe contractual detallado...'
   );
-  toast.success(
-    isChargeAccount
-      ? 'Cuenta de cobro PDF generada.'
-      : 'Informe contractual PDF generado con actividades, calidad, rates y comparativos.',
-    { id: toastId }
-  );
+  try {
+    const result = await buildContractorGeneratedDocumentBlob(account, kind, fallbackProjectName);
+    downloadBlob(result.fileName, result.blob);
+    toast.success(
+      kind === 'chargeAccount'
+        ? 'Cuenta de cobro PDF generada.'
+        : 'Informe contractual PDF generado con actividades, calidad, rates y comparativos.',
+      { id: toastId }
+    );
   } catch (error: any) {
     console.error('Error generating contractor account PDF:', error);
     toast.error(error?.message || 'No se pudo generar el informe PDF de la cuenta de cobro.', { id: toastId });
+  }
+};
+
+const appendPdfBlobToDocument = async (targetPdf: PDFDocument, blob: Blob, label: string, fileName?: string) => {
+  const bytes = await blob.arrayBuffer();
+  const isPdf = blob.type.includes('pdf') || String(fileName || '').toLowerCase().endsWith('.pdf');
+  if (isPdf) {
+    const sourcePdf = await PDFDocument.load(bytes);
+    const pages = await targetPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
+    pages.forEach((page) => targetPdf.addPage(page));
+    return;
+  }
+
+  const page = targetPdf.addPage([612, 792]);
+  const font = await targetPdf.embedFont(StandardFonts.HelveticaBold);
+  page.drawText(label, { x: 38, y: 742, size: 15, font, color: rgb(0.04, 0.06, 0.15) });
+  page.drawText(fileName || 'Documento soporte', { x: 38, y: 720, size: 9, font, color: rgb(0.25, 0.3, 0.4) });
+
+  const lowerName = String(fileName || '').toLowerCase();
+  const image = lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg') || blob.type.includes('jpeg')
+    ? await targetPdf.embedJpg(bytes)
+    : await targetPdf.embedPng(bytes);
+  const maxWidth = 536;
+  const maxHeight = 640;
+  const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1);
+  const width = image.width * scale;
+  const height = image.height * scale;
+  page.drawImage(image, {
+    x: 38 + (maxWidth - width) / 2,
+    y: 60 + (maxHeight - height) / 2,
+    width,
+    height,
+  });
+};
+
+const getContractorDocumentBlob = async (document: ContractorAccountDocument) => {
+  if (document.storagePath) {
+    return getAuthorizedDownloadBlob(ref(storage, document.storagePath));
+  }
+  const response = await fetch(document.fileUrl);
+  if (!response.ok) throw new Error(`No se pudo descargar ${document.fileName}`);
+  return response.blob();
+};
+
+const downloadContractorCompleteDossier = async (
+  account: ContractorPaymentRequest,
+  fallbackProjectName?: string
+) => {
+  const toastId = toast.loading('Construyendo expediente completo de cuenta de cobro...');
+  try {
+    const [chargeAccount, activityReport] = await Promise.all([
+      buildContractorGeneratedDocumentBlob(account, 'chargeAccount', fallbackProjectName),
+      buildContractorGeneratedDocumentBlob(account, 'activityReport', fallbackProjectName),
+    ]);
+    const mergedPdf = await PDFDocument.create();
+    await appendPdfBlobToDocument(mergedPdf, chargeAccount.blob, 'Cuenta de cobro', chargeAccount.fileName);
+    await appendPdfBlobToDocument(mergedPdf, activityReport.blob, 'Informe contractual detallado', activityReport.fileName);
+
+    const parafiscalDocuments = (account.documents || []).filter((document) => document.kind === 'parafiscals');
+    for (const document of parafiscalDocuments) {
+      try {
+        const supportBlob = await getContractorDocumentBlob(document);
+        await appendPdfBlobToDocument(mergedPdf, supportBlob, document.label || 'Soporte de parafiscales', document.fileName);
+      } catch (error) {
+        console.warn('No se pudo anexar un soporte de parafiscales al expediente:', error);
+      }
+    }
+
+    const bytes = await mergedPdf.save();
+    const safeToken = getSafeFileToken(`${account.customId || account.id}-${account.contractorName}`);
+    downloadBlob(`expediente-cuenta-cobro-${safeToken}.pdf`, bytesToPdfBlob(bytes));
+    toast.success('Expediente completo generado con cuenta, informe y parafiscales.', { id: toastId });
+  } catch (error: any) {
+    console.error('Error generating contractor account dossier:', error);
+    toast.error(error?.message || 'No se pudo generar el expediente completo.', { id: toastId });
   }
 };
 
@@ -3240,7 +3332,7 @@ export function ProjectAdministration({
 
   const downloadContractorAccountReport = useCallback(async (
     account: ContractorPaymentRequest,
-    kind: 'chargeAccount' | 'activityReport'
+    kind: ContractorDownloadKind
   ) => {
     const accountMember = teamMembers.find((member) => {
       const accountEmail = String(account.contractorEmail || '').trim().toLowerCase();
@@ -3450,7 +3542,7 @@ export function ProjectAdministration({
       };
     })();
 
-    await downloadContractorGeneratedDocument({
+    const enrichedAccount = {
       ...account,
       projectName: account.projectName || project?.name || 'Proyecto Pixel',
       activityItems: enrichedActivities,
@@ -3458,7 +3550,12 @@ export function ProjectAdministration({
       qualitySnapshot,
       performanceSnapshot,
       productivityComparison,
-    }, kind, project?.name || 'Proyecto Pixel');
+    };
+    if (kind === 'completeDossier') {
+      await downloadContractorCompleteDossier(enrichedAccount, project?.name || 'Proyecto Pixel');
+    } else {
+      await downloadContractorGeneratedDocument(enrichedAccount, kind, project?.name || 'Proyecto Pixel');
+    }
   }, [
     contractorBillableActivities,
     contractorQualityEvents,
@@ -9591,7 +9688,7 @@ function ContractorAccountsWorkspace({
   onNew: () => void;
   onEdit: (account: ContractorPaymentRequest) => void;
   onAction: (type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete' | 'reassign', account: ContractorPaymentRequest) => void;
-  onDownloadGenerated: (account: ContractorPaymentRequest, kind: 'chargeAccount' | 'activityReport') => Promise<void>;
+  onDownloadGenerated: (account: ContractorPaymentRequest, kind: ContractorDownloadKind) => Promise<void>;
 }) {
   const counts = {
     all: allAccounts.filter((account) => account.status !== 'rejected').length,
@@ -9817,23 +9914,14 @@ function ContractorAccountsWorkspace({
                 <div className="border-t border-slate-100 p-4">
                   <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
                     <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Actividades cobradas</p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {(account.activityItems || []).length > 0 ? (
-                          account.activityItems?.map((activity) => (
-                            <span key={activity.key} className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-black text-slate-700 ring-1 ring-slate-200">
-                              {activity.taskTitle}
-                              {activity.type === 'workflow_step' && <span className="ml-2 text-cyan-600">Paso</span>}
-                              {activity.type === 'subtask' && <span className="ml-2 text-emerald-600">Subtarea</span>}
-                            </span>
-                          ))
-                        ) : (account.taskTitles || []).length === 0 ? (
-                          <span className="text-sm font-semibold text-slate-400">Sin actividades registradas</span>
-                        ) : (
-                          account.taskTitles.map((title, index) => (
-                            <span key={`${title}-${index}`} className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-black text-slate-700 ring-1 ring-slate-200">{title}</span>
-                          ))
-                        )}
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Soporte de actividades</p>
+                        <p className="mt-1 text-sm font-black text-slate-800">
+                          {(account.activityItems?.length || account.taskIds?.length || 0)} actividades incluidas en el informe contractual detallado.
+                        </p>
+                        <p className="mt-1 text-xs font-semibold text-slate-500">
+                          Descarga el informe o el expediente completo para ver el detalle tarea por tarea.
+                        </p>
                       </div>
                       {account.activitySummary && <p className="mt-3 rounded-lg bg-slate-50 p-3 text-sm font-semibold leading-6 text-slate-600">{account.activitySummary}</p>}
                       <details className="mt-3 rounded-xl border border-slate-200 bg-white">
@@ -9905,6 +9993,14 @@ function ContractorAccountsWorkspace({
                     <div>
                       <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Documentos soporte</p>
                       <div className="mt-2 space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => onDownloadGenerated(account, 'completeDossier')}
+                          className="flex w-full items-center justify-between gap-3 rounded-lg bg-slate-950 px-3 py-2.5 text-left text-xs font-black text-white ring-1 ring-slate-900 hover:bg-slate-800"
+                        >
+                          <span className="min-w-0 truncate">Expediente completo en PDF</span>
+                          <span className="shrink-0 text-cyan-200">Cuenta + informe + parafiscales</span>
+                        </button>
                         {(account.generatedDocuments || []).map((document) => (
                           <button
                             key={`${account.id}-${document.kind}`}
