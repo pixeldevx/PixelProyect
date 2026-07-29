@@ -3693,6 +3693,7 @@ export default function ProjectDetailsPage() {
             tasks={tasks}
             teamMembers={projectAssignableTeamMembers}
             currentUser={user}
+            userRole={userRole}
             canView={canViewProjectAdministration}
             canManage={canManageProjectAdministration}
             canValidate={canValidateProjectAdministration}

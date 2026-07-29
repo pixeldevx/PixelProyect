@@ -492,6 +492,22 @@ type ContractorPaymentRequest = {
   productivityComparison?: ContractorProductivityComparison;
   projectName?: string;
   requesterSignature?: AdvanceSignatureSnapshot;
+  reassignedAt?: any;
+  reassignedBy?: string | null;
+  reassignedByName?: string;
+  reassignmentComment?: string;
+  reassignmentHistory?: Array<{
+    fromContractorId?: string;
+    fromContractorName?: string;
+    fromContractorEmail?: string;
+    toContractorId: string;
+    toContractorName: string;
+    toContractorEmail?: string;
+    actorId?: string | null;
+    actorName?: string;
+    at: string;
+    comment?: string;
+  }>;
   generatedDocuments?: Array<{
     kind: 'chargeAccount' | 'activityReport';
     label: string;
@@ -583,6 +599,7 @@ type ProjectAdministrationProps = {
   tasks?: any[];
   teamMembers?: any[];
   currentUser: any;
+  userRole?: string | null;
   canView: boolean;
   canManage: boolean;
   canValidate: boolean;
@@ -1556,6 +1573,7 @@ export function ProjectAdministration({
   tasks = [],
   teamMembers = [],
   currentUser,
+  userRole,
   canView,
   canManage,
   canValidate,
@@ -1581,14 +1599,16 @@ export function ProjectAdministration({
   const [isContractorAccountModalOpen, setIsContractorAccountModalOpen] = useState(false);
   const [contractorAccountStep, setContractorAccountStep] = useState<1 | 2 | 3>(1);
   const [contractorAccountForm, setContractorAccountForm] = useState(() => buildEmptyContractorAccountForm());
+  const [selectedContractorMemberId, setSelectedContractorMemberId] = useState('');
   const [contractorDocumentFiles, setContractorDocumentFiles] = useState<Partial<Record<ContractorAccountDocumentKind, File | null>>>({});
   const [isContractorParafiscalsDragging, setIsContractorParafiscalsDragging] = useState(false);
   const [contractorPaymentFile, setContractorPaymentFile] = useState<File | null>(null);
   const [contractorAccountAction, setContractorAccountAction] = useState<{
-    type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete';
+    type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete' | 'reassign';
     account: ContractorPaymentRequest;
   } | null>(null);
   const [contractorAccountActionComment, setContractorAccountActionComment] = useState('');
+  const [contractorAccountReassignMemberId, setContractorAccountReassignMemberId] = useState('');
   const [advanceSearch, setAdvanceSearch] = useState('');
   const [showPaidAdvances, setShowPaidAdvances] = useState(false);
   const [showReconciledAdvances, setShowReconciledAdvances] = useState(false);
@@ -2732,6 +2752,72 @@ export function ProjectAdministration({
     }) || null;
   }, [currentUser?.email, currentUser?.uid, teamMembers]);
 
+  const canGlobalAdminReassignContractorAccounts = userRole === 'admin';
+  const contractorMemberOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return teamMembers
+      .filter((member) => {
+        const key = String(member?.id || member?.authUserId || member?.email || '').trim();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((left, right) => getMemberLabel(left).localeCompare(getMemberLabel(right), 'es', { sensitivity: 'base' }));
+  }, [teamMembers]);
+  const getContractorMemberOptionId = useCallback((member: any) =>
+    String(member?.id || member?.authUserId || member?.email || '').trim(),
+    []
+  );
+  const findContractorMemberById = useCallback((memberId: string) => {
+    const normalized = String(memberId || '').trim().toLowerCase();
+    if (!normalized) return null;
+    return contractorMemberOptions.find((member) => {
+      return [
+        member?.id,
+        member?.authUserId,
+        member?.uid,
+        member?.userId,
+        member?.memberId,
+        member?.email,
+      ].some((value) => String(value || '').trim().toLowerCase() === normalized);
+    }) || null;
+  }, [contractorMemberOptions]);
+  const selectedContractorMember = useMemo(() => {
+    if (!canGlobalAdminReassignContractorAccounts) return currentSignerMember;
+    return findContractorMemberById(selectedContractorMemberId) || currentSignerMember;
+  }, [canGlobalAdminReassignContractorAccounts, currentSignerMember, findContractorMemberById, selectedContractorMemberId]);
+
+  useEffect(() => {
+    if (!isContractorAccountModalOpen) return;
+    if (canGlobalAdminReassignContractorAccounts) {
+      if (!selectedContractorMemberId && currentSignerMember) {
+        setSelectedContractorMemberId(getContractorMemberOptionId(currentSignerMember));
+      }
+      return;
+    }
+    setSelectedContractorMemberId(currentSignerMember ? getContractorMemberOptionId(currentSignerMember) : '');
+  }, [
+    canGlobalAdminReassignContractorAccounts,
+    currentSignerMember,
+    getContractorMemberOptionId,
+    isContractorAccountModalOpen,
+    selectedContractorMemberId,
+  ]);
+
+  const buildMemberSignatureSnapshot = useCallback((member: any): AdvanceSignatureSnapshot | null => {
+    if (!member?.signatureUrl) return null;
+    return {
+      signatureUrl: member.signatureUrl,
+      signatureStoragePath: member.signatureStoragePath || undefined,
+      signerUserId: String(member.authUserId || member.uid || member.id || currentUser?.uid || ''),
+      signerMemberId: member.id ? String(member.id) : undefined,
+      name: getMemberLabel(member) || getCurrentUserName(currentUser),
+      email: String(member.email || currentUser?.email || ''),
+      jobTitle: getMemberRoleLabel(member),
+      signedAt: new Date().toISOString(),
+    };
+  }, [currentUser]);
+
   const buildCurrentSignatureSnapshot = useCallback((): AdvanceSignatureSnapshot | null => {
     if (!currentUser?.uid || !currentSignerMember?.signatureUrl) return null;
     return {
@@ -2759,16 +2845,22 @@ export function ProjectAdministration({
       if (value === undefined || value === null || value === '') return;
       tokens.add(String(value).trim().toLowerCase());
     };
-    add(currentUser?.uid);
-    add(currentUser?.email);
-    add(currentSignerMember?.id);
-    add(currentSignerMember?.authUserId);
-    add(currentSignerMember?.email);
-    add(currentSignerMember?.displayName);
-    add(currentSignerMember?.name);
-    add(getCurrentUserName(currentUser));
+    if (selectedContractorMember) {
+      add(selectedContractorMember.id);
+      add(selectedContractorMember.authUserId);
+      add(selectedContractorMember.uid);
+      add(selectedContractorMember.userId);
+      add(selectedContractorMember.memberId);
+      add(selectedContractorMember.email);
+      add(selectedContractorMember.displayName);
+      add(selectedContractorMember.name);
+    } else {
+      add(currentUser?.uid);
+      add(currentUser?.email);
+      add(getCurrentUserName(currentUser));
+    }
     return tokens;
-  }, [currentSignerMember, currentUser?.email, currentUser?.uid]);
+  }, [currentUser, selectedContractorMember]);
 
   const contractorUsedActivityKeys = useMemo(() => {
     const used = new Set<string>();
@@ -2940,15 +3032,15 @@ export function ProjectAdministration({
   ]);
 
   const contractorProductivityComparison = useMemo((): ContractorProductivityComparison => {
-    const roleLabel = getMemberRoleLabel(currentSignerMember);
+    const roleLabel = getMemberRoleLabel(selectedContractorMember);
     const normalizedRole = normalizeTaskSearchText(roleLabel);
     const comparableMembers = teamMembers.filter(
       (member) => normalizeTaskSearchText(getMemberRoleLabel(member)) === normalizedRole
     );
     const members = comparableMembers.length > 0
       ? comparableMembers
-      : currentSignerMember
-        ? [currentSignerMember]
+      : selectedContractorMember
+        ? [selectedContractorMember]
         : [];
     const memberRows = members.map((member) => ({
       member,
@@ -2994,8 +3086,8 @@ export function ProjectAdministration({
         professionals: professionals.length > 0
           ? professionals
           : [{
-              memberId: String(currentSignerMember?.id || currentUser?.uid || 'contratista'),
-              name: getMemberLabel(currentSignerMember) || getCurrentUserName(currentUser),
+              memberId: String(selectedContractorMember?.id || currentUser?.uid || 'contratista'),
+              name: getMemberLabel(selectedContractorMember) || getCurrentUserName(currentUser),
               units: contractorUnits,
               isContractor: true,
             }],
@@ -3012,8 +3104,8 @@ export function ProjectAdministration({
     contractorPeriodRateSummary.rows,
     contractorRateEntries,
     currentContractorTokens,
-    currentSignerMember,
     currentUser,
+    selectedContractorMember,
     teamMembers,
   ]);
 
@@ -3304,6 +3396,7 @@ export function ProjectAdministration({
 
   const openNewContractorAccount = () => {
     setContractorAccountForm(buildEmptyContractorAccountForm());
+    setSelectedContractorMemberId(currentSignerMember ? getContractorMemberOptionId(currentSignerMember) : '');
     setContractorDocumentFiles({});
     setIsContractorParafiscalsDragging(false);
     setContractorAccountStep(1);
@@ -3442,9 +3535,13 @@ export function ProjectAdministration({
       toast.warning('Relaciona al menos una actividad, subtarea o paso de Pixel al informe de actividades.');
       return;
     }
-    const requesterSignature = buildCurrentSignatureSnapshot();
+    const requesterSignature = buildMemberSignatureSnapshot(selectedContractorMember);
     if (!requesterSignature) {
-      toast.warning('Carga tu firma en el perfil antes de enviar la cuenta de cobro.');
+      toast.warning(
+        canGlobalAdminReassignContractorAccounts
+          ? 'La persona seleccionada debe tener firma cargada en su perfil antes de radicar la cuenta de cobro.'
+          : 'Carga tu firma en el perfil antes de enviar la cuenta de cobro.'
+      );
       return;
     }
     const missingDocument = CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS.find((document) => !contractorDocumentFiles[document.kind]);
@@ -3455,7 +3552,7 @@ export function ProjectAdministration({
 
     setSubmitting(true);
     try {
-      const currentMember = currentSignerMember;
+      const currentMember = selectedContractorMember;
       const contractorName = currentMember ? getMemberLabel(currentMember) : getCurrentUserName(currentUser);
       const contractorEmail = String(currentMember?.email || currentUser.email || '');
       const socialSecurityBase = roundCurrency(honorariumAmount * 0.4);
@@ -3479,7 +3576,7 @@ export function ProjectAdministration({
 
       await setDoc(accountRef, {
         projectId,
-        contractorId: currentMember?.id || currentUser.uid,
+        contractorId: currentMember?.id || currentMember?.authUserId || currentUser.uid,
         contractorName,
         contractorEmail,
         customId: contractorAccountForm.customId.trim(),
@@ -3537,11 +3634,25 @@ export function ProjectAdministration({
   };
 
   const openContractorAccountAction = (
-    type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete',
+    type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete' | 'reassign',
     account: ContractorPaymentRequest
   ) => {
     setContractorPaymentFile(null);
     setContractorAccountActionComment('');
+    if (type === 'reassign') {
+      const accountEmail = String(account.contractorEmail || '').trim().toLowerCase();
+      const matchedMember = contractorMemberOptions.find((member) => {
+        const memberEmail = String(member?.email || '').trim().toLowerCase();
+        return (
+          String(member?.id || '') === String(account.contractorId || '') ||
+          String(member?.authUserId || '') === String(account.contractorId || '') ||
+          Boolean(accountEmail && memberEmail === accountEmail)
+        );
+      }) || null;
+      setContractorAccountReassignMemberId(matchedMember ? getContractorMemberOptionId(matchedMember) : String(account.contractorId || ''));
+    } else {
+      setContractorAccountReassignMemberId('');
+    }
     setContractorAccountForm((current) => ({
       ...current,
       accountingReference: account.accountingReference || '',
@@ -3557,7 +3668,11 @@ export function ProjectAdministration({
       toast.error('Solo administradores o coordinadores pueden eliminar cuentas de cobro.');
       return;
     }
-    if (type !== 'delete' && !canValidate && type !== 'return') return;
+    if (type === 'reassign' && !canGlobalAdminReassignContractorAccounts) {
+      toast.error('Solo el administrador global puede cambiar la persona asociada a una cuenta de cobro.');
+      return;
+    }
+    if (type !== 'delete' && type !== 'reassign' && !canValidate && type !== 'return') return;
     const nextStatus = type === 'approve' ? getNextContractorAccountStatus(account.status) : null;
     if (type === 'approve' && !nextStatus) {
       toast.warning('Esta cuenta de cobro no tiene una siguiente aprobación disponible.');
@@ -3581,6 +3696,51 @@ export function ProjectAdministration({
         toast.success('Cuenta de cobro eliminada junto con sus documentos asociados.');
         setContractorAccountAction(null);
         setContractorPaymentFile(null);
+        return;
+      }
+
+      if (type === 'reassign') {
+        const nextMember = findContractorMemberById(contractorAccountReassignMemberId);
+        if (!nextMember) {
+          toast.warning('Selecciona la nueva persona asociada a la cuenta de cobro.');
+          return;
+        }
+        const nextSignature = buildMemberSignatureSnapshot(nextMember);
+        if (!nextSignature) {
+          toast.warning('La nueva persona debe tener firma cargada en su perfil antes de asociarla a la cuenta de cobro.');
+          return;
+        }
+        const nextContractorId = String(nextMember.id || nextMember.authUserId || nextMember.email || '');
+        const nextContractorName = getMemberLabel(nextMember);
+        const nextContractorEmail = String(nextMember.email || '');
+        const actorName = getCurrentUserName(currentUser);
+        const actionStamp = new Date().toISOString();
+        await updateDoc(refDoc, {
+          contractorId: nextContractorId,
+          contractorName: nextContractorName,
+          contractorEmail: nextContractorEmail,
+          requesterSignature: nextSignature,
+          reassignedAt: serverTimestamp(),
+          reassignedBy: currentUser?.uid || null,
+          reassignedByName: actorName,
+          reassignmentComment: contractorAccountActionComment.trim(),
+          reassignmentHistory: arrayUnion({
+            fromContractorId: account.contractorId || '',
+            fromContractorName: account.contractorName || '',
+            fromContractorEmail: account.contractorEmail || '',
+            toContractorId: nextContractorId,
+            toContractorName: nextContractorName,
+            toContractorEmail: nextContractorEmail,
+            actorId: currentUser?.uid || null,
+            actorName,
+            at: actionStamp,
+            comment: contractorAccountActionComment.trim(),
+          }),
+          updatedAt: serverTimestamp(),
+        });
+        toast.success('Persona asociada a la cuenta de cobro actualizada.');
+        setContractorAccountAction(null);
+        setContractorAccountReassignMemberId('');
         return;
       }
 
@@ -7140,6 +7300,7 @@ export function ProjectAdministration({
           hiddenPaidCount={contractorAccounts.filter((account) => account.status === 'paid').length}
           canValidate={canValidate}
           canManage={canManage}
+          canReassignContractor={canGlobalAdminReassignContractorAccounts}
           onNew={openNewContractorAccount}
           onAction={openContractorAccountAction}
           onDownloadGenerated={downloadContractorAccountReport}
@@ -7192,7 +7353,25 @@ export function ProjectAdministration({
                       />
                     </Field>
                     <Field label="Contratista">
-                      <input className={`${inputClass} bg-slate-50`} value={currentSignerMember ? getMemberLabel(currentSignerMember) : getCurrentUserName(currentUser)} disabled />
+                      {canGlobalAdminReassignContractorAccounts ? (
+                        <select
+                          className={inputClass}
+                          value={selectedContractorMemberId}
+                          onChange={(event) => setSelectedContractorMemberId(event.target.value)}
+                        >
+                          <option value="">Selecciona contratista</option>
+                          {contractorMemberOptions.map((member) => {
+                            const optionId = getContractorMemberOptionId(member);
+                            return (
+                              <option key={optionId} value={optionId}>
+                                {getMemberLabel(member)} · {getMemberRoleLabel(member)}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      ) : (
+                        <input className={`${inputClass} bg-slate-50`} value={currentSignerMember ? getMemberLabel(currentSignerMember) : getCurrentUserName(currentUser)} disabled />
+                      )}
                     </Field>
                     <Field label="Periodo inicio">
                       <input
@@ -7224,7 +7403,7 @@ export function ProjectAdministration({
                     </div>
                   </div>
 
-                  <SignatureSummary title="Firma del contratista para radicar" signature={buildCurrentSignatureSnapshot() || undefined} />
+                  <SignatureSummary title="Firma del contratista para radicar" signature={buildMemberSignatureSnapshot(selectedContractorMember) || undefined} />
                 </div>
               )}
 
@@ -7611,11 +7790,13 @@ export function ProjectAdministration({
                 ? 'Contabilizar cuenta de cobro'
                 : contractorAccountAction.type === 'delete'
                   ? 'Eliminar cuenta de cobro'
-                  : contractorAccountAction.type === 'return'
-                    ? 'Devolver cuenta de cobro'
-                    : contractorAccountAction.type === 'reject'
-                      ? 'Rechazar cuenta de cobro'
-                      : 'Aprobar cuenta de cobro'
+                  : contractorAccountAction.type === 'reassign'
+                    ? 'Cambiar persona asociada'
+                    : contractorAccountAction.type === 'return'
+                      ? 'Devolver cuenta de cobro'
+                      : contractorAccountAction.type === 'reject'
+                        ? 'Rechazar cuenta de cobro'
+                        : 'Aprobar cuenta de cobro'
           }
           subtitle={`${contractorAccountAction.account.contractorName} · ${formatMoney(contractorAccountAction.account.honorariumAmount)}`}
           onClose={() => setContractorAccountAction(null)}
@@ -7641,6 +7822,30 @@ export function ProjectAdministration({
                 <input type="file" className={inputClass} accept=".pdf,.png,.jpg,.jpeg" onChange={(event) => setContractorPaymentFile(event.target.files?.[0] || null)} />
               </Field>
             )}
+            {contractorAccountAction.type === 'reassign' && (
+              <div className="space-y-3">
+                <Field label="Nueva persona asociada">
+                  <select
+                    className={inputClass}
+                    value={contractorAccountReassignMemberId}
+                    onChange={(event) => setContractorAccountReassignMemberId(event.target.value)}
+                  >
+                    <option value="">Selecciona persona</option>
+                    {contractorMemberOptions.map((member) => {
+                      const optionId = getContractorMemberOptionId(member);
+                      return (
+                        <option key={optionId} value={optionId}>
+                          {getMemberLabel(member)} · {getMemberRoleLabel(member)}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </Field>
+                <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-3 text-sm font-semibold leading-6 text-cyan-900">
+                  Pixel actualizará el contratista, correo y firma visible en la cuenta. Las actividades ya cobradas se conservan para no alterar el soporte histórico.
+                </div>
+              </div>
+            )}
             {contractorAccountAction.type === 'delete' && (
               <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold leading-6 text-rose-800">
                 Se eliminará la cuenta de cobro y se intentarán borrar sus soportes del repositorio documental. Esta acción no se puede deshacer.
@@ -7664,11 +7869,17 @@ export function ProjectAdministration({
               className={`font-bold text-white ${
                 contractorAccountAction.type === 'delete'
                   ? 'bg-rose-600 hover:bg-rose-700'
+                  : contractorAccountAction.type === 'reassign'
+                    ? 'bg-cyan-600 hover:bg-cyan-700'
                   : 'bg-indigo-600 hover:bg-indigo-700'
               }`}
             >
               {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
-              {contractorAccountAction.type === 'delete' ? 'Sí, eliminar cuenta' : 'Confirmar'}
+              {contractorAccountAction.type === 'delete'
+                ? 'Sí, eliminar cuenta'
+                : contractorAccountAction.type === 'reassign'
+                  ? 'Guardar cambio'
+                  : 'Confirmar'}
             </Button>
           </ModalFooter>
         </ModalShell>
@@ -9165,6 +9376,7 @@ function ContractorAccountsWorkspace({
   hiddenPaidCount,
   canValidate,
   canManage,
+  canReassignContractor,
   onNew,
   onAction,
   onDownloadGenerated,
@@ -9180,8 +9392,9 @@ function ContractorAccountsWorkspace({
   hiddenPaidCount: number;
   canValidate: boolean;
   canManage: boolean;
+  canReassignContractor: boolean;
   onNew: () => void;
-  onAction: (type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete', account: ContractorPaymentRequest) => void;
+  onAction: (type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete' | 'reassign', account: ContractorPaymentRequest) => void;
   onDownloadGenerated: (account: ContractorPaymentRequest, kind: 'chargeAccount' | 'activityReport') => Promise<void>;
 }) {
   const counts = {
@@ -9329,6 +9542,12 @@ function ContractorAccountsWorkspace({
                           Rechazar
                         </Button>
                       </>
+                    )}
+                    {canReassignContractor && (
+                      <Button type="button" size="sm" variant="outline" onClick={() => onAction('reassign', account)} className="border-cyan-200 text-cyan-700 hover:bg-cyan-50">
+                        <PencilLine size={14} className="mr-2" />
+                        Cambiar persona
+                      </Button>
                     )}
                     {canManage && (
                       <Button type="button" size="sm" variant="outline" onClick={() => onAction('delete', account)} className="border-rose-200 text-rose-700 hover:bg-rose-50">
