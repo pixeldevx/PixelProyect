@@ -40,7 +40,7 @@ import {
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { SecureDocumentLink } from '@/components/projects/SecureDocumentLink';
-import { addDoc, arrayUnion, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, updateDoc, where } from '@/lib/supabase/document-store';
+import { addDoc, arrayUnion, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where } from '@/lib/supabase/document-store';
 import { db, storage } from '@/lib/backend';
 import {
   ref,
@@ -317,6 +317,80 @@ type AdvanceEditForm = {
   items: AdvanceItem[];
 };
 
+type ContractorAccountStatus =
+  | 'submitted'
+  | 'boss_approved'
+  | 'operations_approved'
+  | 'quality_approved'
+  | 'hr_approved'
+  | 'accounted'
+  | 'paid'
+  | 'returned'
+  | 'rejected';
+
+type ContractorAccountDocumentKind = 'chargeAccount' | 'activityReport' | 'parafiscals' | 'paymentSupport';
+
+type ContractorAccountDocument = {
+  kind: ContractorAccountDocumentKind;
+  label: string;
+  documentId: string;
+  fileName: string;
+  fileSize: number;
+  fileUrl: string;
+  storagePath: string;
+  uploadedAt: string;
+  uploadedBy?: string | null;
+  uploadedByName?: string;
+};
+
+type ContractorAccountApproval = {
+  stage: ContractorAccountStatus;
+  actorId?: string | null;
+  actorName?: string;
+  actorEmail?: string | null;
+  at: string;
+  comment?: string;
+  signature?: AdvanceSignatureSnapshot;
+};
+
+type ContractorPaymentRequest = {
+  id: string;
+  projectId: string;
+  contractorId: string;
+  contractorName: string;
+  contractorEmail?: string;
+  customId?: string;
+  periodStart: string;
+  periodEnd: string;
+  honorariumAmount: number;
+  socialSecurityBase: number;
+  estimatedMinimumWages: number;
+  taskIds: string[];
+  taskTitles: string[];
+  activitySummary?: string;
+  status: ContractorAccountStatus;
+  documents: ContractorAccountDocument[];
+  approvals?: ContractorAccountApproval[];
+  returnComment?: string;
+  returnedAt?: any;
+  returnedBy?: string | null;
+  returnedByName?: string;
+  accountingReference?: string;
+  accountingNote?: string;
+  accountedAt?: any;
+  accountedBy?: string | null;
+  accountedByName?: string;
+  paymentSupport?: ContractorAccountDocument;
+  paidAt?: any;
+  paidBy?: string | null;
+  paidByName?: string;
+  createdAt?: any;
+  createdBy?: string | null;
+  createdByName?: string;
+  submittedAt?: any;
+  updatedAt?: any;
+};
+
 type BillingPayment = {
   id: string;
   amount?: number;
@@ -450,6 +524,57 @@ const DEFAULT_COST_CENTERS: Array<Omit<CostCenterDomain, 'id'>> = [
     description: 'Centro de costos general del proyecto.',
   },
 ];
+
+const CONTRACTOR_ACCOUNT_DOCUMENTS: Array<{ kind: ContractorAccountDocumentKind; label: string; required: boolean }> = [
+  { kind: 'chargeAccount', label: 'Cuenta de cobro', required: true },
+  { kind: 'activityReport', label: 'Informe de actividades', required: true },
+  { kind: 'parafiscals', label: 'Soporte de parafiscales', required: true },
+];
+
+const CONTRACTOR_ACCOUNT_STEPS: Array<{ status: ContractorAccountStatus; label: string; shortLabel: string }> = [
+  { status: 'submitted', label: 'Jefe inmediato', shortLabel: 'Jefe' },
+  { status: 'boss_approved', label: 'Gerencia de operaciones', shortLabel: 'Operaciones' },
+  { status: 'operations_approved', label: 'Calidad y cumplimiento', shortLabel: 'Calidad' },
+  { status: 'quality_approved', label: 'Talento humano', shortLabel: 'TH' },
+  { status: 'hr_approved', label: 'Administración', shortLabel: 'Administración' },
+  { status: 'accounted', label: 'Pago', shortLabel: 'Pago' },
+];
+
+const CONTRACTOR_ACCOUNT_STATUS_META: Record<ContractorAccountStatus, { label: string; className: string }> = {
+  submitted: { label: 'Por aprobar jefe inmediato', className: 'bg-amber-50 text-amber-700 ring-amber-100' },
+  boss_approved: { label: 'Por gerencia operaciones', className: 'bg-sky-50 text-sky-700 ring-sky-100' },
+  operations_approved: { label: 'Por calidad y cumplimiento', className: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
+  quality_approved: { label: 'Por talento humano', className: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-100' },
+  hr_approved: { label: 'Por contabilizar', className: 'bg-violet-50 text-violet-700 ring-violet-100' },
+  accounted: { label: 'Contabilizada · por pagar', className: 'bg-cyan-50 text-cyan-700 ring-cyan-100' },
+  paid: { label: 'Pagada', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
+  returned: { label: 'Devuelta', className: 'bg-orange-50 text-orange-700 ring-orange-100' },
+  rejected: { label: 'Rechazada', className: 'bg-rose-50 text-rose-700 ring-rose-100' },
+};
+
+const getNextContractorAccountStatus = (status: ContractorAccountStatus): ContractorAccountStatus | null => {
+  const transitions: Partial<Record<ContractorAccountStatus, ContractorAccountStatus>> = {
+    submitted: 'boss_approved',
+    returned: 'submitted',
+    boss_approved: 'operations_approved',
+    operations_approved: 'quality_approved',
+    quality_approved: 'hr_approved',
+    hr_approved: 'accounted',
+    accounted: 'paid',
+  };
+  return transitions[status] || null;
+};
+
+const buildEmptyContractorAccountForm = () => ({
+  customId: '',
+  periodStart: todayInputValue(),
+  periodEnd: todayInputValue(),
+  honorariumAmount: '',
+  taskIds: [] as string[],
+  activitySummary: '',
+  accountingReference: '',
+  accountingNote: '',
+});
 
 const inputClass =
   'h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15';
@@ -886,6 +1011,8 @@ export function ProjectAdministration({
   canConfigure,
 }: ProjectAdministrationProps) {
   const [advances, setAdvances] = useState<TravelAdvance[]>([]);
+  const [adminWorkspace, setAdminWorkspace] = useState<'advances' | 'contractorAccounts'>('advances');
+  const [contractorAccounts, setContractorAccounts] = useState<ContractorPaymentRequest[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [costCenterDomains, setCostCenterDomains] = useState<CostCenterDomain[]>([]);
   const [payments, setPayments] = useState<BillingPayment[]>([]);
@@ -894,6 +1021,18 @@ export function ProjectAdministration({
   const [locationsLoaded, setLocationsLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'requests' | 'approvals' | 'payables' | 'receipts' | 'conciliation' | 'payments' | 'settings'>('requests');
+  const [contractorAccountView, setContractorAccountView] = useState<'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid'>('all');
+  const [contractorAccountSearch, setContractorAccountSearch] = useState('');
+  const [showPaidContractorAccounts, setShowPaidContractorAccounts] = useState(false);
+  const [isContractorAccountModalOpen, setIsContractorAccountModalOpen] = useState(false);
+  const [contractorAccountForm, setContractorAccountForm] = useState(() => buildEmptyContractorAccountForm());
+  const [contractorDocumentFiles, setContractorDocumentFiles] = useState<Partial<Record<ContractorAccountDocumentKind, File | null>>>({});
+  const [contractorPaymentFile, setContractorPaymentFile] = useState<File | null>(null);
+  const [contractorAccountAction, setContractorAccountAction] = useState<{
+    type: 'approve' | 'return' | 'reject' | 'account' | 'pay';
+    account: ContractorPaymentRequest;
+  } | null>(null);
+  const [contractorAccountActionComment, setContractorAccountActionComment] = useState('');
   const [advanceSearch, setAdvanceSearch] = useState('');
   const [showPaidAdvances, setShowPaidAdvances] = useState(false);
   const [showReconciledAdvances, setShowReconciledAdvances] = useState(false);
@@ -997,6 +1136,16 @@ export function ProjectAdministration({
         }
       ),
       onSnapshot(
+        query(collection(db, 'projects', projectId, 'contractorPaymentRequests'), orderBy('createdAt', 'desc')),
+        (snapshot) => {
+          setContractorAccounts(snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() } as ContractorPaymentRequest)));
+        },
+        (error) => {
+          console.error('Error loading contractor payment requests:', error);
+          toast.error('No se pudieron cargar las cuentas de cobro.');
+        }
+      ),
+      onSnapshot(
         query(collection(db, 'projects', projectId, 'expenseCategories'), orderBy('name', 'asc')),
         (snapshot) => {
           setCategories(snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() } as ExpenseCategory)));
@@ -1056,6 +1205,10 @@ export function ProjectAdministration({
   const selectedAdvanceTasks = useMemo(
     () => tasks.filter((task) => advanceForm.taskIds.includes(task.id)),
     [advanceForm.taskIds, tasks]
+  );
+  const selectedContractorAccountTasks = useMemo(
+    () => tasks.filter((task) => contractorAccountForm.taskIds.includes(task.id)),
+    [contractorAccountForm.taskIds, tasks]
   );
   const taskById = useMemo(
     () => new Map(tasks.filter((task) => task?.id).map((task) => [task.id as string, task])),
@@ -1248,6 +1401,50 @@ export function ProjectAdministration({
       return haystack.includes(search);
     });
   }, [advanceSearch, advances]);
+
+  const filteredContractorAccounts = useMemo(() => {
+    const search = contractorAccountSearch.trim().toLowerCase();
+    return contractorAccounts
+      .filter((account) => showPaidContractorAccounts || account.status !== 'paid')
+      .filter((account) => {
+        if (contractorAccountView === 'approvals') {
+          return ['submitted', 'boss_approved', 'operations_approved'].includes(account.status);
+        }
+        if (contractorAccountView === 'humanTalent') return account.status === 'quality_approved';
+        if (contractorAccountView === 'accounting') return ['hr_approved', 'accounted'].includes(account.status);
+        if (contractorAccountView === 'paid') return account.status === 'paid';
+        return account.status !== 'rejected';
+      })
+      .filter((account) => {
+        if (!search) return true;
+        return [
+          account.customId,
+          account.id,
+          account.contractorName,
+          account.contractorEmail,
+          account.activitySummary,
+          account.status,
+          ...(account.taskTitles || []),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(search);
+      });
+  }, [contractorAccountSearch, contractorAccountView, contractorAccounts, showPaidContractorAccounts]);
+
+  const contractorAccountMetrics = useMemo(() => {
+    const activeAccounts = contractorAccounts.filter((account) => account.status !== 'rejected');
+    return {
+      submitted: activeAccounts.length,
+      pendingApprovals: activeAccounts.filter((account) => ['submitted', 'boss_approved', 'operations_approved', 'quality_approved'].includes(account.status)).length,
+      pendingAccounting: activeAccounts.filter((account) => account.status === 'hr_approved').length,
+      pendingPayment: activeAccounts.filter((account) => account.status === 'accounted').length,
+      paid: activeAccounts.filter((account) => account.status === 'paid').length,
+      totalHonorarium: activeAccounts.reduce((sum, account) => sum + asNumber(account.honorariumAmount), 0),
+      socialSecurityBase: activeAccounts.reduce((sum, account) => sum + asNumber(account.socialSecurityBase), 0),
+    };
+  }, [contractorAccounts]);
 
   const hiddenPaidAdvancesCount = useMemo(
     () => filteredAdvances.filter((advance) => advance.status === 'paid').length,
@@ -1911,6 +2108,294 @@ export function ProjectAdministration({
     },
     [currentActorIds, currentUser?.email]
   );
+
+  const openNewContractorAccount = () => {
+    setContractorAccountForm(buildEmptyContractorAccountForm());
+    setContractorDocumentFiles({});
+    setIsContractorAccountModalOpen(true);
+  };
+
+  const toggleContractorAccountTask = (taskId: string) => {
+    setContractorAccountForm((current) => ({
+      ...current,
+      taskIds: current.taskIds.includes(taskId)
+        ? current.taskIds.filter((id) => id !== taskId)
+        : [...current.taskIds, taskId],
+    }));
+  };
+
+  const uploadContractorAccountDocument = async ({
+    accountId,
+    accountLabel,
+    file,
+    kind,
+    label,
+  }: {
+    accountId: string;
+    accountLabel: string;
+    file: File;
+    kind: ContractorAccountDocumentKind;
+    label: string;
+  }): Promise<ContractorAccountDocument> => {
+    const uploadDate = new Date();
+    const managedPrefix = `managed-contractor-account-${accountId}`;
+    const folderName = kind === 'paymentSupport' ? 'Pago' : 'Documentos';
+    const { folders: indexedFolders, leafFolderId } = await ensureManagedDocumentFolderPath({
+      projectId,
+      userId: currentUser?.uid || null,
+      segments: [
+        { id: 'managed-administrativo', name: 'Administrativo', accessMode: 'all', metadata: { documentContext: 'administration' } },
+        { id: 'managed-administrativo-cuentas-cobro', name: 'Cuentas de cobro', accessMode: 'inherit', metadata: { documentContext: 'contractorAccounts' } },
+        { id: managedPrefix, name: accountLabel, accessMode: 'inherit', metadata: { contractorAccountId: accountId, documentContext: 'contractorAccount' } },
+        { id: `${managedPrefix}-${kind === 'paymentSupport' ? 'pago' : 'documentos'}`, name: folderName, accessMode: 'inherit', metadata: { contractorAccountId: accountId, documentContext: kind } },
+      ],
+    });
+    const projectFolderSegments = getDocumentFolderStorageSegments(leafFolderId, indexedFolders);
+    let storagePath = buildDocumentStoragePath({
+      projectId,
+      projectName: project?.name,
+      fileName: file.name,
+      documentName: `${label}-${accountId}`,
+      date: uploadDate,
+      folderName: 'administrativo',
+      folderSegments: ['cuentas-de-cobro', accountId, folderName],
+    });
+    const storageRef = ref(storage, storagePath);
+    await uploadBytes(storageRef, file);
+    storagePath = storageRef.fullPath;
+    const fileUrl = await getDownloadURL(storageRef);
+    const documentRef = await addDoc(collection(db, 'projects', projectId, 'documents'), {
+      projectId,
+      name: file.name,
+      documentName: `${label} · ${accountLabel}`,
+      type: label,
+      itemKind: 'file',
+      scope: 'project',
+      parentFolderId: leafFolderId,
+      projectFolderSegments,
+      administrativeRequestType: 'contractorAccount',
+      contractorAccountId: accountId,
+      documentContext: kind === 'paymentSupport' ? 'contractorAccountPayment' : 'contractorAccountDocument',
+      contractorAccountDocumentKind: kind,
+      url: fileUrl,
+      downloadURL: fileUrl,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type || 'application/octet-stream',
+      storagePath,
+      storageFolder: storagePath.split('/').slice(0, -1).join('/'),
+      uploadedAt: serverTimestamp(),
+      uploadedBy: currentUser?.uid || null,
+      uploadedByName: getCurrentUserName(currentUser),
+      createdAt: serverTimestamp(),
+      accessMode: 'inherit',
+      allowedMemberIds: [],
+      accessPolicyVersion: 'folder-inheritance-v1',
+      providerPathVersion: 'structured-v2',
+    });
+
+    return {
+      kind,
+      label,
+      documentId: documentRef.id,
+      fileName: file.name,
+      fileSize: file.size,
+      fileUrl,
+      storagePath,
+      uploadedAt: uploadDate.toISOString(),
+      uploadedBy: currentUser?.uid || null,
+      uploadedByName: getCurrentUserName(currentUser),
+    };
+  };
+
+  const handleCreateContractorAccount = async () => {
+    if (!canManage || !currentUser?.uid) return;
+    const honorariumAmount = asNumber(contractorAccountForm.honorariumAmount);
+    if (honorariumAmount <= 0) {
+      toast.warning('Ingresa el monto de honorarios de la cuenta de cobro.');
+      return;
+    }
+    if (contractorAccountForm.taskIds.length === 0) {
+      toast.warning('Relaciona al menos una tarea de Pixel al informe de actividades.');
+      return;
+    }
+    const missingDocument = CONTRACTOR_ACCOUNT_DOCUMENTS.find((document) => !contractorDocumentFiles[document.kind]);
+    if (missingDocument) {
+      toast.warning(`Adjunta el documento obligatorio: ${missingDocument.label}.`);
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const currentMember = currentSignerMember;
+      const contractorName = currentMember ? getMemberLabel(currentMember) : getCurrentUserName(currentUser);
+      const contractorEmail = String(currentMember?.email || currentUser.email || '');
+      const socialSecurityBase = roundCurrency(honorariumAmount * 0.4);
+      const estimatedMinimumWages = Math.max(1, Math.ceil(socialSecurityBase / 1423500));
+      const taskTitles = selectedContractorAccountTasks.map((task) => getTaskTitle(task));
+      const accountRef = doc(collection(db, 'projects', projectId, 'contractorPaymentRequests'));
+      const accountLabel = `${contractorName} · ${contractorAccountForm.periodStart} - ${contractorAccountForm.periodEnd}`;
+      const documents = await Promise.all(
+        CONTRACTOR_ACCOUNT_DOCUMENTS.map((document) =>
+          uploadContractorAccountDocument({
+            accountId: accountRef.id,
+            accountLabel,
+            file: contractorDocumentFiles[document.kind] as File,
+            kind: document.kind,
+            label: document.label,
+          })
+        )
+      );
+
+      await setDoc(accountRef, {
+        projectId,
+        contractorId: currentMember?.id || currentUser.uid,
+        contractorName,
+        contractorEmail,
+        customId: contractorAccountForm.customId.trim(),
+        periodStart: contractorAccountForm.periodStart,
+        periodEnd: contractorAccountForm.periodEnd,
+        honorariumAmount,
+        socialSecurityBase,
+        estimatedMinimumWages,
+        taskIds: contractorAccountForm.taskIds,
+        taskTitles,
+        activitySummary: contractorAccountForm.activitySummary.trim(),
+        status: 'submitted',
+        documents,
+        approvals: [],
+        createdAt: serverTimestamp(),
+        createdBy: currentUser.uid,
+        createdByName: getCurrentUserName(currentUser),
+        submittedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      toast.success('Cuenta de cobro enviada para aprobación del jefe inmediato.');
+      setIsContractorAccountModalOpen(false);
+      setContractorDocumentFiles({});
+      setContractorAccountForm(buildEmptyContractorAccountForm());
+      setAdminWorkspace('contractorAccounts');
+      setContractorAccountView('approvals');
+    } catch (error) {
+      console.error('Error creating contractor payment request:', error);
+      toast.error('No se pudo crear la cuenta de cobro.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const openContractorAccountAction = (
+    type: 'approve' | 'return' | 'reject' | 'account' | 'pay',
+    account: ContractorPaymentRequest
+  ) => {
+    setContractorPaymentFile(null);
+    setContractorAccountActionComment('');
+    setContractorAccountForm((current) => ({
+      ...current,
+      accountingReference: account.accountingReference || '',
+      accountingNote: account.accountingNote || '',
+    }));
+    setContractorAccountAction({ type, account });
+  };
+
+  const applyContractorAccountAction = async () => {
+    if (!contractorAccountAction) return;
+    const { type, account } = contractorAccountAction;
+    if (!canValidate && type !== 'return') return;
+    const nextStatus = type === 'approve' ? getNextContractorAccountStatus(account.status) : null;
+    if (type === 'approve' && !nextStatus) {
+      toast.warning('Esta cuenta de cobro no tiene una siguiente aprobación disponible.');
+      return;
+    }
+    if ((type === 'return' || type === 'reject') && !contractorAccountActionComment.trim()) {
+      toast.warning('Escribe una observación para devolver o rechazar la cuenta de cobro.');
+      return;
+    }
+    if (type === 'pay' && !contractorPaymentFile) {
+      toast.warning('Adjunta el soporte de pago de la cuenta de cobro.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const refDoc = doc(db, 'projects', projectId, 'contractorPaymentRequests', account.id);
+      const actorName = getCurrentUserName(currentUser);
+      const signature = buildCurrentSignatureSnapshot() || undefined;
+      const actionStamp = new Date().toISOString();
+      const approval: ContractorAccountApproval = {
+        stage: type === 'approve' ? nextStatus! : type === 'account' ? 'accounted' : type === 'pay' ? 'paid' : account.status,
+        actorId: currentUser?.uid || null,
+        actorName,
+        actorEmail: currentUser?.email || null,
+        at: actionStamp,
+        comment: contractorAccountActionComment.trim(),
+        signature,
+      };
+      const payload: any = {
+        updatedAt: serverTimestamp(),
+      };
+
+      if (type === 'approve') {
+        payload.status = nextStatus;
+        payload.approvals = arrayUnion(approval);
+      } else if (type === 'account') {
+        payload.status = 'accounted';
+        payload.accountingReference = contractorAccountForm.accountingReference.trim();
+        payload.accountingNote = contractorAccountForm.accountingNote.trim() || contractorAccountActionComment.trim();
+        payload.accountedAt = serverTimestamp();
+        payload.accountedBy = currentUser?.uid || null;
+        payload.accountedByName = actorName;
+        payload.approvals = arrayUnion(approval);
+      } else if (type === 'pay') {
+        const paymentSupport = await uploadContractorAccountDocument({
+          accountId: account.id,
+          accountLabel: `${account.contractorName} · ${account.periodStart} - ${account.periodEnd}`,
+          file: contractorPaymentFile as File,
+          kind: 'paymentSupport',
+          label: 'Soporte de pago de cuenta de cobro',
+        });
+        payload.status = 'paid';
+        payload.paymentSupport = paymentSupport;
+        payload.paidAt = serverTimestamp();
+        payload.paidBy = currentUser?.uid || null;
+        payload.paidByName = actorName;
+        payload.approvals = arrayUnion(approval);
+      } else if (type === 'return') {
+        payload.status = 'returned';
+        payload.returnComment = contractorAccountActionComment.trim();
+        payload.returnedAt = serverTimestamp();
+        payload.returnedBy = currentUser?.uid || null;
+        payload.returnedByName = actorName;
+      } else if (type === 'reject') {
+        payload.status = 'rejected';
+        payload.returnComment = contractorAccountActionComment.trim();
+        payload.returnedAt = serverTimestamp();
+        payload.returnedBy = currentUser?.uid || null;
+        payload.returnedByName = actorName;
+      }
+
+      await updateDoc(refDoc, payload);
+      toast.success(
+        type === 'pay'
+          ? 'Cuenta de cobro pagada y soporte archivado.'
+          : type === 'account'
+            ? 'Cuenta de cobro contabilizada.'
+            : type === 'return'
+              ? 'Cuenta de cobro devuelta para corrección.'
+              : type === 'reject'
+                ? 'Cuenta de cobro rechazada.'
+                : 'Cuenta de cobro aprobada y enviada a la siguiente etapa.'
+      );
+      setContractorAccountAction(null);
+      setContractorPaymentFile(null);
+    } catch (error) {
+      console.error('Error applying contractor account action:', error);
+      toast.error('No se pudo actualizar la cuenta de cobro.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const canCorrectAdvanceReceipt = useCallback(
     (advance: TravelAdvance) => {
@@ -4379,38 +4864,83 @@ export function ProjectAdministration({
               <FolderKanban size={14} />
               Control administrativo
             </div>
-            <h2 className="mt-2 text-2xl font-black tracking-tight">Anticipos, legalizaciones y costos reales</h2>
+            <h2 className="mt-2 text-2xl font-black tracking-tight">
+              {adminWorkspace === 'advances'
+                ? 'Anticipos, legalizaciones y costos reales'
+                : 'Cuentas de cobro de contratistas'}
+            </h2>
             <p className="mt-1 max-w-3xl text-xs font-semibold leading-5 text-slate-300">
-              Gestiona solicitudes de viaje, soportes de campo y validaciones administrativas sin perder trazabilidad.
-              Los soportes aprobados alimentan los pagos reales del proyecto.
+              {adminWorkspace === 'advances'
+                ? 'Gestiona solicitudes de viaje, soportes de campo y validaciones administrativas sin perder trazabilidad. Los soportes aprobados alimentan los pagos reales del proyecto.'
+                : 'Gestiona cuentas de cobro, informes de actividades, parafiscales, aprobaciones internas, contabilización y pago sin mezclarlas con anticipos.'}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {canConfigure && (
+            <div className="flex rounded-xl border border-white/10 bg-white/5 p-1">
+              {[
+                ['advances', 'Anticipos'],
+                ['contractorAccounts', 'Cuentas de cobro'],
+              ].map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setAdminWorkspace(id as typeof adminWorkspace)}
+                  className={`rounded-lg px-3 py-2 text-xs font-black transition ${
+                    adminWorkspace === id
+                      ? 'bg-white text-slate-950'
+                      : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {adminWorkspace === 'advances' && canConfigure && (
               <Button type="button" variant="outline" onClick={seedDefaultCategories} className="border-white/20 bg-white/10 text-white hover:bg-white/20">
                 <RefreshCw size={16} className="mr-2" />
                 Dominios base
               </Button>
             )}
-            {canManage && (
+            {adminWorkspace === 'advances' && canManage && (
               <Button type="button" onClick={openNewAdvance} className="bg-emerald-500 font-bold text-white hover:bg-emerald-600">
                 <Plus size={17} className="mr-2" />
                 Nuevo anticipo
+              </Button>
+            )}
+            {adminWorkspace === 'contractorAccounts' && canManage && (
+              <Button type="button" onClick={openNewContractorAccount} className="bg-cyan-500 font-bold text-slate-950 hover:bg-cyan-400">
+                <Plus size={17} className="mr-2" />
+                Nueva cuenta de cobro
               </Button>
             )}
           </div>
         </div>
 
         <div className="grid gap-2 border-t border-slate-800 bg-slate-950/95 p-3 sm:grid-cols-2 xl:grid-cols-6">
-          <Metric label="Solicitado" value={formatMoney(metrics.requested)} icon={<Send size={18} />} tone="blue" />
-          <Metric label={`Pagado / abonado · ${metrics.paymentProgress}%`} value={formatMoney(metrics.paidDisbursements)} icon={<CreditCard size={18} />} tone="violet" />
-          <Metric label="Justificado" value={formatMoney(metrics.justified)} icon={<ClipboardCheck size={18} />} tone="indigo" />
-          <Metric label="Legalizado" value={formatMoney(metrics.legalized)} icon={<ReceiptText size={18} />} tone="emerald" />
-          <Metric label="Saldo por legalizar" value={formatMoney(metrics.balance)} icon={<AlertCircle size={18} />} tone="amber" />
-          <Metric label="Costo real registrado" value={formatMoney(metrics.realAdminPayments)} icon={<Banknote size={18} />} tone="rose" />
+          {adminWorkspace === 'advances' ? (
+            <>
+              <Metric label="Solicitado" value={formatMoney(metrics.requested)} icon={<Send size={18} />} tone="blue" />
+              <Metric label={`Pagado / abonado · ${metrics.paymentProgress}%`} value={formatMoney(metrics.paidDisbursements)} icon={<CreditCard size={18} />} tone="violet" />
+              <Metric label="Justificado" value={formatMoney(metrics.justified)} icon={<ClipboardCheck size={18} />} tone="indigo" />
+              <Metric label="Legalizado" value={formatMoney(metrics.legalized)} icon={<ReceiptText size={18} />} tone="emerald" />
+              <Metric label="Saldo por legalizar" value={formatMoney(metrics.balance)} icon={<AlertCircle size={18} />} tone="amber" />
+              <Metric label="Costo real registrado" value={formatMoney(metrics.realAdminPayments)} icon={<Banknote size={18} />} tone="rose" />
+            </>
+          ) : (
+            <>
+              <Metric label="Cuentas radicadas" value={String(contractorAccountMetrics.submitted)} icon={<FileText size={18} />} tone="blue" />
+              <Metric label="Honorarios" value={formatMoney(contractorAccountMetrics.totalHonorarium)} icon={<WalletCards size={18} />} tone="violet" />
+              <Metric label="Base seguridad social 40%" value={formatMoney(contractorAccountMetrics.socialSecurityBase)} icon={<ShieldCheck size={18} />} tone="indigo" />
+              <Metric label="En aprobación" value={String(contractorAccountMetrics.pendingApprovals)} icon={<ClipboardCheck size={18} />} tone="amber" />
+              <Metric label="Por contabilizar" value={String(contractorAccountMetrics.pendingAccounting)} icon={<ReceiptText size={18} />} tone="emerald" />
+              <Metric label="Por pagar" value={String(contractorAccountMetrics.pendingPayment)} icon={<CreditCard size={18} />} tone="rose" />
+            </>
+          )}
         </div>
       </section>
 
+      {adminWorkspace === 'advances' ? (
+      <>
       <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap gap-2">
           {[
@@ -5301,6 +5831,235 @@ export function ProjectAdministration({
             </div>
           )}
         </>
+      )}
+      </>
+      ) : (
+        <ContractorAccountsWorkspace
+          accounts={filteredContractorAccounts}
+          allAccounts={contractorAccounts}
+          view={contractorAccountView}
+          onViewChange={setContractorAccountView}
+          search={contractorAccountSearch}
+          onSearchChange={setContractorAccountSearch}
+          showPaid={showPaidContractorAccounts}
+          onTogglePaid={() => setShowPaidContractorAccounts((current) => !current)}
+          hiddenPaidCount={contractorAccounts.filter((account) => account.status === 'paid').length}
+          canValidate={canValidate}
+          canManage={canManage}
+          onNew={openNewContractorAccount}
+          onAction={openContractorAccountAction}
+        />
+      )}
+
+      {isContractorAccountModalOpen && (
+        <ModalShell title="Nueva cuenta de cobro" subtitle="Radicación administrativa de honorarios de contratista." onClose={() => setIsContractorAccountModalOpen(false)} wide>
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="ID o consecutivo (opcional)">
+                  <input
+                    className={inputClass}
+                    value={contractorAccountForm.customId}
+                    onChange={(event) => setContractorAccountForm((current) => ({ ...current, customId: event.target.value }))}
+                    placeholder="Ej: CC-2026-001"
+                  />
+                </Field>
+                <Field label="Contratista">
+                  <input className={`${inputClass} bg-slate-50`} value={currentSignerMember ? getMemberLabel(currentSignerMember) : getCurrentUserName(currentUser)} disabled />
+                </Field>
+                <Field label="Periodo inicio">
+                  <input
+                    type="date"
+                    className={inputClass}
+                    value={contractorAccountForm.periodStart}
+                    onChange={(event) => setContractorAccountForm((current) => ({ ...current, periodStart: event.target.value }))}
+                  />
+                </Field>
+                <Field label="Periodo fin">
+                  <input
+                    type="date"
+                    className={inputClass}
+                    value={contractorAccountForm.periodEnd}
+                    onChange={(event) => setContractorAccountForm((current) => ({ ...current, periodEnd: event.target.value }))}
+                  />
+                </Field>
+                <div className="md:col-span-2">
+                  <Field label="Honorarios devengados">
+                    <input
+                      type="number"
+                      min="0"
+                      className={inputClass}
+                      value={contractorAccountForm.honorariumAmount}
+                      onChange={(event) => setContractorAccountForm((current) => ({ ...current, honorariumAmount: event.target.value }))}
+                      placeholder="Ingresa solo el monto de honorarios"
+                    />
+                  </Field>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="font-black text-slate-950">Tareas relacionadas al informe de actividades</h3>
+                    <p className="text-xs font-semibold text-slate-500">La cuenta de cobro debe relacionar una o varias tareas de Pixel.</p>
+                  </div>
+                  <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-black text-indigo-700 ring-1 ring-indigo-100">
+                    {selectedContractorAccountTasks.length} seleccionada{selectedContractorAccountTasks.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <div className="grid gap-2 border-b border-slate-200 pb-3 lg:grid-cols-[minmax(0,1fr)_180px_210px]">
+                  <div className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3">
+                    <Search size={16} className="shrink-0 text-slate-400" />
+                    <input
+                      type="search"
+                      value={advanceTaskSearch}
+                      onChange={(event) => setAdvanceTaskSearch(event.target.value)}
+                      placeholder="Buscar tarea para el informe..."
+                      className="min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none"
+                    />
+                  </div>
+                  <select value={advanceTaskStatusFilter} onChange={(event) => setAdvanceTaskStatusFilter(event.target.value as AdvanceTaskStatusFilter)} className={inputClass}>
+                    <option value="active">Tareas activas</option>
+                    <option value="pending">Pendientes</option>
+                    <option value="in_progress">En curso</option>
+                    <option value="blocked">Pausadas o bloqueadas</option>
+                    <option value="completed">Finalizadas</option>
+                    <option value="all">Todos los estados</option>
+                  </select>
+                  <select value={advanceTaskGroupFilter} onChange={(event) => setAdvanceTaskGroupFilter(event.target.value)} className={inputClass}>
+                    <option value="all">Todos los grupos</option>
+                    {advanceTaskGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                  </select>
+                </div>
+                <div className="mt-3 max-h-56 overflow-y-auto rounded-lg bg-white p-2 ring-1 ring-slate-200">
+                  {filteredAdvanceTasks.length === 0 ? (
+                    <p className="p-4 text-center text-sm font-bold text-slate-400">No encontramos tareas con esos filtros.</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {filteredAdvanceTasks.map((task) => {
+                        const selected = contractorAccountForm.taskIds.includes(task.id);
+                        const group = advanceTaskGroupById.get(getAdvanceTaskGroupId(task));
+                        return (
+                          <label key={task.id} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 ${selected ? 'border-cyan-200 bg-cyan-50' : 'border-transparent hover:bg-slate-50'}`}>
+                            <input type="checkbox" checked={selected} onChange={() => toggleContractorAccountTask(task.id)} className="mt-1 h-4 w-4 rounded border-slate-300 text-cyan-600" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-black text-slate-800">{getTaskTitle(task)}</span>
+                              <span className="mt-1 flex items-center gap-2 text-[11px] font-semibold text-slate-400">
+                                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: group?.color || '#94a3b8' }} />
+                                {group?.name || 'Sin grupo'}
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <Field label="Resumen de actividades">
+                <textarea
+                  className={textareaClass}
+                  value={contractorAccountForm.activitySummary}
+                  onChange={(event) => setContractorAccountForm((current) => ({ ...current, activitySummary: event.target.value }))}
+                  placeholder="Describe brevemente las actividades ejecutadas en el periodo."
+                />
+              </Field>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                {CONTRACTOR_ACCOUNT_DOCUMENTS.map((document) => (
+                  <Field key={document.kind} label={document.label}>
+                    <input
+                      type="file"
+                      className={inputClass}
+                      accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                      onChange={(event) => setContractorDocumentFiles((current) => ({ ...current, [document.kind]: event.target.files?.[0] || null }))}
+                    />
+                    <p className="mt-1 text-[11px] font-semibold text-slate-400">
+                      {contractorDocumentFiles[document.kind]?.name || 'Documento obligatorio'}
+                    </p>
+                  </Field>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-cyan-100 bg-cyan-50/70 p-4">
+              <p className="text-[11px] font-black uppercase tracking-[0.28em] text-cyan-700">Resumen de cuenta</p>
+              <div className="mt-4 space-y-3">
+                <SummaryLine label="Honorarios" value={formatMoney(contractorAccountForm.honorariumAmount)} strong />
+                <SummaryLine label="Base parafiscales 40%" value={formatMoney(asNumber(contractorAccountForm.honorariumAmount) * 0.4)} />
+                <SummaryLine label="Mínimos estimados" value={`${Math.max(1, Math.ceil((asNumber(contractorAccountForm.honorariumAmount) * 0.4) / 1423500))}`} />
+                <SummaryLine label="Periodo" value={`${formatDate(contractorAccountForm.periodStart)} - ${formatDate(contractorAccountForm.periodEnd)}`} />
+                <SummaryLine label="Tareas relacionadas" value={`${selectedContractorAccountTasks.length}`} />
+                <SummaryLine label="Documentos" value={`${Object.values(contractorDocumentFiles).filter(Boolean).length} de 3`} />
+              </div>
+              <p className="mt-4 rounded-lg bg-white p-3 text-xs font-semibold leading-5 text-slate-600 ring-1 ring-cyan-100">
+                La cuenta inicia en aprobación del jefe inmediato y avanzará por gerencia de operaciones, calidad/cumplimiento, talento humano y administración.
+              </p>
+            </div>
+          </div>
+          <ModalFooter>
+            <Button type="button" variant="outline" onClick={() => setIsContractorAccountModalOpen(false)}>Cancelar</Button>
+            <Button type="button" disabled={submitting} onClick={handleCreateContractorAccount} className="bg-cyan-600 font-bold text-white hover:bg-cyan-700">
+              {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
+              Enviar cuenta de cobro
+            </Button>
+          </ModalFooter>
+        </ModalShell>
+      )}
+
+      {contractorAccountAction && (
+        <ModalShell
+          title={
+            contractorAccountAction.type === 'pay'
+              ? 'Registrar pago de cuenta de cobro'
+              : contractorAccountAction.type === 'account'
+                ? 'Contabilizar cuenta de cobro'
+                : contractorAccountAction.type === 'return'
+                  ? 'Devolver cuenta de cobro'
+                  : contractorAccountAction.type === 'reject'
+                    ? 'Rechazar cuenta de cobro'
+                    : 'Aprobar cuenta de cobro'
+          }
+          subtitle={`${contractorAccountAction.account.contractorName} · ${formatMoney(contractorAccountAction.account.honorariumAmount)}`}
+          onClose={() => setContractorAccountAction(null)}
+        >
+          <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <SummaryLine label="Estado actual" value={CONTRACTOR_ACCOUNT_STATUS_META[contractorAccountAction.account.status]?.label || contractorAccountAction.account.status} />
+              <SummaryLine label="Periodo" value={`${formatDate(contractorAccountAction.account.periodStart)} - ${formatDate(contractorAccountAction.account.periodEnd)}`} />
+              <SummaryLine label="Tareas" value={(contractorAccountAction.account.taskTitles || []).join(', ') || 'Sin tareas'} />
+            </div>
+            {contractorAccountAction.type === 'account' && (
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="Referencia contable">
+                  <input className={inputClass} value={contractorAccountForm.accountingReference} onChange={(event) => setContractorAccountForm((current) => ({ ...current, accountingReference: event.target.value }))} placeholder="Ej: comprobante, causación o consecutivo" />
+                </Field>
+                <Field label="Nota contable">
+                  <input className={inputClass} value={contractorAccountForm.accountingNote} onChange={(event) => setContractorAccountForm((current) => ({ ...current, accountingNote: event.target.value }))} placeholder="Opcional" />
+                </Field>
+              </div>
+            )}
+            {contractorAccountAction.type === 'pay' && (
+              <Field label="Soporte de pago">
+                <input type="file" className={inputClass} accept=".pdf,.png,.jpg,.jpeg" onChange={(event) => setContractorPaymentFile(event.target.files?.[0] || null)} />
+              </Field>
+            )}
+            <Field label={contractorAccountAction.type === 'return' || contractorAccountAction.type === 'reject' ? 'Observación obligatoria' : 'Comentario'}>
+              <textarea className={textareaClass} value={contractorAccountActionComment} onChange={(event) => setContractorAccountActionComment(event.target.value)} placeholder="Deja una nota para la trazabilidad del flujo." />
+            </Field>
+            {contractorAccountAction.type === 'approve' && (
+              <SignatureSummary title="Tu firma de aprobación" signature={buildCurrentSignatureSnapshot() || undefined} />
+            )}
+          </div>
+          <ModalFooter>
+            <Button type="button" variant="outline" onClick={() => setContractorAccountAction(null)}>Cancelar</Button>
+            <Button type="button" onClick={applyContractorAccountAction} disabled={submitting} className="bg-indigo-600 font-bold text-white hover:bg-indigo-700">
+              {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
+              Confirmar
+            </Button>
+          </ModalFooter>
+        </ModalShell>
       )}
 
       {isAdvanceModalOpen && (
@@ -6777,6 +7536,221 @@ export function ProjectAdministration({
             </Button>
           </ModalFooter>
         </ModalShell>
+      )}
+    </div>
+  );
+}
+
+function ContractorAccountsWorkspace({
+  accounts,
+  allAccounts,
+  view,
+  onViewChange,
+  search,
+  onSearchChange,
+  showPaid,
+  onTogglePaid,
+  hiddenPaidCount,
+  canValidate,
+  canManage,
+  onNew,
+  onAction,
+}: {
+  accounts: ContractorPaymentRequest[];
+  allAccounts: ContractorPaymentRequest[];
+  view: 'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid';
+  onViewChange: (view: 'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid') => void;
+  search: string;
+  onSearchChange: (value: string) => void;
+  showPaid: boolean;
+  onTogglePaid: () => void;
+  hiddenPaidCount: number;
+  canValidate: boolean;
+  canManage: boolean;
+  onNew: () => void;
+  onAction: (type: 'approve' | 'return' | 'reject' | 'account' | 'pay', account: ContractorPaymentRequest) => void;
+}) {
+  const counts = {
+    all: allAccounts.filter((account) => account.status !== 'rejected').length,
+    approvals: allAccounts.filter((account) => ['submitted', 'boss_approved', 'operations_approved'].includes(account.status)).length,
+    humanTalent: allAccounts.filter((account) => account.status === 'quality_approved').length,
+    accounting: allAccounts.filter((account) => ['hr_approved', 'accounted'].includes(account.status)).length,
+    paid: allAccounts.filter((account) => account.status === 'paid').length,
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-wrap gap-2">
+          {[
+            ['all', 'Cuentas de cobro', counts.all],
+            ['approvals', 'Aprobaciones', counts.approvals],
+            ['humanTalent', 'Talento humano', counts.humanTalent],
+            ['accounting', 'Contabilidad y pago', counts.accounting],
+            ['paid', 'Pagadas', counts.paid],
+          ].map(([id, label, count]) => (
+            <button
+              key={String(id)}
+              type="button"
+              onClick={() => onViewChange(id as typeof view)}
+              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-black transition ${
+                view === id
+                  ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-500/20'
+                  : 'bg-slate-50 text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              {label}
+              <span className={`rounded-md px-1.5 py-0.5 text-[11px] ${view === id ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-600'}`}>{count}</span>
+            </button>
+          ))}
+        </div>
+        {canManage && (
+          <Button type="button" onClick={onNew} className="bg-cyan-600 font-bold text-white hover:bg-cyan-700">
+            <Plus size={16} className="mr-2" />
+            Nueva cuenta
+          </Button>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-cyan-200 bg-gradient-to-r from-cyan-50 to-white p-4 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-cyan-800">
+              <FileText size={20} />
+              <h3 className="text-lg font-black">Cuentas de cobro de contratistas</h3>
+            </div>
+            <p className="mt-1 text-sm font-medium text-slate-600">
+              Controla cuenta de cobro, informe de actividades, parafiscales, aprobaciones, contabilización y pago.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <button
+              type="button"
+              aria-pressed={showPaid}
+              onClick={onTogglePaid}
+              className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-3 text-xs font-black ring-1 transition ${
+                showPaid ? 'bg-teal-600 text-white ring-teal-600' : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {showPaid ? <EyeOff size={15} /> : <Eye size={15} />}
+              {showPaid ? 'Ocultar pagadas' : `Mostrar pagadas${hiddenPaidCount ? ` (${hiddenPaidCount})` : ''}`}
+            </button>
+            <div className="relative min-w-0 lg:w-96">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input className={`${inputClass} pl-10`} value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Buscar cuenta, contratista, tarea o estado..." />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {accounts.length === 0 ? (
+        <EmptyState
+          title={search.trim() ? 'No encontramos cuentas de cobro' : 'Sin cuentas de cobro registradas'}
+          body={search.trim() ? 'Ajusta el término de búsqueda o cambia de pestaña.' : 'Cuando un contratista radique su cuenta de cobro aparecerá aquí con sus documentos y ciclo de aprobación.'}
+        />
+      ) : (
+        <div className="space-y-3">
+          {accounts.map((account) => {
+            const statusMeta = CONTRACTOR_ACCOUNT_STATUS_META[account.status] || CONTRACTOR_ACCOUNT_STATUS_META.submitted;
+            const nextStatus = getNextContractorAccountStatus(account.status);
+            const canApprove = canValidate && Boolean(nextStatus) && !['hr_approved', 'accounted'].includes(account.status);
+            const canAccount = canValidate && account.status === 'hr_approved';
+            const canPay = canValidate && account.status === 'accounted';
+            return (
+              <section key={account.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="grid gap-4 border-b border-slate-100 bg-slate-50 p-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${statusMeta.className}`}>
+                        {statusMeta.label}
+                      </span>
+                      {account.customId && <span className="rounded-md bg-slate-900 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">ID {account.customId}</span>}
+                      <span className="rounded-md bg-cyan-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-cyan-700 ring-1 ring-cyan-100">
+                        {account.documents?.length || 0} documentos
+                      </span>
+                    </div>
+                    <h4 className="mt-2 truncate text-lg font-black text-slate-950">{account.contractorName}</h4>
+                    <p className="mt-1 text-xs font-bold text-slate-500">
+                      {formatDate(account.periodStart)} - {formatDate(account.periodEnd)} · {account.contractorEmail || 'Sin correo'}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {canApprove && (
+                      <Button type="button" size="sm" onClick={() => onAction('approve', account)} className="bg-emerald-600 text-white hover:bg-emerald-700">
+                        <CheckCircle2 size={14} className="mr-2" />
+                        Aprobar
+                      </Button>
+                    )}
+                    {canAccount && (
+                      <Button type="button" size="sm" onClick={() => onAction('account', account)} className="bg-violet-600 text-white hover:bg-violet-700">
+                        <ReceiptText size={14} className="mr-2" />
+                        Contabilizar
+                      </Button>
+                    )}
+                    {canPay && (
+                      <Button type="button" size="sm" onClick={() => onAction('pay', account)} className="bg-cyan-600 text-white hover:bg-cyan-700">
+                        <CreditCard size={14} className="mr-2" />
+                        Pagar
+                      </Button>
+                    )}
+                    {canValidate && !['paid', 'rejected'].includes(account.status) && (
+                      <>
+                        <Button type="button" size="sm" variant="outline" onClick={() => onAction('return', account)} className="border-orange-200 text-orange-700 hover:bg-orange-50">
+                          <RotateCcw size={14} className="mr-2" />
+                          Devolver
+                        </Button>
+                        <Button type="button" size="sm" variant="outline" onClick={() => onAction('reject', account)} className="border-rose-200 text-rose-700 hover:bg-rose-50">
+                          Rechazar
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
+                  <ReceiptGroupMetric label="Honorarios" value={formatMoney(account.honorariumAmount)} tone="slate" />
+                  <ReceiptGroupMetric label="Base 40%" value={formatMoney(account.socialSecurityBase)} tone="indigo" />
+                  <ReceiptGroupMetric label="Mínimos estimados" value={`${account.estimatedMinimumWages || 1}`} tone="amber" />
+                  <ReceiptGroupMetric label="Tareas" value={`${account.taskIds?.length || 0}`} tone="emerald" />
+                  <ReceiptGroupMetric label="Aprobaciones" value={`${account.approvals?.length || 0}`} tone="slate" />
+                </div>
+
+                <div className="border-t border-slate-100 p-4">
+                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Tareas relacionadas</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {(account.taskTitles || []).length === 0 ? (
+                          <span className="text-sm font-semibold text-slate-400">Sin tareas registradas</span>
+                        ) : account.taskTitles.map((title, index) => (
+                          <span key={`${title}-${index}`} className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-black text-slate-700 ring-1 ring-slate-200">{title}</span>
+                        ))}
+                      </div>
+                      {account.activitySummary && <p className="mt-3 rounded-lg bg-slate-50 p-3 text-sm font-semibold leading-6 text-slate-600">{account.activitySummary}</p>}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Documentos soporte</p>
+                      <div className="mt-2 space-y-2">
+                        {(account.documents || []).map((document) => (
+                          <SecureDocumentLink key={document.documentId} storagePath={document.storagePath} fallbackUrl={document.fileUrl} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-xs font-black text-indigo-700 ring-1 ring-slate-200 hover:bg-indigo-50">
+                            <span className="min-w-0 truncate">{document.label}</span>
+                            <span className="shrink-0 text-slate-400">{formatSupportFileSize(document.fileSize)}</span>
+                          </SecureDocumentLink>
+                        ))}
+                        {account.paymentSupport && (
+                          <SecureDocumentLink storagePath={account.paymentSupport.storagePath} fallbackUrl={account.paymentSupport.fileUrl} className="flex items-center justify-between gap-3 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700 ring-1 ring-emerald-100 hover:bg-emerald-100">
+                            <span>Soporte de pago</span>
+                            <span className="text-emerald-500">{formatDate(account.paidAt)}</span>
+                          </SecureDocumentLink>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            );
+          })}
+        </div>
       )}
     </div>
   );
