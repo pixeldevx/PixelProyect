@@ -158,14 +158,18 @@ const getRateCardEntryMovementKey = (entry: any) => {
   ].join('::');
 };
 
-const dedupeRateCardEntriesByMovement = (entries: any[]) => {
+const buildRateCardEntryDedupePlan = (entries: any[]) => {
   const traceSeen = new Set<string>();
   const groups = new Map<string, any[]>();
+  const duplicateEntries: any[] = [];
 
   entries.forEach((entry) => {
     const traceKey = String(entry?.traceKey || '').trim();
     if (traceKey) {
-      if (traceSeen.has(traceKey)) return;
+      if (traceSeen.has(traceKey)) {
+        duplicateEntries.push(entry);
+        return;
+      }
       traceSeen.add(traceKey);
     }
 
@@ -175,17 +179,27 @@ const dedupeRateCardEntriesByMovement = (entries: any[]) => {
     groups.set(movementKey, current);
   });
 
-  return Array.from(groups.values())
+  const effectiveEntries = Array.from(groups.values())
     .map((group) => {
       const ordered = [...group].sort((left, right) => getEntrySortMillis(right) - getEntrySortMillis(left));
       const latest = ordered[0];
-      if (latest?.reversal) return null;
+      if (latest?.reversal) {
+        duplicateEntries.push(...ordered.slice(1));
+        return null;
+      }
 
       const chargeEntries = ordered.filter(entry => !entry?.reversal);
       const preferredCharge = chargeEntries.find(entry => !isTraceRepairEntry(entry)) || chargeEntries[0];
+      duplicateEntries.push(...ordered.filter(entry => entry?.id !== preferredCharge?.id));
       return preferredCharge || null;
     })
     .filter(Boolean);
+
+  return { effectiveEntries, duplicateEntries };
+};
+
+const dedupeRateCardEntriesByMovement = (entries: any[]) => {
+  return buildRateCardEntryDedupePlan(entries).effectiveEntries;
 };
 
 const parseDelimitedRows = (text: string) => {
@@ -290,6 +304,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [rateCardToEdit, setRateCardToEdit] = useState<any>(null);
   const [rateCardEntries, setRateCardEntries] = useState<any[]>([]);
+  const [rawRateCardEntries, setRawRateCardEntries] = useState<any[]>([]);
   const [dashboardStartDate, setDashboardStartDate] = useState('');
   const [dashboardEndDate, setDashboardEndDate] = useState('');
   const [selectedRateCardId, setSelectedRateCardId] = useState<string | null>(null);
@@ -297,7 +312,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
   const [maintenanceRateCardId, setMaintenanceRateCardId] = useState<string | null>(null);
   const [entryDrafts, setEntryDrafts] = useState<Record<string, { units: string; assignedTo: string; comment: string }>>({});
   const [maintenanceLoading, setMaintenanceLoading] = useState(false);
-  const [maintenanceConfirm, setMaintenanceConfirm] = useState<{ type: 'reset' | 'deleteEntry' | 'repairTrace'; entry?: any } | null>(null);
+  const [maintenanceConfirm, setMaintenanceConfirm] = useState<{ type: 'reset' | 'deleteEntry' | 'repairTrace' | 'cleanupDuplicates'; entry?: any } | null>(null);
   const [maintenanceBulkPreview, setMaintenanceBulkPreview] = useState<MaintenanceBulkPreview | null>(null);
   const maintenanceFileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -328,6 +343,7 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
         const left = a.createdAt?.toMillis?.() || Date.parse(a.createdAt || a.dateKey || '') || 0;
         return right - left;
       });
+      setRawRateCardEntries(data);
       setRateCardEntries(dedupeRateCardEntriesByMovement(data));
     });
     return () => unsubscribe();
@@ -717,6 +733,13 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
       }))
       .sort((a, b) => (b.dateKey || '').localeCompare(a.dateKey || ''))
     : [];
+  const maintenanceRawEntries = maintenanceRateCard
+    ? rawRateCardEntries.filter(entry => entry.rateCardId === maintenanceRateCard.id)
+    : [];
+  const maintenanceDedupePlan = maintenanceRateCard
+    ? buildRateCardEntryDedupePlan(maintenanceRawEntries)
+    : { effectiveEntries: [], duplicateEntries: [] };
+  const maintenanceDuplicateEntries = maintenanceDedupePlan.duplicateEntries;
   const maintenanceStoredHistoricalRows = maintenanceEntries
     .filter(isHistoricalBalanceEntry)
     .map((entry: any) => ({
@@ -1257,6 +1280,41 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
     } catch (error: any) {
       console.error('Error deleting rate card entry:', error);
       toast.error(`No se pudo eliminar el movimiento: ${error.message}`);
+    } finally {
+      setMaintenanceLoading(false);
+      setMaintenanceConfirm(null);
+    }
+  };
+
+  const executeCleanupDuplicateRateCardEntries = async () => {
+    if (!maintenanceRateCard || maintenanceDuplicateEntries.length === 0) return;
+
+    setMaintenanceLoading(true);
+    try {
+      const batch = writeBatch(db);
+      maintenanceDuplicateEntries.forEach((entry: any) => {
+        batch.delete(doc(db, 'projects', projectId, 'rateCardEntries', entry.id));
+      });
+
+      const nextEffectiveEntries = maintenanceDedupePlan.effectiveEntries
+        .filter((entry: any) => entry.rateCardId === maintenanceRateCard.id);
+      batch.update(
+        doc(db, 'projects', projectId, 'rateCards', maintenanceRateCard.id),
+        buildRateCardStateFromEntries(maintenanceRateCard, nextEffectiveEntries),
+      );
+
+      await batch.commit();
+      await syncRateDrivenIncrementalTasksForRate({
+        projectId,
+        rateCardId: maintenanceRateCard.id,
+      });
+      setEntryDrafts(buildEntryDrafts(nextEffectiveEntries));
+      toast.success(
+        `Se eliminaron ${maintenanceDuplicateEntries.length} registro${maintenanceDuplicateEntries.length === 1 ? '' : 's'} repetido${maintenanceDuplicateEntries.length === 1 ? '' : 's'} y se recalculó el rate card.`,
+      );
+    } catch (error: any) {
+      console.error('Error cleaning duplicate rate card entries:', error);
+      toast.error(`No se pudieron limpiar los duplicados: ${error.message}`);
     } finally {
       setMaintenanceLoading(false);
       setMaintenanceConfirm(null);
@@ -2662,6 +2720,17 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                   </Button>
                   <Button
                     type="button"
+                    variant="outline"
+                    onClick={() => setMaintenanceConfirm({ type: 'cleanupDuplicates' })}
+                    disabled={maintenanceLoading || maintenanceDuplicateEntries.length === 0}
+                    className="border-amber-200 text-amber-700 hover:bg-amber-50 disabled:text-slate-400"
+                  >
+                    <Wrench size={15} className="mr-2" />
+                    Limpiar duplicados
+                    {maintenanceDuplicateEntries.length > 0 ? ` (${maintenanceDuplicateEntries.length})` : ''}
+                  </Button>
+                  <Button
+                    type="button"
                     onClick={handleResetMaintenanceRateCard}
                     disabled={maintenanceLoading}
                     className="bg-rose-600 text-white hover:bg-rose-700"
@@ -3074,8 +3143,14 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-start gap-3">
-              <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${maintenanceConfirm.type === 'repairTrace' ? 'bg-indigo-50 text-indigo-600' : 'bg-rose-50 text-rose-600'}`}>
-                {maintenanceConfirm.type === 'repairTrace' ? <Wrench size={22} /> : <AlertCircle size={22} />}
+              <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${
+                maintenanceConfirm.type === 'repairTrace'
+                  ? 'bg-indigo-50 text-indigo-600'
+                  : maintenanceConfirm.type === 'cleanupDuplicates'
+                    ? 'bg-amber-50 text-amber-600'
+                    : 'bg-rose-50 text-rose-600'
+              }`}>
+                {maintenanceConfirm.type === 'repairTrace' || maintenanceConfirm.type === 'cleanupDuplicates' ? <Wrench size={22} /> : <AlertCircle size={22} />}
               </div>
               <div>
                 <h4 className="text-lg font-black text-slate-950">
@@ -3083,14 +3158,18 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     ? 'Reiniciar rate card'
                     : maintenanceConfirm.type === 'repairTrace'
                       ? 'Reparar trazabilidad histórica'
-                      : 'Eliminar movimiento'}
+                      : maintenanceConfirm.type === 'cleanupDuplicates'
+                        ? 'Limpiar movimientos repetidos'
+                        : 'Eliminar movimiento'}
                 </h4>
                 <p className="mt-2 text-sm font-medium leading-6 text-slate-600">
                   {maintenanceConfirm.type === 'reset'
                     ? `Se eliminarán ${maintenanceEntries.length} movimiento${maintenanceEntries.length === 1 ? '' : 's'}${maintenanceHasHistoricalBalance ? ' y el saldo histórico sin detalle' : ''}; los acumulados de "${maintenanceRateCard.name}" quedarán en cero.`
                     : maintenanceConfirm.type === 'repairTrace'
                       ? `Se crearán ${maintenanceRepairPlan.matches.length} movimiento${maintenanceRepairPlan.matches.length === 1 ? '' : 's'} detallado${maintenanceRepairPlan.matches.length === 1 ? '' : 's'} con su tarea, paso, profesional y fecha de cierre. El acumulado de "${maintenanceRateCard.name}" no cambiará.`
-                      : `Se eliminará este movimiento de "${maintenanceRateCard.name}" y se recalcularán sus totales.`}
+                      : maintenanceConfirm.type === 'cleanupDuplicates'
+                        ? `Se eliminarán ${maintenanceDuplicateEntries.length} registro${maintenanceDuplicateEntries.length === 1 ? '' : 's'} repetido${maintenanceDuplicateEntries.length === 1 ? '' : 's'} de "${maintenanceRateCard.name}". Pixel conservará un solo movimiento efectivo por tarea, paso, persona y rate card, y recalculará los totales.`
+                        : `Se eliminará este movimiento de "${maintenanceRateCard.name}" y se recalcularán sus totales.`}
                 </p>
               </div>
             </div>
@@ -3138,12 +3217,20 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     void executeResetMaintenanceRateCard();
                   } else if (maintenanceConfirm.type === 'repairTrace') {
                     void executeRepairHistoricalTrace();
+                  } else if (maintenanceConfirm.type === 'cleanupDuplicates') {
+                    void executeCleanupDuplicateRateCardEntries();
                   } else if (maintenanceConfirm.entry) {
                     void executeDeleteRateCardEntry(maintenanceConfirm.entry);
                   }
                 }}
                 disabled={maintenanceLoading}
-                className={maintenanceConfirm.type === 'repairTrace' ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-rose-600 text-white hover:bg-rose-700'}
+                className={
+                  maintenanceConfirm.type === 'repairTrace'
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    : maintenanceConfirm.type === 'cleanupDuplicates'
+                      ? 'bg-amber-600 text-white hover:bg-amber-700'
+                      : 'bg-rose-600 text-white hover:bg-rose-700'
+                }
               >
                 {maintenanceLoading
                   ? 'Procesando...'
@@ -3151,7 +3238,9 @@ export function ProjectRateCards({ projectId, currentUser, tasks = [], teamMembe
                     ? 'Sí, reiniciar'
                     : maintenanceConfirm.type === 'repairTrace'
                       ? 'Reparar movimientos'
-                      : 'Sí, eliminar'}
+                      : maintenanceConfirm.type === 'cleanupDuplicates'
+                        ? 'Limpiar duplicados'
+                        : 'Sí, eliminar'}
               </Button>
             </div>
           </div>
