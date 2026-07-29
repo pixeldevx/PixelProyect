@@ -68,6 +68,7 @@ import {
   getRateCardIncomeValue,
   normalizeDecimalInput,
 } from '@/lib/rate-card-config';
+import { getOrganizationIds } from '@/lib/organizations';
 
 type ColombiaDepartment = {
   department: string;
@@ -525,6 +526,9 @@ type ContractorPaymentRequest = {
     note: string;
   };
   status: ContractorAccountStatus;
+  currentApproverId?: string | null;
+  currentApproverLabel?: string | null;
+  currentApprovalStage?: ContractorAccountStatus | null;
   documents: ContractorAccountDocument[];
   approvals?: ContractorAccountApproval[];
   returnComment?: string;
@@ -1603,6 +1607,7 @@ export function ProjectAdministration({
   const [contractorRateCards, setContractorRateCards] = useState<any[]>([]);
   const [contractorRateEntries, setContractorRateEntries] = useState<any[]>([]);
   const [contractorQualityEvents, setContractorQualityEvents] = useState<any[]>([]);
+  const [organizations, setOrganizations] = useState<any[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [costCenterDomains, setCostCenterDomains] = useState<CostCenterDomain[]>([]);
   const [payments, setPayments] = useState<BillingPayment[]>([]);
@@ -1615,6 +1620,7 @@ export function ProjectAdministration({
   const [contractorAccountSearch, setContractorAccountSearch] = useState('');
   const [showPaidContractorAccounts, setShowPaidContractorAccounts] = useState(false);
   const [isContractorAccountModalOpen, setIsContractorAccountModalOpen] = useState(false);
+  const [editingContractorAccount, setEditingContractorAccount] = useState<ContractorPaymentRequest | null>(null);
   const [contractorAccountStep, setContractorAccountStep] = useState<1 | 2 | 3>(1);
   const [contractorAccountForm, setContractorAccountForm] = useState(() => buildEmptyContractorAccountForm());
   const [selectedContractorMemberId, setSelectedContractorMemberId] = useState('');
@@ -1717,6 +1723,15 @@ export function ProjectAdministration({
     if (!canView) return;
     setLoading(true);
     const unsubscribes = [
+      onSnapshot(
+        query(collection(db, 'organizations')),
+        (snapshot) => {
+          setOrganizations(snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() })));
+        },
+        (error) => {
+          console.error('Error loading organizations for contractor accounts:', error);
+        }
+      ),
       onSnapshot(
         query(collection(db, 'projects', projectId, 'advanceRequests'), orderBy('createdAt', 'desc')),
         (snapshot) => {
@@ -2093,13 +2108,90 @@ export function ProjectAdministration({
     });
   }, [advanceSearch, advances]);
 
+  const projectOrganizationIds = useMemo(() => getOrganizationIds(project), [project]);
+  const projectOrganization = useMemo(() => {
+    const organizationId = projectOrganizationIds[0];
+    return organizations.find((organization) => organization.id === organizationId) || null;
+  }, [organizations, projectOrganizationIds]);
+  const contractorApprovalConfig = projectOrganization?.contractorAccountApprovalConfig || {};
+  const currentContractorActorKeys = useMemo(() => {
+    const keys = new Set<string>();
+    const push = (value: unknown) => {
+      const normalized = String(value || '').trim().toLowerCase();
+      if (normalized) keys.add(normalized);
+    };
+    push(currentUser?.uid);
+    push(currentUser?.email);
+    teamMembers.forEach((member) => {
+      const memberEmail = String(member?.email || '').trim().toLowerCase();
+      if (
+        String(member?.id || '') === String(currentUser?.uid || '') ||
+        String(member?.authUserId || '') === String(currentUser?.uid || '') ||
+        Boolean(currentUser?.email && memberEmail === String(currentUser.email).trim().toLowerCase())
+      ) {
+        push(member?.id);
+        push(member?.authUserId);
+        push(member?.uid);
+        push(member?.email);
+      }
+    });
+    return keys;
+  }, [currentUser?.email, currentUser?.uid, teamMembers]);
+  const matchesCurrentContractorActor = useCallback((...values: unknown[]) => {
+    return values.some((value) => currentContractorActorKeys.has(String(value || '').trim().toLowerCase()));
+  }, [currentContractorActorKeys]);
+  const getContractorAccountConfiguredApproverId = useCallback((status: ContractorAccountStatus | null | undefined) => {
+    if (!status) return null;
+    const config: any = contractorApprovalConfig || {};
+    const map: Partial<Record<ContractorAccountStatus, string | null | undefined>> = {
+      submitted: config.immediateBossId,
+      boss_approved: config.operationsManagerId,
+      operations_approved: config.qualityComplianceId,
+      quality_approved: config.humanTalentId,
+      hr_approved: config.accountingId,
+      accounted: config.accountingId,
+      returned: null,
+      rejected: null,
+      paid: null,
+    };
+    return map[status] ? String(map[status]) : null;
+  }, [contractorApprovalConfig]);
+  const getContractorAccountOwnerId = useCallback((account: ContractorPaymentRequest) => {
+    return account.currentApproverId || getContractorAccountConfiguredApproverId(account.status);
+  }, [getContractorAccountConfiguredApproverId]);
+  const isContractorAccountOwner = useCallback((account: ContractorPaymentRequest) => {
+    const ownerId = getContractorAccountOwnerId(account);
+    return ownerId ? matchesCurrentContractorActor(ownerId) : false;
+  }, [getContractorAccountOwnerId, matchesCurrentContractorActor]);
+  const isOwnContractorAccount = useCallback((account: ContractorPaymentRequest) => {
+    return matchesCurrentContractorActor(account.contractorId, account.contractorEmail, account.requesterSignature?.signerUserId, account.requesterSignature?.signerMemberId);
+  }, [matchesCurrentContractorActor]);
+  const hasConfiguredContractorApprovalFlow = Boolean(
+    contractorApprovalConfig.immediateBossId ||
+      contractorApprovalConfig.operationsManagerId ||
+      contractorApprovalConfig.qualityComplianceId ||
+      contractorApprovalConfig.humanTalentId ||
+      contractorApprovalConfig.accountingId
+  );
+  const canSeeAllContractorAccounts = Boolean(canManage || userRole === 'admin' || userRole === 'org_admin');
+  const canCreateContractorAccount = Boolean(canManage || currentUser?.uid);
+  const canActOnContractorAccount = useCallback((account: ContractorPaymentRequest) => {
+    if (canManage || userRole === 'admin') return true;
+    if (hasConfiguredContractorApprovalFlow) return isContractorAccountOwner(account);
+    return Boolean(canValidate);
+  }, [canManage, canValidate, hasConfiguredContractorApprovalFlow, isContractorAccountOwner, userRole]);
+  const scopedContractorAccounts = useMemo(() => {
+    if (canSeeAllContractorAccounts) return contractorAccounts;
+    return contractorAccounts.filter((account) => isOwnContractorAccount(account) || isContractorAccountOwner(account));
+  }, [canSeeAllContractorAccounts, contractorAccounts, isContractorAccountOwner, isOwnContractorAccount]);
+
   const filteredContractorAccounts = useMemo(() => {
     const search = contractorAccountSearch.trim().toLowerCase();
-    return contractorAccounts
+    return scopedContractorAccounts
       .filter((account) => showPaidContractorAccounts || account.status !== 'paid')
       .filter((account) => {
         if (contractorAccountView === 'approvals') {
-          return ['submitted', 'boss_approved', 'operations_approved'].includes(account.status);
+          return ['submitted', 'boss_approved', 'operations_approved'].includes(account.status) && (canSeeAllContractorAccounts || isContractorAccountOwner(account));
         }
         if (contractorAccountView === 'humanTalent') return account.status === 'quality_approved';
         if (contractorAccountView === 'accounting') return ['hr_approved', 'accounted'].includes(account.status);
@@ -2123,21 +2215,21 @@ export function ProjectAdministration({
           .toLowerCase()
           .includes(search);
       });
-  }, [contractorAccountSearch, contractorAccountView, contractorAccounts, showPaidContractorAccounts]);
+  }, [canSeeAllContractorAccounts, contractorAccountSearch, contractorAccountView, isContractorAccountOwner, scopedContractorAccounts, showPaidContractorAccounts]);
 
   const contractorAccountMetrics = useMemo(() => {
-    const activeAccounts = contractorAccounts.filter((account) => account.status !== 'rejected');
+    const activeAccounts = scopedContractorAccounts.filter((account) => account.status !== 'rejected');
     return {
       submitted: activeAccounts.length,
       pendingApprovals: activeAccounts.filter((account) => ['submitted', 'boss_approved', 'operations_approved', 'quality_approved'].includes(account.status)).length,
       pendingAccounting: activeAccounts.filter((account) => account.status === 'hr_approved').length,
       pendingPayment: activeAccounts.filter((account) => account.status === 'accounted').length,
       paid: activeAccounts.filter((account) => account.status === 'paid').length,
-      rejected: contractorAccounts.filter((account) => account.status === 'rejected').length,
+      rejected: scopedContractorAccounts.filter((account) => account.status === 'rejected').length,
       totalHonorarium: activeAccounts.reduce((sum, account) => sum + asNumber(account.honorariumAmount), 0),
       socialSecurityBase: activeAccounts.reduce((sum, account) => sum + asNumber(account.socialSecurityBase), 0),
     };
-  }, [contractorAccounts]);
+  }, [scopedContractorAccounts]);
 
   const hiddenPaidAdvancesCount = useMemo(
     () => filteredAdvances.filter((advance) => advance.status === 'paid').length,
@@ -3413,8 +3505,35 @@ export function ProjectAdministration({
   );
 
   const openNewContractorAccount = () => {
+    setEditingContractorAccount(null);
     setContractorAccountForm(buildEmptyContractorAccountForm());
     setSelectedContractorMemberId(currentSignerMember ? getContractorMemberOptionId(currentSignerMember) : '');
+    setContractorDocumentFiles({});
+    setIsContractorParafiscalsDragging(false);
+    setContractorAccountStep(1);
+    setAdvanceTaskSearch('');
+    setAdvanceTaskStatusFilter('all');
+    setAdvanceTaskGroupFilter('all');
+    setIsContractorAccountModalOpen(true);
+  };
+
+  const openEditContractorAccount = (account: ContractorPaymentRequest) => {
+    if (account.status !== 'returned' || !isOwnContractorAccount(account)) {
+      toast.warning('Solo puedes editar cuentas devueltas cuando están nuevamente en tu poder.');
+      return;
+    }
+    setEditingContractorAccount(account);
+    setContractorAccountForm({
+      ...buildEmptyContractorAccountForm(),
+      customId: account.customId || '',
+      periodStart: account.periodStart || todayInputValue(),
+      periodEnd: account.periodEnd || todayInputValue(),
+      honorariumAmount: String(account.honorariumAmount || ''),
+      taskIds: account.taskIds || [],
+      activityKeys: account.activityKeys || [],
+      activitySummary: account.activitySummary || '',
+    });
+    setSelectedContractorMemberId(String(account.contractorId || ''));
     setContractorDocumentFiles({});
     setIsContractorParafiscalsDragging(false);
     setContractorAccountStep(1);
@@ -3543,7 +3662,7 @@ export function ProjectAdministration({
   };
 
   const handleCreateContractorAccount = async () => {
-    if (!canManage || !currentUser?.uid) return;
+    if (!canCreateContractorAccount || !currentUser?.uid) return;
     const honorariumAmount = asNumber(contractorAccountForm.honorariumAmount);
     if (honorariumAmount <= 0) {
       toast.warning('Ingresa el monto de honorarios de la cuenta de cobro.');
@@ -3562,7 +3681,10 @@ export function ProjectAdministration({
       );
       return;
     }
-    const missingDocument = CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS.find((document) => !contractorDocumentFiles[document.kind]);
+    const missingDocument = CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS.find((document) =>
+      !contractorDocumentFiles[document.kind] &&
+      !editingContractorAccount?.documents?.some((existing) => existing.kind === document.kind)
+    );
     if (missingDocument) {
       toast.warning(`Adjunta el documento obligatorio: ${missingDocument.label}.`);
       return;
@@ -3578,19 +3700,29 @@ export function ProjectAdministration({
       const activityItems = selectedContractorActivities.map(({ actorTokens, ...activity }: any) => activity as ContractorAccountActivityItem);
       const taskIds = Array.from(new Set(activityItems.map((activity) => activity.taskId)));
       const taskTitles = activityItems.map((activity) => activity.taskTitle);
-      const accountRef = doc(collection(db, 'projects', projectId, 'contractorPaymentRequests'));
+      const accountRef = editingContractorAccount
+        ? doc(db, 'projects', projectId, 'contractorPaymentRequests', editingContractorAccount.id)
+        : doc(collection(db, 'projects', projectId, 'contractorPaymentRequests'));
       const accountLabel = `${contractorName} · ${contractorAccountForm.periodStart} - ${contractorAccountForm.periodEnd}`;
-      const documents = await Promise.all(
-        CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS.map((document) =>
-          uploadContractorAccountDocument({
-            accountId: accountRef.id,
-            accountLabel,
-            file: contractorDocumentFiles[document.kind] as File,
-            kind: document.kind,
-            label: document.label,
-          })
-        )
+      const existingDocuments = editingContractorAccount?.documents || [];
+      const uploadedDocuments = await Promise.all(
+        CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS
+          .filter((document) => contractorDocumentFiles[document.kind])
+          .map((document) =>
+            uploadContractorAccountDocument({
+              accountId: accountRef.id,
+              accountLabel,
+              file: contractorDocumentFiles[document.kind] as File,
+              kind: document.kind,
+              label: document.label,
+            })
+          )
       );
+      const documents = CONTRACTOR_ACCOUNT_UPLOAD_DOCUMENTS.map((document) =>
+        uploadedDocuments.find((uploaded) => uploaded.kind === document.kind) ||
+        existingDocuments.find((existing) => existing.kind === document.kind)
+      ).filter(Boolean) as ContractorAccountDocument[];
+      const nextApproverId = getContractorAccountConfiguredApproverId('submitted');
 
       await setDoc(accountRef, {
         projectId,
@@ -3627,17 +3759,25 @@ export function ProjectAdministration({
           note: 'Pixel calcula la base sobre el 40% de los honorarios. El soporte queda pendiente de revisión administrativa contra el periodo cobrado.',
         },
         status: 'submitted',
+        currentApproverId: nextApproverId,
+        currentApproverLabel: CONTRACTOR_ACCOUNT_STATUS_META.submitted.label,
+        currentApprovalStage: 'submitted',
         documents,
-        approvals: [],
-        createdAt: serverTimestamp(),
-        createdBy: currentUser.uid,
-        createdByName: getCurrentUserName(currentUser),
+        approvals: editingContractorAccount?.approvals || [],
+        ...(editingContractorAccount ? {} : {
+          createdAt: serverTimestamp(),
+          createdBy: currentUser.uid,
+          createdByName: getCurrentUserName(currentUser),
+        }),
         submittedAt: serverTimestamp(),
+        resubmittedAt: editingContractorAccount ? serverTimestamp() : null,
+        resubmittedBy: editingContractorAccount ? currentUser.uid : null,
         updatedAt: serverTimestamp(),
-      });
+      }, { merge: true });
 
-      toast.success('Cuenta de cobro enviada para aprobación del jefe inmediato.');
+      toast.success(editingContractorAccount ? 'Cuenta de cobro corregida y reenviada al jefe inmediato.' : 'Cuenta de cobro enviada para aprobación del jefe inmediato.');
       setIsContractorAccountModalOpen(false);
+      setEditingContractorAccount(null);
       setContractorDocumentFiles({});
       setContractorAccountStep(1);
       setContractorAccountForm(buildEmptyContractorAccountForm());
@@ -3690,7 +3830,7 @@ export function ProjectAdministration({
       toast.error('Solo el administrador global puede cambiar la persona asociada a una cuenta de cobro.');
       return;
     }
-    if (type !== 'delete' && type !== 'reassign' && !canValidate && type !== 'return') return;
+    if (type !== 'delete' && type !== 'reassign' && !canActOnContractorAccount(account)) return;
     const nextStatus = type === 'approve' ? getNextContractorAccountStatus(account.status) : null;
     if (type === 'approve' && !nextStatus) {
       toast.warning('Esta cuenta de cobro no tiene una siguiente aprobación disponible.');
@@ -3777,12 +3917,19 @@ export function ProjectAdministration({
       const payload: any = {
         updatedAt: serverTimestamp(),
       };
+      const assignCurrentApprover = (status: ContractorAccountStatus | null) => {
+        payload.currentApprovalStage = status;
+        payload.currentApproverId = status ? getContractorAccountConfiguredApproverId(status) : null;
+        payload.currentApproverLabel = status ? CONTRACTOR_ACCOUNT_STATUS_META[status]?.label || status : null;
+      };
 
       if (type === 'approve') {
         payload.status = nextStatus;
+        assignCurrentApprover(nextStatus);
         payload.approvals = arrayUnion(approval);
       } else if (type === 'account') {
         payload.status = 'accounted';
+        assignCurrentApprover('accounted');
         payload.accountingReference = contractorAccountForm.accountingReference.trim();
         payload.accountingNote = contractorAccountForm.accountingNote.trim() || contractorAccountActionComment.trim();
         payload.accountedAt = serverTimestamp();
@@ -3798,6 +3945,7 @@ export function ProjectAdministration({
           label: 'Soporte de pago de cuenta de cobro',
         });
         payload.status = 'paid';
+        assignCurrentApprover(null);
         payload.paymentSupport = paymentSupport;
         payload.paidAt = serverTimestamp();
         payload.paidBy = currentUser?.uid || null;
@@ -3805,12 +3953,16 @@ export function ProjectAdministration({
         payload.approvals = arrayUnion(approval);
       } else if (type === 'return') {
         payload.status = 'returned';
+        payload.currentApprovalStage = 'returned';
+        payload.currentApproverId = account.contractorId || account.requesterSignature?.signerMemberId || account.requesterSignature?.signerUserId || null;
+        payload.currentApproverLabel = 'Contratista';
         payload.returnComment = contractorAccountActionComment.trim();
         payload.returnedAt = serverTimestamp();
         payload.returnedBy = currentUser?.uid || null;
         payload.returnedByName = actorName;
       } else if (type === 'reject') {
         payload.status = 'rejected';
+        assignCurrentApprover(null);
         payload.returnComment = contractorAccountActionComment.trim();
         payload.rejectedAt = serverTimestamp();
         payload.rejectedBy = currentUser?.uid || null;
@@ -6379,7 +6531,7 @@ export function ProjectAdministration({
                 Nuevo anticipo
               </Button>
             )}
-            {adminWorkspace === 'contractorAccounts' && canManage && (
+            {adminWorkspace === 'contractorAccounts' && canCreateContractorAccount && (
               <Button type="button" onClick={openNewContractorAccount} className="bg-cyan-500 font-bold text-slate-950 hover:bg-cyan-400">
                 <Plus size={17} className="mr-2" />
                 Nueva cuenta de cobro
@@ -7308,25 +7460,37 @@ export function ProjectAdministration({
       ) : (
         <ContractorAccountsWorkspace
           accounts={filteredContractorAccounts}
-          allAccounts={contractorAccounts}
+          allAccounts={scopedContractorAccounts}
           view={contractorAccountView}
           onViewChange={setContractorAccountView}
           search={contractorAccountSearch}
           onSearchChange={setContractorAccountSearch}
           showPaid={showPaidContractorAccounts}
           onTogglePaid={() => setShowPaidContractorAccounts((current) => !current)}
-          hiddenPaidCount={contractorAccounts.filter((account) => account.status === 'paid').length}
+          hiddenPaidCount={scopedContractorAccounts.filter((account) => account.status === 'paid').length}
           canValidate={canValidate}
           canManage={canManage}
+          canCreate={canCreateContractorAccount}
           canReassignContractor={canGlobalAdminReassignContractorAccounts}
+          canActOnAccount={canActOnContractorAccount}
+          canEditReturnedAccount={(account) => account.status === 'returned' && isOwnContractorAccount(account)}
           onNew={openNewContractorAccount}
+          onEdit={openEditContractorAccount}
           onAction={openContractorAccountAction}
           onDownloadGenerated={downloadContractorAccountReport}
         />
       )}
 
       {isContractorAccountModalOpen && (
-        <ModalShell title="Nueva cuenta de cobro" subtitle="Pixel genera la cuenta y el informe; el contratista firma y adjunta parafiscales." onClose={() => setIsContractorAccountModalOpen(false)} wide>
+        <ModalShell
+          title={editingContractorAccount ? 'Corregir cuenta de cobro' : 'Nueva cuenta de cobro'}
+          subtitle={editingContractorAccount ? 'Actualiza la cuenta devuelta y reenvíala al jefe inmediato.' : 'Pixel genera la cuenta y el informe; el contratista firma y adjunta parafiscales.'}
+          onClose={() => {
+            setIsContractorAccountModalOpen(false);
+            setEditingContractorAccount(null);
+          }}
+          wide
+        >
           <div className="mb-4 grid gap-2 md:grid-cols-3">
             {[
               [1, 'Cuenta y firma', 'Monto, periodo y firma del contratista'],
@@ -7783,7 +7947,10 @@ export function ProjectAdministration({
             </div>
           </div>
           <ModalFooter>
-            <Button type="button" variant="outline" onClick={() => setIsContractorAccountModalOpen(false)}>Cancelar</Button>
+            <Button type="button" variant="outline" onClick={() => {
+              setIsContractorAccountModalOpen(false);
+              setEditingContractorAccount(null);
+            }}>Cancelar</Button>
             {contractorAccountStep > 1 && (
               <Button type="button" variant="outline" onClick={() => setContractorAccountStep((current) => Math.max(1, current - 1) as 1 | 2 | 3)}>Atrás</Button>
             )}
@@ -7795,7 +7962,7 @@ export function ProjectAdministration({
             ) : (
               <Button type="button" disabled={submitting} onClick={handleCreateContractorAccount} className="bg-cyan-600 font-bold text-white hover:bg-cyan-700">
                 {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
-                Enviar cuenta de cobro
+                {editingContractorAccount ? 'Reenviar cuenta corregida' : 'Enviar cuenta de cobro'}
               </Button>
             )}
           </ModalFooter>
@@ -9397,8 +9564,12 @@ function ContractorAccountsWorkspace({
   hiddenPaidCount,
   canValidate,
   canManage,
+  canCreate,
   canReassignContractor,
+  canActOnAccount,
+  canEditReturnedAccount,
   onNew,
+  onEdit,
   onAction,
   onDownloadGenerated,
 }: {
@@ -9413,8 +9584,12 @@ function ContractorAccountsWorkspace({
   hiddenPaidCount: number;
   canValidate: boolean;
   canManage: boolean;
+  canCreate: boolean;
   canReassignContractor: boolean;
+  canActOnAccount: (account: ContractorPaymentRequest) => boolean;
+  canEditReturnedAccount: (account: ContractorPaymentRequest) => boolean;
   onNew: () => void;
+  onEdit: (account: ContractorPaymentRequest) => void;
   onAction: (type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete' | 'reassign', account: ContractorPaymentRequest) => void;
   onDownloadGenerated: (account: ContractorPaymentRequest, kind: 'chargeAccount' | 'activityReport') => Promise<void>;
 }) {
@@ -9426,19 +9601,33 @@ function ContractorAccountsWorkspace({
     paid: allAccounts.filter((account) => account.status === 'paid').length,
     rejected: allAccounts.filter((account) => account.status === 'rejected').length,
   };
+  const getLifecycleIndex = (status: ContractorAccountStatus) => {
+    if (status === 'paid') return CONTRACTOR_ACCOUNT_STEPS.length;
+    if (status === 'rejected') return -1;
+    const index = CONTRACTOR_ACCOUNT_STEPS.findIndex((step) => step.status === status);
+    return index >= 0 ? index : 0;
+  };
+  const navigationItems: Array<[typeof view, string, number]> = canManage || canValidate
+    ? [
+        ['all', 'Cuentas de cobro', counts.all],
+        ['approvals', 'Aprobaciones', counts.approvals],
+        ['humanTalent', 'Talento humano', counts.humanTalent],
+        ['accounting', 'Contabilidad y pago', counts.accounting],
+        ['paid', 'Pagadas', counts.paid],
+        ['rejected', 'Rechazadas', counts.rejected],
+      ]
+    : [
+        ['all', 'Mis cuentas', counts.all],
+        ...(counts.approvals > 0 ? [['approvals', 'Por aprobar', counts.approvals] as [typeof view, string, number]] : []),
+        ['paid', 'Pagadas', counts.paid],
+        ['rejected', 'Rechazadas', counts.rejected],
+      ];
 
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap gap-2">
-          {[
-            ['all', 'Cuentas de cobro', counts.all],
-            ['approvals', 'Aprobaciones', counts.approvals],
-            ['humanTalent', 'Talento humano', counts.humanTalent],
-            ['accounting', 'Contabilidad y pago', counts.accounting],
-            ['paid', 'Pagadas', counts.paid],
-            ['rejected', 'Rechazadas', counts.rejected],
-          ].map(([id, label, count]) => (
+          {navigationItems.map(([id, label, count]) => (
             <button
               key={String(id)}
               type="button"
@@ -9454,7 +9643,7 @@ function ContractorAccountsWorkspace({
             </button>
           ))}
         </div>
-        {canManage && (
+        {canCreate && (
           <Button type="button" onClick={onNew} className="bg-cyan-600 font-bold text-white hover:bg-cyan-700">
             <Plus size={16} className="mr-2" />
             Nueva cuenta
@@ -9503,9 +9692,12 @@ function ContractorAccountsWorkspace({
           {accounts.map((account) => {
             const statusMeta = CONTRACTOR_ACCOUNT_STATUS_META[account.status] || CONTRACTOR_ACCOUNT_STATUS_META.submitted;
             const nextStatus = getNextContractorAccountStatus(account.status);
-            const canApprove = canValidate && Boolean(nextStatus) && !['hr_approved', 'accounted'].includes(account.status);
-            const canAccount = canValidate && account.status === 'hr_approved';
-            const canPay = canValidate && account.status === 'accounted';
+            const canAct = canActOnAccount(account);
+            const canApprove = canAct && Boolean(nextStatus) && !['hr_approved', 'accounted'].includes(account.status);
+            const canAccount = canAct && account.status === 'hr_approved';
+            const canPay = canAct && account.status === 'accounted';
+            const canEditReturned = canEditReturnedAccount(account);
+            const lifecycleIndex = getLifecycleIndex(account.status);
             return (
               <section key={account.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                 <div className="grid gap-4 border-b border-slate-100 bg-slate-50 p-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
@@ -9535,6 +9727,12 @@ function ContractorAccountsWorkspace({
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    {canEditReturned && (
+                      <Button type="button" size="sm" onClick={() => onEdit(account)} className="bg-orange-600 text-white hover:bg-orange-700">
+                        <PencilLine size={14} className="mr-2" />
+                        Corregir
+                      </Button>
+                    )}
                     {canApprove && (
                       <Button type="button" size="sm" onClick={() => onAction('approve', account)} className="bg-emerald-600 text-white hover:bg-emerald-700">
                         <CheckCircle2 size={14} className="mr-2" />
@@ -9553,7 +9751,7 @@ function ContractorAccountsWorkspace({
                         Pagar
                       </Button>
                     )}
-                    {canValidate && !['paid', 'rejected'].includes(account.status) && (
+                    {canAct && !['paid', 'rejected', 'returned'].includes(account.status) && (
                       <>
                         <Button type="button" size="sm" variant="outline" onClick={() => onAction('return', account)} className="border-orange-200 text-orange-700 hover:bg-orange-50">
                           <RotateCcw size={14} className="mr-2" />
@@ -9579,14 +9777,40 @@ function ContractorAccountsWorkspace({
                   </div>
                 </div>
 
-                <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-8">
+                <div className="border-b border-slate-100 bg-white px-4 py-4">
+                  <div className="grid gap-3 md:grid-cols-6">
+                    {CONTRACTOR_ACCOUNT_STEPS.map((step, index) => {
+                      const isDone = lifecycleIndex > index || account.status === 'paid';
+                      const isActive = lifecycleIndex === index && !['paid', 'rejected'].includes(account.status);
+                      const isBlocked = account.status === 'returned' || account.status === 'rejected';
+                      return (
+                        <div key={step.status} className="relative">
+                          <div className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${
+                            isBlocked
+                              ? 'border-orange-100 bg-orange-50 text-orange-700'
+                              : isDone
+                                ? 'border-emerald-100 bg-emerald-50 text-emerald-700'
+                                : isActive
+                                  ? 'border-cyan-200 bg-cyan-50 text-cyan-700 ring-2 ring-cyan-100'
+                                  : 'border-slate-200 bg-slate-50 text-slate-400'
+                          }`}>
+                            <span className={`grid h-6 w-6 place-items-center rounded-full text-[10px] font-black ${
+                              isDone ? 'bg-emerald-600 text-white' : isActive ? 'bg-cyan-600 text-white' : 'bg-white text-slate-400 ring-1 ring-slate-200'
+                            }`}>
+                              {isDone ? <CheckCircle2 size={13} /> : index + 1}
+                            </span>
+                            <span className="min-w-0 truncate text-[10px] font-black uppercase tracking-[0.14em]">{step.shortLabel}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
                   <ReceiptGroupMetric label="Honorarios" value={formatMoney(account.honorariumAmount)} tone="slate" />
-                  <ReceiptGroupMetric label="Base 40%" value={formatMoney(account.socialSecurityBase)} tone="indigo" />
-                  <ReceiptGroupMetric label="Mínimos estimados" value={`${account.estimatedMinimumWages || 1}`} tone="amber" />
                   <ReceiptGroupMetric label="Actividades" value={`${account.activityItems?.length || account.taskIds?.length || 0}`} tone="emerald" />
                   <ReceiptGroupMetric label="Calidad" value={account.qualitySnapshot?.score === null || account.qualitySnapshot?.score === undefined ? 'Sin dato' : `${account.qualitySnapshot.score}%`} tone={account.qualitySnapshot?.rejected ? 'rose' : 'emerald'} />
-                  <ReceiptGroupMetric label="Ingreso rate" value={formatMoney(account.rateSnapshot?.income || account.activitySnapshot?.rateIncome || 0)} tone="indigo" />
-                  <ReceiptGroupMetric label="Margen rate" value={formatMoney(account.rateSnapshot?.margin || account.activitySnapshot?.rateMargin || 0)} tone="slate" />
                   <ReceiptGroupMetric label="Aprobaciones" value={`${account.approvals?.length || 0}`} tone="slate" />
                 </div>
 
@@ -9612,7 +9836,11 @@ function ContractorAccountsWorkspace({
                         )}
                       </div>
                       {account.activitySummary && <p className="mt-3 rounded-lg bg-slate-50 p-3 text-sm font-semibold leading-6 text-slate-600">{account.activitySummary}</p>}
-                      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                      <details className="mt-3 rounded-xl border border-slate-200 bg-white">
+                        <summary className="cursor-pointer px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-500">
+                          Ver análisis del periodo
+                        </summary>
+                      <div className="grid gap-3 border-t border-slate-100 p-3 lg:grid-cols-2">
                         <div className="rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
                           <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700">Calidad del periodo</p>
                           <div className="mt-2 grid grid-cols-4 gap-2">
@@ -9671,6 +9899,7 @@ function ContractorAccountsWorkspace({
                           )}
                         </div>
                       </div>
+                      </details>
                       {account.requesterSignature && <div className="mt-3 max-w-md"><SignatureSummary title="Firma del contratista" signature={account.requesterSignature} /></div>}
                     </div>
                     <div>

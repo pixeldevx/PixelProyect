@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,7 @@ import { handleDataError, OperationType } from '@/lib/backend-utils';
 export function OrganizationManagement() {
   const { user, userRole } = useAuth();
   const [organizations, setOrganizations] = useState<any[]>([]);
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -23,6 +24,13 @@ export function OrganizationManagement() {
   const [deletingOrgId, setDeletingOrgId] = useState<string | null>(null);
   
   const [orgName, setOrgName] = useState('');
+  const [contractorApprovers, setContractorApprovers] = useState({
+    immediateBossId: '',
+    operationsManagerId: '',
+    qualityComplianceId: '',
+    humanTalentId: '',
+    accountingId: '',
+  });
 
   useEffect(() => {
     let active = true;
@@ -47,20 +55,60 @@ export function OrganizationManagement() {
         setLoading(false);
       }
     });
+    const unsubscribeMembers = onSnapshot(
+      query(collection(db, 'team_members')),
+      (snapshot) => setTeamMembers(snapshot.docs.map((memberDoc) => ({ id: memberDoc.id, ...memberDoc.data() }))),
+      (error) => handleDataError(error, OperationType.LIST, 'team_members')
+    );
 
     return () => {
       active = false;
       unsubscribe();
+      unsubscribeMembers();
     };
   }, [userRole]);
+
+  const getMemberLabel = (member: any) =>
+    member?.name || member?.displayName || member?.fullName || member?.email || 'Sin nombre';
+
+  const getMemberOptionId = (member: any) =>
+    String(member?.id || member?.authUserId || member?.email || '').trim();
+
+  const memberNameById = (memberId?: string) => {
+    if (!memberId) return 'Sin asignar';
+    const normalized = String(memberId).trim().toLowerCase();
+    const member = teamMembers.find((item) =>
+      [item.id, item.authUserId, item.uid, item.email].some((value) => String(value || '').trim().toLowerCase() === normalized)
+    );
+    return member ? getMemberLabel(member) : memberId;
+  };
+
+  const scopedMembers = useMemo(() => {
+    if (!editingOrg?.id) return teamMembers;
+    return teamMembers.filter((member) => belongsToAnyOrganization(member, [editingOrg.id]));
+  }, [editingOrg?.id, teamMembers]);
 
   const handleOpenModal = (org?: any) => {
     if (org) {
       setEditingOrg(org);
       setOrgName(org.name || '');
+      setContractorApprovers({
+        immediateBossId: org.contractorAccountApprovalConfig?.immediateBossId || '',
+        operationsManagerId: org.contractorAccountApprovalConfig?.operationsManagerId || '',
+        qualityComplianceId: org.contractorAccountApprovalConfig?.qualityComplianceId || '',
+        humanTalentId: org.contractorAccountApprovalConfig?.humanTalentId || '',
+        accountingId: org.contractorAccountApprovalConfig?.accountingId || '',
+      });
     } else {
       setEditingOrg(null);
       setOrgName('');
+      setContractorApprovers({
+        immediateBossId: '',
+        operationsManagerId: '',
+        qualityComplianceId: '',
+        humanTalentId: '',
+        accountingId: '',
+      });
     }
     setIsModalOpen(true);
   };
@@ -73,6 +121,7 @@ export function OrganizationManagement() {
       if (editingOrg) {
         await updateDoc(doc(db, 'organizations', editingOrg.id), {
           name: orgName,
+          contractorAccountApprovalConfig: contractorApprovers,
           updatedAt: serverTimestamp()
         });
         toast.success("Organización actualizada");
@@ -80,6 +129,7 @@ export function OrganizationManagement() {
         const newOrgRef = doc(collection(db, 'organizations'));
         await setDoc(newOrgRef, {
           name: orgName,
+          contractorAccountApprovalConfig: contractorApprovers,
           ownerId: user.uid,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
@@ -178,6 +228,7 @@ export function OrganizationManagement() {
             <TableHeader>
               <TableRow>
                 <TableHead>Nombre</TableHead>
+                <TableHead>Flujo cuentas de cobro</TableHead>
                 <TableHead>Fecha de Creación</TableHead>
                 <TableHead className="text-right">Acciones</TableHead>
               </TableRow>
@@ -186,6 +237,13 @@ export function OrganizationManagement() {
               {organizations.map((o) => (
                 <TableRow key={o.id}>
                   <TableCell className="font-medium text-slate-900">{o.name}</TableCell>
+                  <TableCell className="text-xs text-slate-500">
+                    <div className="space-y-1">
+                      <p><span className="font-bold text-slate-700">Jefe:</span> {memberNameById(o.contractorAccountApprovalConfig?.immediateBossId)}</p>
+                      <p><span className="font-bold text-slate-700">Operaciones:</span> {memberNameById(o.contractorAccountApprovalConfig?.operationsManagerId)}</p>
+                      <p><span className="font-bold text-slate-700">Calidad:</span> {memberNameById(o.contractorAccountApprovalConfig?.qualityComplianceId)}</p>
+                    </div>
+                  </TableCell>
                   <TableCell className="text-slate-500 text-sm">
                     {o.createdAt ? new Date(o.createdAt.toDate()).toLocaleDateString() : 'N/A'}
                   </TableCell>
@@ -222,7 +280,7 @@ export function OrganizationManagement() {
       {/* Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 m-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 m-4">
             <h3 className="text-lg font-semibold text-slate-900 mb-4">
               {editingOrg ? 'Editar Organización' : 'Nueva Organización'}
             </h3>
@@ -241,6 +299,42 @@ export function OrganizationManagement() {
                     placeholder="Ej: Acirón S.A."
                     className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
+                </div>
+                <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 p-4">
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700">
+                    Responsables de cuentas de cobro
+                  </p>
+                  <p className="mt-1 text-xs font-medium text-slate-500">
+                    Define quién recibe cada aprobación. Si un campo queda vacío, Pixel conserva la validación general por rol.
+                  </p>
+                  <div className="mt-3 grid gap-3">
+                    {[
+                      ['immediateBossId', 'Jefe inmediato'],
+                      ['operationsManagerId', 'Gerente de operaciones'],
+                      ['qualityComplianceId', 'Calidad y cumplimiento'],
+                      ['humanTalentId', 'Talento humano'],
+                      ['accountingId', 'Contabilidad / pago'],
+                    ].map(([field, label]) => (
+                      <label key={field} className="block">
+                        <span className="mb-1 block text-xs font-bold text-slate-600">{label}</span>
+                        <select
+                          value={(contractorApprovers as any)[field]}
+                          onChange={(event) => setContractorApprovers((current) => ({ ...current, [field]: event.target.value }))}
+                          className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="">Sin asignar</option>
+                          {scopedMembers.map((member) => {
+                            const memberId = getMemberOptionId(member);
+                            return (
+                              <option key={`${field}-${memberId}`} value={memberId}>
+                                {getMemberLabel(member)}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               </div>
               
