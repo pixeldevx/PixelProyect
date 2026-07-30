@@ -69,7 +69,6 @@ const PAGE_HEIGHT = 792;
 const MARGIN_X = 40;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN_X * 2;
 const CONTENT_BOTTOM = 46;
-const HEADER_NAVY = rgb(0.035, 0.055, 0.15);
 const INDIGO = rgb(0.31, 0.27, 0.9);
 const TEAL = rgb(0.06, 0.47, 0.44);
 const SLATE_950 = rgb(0.06, 0.09, 0.16);
@@ -774,46 +773,54 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
   };
 
   addReportPage(false);
+  page.drawLine({
+    start: { x: MARGIN_X, y: PAGE_HEIGHT - 42 },
+    end: { x: PAGE_WIDTH - MARGIN_X, y: PAGE_HEIGHT - 42 },
+    thickness: 1.2,
+    color: TEAL,
+  });
   page.drawRectangle({
-    x: 0,
-    y: PAGE_HEIGHT - 176,
-    width: PAGE_WIDTH,
-    height: 176,
-    color: HEADER_NAVY,
+    x: MARGIN_X,
+    y: PAGE_HEIGHT - 146,
+    width: CONTENT_WIDTH,
+    height: 88,
+    color: WHITE,
+    borderColor: SLATE_300,
+    borderWidth: 0.8,
   });
   page.drawText('PIXEL PROJECT - EXPEDIENTE DE ANTICIPO', {
-    x: MARGIN_X,
-    y: PAGE_HEIGHT - 52,
+    x: MARGIN_X + 14,
+    y: PAGE_HEIGHT - 77,
     size: 9,
     font: fonts.bold,
-    color: rgb(0.55, 0.97, 0.87),
+    color: TEAL,
   });
   const reportTitle = fitText(fonts.bold, report.title, 24, CONTENT_WIDTH);
   page.drawText(reportTitle, {
-    x: MARGIN_X,
-    y: PAGE_HEIGHT - 92,
+    x: MARGIN_X + 14,
+    y: PAGE_HEIGHT - 106,
     size: 24,
     font: fonts.bold,
-    color: WHITE,
+    color: SLATE_950,
   });
   page.drawText(fitText(fonts.bold, report.advanceId, 14, CONTENT_WIDTH), {
-    x: MARGIN_X,
-    y: PAGE_HEIGHT - 121,
+    x: MARGIN_X + 14,
+    y: PAGE_HEIGHT - 128,
     size: 14,
     font: fonts.bold,
-    color: rgb(0.77, 0.8, 1),
+    color: INDIGO,
   });
   page.drawText(
     fitText(fonts.regular, `${report.projectName} - ${report.status} - ${report.generatedAt}`, 9, CONTENT_WIDTH),
     {
-      x: MARGIN_X,
-      y: PAGE_HEIGHT - 145,
+      x: MARGIN_X + 110,
+      y: PAGE_HEIGHT - 127,
       size: 9,
       font: fonts.regular,
-      color: rgb(0.8, 0.84, 0.9),
+      color: SLATE_500,
     }
   );
-  y = PAGE_HEIGHT - 206;
+  y = PAGE_HEIGHT - 178;
 
   drawSectionTitle(1, 'Anticipo y aprobación');
   drawMetrics(report.metrics);
