@@ -766,7 +766,40 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
       );
       y -= 18;
     }
-    void step;
+    if (y - 38 >= CONTENT_BOTTOM) {
+      page.drawRectangle({
+        x: MARGIN_X,
+        y: y - 30,
+        width: CONTENT_WIDTH,
+        height: 30,
+        color: rgb(0.98, 0.99, 1),
+        borderColor: SLATE_300,
+        borderWidth: 0.6,
+      });
+      page.drawText(
+        fitText(
+          fonts.bold,
+          `Soportes anexos de la etapa ${step}: ${preparedAttachments.length} documento${preparedAttachments.length === 1 ? '' : 's'}`,
+          8,
+          CONTENT_WIDTH - 18
+        ),
+        {
+          x: MARGIN_X + 9,
+          y: y - 12,
+          size: 8,
+          font: fonts.bold,
+          color: SLATE_700,
+        }
+      );
+      page.drawText('Los archivos se incorporan en las páginas siguientes, sin hoja separadora.', {
+        x: MARGIN_X + 9,
+        y: y - 24,
+        size: 7,
+        font: fonts.regular,
+        color: SLATE_500,
+      });
+      y -= 38;
+    }
     preparedAttachments.forEach((prepared, index) => {
       appendPreparedAttachment(prepared, index + 1);
     });
