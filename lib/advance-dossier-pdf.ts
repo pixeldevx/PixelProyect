@@ -43,6 +43,7 @@ export type AdvanceDossierReport = {
   costCenters: string[][];
   signatures: AdvanceDossierSignature[];
   paymentDetails: Array<{ label: string; value: string }>;
+  legalizationSummary?: Array<{ label: string; value: string }>;
   legalizations: string[][];
   reconciliationDetails: Array<{ label: string; value: string }>;
   paymentAttachment?: AdvanceDossierAttachment;
@@ -609,13 +610,13 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
     const { width, height } = target.getSize();
     const reference = buildAttachmentReference(attachment, ordinal, pageNumber, totalPages);
     const boxWidth = Math.min(Math.max(width - 48, 220), 500);
-    const boxHeight = 34;
-    const x = Math.max(18, Math.min(MARGIN_X, (width - boxWidth) / 2));
-    const top = height - 18;
+    const boxHeight = 24;
+    const x = Math.max(16, Math.min(MARGIN_X, (width - boxWidth) / 2));
+    const bottom = 14;
 
     target.drawRectangle({
       x,
-      y: top - boxHeight,
+      y: bottom,
       width: boxWidth,
       height: boxHeight,
       color: WHITE,
@@ -624,21 +625,21 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
     });
     target.drawRectangle({
       x,
-      y: top - boxHeight,
+      y: bottom,
       width: 4,
       height: boxHeight,
       color: TEAL,
     });
     target.drawText(fitText(fonts.bold, reference.title.toUpperCase(), 7.5, boxWidth - 18), {
       x: x + 10,
-      y: top - 13,
+      y: bottom + 13,
       size: 7.5,
       font: fonts.bold,
       color: INDIGO,
     });
     target.drawText(fitText(fonts.regular, reference.detail, 6.8, boxWidth - 18), {
       x: x + 10,
-      y: top - 26,
+      y: bottom + 4,
       size: 6.8,
       font: fonts.regular,
       color: SLATE_700,
@@ -706,7 +707,6 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
 
     const image = prepared.image;
     const imagePage = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    drawAttachmentInlineReference(imagePage, prepared.attachment, ordinal);
     const availableWidth = CONTENT_WIDTH;
     const availableHeight = PAGE_HEIGHT - 108;
     const scale = Math.min(availableWidth / image.width, availableHeight / image.height, 1);
@@ -718,6 +718,7 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
       width: imageWidth,
       height: imageHeight,
     });
+    drawAttachmentInlineReference(imagePage, prepared.attachment, ordinal);
   };
 
   const appendAttachmentGroup = async (
@@ -733,13 +734,12 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
     );
     const omittedCount = attachments.length - preparedAttachments.length;
 
-    addReportPage();
-    drawSectionTitle(step, title);
     if (preparedAttachments.length === 0) {
+      ensureSpace(34);
       page.drawText(
         attachments.length === 0
-          ? 'No se cargaron documentos para esta etapa.'
-          : 'Los documentos cargados no estaban disponibles o no tenían un formato válido. El expediente continúa sin esos anexos.',
+          ? `No se cargaron documentos para ${title.toLowerCase()}.`
+          : `Los documentos de ${title.toLowerCase()} no estaban disponibles o no tenían un formato válido. El expediente continúa sin esos anexos.`,
         {
           x: MARGIN_X,
           y,
@@ -751,41 +751,23 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
       y -= 22;
       return;
     }
-    page.drawText(
-      normalizePdfText(
-        `${preparedAttachments.length} documento${preparedAttachments.length === 1 ? '' : 's'} se anexa${preparedAttachments.length === 1 ? '' : 'n'} completo${preparedAttachments.length === 1 ? '' : 's'} con una referencia compacta dentro del mismo soporte, sin hojas separadoras.`
-      ),
-      {
-        x: MARGIN_X,
-        y,
-        size: 10,
-        font: fonts.regular,
-        color: SLATE_700,
-      }
-    );
-    preparedAttachments.forEach((prepared, index) => {
-      page.drawText(fitText(fonts.bold, `${index + 1}. ${prepared.attachment.label}`, 9, CONTENT_WIDTH - 10), {
-        x: MARGIN_X + 8,
-        y: y - 24 - index * 18,
-        size: 9,
-        font: fonts.bold,
-        color: SLATE_950,
-      });
-    });
     if (omittedCount > 0) {
+      ensureSpace(28);
       page.drawText(
         normalizePdfText(
-          `${omittedCount} archivo${omittedCount === 1 ? '' : 's'} se omitió${omittedCount === 1 ? '' : 'eron'} por no estar disponible${omittedCount === 1 ? '' : 's'} o estar dañado${omittedCount === 1 ? '' : 's'}.`
+          `${omittedCount} archivo${omittedCount === 1 ? '' : 's'} de ${title.toLowerCase()} se omitió${omittedCount === 1 ? '' : 'eron'} por no estar disponible${omittedCount === 1 ? '' : 's'} o estar dañado${omittedCount === 1 ? '' : 's'}.`
         ),
         {
-          x: MARGIN_X + 8,
-          y: y - 32 - preparedAttachments.length * 18,
+          x: MARGIN_X,
+          y,
           size: 8,
           font: fonts.oblique,
           color: SLATE_500,
         }
       );
+      y -= 18;
     }
+    void step;
     preparedAttachments.forEach((prepared, index) => {
       appendPreparedAttachment(prepared, index + 1);
     });
@@ -899,10 +881,13 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
   if (sections.legalizations) {
     drawSectionTitle(sectionNumber, 'Legalización', true);
     sectionNumber += 1;
+    if (report.legalizationSummary?.length) {
+      drawMetrics(report.legalizationSummary);
+    }
     drawTable({
-      headers: ['#', 'Tipo', 'Proveedor', 'Fecha', 'Documento', 'Valor', 'Estado'],
+      headers: ['#', 'Rubro / tipo', 'Proveedor', 'Fecha', 'Documento', 'Soporte', 'Valor'],
       rows: report.legalizations,
-      widths: [0.05, 0.18, 0.18, 0.13, 0.17, 0.15, 0.14],
+      widths: [0.05, 0.2, 0.18, 0.12, 0.15, 0.18, 0.12],
     });
 
     await appendAttachmentGroup(
@@ -910,7 +895,6 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
       'Documentos soporte de la legalización',
       report.legalizationAttachments
     );
-    sectionNumber += 1;
   }
 
   if (sections.reconciliation) {

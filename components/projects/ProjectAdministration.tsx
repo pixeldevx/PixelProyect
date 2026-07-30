@@ -231,7 +231,7 @@ type AdvanceReconciliationSupport = {
 
 type AdvanceReconciliationStatus = 'pending_validation' | 'pending_return' | 'pending_compensation' | 'ready' | 'reconciled';
 
-type AdvanceReportScope = 'advance' | 'payment' | 'justifications' | 'reconciliation' | 'full';
+type AdvanceReportScope = 'advance' | 'payment' | 'justifications' | 'partialClose' | 'reconciliation' | 'full';
 
 type AdvanceSignatureSnapshot = {
   signatureUrl: string;
@@ -937,7 +937,10 @@ const getAdvanceReportAvailability = (advance: Partial<TravelAdvance>) => {
   const paymentSummary = getAdvancePaymentSummary(advance);
   const hasPayment = paymentSummary.hasPayment;
   const hasLegalizations = (advance.receipts || []).some(
-    (receipt) => receipt.status !== 'rejected'
+    (receipt) => isApprovedReceipt(receipt)
+  );
+  const hasPartialClose = (advance.receipts || []).some(
+    (receipt) => isAccountingAcceptedReceipt(receipt)
   );
   const hasEnteredReconciliation =
     advance.status === 'completed' ||
@@ -951,6 +954,7 @@ const getAdvanceReportAvailability = (advance: Partial<TravelAdvance>) => {
     advance: true,
     payment: hasPayment,
     justifications: hasLegalizations,
+    partialClose: hasPartialClose,
     reconciliation: hasEnteredReconciliation,
     full: hasFinalReport,
   } satisfies Record<AdvanceReportScope, boolean>;
@@ -1593,6 +1597,14 @@ const isApprovedReceipt = (receipt: Pick<AdvanceReceipt, 'status'>) =>
 
 const isInvoiceReceipt = (receipt: Pick<AdvanceReceipt, 'documentType'>) =>
   getReceiptDocumentType(receipt.documentType) === 'invoice';
+
+const isAccountingAcceptedReceipt = (
+  receipt: Pick<AdvanceReceipt, 'documentType' | 'status' | 'accountingAuditStatus'>
+) => {
+  if (!isApprovedReceipt(receipt)) return false;
+  if (receipt.status === 'audit_passed' || receipt.accountingAuditStatus === 'matched') return true;
+  return !isInvoiceReceipt(receipt);
+};
 
 const needsDianAccountingAudit = (receipt: Pick<AdvanceReceipt, 'documentType' | 'status'>) =>
   isInvoiceReceipt(receipt) && RECEIPT_STATUSES_READY_FOR_DIAN_AUDIT.includes(receipt.status);
@@ -2779,8 +2791,8 @@ export function ProjectAdministration({
     }) => {
       const toastId = toast.loading('Preparando el expediente y anexando los soportes...');
       try {
-        const includePayment = ['payment', 'justifications', 'reconciliation', 'full'].includes(scope);
-        const includeLegalizations = ['justifications', 'reconciliation', 'full'].includes(scope);
+        const includePayment = ['payment', 'justifications', 'partialClose', 'reconciliation', 'full'].includes(scope);
+        const includeLegalizations = ['justifications', 'partialClose', 'reconciliation', 'full'].includes(scope);
         const includeReconciliation = scope === 'reconciliation' || scope === 'full';
         const paymentSummary = getAdvancePaymentSummary(advance);
         const paymentSupports = paymentSummary.supports;
@@ -2893,6 +2905,38 @@ export function ProjectAdministration({
           advance.costCenters,
           asNumber(advance.amountApproved || advance.amountRequested)
         );
+        const reportLegalizationsTotal = reportReceipts.reduce(
+          (sum, receipt) => sum + asNumber(receipt.amount),
+          0
+        );
+        const legalizationsRows = includeLegalizations
+          ? [
+              ...reportReceipts.map((receipt, index) => {
+                const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
+                const documentNumber = receipt.invoiceNumber || receipt.cufe || 'Sin número';
+                return [
+                  String(index + 1),
+                  `${receipt.categoryName}\n${documentMeta.label}`,
+                  receipt.businessName || 'Sin razón social',
+                  formatDate(receipt.date),
+                  documentNumber,
+                  receipt.fileName || `${documentMeta.shortLabel} ${documentNumber}`,
+                  formatMoney(receipt.amount),
+                ];
+              }),
+              ...(reportReceipts.length > 0
+                ? [[
+                    '',
+                    'TOTAL LEGALIZACIONES ACEPTADAS',
+                    '',
+                    '',
+                    '',
+                    `${reportReceipts.length} soporte${reportReceipts.length === 1 ? '' : 's'}`,
+                    formatMoney(reportLegalizationsTotal),
+                  ]]
+                : []),
+            ]
+          : [];
         const report: AdvanceDossierReport = {
           title,
           advanceId: advance.customId || 'Sin ID contable',
@@ -2922,13 +2966,20 @@ export function ProjectAdministration({
                 ? [
                     { label: 'Anticipado', value: formatMoney(coverage.approved) },
                     { label: 'Justificado', value: formatMoney(getAdvanceJustifiedAmount(advance)) },
-                    { label: 'Legalizado', value: formatMoney(coverage.legalized) },
+                    { label: 'Aceptado', value: formatMoney(reportLegalizationsTotal) },
                     { label: 'Saldo', value: formatMoney(Math.max(0, coverage.balance)) },
                   ]
+                : scope === 'partialClose'
+                  ? [
+                      { label: 'Anticipado', value: formatMoney(coverage.approved) },
+                      { label: 'Cierre parcial', value: formatMoney(reportLegalizationsTotal) },
+                      { label: 'Legalizaciones aceptadas', value: String(reportReceipts.length) },
+                      { label: 'Generado hasta', value: formatDate(new Date()) },
+                    ]
                 : [
                     { label: 'Anticipado', value: formatMoney(coverage.approved) },
                     { label: 'Justificado', value: formatMoney(getAdvanceJustifiedAmount(advance)) },
-                    { label: 'Legalizado', value: formatMoney(coverage.legalized) },
+                    { label: 'Aceptado', value: formatMoney(reportLegalizationsTotal) },
                     { label: 'Devuelto', value: formatMoney(coverage.returnedCash) },
                     { label: 'Compensado', value: formatMoney(advance.amountCompensated) },
                     ...(realCost === undefined
@@ -3009,15 +3060,15 @@ export function ProjectAdministration({
                 ]),
               ]
             : [],
-          legalizations: includeLegalizations ? reportReceipts.map((receipt, index) => [
-            String(index + 1),
-            `${receipt.categoryName}\n${getReceiptDocumentTypeMeta(receipt.documentType).label}`,
-            receipt.businessName || 'Sin razón social',
-            formatDate(receipt.date),
-            receipt.invoiceNumber || receipt.cufe || 'Sin número',
-            formatMoney(receipt.amount),
-            `${getReceiptStatusMeta(receipt.status).label}${receipt.storagePath || receipt.fileUrl ? '' : ' - Sin archivo adjunto'}`,
-          ]) : [],
+          legalizationSummary: includeLegalizations ? [
+            {
+              label: scope === 'partialClose' ? 'Total cierre parcial' : 'Total legalizaciones aceptadas',
+              value: formatMoney(reportLegalizationsTotal),
+            },
+            { label: 'Soportes incluidos', value: String(reportReceipts.length) },
+            { label: 'Corte', value: formatDate(new Date()) },
+          ] : [],
+          legalizations: legalizationsRows,
           reconciliationDetails: includeReconciliation ? [
             {
               label: 'Estado',
@@ -3133,12 +3184,13 @@ export function ProjectAdministration({
         return;
       }
 
-      const onlyApprovedReceipts = scope === 'reconciliation' || scope === 'full';
       const reportReceipts =
         scope === 'advance' || scope === 'payment'
           ? []
           : (advance.receipts || []).filter((receipt) =>
-              onlyApprovedReceipts ? isApprovedReceipt(receipt) : receipt.status !== 'rejected'
+              scope === 'partialClose'
+                ? isAccountingAcceptedReceipt(receipt)
+                : isApprovedReceipt(receipt)
             );
       const reportMeta = {
         advance: {
@@ -3152,6 +3204,10 @@ export function ProjectAdministration({
         justifications: {
           title: 'Anticipo, pago y legalizaciones',
           filePrefix: 'anticipo-con-legalizaciones',
+        },
+        partialClose: {
+          title: 'Cierre parcial del anticipo',
+          filePrefix: 'cierre-parcial-anticipo',
         },
         reconciliation: {
           title: 'Anticipo y conciliación',
@@ -10782,6 +10838,7 @@ function AdvanceReportMenu({
         <option value="advance">Informe del anticipo</option>
         {reportAvailability.payment && <option value="payment">Anticipo con pago</option>}
         {reportAvailability.justifications && <option value="justifications">Anticipo con legalizaciones</option>}
+        {reportAvailability.partialClose && <option value="partialClose">Cierre parcial</option>}
         {reportAvailability.reconciliation && <option value="reconciliation">Anticipo con conciliación</option>}
         {reportAvailability.full && <option value="full">Informe final</option>}
       </select>
