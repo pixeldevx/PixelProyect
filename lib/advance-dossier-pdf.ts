@@ -886,7 +886,7 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
   }
 
   if (sections.legalizations) {
-    drawSectionTitle(sectionNumber, 'Legalización', true);
+    drawSectionTitle(sectionNumber, `Legalización del anticipo - ${report.advanceId}`, true);
     sectionNumber += 1;
     if (report.legalizationSummary?.length) {
       drawMetrics(report.legalizationSummary);
