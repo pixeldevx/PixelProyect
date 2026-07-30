@@ -925,9 +925,9 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
       drawMetrics(report.legalizationSummary);
     }
     drawTable({
-      headers: ['#', 'Rubro / tipo', 'Proveedor', 'Fecha', 'Documento', 'Soporte', 'Valor'],
+      headers: ['#', 'Rubro / tipo', 'Proveedor', 'Fecha', 'Documento', 'Centro de costos', 'Soporte', 'Valor'],
       rows: report.legalizations,
-      widths: [0.05, 0.2, 0.18, 0.12, 0.15, 0.18, 0.12],
+      widths: [0.04, 0.17, 0.15, 0.1, 0.12, 0.14, 0.15, 0.13],
     });
 
     await appendAttachmentGroup(

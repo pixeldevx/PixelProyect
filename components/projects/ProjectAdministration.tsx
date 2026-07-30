@@ -141,6 +141,9 @@ type AdvanceReceipt = {
   documentType?: ReceiptDocumentType;
   categoryId: string;
   categoryName: string;
+  costCenterId?: string;
+  costCenterName?: string;
+  costCenterSource?: 'manual' | 'ai' | 'advance_provisional' | 'administrative_edit';
   amount: number;
   date: string;
   businessName: string;
@@ -253,6 +256,8 @@ type AiReceiptDraft = {
   documentType: ReceiptDocumentType;
   categoryId: string;
   categoryName?: string;
+  costCenterId: string;
+  costCenterName?: string;
   amount: string;
   date: string;
   businessName: string;
@@ -602,7 +607,7 @@ type ReviewAction =
   | { type: 'deleteReceipt'; advance: TravelAdvance; receipt: AdvanceReceipt }
   | null;
 
-type ReceiptEditorMode = 'review' | 'correction';
+type ReceiptEditorMode = 'review' | 'correction' | 'audit';
 
 type ReceiptEditorState = {
   mode: ReceiptEditorMode;
@@ -613,6 +618,7 @@ type ReceiptEditorState = {
 type ReceiptEditorForm = {
   documentType: ReceiptDocumentType;
   categoryId: string;
+  costCenterId: string;
   amount: string;
   date: string;
   businessName: string;
@@ -840,6 +846,37 @@ const getCostCenterPercentTotal = (centers?: CostCenterAllocation[]) =>
 
 const costCentersAreBalanced = (centers?: CostCenterAllocation[]) =>
   Math.abs(getCostCenterPercentTotal(centers) - 100) < 0.01;
+
+const getAdvancePrimaryCostCenter = (advance: Partial<TravelAdvance>) => {
+  const firstAllocation = (advance.costCenters || []).find(
+    (center) => center?.domainId || String(center?.name || '').trim()
+  );
+  return {
+    id: String(firstAllocation?.domainId || advance.costCenterId || '').trim(),
+    name: String(firstAllocation?.name || advance.costCenterName || 'Centro de costos principal').trim(),
+  };
+};
+
+const getReceiptCostCenter = (
+  receipt: Partial<AdvanceReceipt>,
+  advance: Partial<TravelAdvance>
+) => {
+  const directId = String(receipt.costCenterId || '').trim();
+  const directName = String(receipt.costCenterName || '').trim();
+  if (directId || directName) {
+    return {
+      id: directId,
+      name: directName || 'Centro de costos sin nombre',
+      provisional: receipt.costCenterSource === 'advance_provisional',
+    };
+  }
+
+  const fallback = getAdvancePrimaryCostCenter(advance);
+  return {
+    ...fallback,
+    provisional: true,
+  };
+};
 
 const getAdvanceFinancialCoverage = (advance: Partial<TravelAdvance>) => {
   const approved = asNumber(advance.amountApproved || advance.amountRequested);
@@ -1839,6 +1876,7 @@ const buildDianDocumentUrl = (cufe: string) =>
 const RECEIPT_EDITABLE_FIELDS: Array<{ key: keyof ReceiptEditorForm; label: string }> = [
   { key: 'documentType', label: 'Tipo de documento' },
   { key: 'categoryId', label: 'Tipo de gasto' },
+  { key: 'costCenterId', label: 'Centro de costos' },
   { key: 'amount', label: 'Valor' },
   { key: 'date', label: 'Fecha' },
   { key: 'businessName', label: 'Razón social' },
@@ -1848,12 +1886,17 @@ const RECEIPT_EDITABLE_FIELDS: Array<{ key: keyof ReceiptEditorForm; label: stri
   { key: 'description', label: 'Descripción' },
 ];
 
-const buildReceiptEditorForm = (receipt: AdvanceReceipt): ReceiptEditorForm => {
+const buildReceiptEditorForm = (
+  receipt: AdvanceReceipt,
+  advance?: TravelAdvance
+): ReceiptEditorForm => {
   const documentType = getReceiptDocumentType(receipt.documentType);
   const cufe = receipt.cufe || '';
+  const costCenter = getReceiptCostCenter(receipt, advance || {});
   return {
     documentType,
     categoryId: receipt.categoryId || '',
+    costCenterId: costCenter.id,
     amount: String(asNumber(receipt.amount) || ''),
     date: receipt.date || todayInputValue(),
     businessName: receipt.businessName || '',
@@ -1990,6 +2033,7 @@ export function ProjectAdministration({
   const [receiptForm, setReceiptForm] = useState({
     documentType: 'invoice' as ReceiptDocumentType,
     categoryId: '',
+    costCenterId: '',
     amount: '',
     date: todayInputValue(),
     businessName: '',
@@ -2044,7 +2088,23 @@ export function ProjectAdministration({
       onSnapshot(
         query(collection(db, 'projects', projectId, 'advanceRequests'), orderBy('createdAt', 'desc')),
         (snapshot) => {
-          setAdvances(snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() } as TravelAdvance)));
+          setAdvances(snapshot.docs.map((snap) => {
+            const advance = { id: snap.id, ...snap.data() } as TravelAdvance;
+            const provisionalCostCenter = getAdvancePrimaryCostCenter(advance);
+            return {
+              ...advance,
+              receipts: (advance.receipts || []).map((receipt) =>
+                receipt.costCenterId || receipt.costCenterName
+                  ? receipt
+                  : {
+                      ...receipt,
+                      costCenterId: provisionalCostCenter.id,
+                      costCenterName: provisionalCostCenter.name,
+                      costCenterSource: 'advance_provisional' as const,
+                    }
+              ),
+            };
+          }));
           setLoading(false);
         },
         (error) => {
@@ -2335,6 +2395,21 @@ export function ProjectAdministration({
       setReceiptForm((current) => ({ ...current, categoryId: categoryOptions[0].id }));
     }
   }, [categoryOptions, receiptForm.categoryId]);
+
+  useEffect(() => {
+    if (!selectedAdvance || receiptForm.costCenterId) return;
+    const provisional = getAdvancePrimaryCostCenter(selectedAdvance);
+    const preferredId =
+      costCenterOptions.find((center) => center.id === provisional.id)?.id ||
+      costCenterOptions.find(
+        (center) => center.name.trim().toLowerCase() === provisional.name.trim().toLowerCase()
+      )?.id ||
+      costCenterOptions[0]?.id ||
+      '';
+    if (preferredId) {
+      setReceiptForm((current) => ({ ...current, costCenterId: preferredId }));
+    }
+  }, [selectedAdvance, receiptForm.costCenterId, costCenterOptions]);
 
   useEffect(() => {
     if (!advanceForm.costCenterId && costCenterOptions.length > 0) {
@@ -2914,12 +2989,14 @@ export function ProjectAdministration({
               ...reportReceipts.map((receipt, index) => {
                 const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
                 const documentNumber = receipt.invoiceNumber || receipt.cufe || 'Sin número';
+                const receiptCostCenter = getReceiptCostCenter(receipt, advance);
                 return [
                   String(index + 1),
                   `${receipt.categoryName}\n${documentMeta.label}`,
                   receipt.businessName || 'Sin razón social',
                   formatDate(receipt.date),
                   documentNumber,
+                  `${receiptCostCenter.name}${receiptCostCenter.provisional ? '\nProvisional' : ''}`,
                   receipt.fileName || `${documentMeta.shortLabel} ${documentNumber}`,
                   formatMoney(receipt.amount),
                 ];
@@ -2928,6 +3005,7 @@ export function ProjectAdministration({
                 ? [[
                     '',
                     'TOTAL LEGALIZACIONES ACEPTADAS',
+                    '',
                     '',
                     '',
                     '',
@@ -4662,7 +4740,7 @@ export function ProjectAdministration({
 
   const openReceiptEditor = (mode: ReceiptEditorMode, advance: TravelAdvance, receipt: AdvanceReceipt) => {
     setReceiptEditor({ mode, advance, receipt });
-    setReceiptEditorForm(buildReceiptEditorForm(receipt));
+    setReceiptEditorForm(buildReceiptEditorForm(receipt, advance));
     setReceiptCorrectionFile(null);
     setReceiptReplacementFile(null);
     setReceiptSupportAction(null);
@@ -4684,7 +4762,7 @@ export function ProjectAdministration({
     receipt: AdvanceReceipt,
     form: ReceiptEditorForm
   ): ReceiptFieldChange[] => {
-    const original = buildReceiptEditorForm(receipt);
+    const original = buildReceiptEditorForm(receipt, receiptEditor?.advance);
     const changes: ReceiptFieldChange[] = [];
 
     RECEIPT_EDITABLE_FIELDS.forEach(({ key, label }) => {
@@ -4703,6 +4781,16 @@ export function ProjectAdministration({
           label,
           previousValue: categoryOptions.find((category) => category.id === previousValue)?.name || previousValue,
           nextValue: categoryOptions.find((category) => category.id === nextValue)?.name || nextValue,
+        });
+        return;
+      }
+
+      if (key === 'costCenterId') {
+        changes.push({
+          field: key,
+          label,
+          previousValue: costCenterOptions.find((center) => center.id === previousValue)?.name || previousValue,
+          nextValue: costCenterOptions.find((center) => center.id === nextValue)?.name || nextValue,
         });
         return;
       }
@@ -5009,7 +5097,7 @@ export function ProjectAdministration({
   };
 
   const handleApproveReceipt = async () => {
-    if (!receiptEditor || !receiptEditorForm || receiptEditor.mode !== 'review') return;
+    if (!receiptEditor || !receiptEditorForm || receiptEditor.mode === 'correction') return;
     if (!canValidate) {
       toast.error('No tienes permisos para aprobar legalizaciones.');
       return;
@@ -5018,12 +5106,13 @@ export function ProjectAdministration({
     const latestAdvance = advances.find((advance) => advance.id === receiptEditor.advance.id) || receiptEditor.advance;
     const latestReceipt = (latestAdvance.receipts || []).find((receipt) => receipt.id === receiptEditor.receipt.id) || receiptEditor.receipt;
     const category = categoryOptions.find((item) => item.id === receiptEditorForm.categoryId);
+    const costCenter = costCenterOptions.find((item) => item.id === receiptEditorForm.costCenterId);
     const amount = asNumber(receiptEditorForm.amount);
     const documentType = getReceiptDocumentType(receiptEditorForm.documentType);
     const cufe = normalizeCufe(receiptEditorForm.cufe);
 
-    if (!category || amount <= 0 || !receiptEditorForm.businessName.trim() || !receiptEditorForm.date) {
-      toast.error('Completa tipo de gasto, valor, fecha y razón social.');
+    if (!category || !costCenter || amount <= 0 || !receiptEditorForm.businessName.trim() || !receiptEditorForm.date) {
+      toast.error('Completa tipo de gasto, centro de costos, valor, fecha y razón social.');
       return;
     }
     if (documentType === 'invoice' && category.requiresCufe && !cufe) {
@@ -5064,6 +5153,9 @@ export function ProjectAdministration({
         documentType,
         categoryId: category.id,
         categoryName: category.name,
+        costCenterId: costCenter.id,
+        costCenterName: costCenter.name,
+        costCenterSource: receiptEditor.mode === 'audit' ? 'administrative_edit' : 'manual',
         amount,
         date: receiptEditorForm.date,
         businessName: receiptEditorForm.businessName.trim(),
@@ -5084,7 +5176,13 @@ export function ProjectAdministration({
         dianVerifiedByName: receiptEditorForm.dianVerifiedAt ? getCurrentUserName(currentUser) : '',
         dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : '',
         accountingAuditStatus: shouldQueueDianAudit ? 'pending' : 'not_applicable',
+        accountingAuditBatchId: shouldQueueDianAudit ? '' : latestReceipt.accountingAuditBatchId || '',
+        accountingAuditBatchName: shouldQueueDianAudit ? '' : latestReceipt.accountingAuditBatchName || '',
+        accountingAuditedAt: shouldQueueDianAudit ? '' : latestReceipt.accountingAuditedAt || '',
+        accountingAuditedBy: shouldQueueDianAudit ? null : latestReceipt.accountingAuditedBy || null,
+        accountingAuditedByName: shouldQueueDianAudit ? '' : latestReceipt.accountingAuditedByName || '',
         accountingAuditMessage: shouldQueueDianAudit ? 'Factura aprobada administrativamente y pendiente de cruce con base DIAN.' : '',
+        accountingAuditMatch: shouldQueueDianAudit ? undefined : latestReceipt.accountingAuditMatch,
         billingPaymentId,
         revisions: [
           ...(latestReceipt.revisions || []),
@@ -5165,6 +5263,8 @@ export function ProjectAdministration({
         receiptId: latestReceipt.id,
         documentType,
         amount,
+        costCenterId: costCenter.id,
+        costCenterName: costCenter.name,
         billingPaymentId,
         comment: reviewComment.trim(),
         changes,
@@ -5172,7 +5272,15 @@ export function ProjectAdministration({
         dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : null,
       });
 
-      toast.success(shouldQueueDianAudit ? 'Factura aprobada y enviada a Auditoría DIAN.' : status === 'approved_modified' ? 'Soporte aprobado con modificación y costo real registrado.' : 'Soporte aprobado y costo real registrado.');
+      toast.success(
+        receiptEditor.mode === 'audit'
+          ? 'Legalización actualizada y enviada nuevamente al cruce DIAN.'
+          : shouldQueueDianAudit
+            ? 'Factura aprobada y enviada a Auditoría DIAN.'
+            : status === 'approved_modified'
+              ? 'Soporte aprobado con modificación y costo real registrado.'
+              : 'Soporte aprobado y costo real registrado.'
+      );
       setReviewComment('');
       closeReceiptEditor();
     } catch (error: any) {
@@ -5197,11 +5305,12 @@ export function ProjectAdministration({
     }
 
     const category = categoryOptions.find((item) => item.id === receiptEditorForm.categoryId);
+    const costCenter = costCenterOptions.find((item) => item.id === receiptEditorForm.costCenterId);
     const amount = asNumber(receiptEditorForm.amount);
     const documentType = getReceiptDocumentType(receiptEditorForm.documentType);
     const cufe = normalizeCufe(receiptEditorForm.cufe);
-    if (!category || amount <= 0 || !receiptEditorForm.businessName.trim() || !receiptEditorForm.date) {
-      toast.error('Completa tipo de gasto, valor, fecha y razón social.');
+    if (!category || !costCenter || amount <= 0 || !receiptEditorForm.businessName.trim() || !receiptEditorForm.date) {
+      toast.error('Completa tipo de gasto, centro de costos, valor, fecha y razón social.');
       return;
     }
     if (documentType === 'invoice' && category.requiresCufe && !cufe) {
@@ -5265,6 +5374,9 @@ export function ProjectAdministration({
         documentType,
         categoryId: category.id,
         categoryName: category.name,
+        costCenterId: costCenter.id,
+        costCenterName: costCenter.name,
+        costCenterSource: 'manual',
         amount,
         date: receiptEditorForm.date,
         businessName: receiptEditorForm.businessName.trim(),
@@ -6131,6 +6243,7 @@ export function ProjectAdministration({
     setReceiptForm({
       documentType: 'invoice',
       categoryId: categoryOptions[0]?.id || '',
+      costCenterId: '',
       amount: '',
       date: todayInputValue(),
       businessName: '',
@@ -6234,9 +6347,10 @@ export function ProjectAdministration({
   const handleCreateReceipt = async () => {
     if (!selectedAdvance || !canManage) return;
     const category = categoryOptions.find((item) => item.id === receiptForm.categoryId);
+    const costCenter = costCenterOptions.find((item) => item.id === receiptForm.costCenterId);
     const amount = asNumber(receiptForm.amount);
-    if (!category || amount <= 0 || !receiptForm.businessName.trim()) {
-      toast.error('Completa categoría, valor y razón social del soporte.');
+    if (!category || !costCenter || amount <= 0 || !receiptForm.businessName.trim()) {
+      toast.error('Completa categoría, centro de costos, valor y razón social del soporte.');
       return;
     }
     if (!receiptFile) {
@@ -6287,6 +6401,9 @@ export function ProjectAdministration({
         documentType,
         categoryId: category.id,
         categoryName: category.name,
+        costCenterId: costCenter.id,
+        costCenterName: costCenter.name,
+        costCenterSource: 'manual',
         amount,
         date: receiptForm.date,
         businessName: receiptForm.businessName.trim(),
@@ -6322,6 +6439,8 @@ export function ProjectAdministration({
         documentTypeLabel: documentTypeMeta.label,
         amount,
         categoryName: category.name,
+        costCenterId: costCenter.id,
+        costCenterName: costCenter.name,
       });
       toast.success('Soporte cargado para validación.');
       closeReceiptModal();
@@ -6340,6 +6459,7 @@ export function ProjectAdministration({
   ) => {
     const documentType = getReceiptDocumentType(receipt.documentType);
     const documentMeta = getReceiptDocumentTypeMeta(documentType);
+    const receiptCostCenter = getReceiptCostCenter(receipt, advance);
     const paymentData = {
       projectId,
       description: `Legalización anticipo: ${receipt.categoryName}`,
@@ -6363,6 +6483,9 @@ export function ProjectAdministration({
       documentType,
       documentTypeLabel: documentMeta.label,
       expenseCategoryId: receipt.categoryId,
+      costCenterId: receiptCostCenter.id || null,
+      costCenterName: receiptCostCenter.name,
+      costCenterSource: receiptCostCenter.provisional ? 'advance_provisional' : receipt.costCenterSource || 'manual',
       updatedAt: serverTimestamp(),
     };
 
@@ -6456,6 +6579,14 @@ export function ProjectAdministration({
         let groupAlertCount = 0;
         const nextReceipts = await Promise.all((latestAdvance.receipts || []).map(async (receipt) => {
           if (!needsDianAccountingAudit(receipt)) return receipt;
+          const resolvedCostCenter = getReceiptCostCenter(receipt, latestAdvance);
+          const costCenterPatch = receipt.costCenterId
+            ? {}
+            : {
+                costCenterId: resolvedCostCenter.id,
+                costCenterName: resolvedCostCenter.name,
+                costCenterSource: 'advance_provisional' as const,
+              };
           const match = findDianAuditMatch(receipt, dianAuditRows);
           if (match) {
             matchedCount += 1;
@@ -6463,6 +6594,7 @@ export function ProjectAdministration({
             changed = true;
             const auditedReceipt: AdvanceReceipt = {
               ...receipt,
+              ...costCenterPatch,
               status: 'audit_passed',
               accountingAuditStatus: 'matched',
               accountingAuditBatchId: auditBatchRef.id,
@@ -6499,6 +6631,7 @@ export function ProjectAdministration({
           changed = true;
           return {
             ...receipt,
+            ...costCenterPatch,
             status: 'audit_alert' as const,
             accountingAuditStatus: 'alert' as const,
             accountingAuditBatchId: auditBatchRef.id,
@@ -6573,6 +6706,18 @@ export function ProjectAdministration({
       )
     );
     body.append(
+      'costCenters',
+      JSON.stringify(
+        costCenterOptions.map((center) => ({
+          id: center.id,
+          name: center.name,
+          code: center.code,
+          description: center.description,
+        }))
+      )
+    );
+    const advancePrimaryCostCenter = getAdvancePrimaryCostCenter(advance);
+    body.append(
       'advanceContext',
       JSON.stringify({
         id: advance.id,
@@ -6581,6 +6726,8 @@ export function ProjectAdministration({
         items: advance.items,
         travelStart: advance.travelStart,
         travelEnd: advance.travelEnd,
+        primaryCostCenter: advancePrimaryCostCenter,
+        costCenterAllocations: advance.costCenters || [],
       })
     );
 
@@ -6603,6 +6750,19 @@ export function ProjectAdministration({
           (category) => category.name.toLowerCase() === String(item?.categoryName || '').toLowerCase()
         );
         const category = categoryById || categoryByName || categoryOptions[0];
+        const provisionalCostCenter = getAdvancePrimaryCostCenter(advance);
+        const costCenterById = costCenterOptions.find((center) => center.id === item?.costCenterId);
+        const costCenterByName = costCenterOptions.find(
+          (center) => center.name.toLowerCase() === String(item?.costCenterName || '').toLowerCase()
+        );
+        const costCenter =
+          costCenterById ||
+          costCenterByName ||
+          costCenterOptions.find((center) => center.id === provisionalCostCenter.id) ||
+          costCenterOptions.find(
+            (center) => center.name.toLowerCase() === provisionalCostCenter.name.toLowerCase()
+          ) ||
+          costCenterOptions[0];
 
         return {
           id: safeId(),
@@ -6613,6 +6773,8 @@ export function ProjectAdministration({
           documentType: getReceiptDocumentType(item?.documentType),
           categoryId: category?.id || item?.categoryId || '',
           categoryName: item?.categoryName || category?.name || '',
+          costCenterId: costCenter?.id || item?.costCenterId || '',
+          costCenterName: costCenter?.name || item?.costCenterName || provisionalCostCenter.name,
           amount: item?.amount ? String(item.amount) : '',
           date: item?.date || todayInputValue(),
           businessName: item?.businessName || '',
@@ -6664,6 +6826,7 @@ export function ProjectAdministration({
         ...current,
         documentType,
         categoryId: draft.categoryId || current.categoryId,
+        costCenterId: draft.costCenterId || current.costCenterId,
         amount: draft.amount || current.amount,
         date: draft.date || current.date,
         businessName: draft.businessName || current.businessName,
@@ -6822,11 +6985,12 @@ export function ProjectAdministration({
     const batchIdentities = new Map<string, string>();
     for (const draft of readyDrafts) {
       const category = categoryOptions.find((item) => item.id === draft.categoryId);
+      const costCenter = costCenterOptions.find((item) => item.id === draft.costCenterId);
       const amount = asNumber(draft.amount);
       const documentType = getReceiptDocumentType(draft.documentType);
       const cufe = normalizeCufe(draft.cufe);
-      if (!category || amount <= 0 || !draft.businessName.trim()) {
-        toast.error(`Revisa categoría, valor y proveedor en ${draft.fileName}.`);
+      if (!category || !costCenter || amount <= 0 || !draft.businessName.trim()) {
+        toast.error(`Revisa categoría, centro de costos, valor y proveedor en ${draft.fileName}.`);
         return;
       }
       if (documentType === 'invoice' && category.requiresCufe && !cufe) {
@@ -6873,6 +7037,7 @@ export function ProjectAdministration({
 
       for (const draft of readyDrafts) {
         const category = categoryOptions.find((item) => item.id === draft.categoryId)!;
+        const costCenter = costCenterOptions.find((item) => item.id === draft.costCenterId)!;
         const documentType = getReceiptDocumentType(draft.documentType);
         const { fileUrl, storagePath, documentId } = await uploadReceiptDocument(
           latestAdvance,
@@ -6887,6 +7052,9 @@ export function ProjectAdministration({
           documentType,
           categoryId: category.id,
           categoryName: category.name,
+          costCenterId: costCenter.id,
+          costCenterName: costCenter.name,
+          costCenterSource: 'ai',
           amount: asNumber(draft.amount),
           date: draft.date || todayInputValue(),
           businessName: draft.businessName.trim(),
@@ -6923,6 +7091,7 @@ export function ProjectAdministration({
       await logAdministrativeEvent(selectedAdvance.id, 'receipts_ai_bulk_submitted', {
         receiptCount: createdReceipts.length,
         documentTypes: Array.from(new Set(createdReceipts.map((receipt) => receipt.documentType))),
+        costCenters: Array.from(new Set(createdReceipts.map((receipt) => receipt.costCenterName).filter(Boolean))),
         amount: createdReceipts.reduce((sum, receipt) => sum + asNumber(receipt.amount), 0),
       });
       toast.success(`${createdReceipts.length} soportes creados para validación.`);
@@ -7538,6 +7707,7 @@ export function ProjectAdministration({
                           {group.receipts.map((receipt) => {
                             const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
                             const statusMeta = getReceiptStatusMeta(receipt.status);
+                            const receiptCostCenter = getReceiptCostCenter(receipt, group.advance);
                             const isReturned = receipt.status === 'returned';
                             const duplicateUsage = findDuplicateReceiptUsage(receipt, group.advance.id);
                             const canDeleteReceipt = canDeleteUnlegalizedReceipt(receipt) && canCorrectAdvanceReceipt(group.advance);
@@ -7558,6 +7728,9 @@ export function ProjectAdministration({
                                       {statusMeta.label}
                                     </span>
                                     <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-black text-slate-700">{formatMoney(receipt.amount)}</span>
+                                    <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] ring-1 ${receiptCostCenter.provisional ? 'bg-amber-50 text-amber-700 ring-amber-100' : 'bg-emerald-50 text-emerald-700 ring-emerald-100'}`}>
+                                      {receiptCostCenter.name}{receiptCostCenter.provisional ? ' · provisional' : ''}
+                                    </span>
                                     {duplicateUsage && (
                                       <span className="rounded-md bg-red-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-red-700 ring-1 ring-red-200">
                                         Factura repetida
@@ -7721,12 +7894,13 @@ export function ProjectAdministration({
                     </div>
                     <AdvanceLifecycle advance={group.advance} compact />
                     <div className="divide-y divide-slate-100">
-                      {group.receipts.length === 0 ? (
-                        <div className="p-4 text-sm font-bold text-emerald-700">Todas las facturas de este anticipo ya pasaron auditoría DIAN.</div>
+                      {group.receipts.length === 0 && group.passed.length === 0 ? (
+                        <div className="p-4 text-sm font-bold text-emerald-700">Este anticipo no tiene facturas disponibles para auditoría.</div>
                       ) : (
-                        group.receipts.map((receipt) => {
+                        [...group.receipts, ...group.passed].map((receipt) => {
                           const statusMeta = getReceiptStatusMeta(receipt.status);
                           const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
+                          const receiptCostCenter = getReceiptCostCenter(receipt, group.advance);
                           return (
                             <div key={receipt.id} className={`grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center ${receipt.status === 'audit_alert' ? 'border-l-4 border-red-500 bg-red-50/70' : ''}`}>
                               <div className="min-w-0">
@@ -7739,6 +7913,9 @@ export function ProjectAdministration({
                                     {statusMeta.label}
                                   </span>
                                   <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-black text-slate-700">{formatMoney(receipt.amount)}</span>
+                                  <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] ring-1 ${receiptCostCenter.provisional ? 'bg-amber-50 text-amber-700 ring-amber-100' : 'bg-emerald-50 text-emerald-700 ring-emerald-100'}`}>
+                                    {receiptCostCenter.name}{receiptCostCenter.provisional ? ' · provisional' : ''}
+                                  </span>
                                 </div>
                                 <p className="mt-1 text-sm font-semibold text-slate-600">{receipt.businessName || 'Sin razón social'} · {formatDate(receipt.date)}</p>
                                 <p className="mt-1 break-words text-xs font-semibold text-slate-400">
@@ -7765,6 +7942,18 @@ export function ProjectAdministration({
                                 </div>
                               </div>
                               <div className="flex flex-wrap justify-end gap-2">
+                                {canValidate && (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openReceiptEditor('audit', group.advance, receipt)}
+                                    className="border-cyan-200 text-cyan-700 hover:bg-cyan-50"
+                                  >
+                                    <PencilLine size={14} className="mr-1" />
+                                    Editar legalización
+                                  </Button>
+                                )}
                                 {canValidate && receipt.status === 'audit_alert' && (
                                   <Button
                                     type="button"
@@ -7991,6 +8180,7 @@ export function ProjectAdministration({
                             ) : (
                               group.receipts.map((receipt) => {
                                 const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
+                                const receiptCostCenter = getReceiptCostCenter(receipt, group.advance);
                                 return (
                                   <div key={receipt.id} className="grid gap-3 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                                     <div className="min-w-0">
@@ -8001,6 +8191,9 @@ export function ProjectAdministration({
                                         </span>
                                         <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-black text-slate-700">
                                           {formatMoney(receipt.amount)}
+                                        </span>
+                                        <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] ring-1 ${receiptCostCenter.provisional ? 'bg-amber-50 text-amber-700 ring-amber-100' : 'bg-emerald-50 text-emerald-700 ring-emerald-100'}`}>
+                                          {receiptCostCenter.name}{receiptCostCenter.provisional ? ' · provisional' : ''}
                                         </span>
                                       </div>
                                       <p className="mt-1 truncate text-xs font-bold text-slate-500">
@@ -9760,6 +9953,17 @@ export function ProjectAdministration({
                         ))}
                       </select>
                     </Field>
+                    <Field label="Centro de costos obligatorio">
+                      <select className={inputClass} value={receiptForm.costCenterId} onChange={(event) => setReceiptForm((current) => ({ ...current, costCenterId: event.target.value }))}>
+                        <option value="">Selecciona centro de costos</option>
+                        {costCenterOptions.map((center) => (
+                          <option key={center.id} value={center.id}>{center.name}</option>
+                        ))}
+                      </select>
+                      <span className="mt-1 block text-xs font-semibold text-slate-400">
+                        Define dónde se contabilizará esta factura o recibo.
+                      </span>
+                    </Field>
                     <Field label="Valor del soporte">
                       <input className={inputClass} type="number" min="0" step="0.01" value={receiptForm.amount} onChange={(event) => setReceiptForm((current) => ({ ...current, amount: event.target.value }))} />
                     </Field>
@@ -9818,7 +10022,7 @@ export function ProjectAdministration({
                         <div>
                           <h3 className="text-lg font-black text-slate-950">Legalización inteligente por lote</h3>
                           <p className="mt-1 max-w-2xl text-sm font-semibold leading-6 text-slate-600">
-                            Sube fotos o PDF de recibos. Pixel leerá tipo de documento, proveedor, fecha, valor, CUFE si aplica y dominio sugerido para crear una legalización por cada soporte.
+                            Sube fotos o PDF de recibos. Pixel leerá tipo de documento, proveedor, fecha, valor, CUFE, dominio y centro de costos sugerido para crear una legalización por cada soporte.
                           </p>
                         </div>
                       </div>
@@ -9894,6 +10098,24 @@ export function ProjectAdministration({
                                     <select className={inputClass} value={draft.categoryId} onChange={(event) => updateAiReceiptDraft(draft.id, { categoryId: event.target.value })}>
                                       {categoryOptions.map((category) => (
                                         <option key={category.id} value={category.id}>{category.name}</option>
+                                      ))}
+                                    </select>
+                                  </Field>
+                                  <Field label="Centro de costos obligatorio">
+                                    <select
+                                      className={inputClass}
+                                      value={draft.costCenterId}
+                                      onChange={(event) => {
+                                        const center = costCenterOptions.find((item) => item.id === event.target.value);
+                                        updateAiReceiptDraft(draft.id, {
+                                          costCenterId: event.target.value,
+                                          costCenterName: center?.name || '',
+                                        });
+                                      }}
+                                    >
+                                      <option value="">Selecciona centro de costos</option>
+                                      {costCenterOptions.map((center) => (
+                                        <option key={center.id} value={center.id}>{center.name}</option>
                                       ))}
                                     </select>
                                   </Field>
@@ -9998,14 +10220,15 @@ export function ProjectAdministration({
       )}
 
       {receiptEditor && receiptEditorForm && (() => {
-        const isReview = receiptEditor.mode === 'review';
+        const isAuditEdit = receiptEditor.mode === 'audit';
+        const isReview = receiptEditor.mode !== 'correction';
         const documentMeta = getReceiptDocumentTypeMeta(receiptEditorForm.documentType);
         const selectedCategory = categoryOptions.find((category) => category.id === receiptEditorForm.categoryId);
         const changes = getReceiptEditorChanges(receiptEditor.receipt, receiptEditorForm);
         const requiresCufe = receiptEditorForm.documentType === 'invoice' && Boolean(selectedCategory?.requiresCufe);
         return (
           <ModalShell
-            title={isReview ? 'Revisar y aprobar soporte' : 'Subsanar legalización devuelta'}
+            title={isAuditEdit ? 'Editar legalización desde Auditoría DIAN' : isReview ? 'Revisar y aprobar soporte' : 'Subsanar legalización devuelta'}
             subtitle={`${receiptEditor.advance.purpose || receiptEditor.advance.destination} · ${receiptEditor.receipt.categoryName}`}
             onClose={closeReceiptEditor}
             wide
@@ -10044,6 +10267,19 @@ export function ProjectAdministration({
                         <option key={category.id} value={category.id}>{category.name}</option>
                       ))}
                     </select>
+                  </Field>
+                  <Field label="Centro de costos obligatorio">
+                    <select className={inputClass} value={receiptEditorForm.costCenterId} onChange={(event) => updateReceiptEditorForm({ costCenterId: event.target.value })}>
+                      <option value="">Selecciona centro de costos</option>
+                      {costCenterOptions.map((center) => (
+                        <option key={center.id} value={center.id}>{center.name}</option>
+                      ))}
+                    </select>
+                    {receiptEditor.receipt.costCenterSource === 'advance_provisional' && (
+                      <span className="mt-1 block text-xs font-semibold text-amber-600">
+                        Esta legalización anterior heredó provisionalmente el centro principal del anticipo. Confírmalo antes de guardar.
+                      </span>
+                    )}
                   </Field>
                   <Field label="Valor">
                     <input className={inputClass} type="number" min="0" step="0.01" value={receiptEditorForm.amount} onChange={(event) => updateReceiptEditorForm({ amount: event.target.value })} />
@@ -10125,7 +10361,7 @@ export function ProjectAdministration({
 
                 {isReview ? (
                   <Field label="Comentario administrativo">
-                    <textarea className={textareaClass} value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} placeholder="Observaciones de la revisión o explicación de los ajustes realizados." />
+                    <textarea className={textareaClass} value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} placeholder={isAuditEdit ? 'Explica el ajuste realizado antes de volver a ejecutar el cruce DIAN.' : 'Observaciones de la revisión o explicación de los ajustes realizados.'} />
                   </Field>
                 ) : (
                   <div className="space-y-4 rounded-xl border border-rose-200 bg-rose-50/60 p-4">
@@ -10147,6 +10383,7 @@ export function ProjectAdministration({
                   <div className="mt-4 space-y-2">
                     <SummaryLine label="Valor" value={formatMoney(asNumber(receiptEditorForm.amount))} strong />
                     <SummaryLine label="Documento" value={documentMeta.shortLabel} />
+                    <SummaryLine label="Centro de costos" value={costCenterOptions.find((center) => center.id === receiptEditorForm.costCenterId)?.name || 'Pendiente'} />
                     <SummaryLine label="Cambios" value={`${changes.length}`} />
                     <SummaryLine label="Revisiones" value={`${asNumber(receiptEditor.receipt.revisionCount)}`} />
                   </div>
@@ -10237,7 +10474,7 @@ export function ProjectAdministration({
                 className={isReview ? 'bg-emerald-600 font-bold text-white hover:bg-emerald-700' : 'bg-rose-600 font-bold text-white hover:bg-rose-700'}
               >
                 {(submitting || receiptSupportAction) && <Loader2 size={16} className="mr-2 animate-spin" />}
-                {isReview ? (changes.length > 0 ? 'Aprobar con modificación' : 'Aprobar soporte') : 'Reenviar subsanación'}
+                {isAuditEdit ? 'Guardar y volver a auditar' : isReview ? (changes.length > 0 ? 'Aprobar con modificación' : 'Aprobar soporte') : 'Reenviar subsanación'}
               </Button>
             </ModalFooter>
           </ModalShell>

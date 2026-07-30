@@ -11,12 +11,21 @@ type ReceiptCategoryInput = {
   description?: string;
 };
 
+type CostCenterInput = {
+  id?: string;
+  name?: string;
+  code?: string;
+  description?: string;
+};
+
 type ReceiptDocumentType = 'invoice' | 'cash_receipt';
 
 type ParsedReceipt = {
   documentType?: ReceiptDocumentType | string | null;
   categoryId?: string | null;
   categoryName?: string | null;
+  costCenterId?: string | null;
+  costCenterName?: string | null;
   amount?: number | string | null;
   date?: string | null;
   businessName?: string | null;
@@ -127,12 +136,19 @@ const getResponseText = (payload: any) => {
   return chunks.join('\n').trim();
 };
 
-const buildPrompt = (categories: ReceiptCategoryInput[], advanceContext: unknown) => `
+const buildPrompt = (
+  categories: ReceiptCategoryInput[],
+  costCenters: CostCenterInput[],
+  advanceContext: unknown
+) => `
 Eres un asistente de legalización de anticipos en Colombia.
 Lee el soporte adjunto, identifica el gasto y elige la categoría más cercana.
 
 Categorías disponibles:
 ${JSON.stringify(categories, null, 2)}
+
+Centros de costos disponibles:
+${JSON.stringify(costCenters, null, 2)}
 
 Contexto del anticipo:
 ${JSON.stringify(advanceContext || {}, null, 2)}
@@ -142,6 +158,8 @@ Devuelve SOLO un JSON válido con esta forma:
   "documentType": "invoice | cash_receipt",
   "categoryId": "id exacto de la categoría elegida o vacío si no hay certeza",
   "categoryName": "nombre de la categoría elegida",
+  "costCenterId": "id exacto del centro de costos elegido",
+  "costCenterName": "nombre exacto del centro de costos elegido",
   "amount": 0,
   "date": "YYYY-MM-DD",
   "businessName": "proveedor o razón social",
@@ -155,6 +173,8 @@ Devuelve SOLO un JSON válido con esta forma:
 
 Reglas:
 - No inventes valores. Si un campo no se ve, déjalo vacío y agrega una advertencia.
+- Debes elegir un centro de costos de la lista. Usa el contexto, la descripción del gasto y las asignaciones del anticipo.
+- Si el soporte no permite distinguirlo, usa el centro principal del anticipo y agrega la advertencia "Centro de costos sugerido provisionalmente desde el anticipo".
 - documentType debe ser "invoice" cuando el soporte sea factura o factura electrónica.
 - documentType debe ser "cash_receipt" cuando el soporte sea recibo de caja, comprobante físico o recibo manual sin factura electrónica.
 - amount debe ser el total pagado del soporte, sin símbolos.
@@ -166,11 +186,15 @@ Reglas:
 const normalizeReceipt = ({
   parsed,
   categories,
+  costCenters,
+  advanceContext,
   file,
   index,
 }: {
   parsed: ParsedReceipt;
   categories: ReceiptCategoryInput[];
+  costCenters: CostCenterInput[];
+  advanceContext: any;
   file: File;
   index: number;
 }) => {
@@ -178,6 +202,19 @@ const normalizeReceipt = ({
   const parsedCategoryName = safeText(parsed.categoryName).toLowerCase();
   const categoryByName = categories.find((category) => safeText(category.name).toLowerCase() === parsedCategoryName);
   const category = categoryById || categoryByName || categories[0] || {};
+  const costCenterById = costCenters.find(
+    (costCenter) => costCenter.id && costCenter.id === parsed.costCenterId
+  );
+  const parsedCostCenterName = safeText(parsed.costCenterName).toLowerCase();
+  const costCenterByName = costCenters.find(
+    (costCenter) => safeText(costCenter.name).toLowerCase() === parsedCostCenterName
+  );
+  const primaryCostCenterId = safeText(advanceContext?.primaryCostCenter?.id);
+  const primaryCostCenterName = safeText(advanceContext?.primaryCostCenter?.name).toLowerCase();
+  const primaryCostCenter =
+    costCenters.find((costCenter) => safeText(costCenter.id) === primaryCostCenterId) ||
+    costCenters.find((costCenter) => safeText(costCenter.name).toLowerCase() === primaryCostCenterName);
+  const costCenter = costCenterById || costCenterByName || primaryCostCenter || costCenters[0] || {};
   const amount = normalizeAmount(parsed.amount);
   const confidence = Number(parsed.confidence);
   const documentType = normalizeDocumentType(parsed.documentType);
@@ -190,6 +227,9 @@ const normalizeReceipt = ({
   if (documentType === 'invoice' && category.requiresCufe && !safeText(parsed.cufe)) {
     warnings.push('La categoría seleccionada requiere CUFE para factura electrónica.');
   }
+  if (!costCenterById && !costCenterByName) {
+    warnings.push('Centro de costos sugerido provisionalmente desde el anticipo.');
+  }
 
   return {
     index,
@@ -200,6 +240,8 @@ const normalizeReceipt = ({
     documentType,
     categoryId: category.id || '',
     categoryName: category.name || safeText(parsed.categoryName),
+    costCenterId: costCenter.id || '',
+    costCenterName: costCenter.name || safeText(parsed.costCenterName),
     amount,
     date: normalizeDate(parsed.date),
     businessName: safeText(parsed.businessName),
@@ -217,12 +259,14 @@ const analyzeFile = async ({
   file,
   index,
   categories,
+  costCenters,
   advanceContext,
 }: {
   apiKey: string;
   file: File;
   index: number;
   categories: ReceiptCategoryInput[];
+  costCenters: CostCenterInput[];
   advanceContext: unknown;
 }) => {
   if (!isAllowedFile(file)) {
@@ -253,11 +297,11 @@ const analyzeFile = async ({
     const content =
       file.type === 'application/pdf'
         ? [
-            { type: 'input_text', text: buildPrompt(categories, advanceContext) },
+            { type: 'input_text', text: buildPrompt(categories, costCenters, advanceContext) },
             { type: 'input_file', filename: file.name, file_data: dataUrl },
           ]
         : [
-            { type: 'input_text', text: buildPrompt(categories, advanceContext) },
+            { type: 'input_text', text: buildPrompt(categories, costCenters, advanceContext) },
             { type: 'input_image', image_url: dataUrl },
           ];
 
@@ -284,6 +328,8 @@ const analyzeFile = async ({
     return normalizeReceipt({
       parsed: parseJsonPayload(text),
       categories,
+      costCenters,
+      advanceContext,
       file,
       index,
     });
@@ -318,14 +364,18 @@ export async function POST(request: Request) {
     }
 
     const categories = JSON.parse(String(formData.get('categories') || '[]')) as ReceiptCategoryInput[];
+    const costCenters = JSON.parse(String(formData.get('costCenters') || '[]')) as CostCenterInput[];
     const advanceContext = JSON.parse(String(formData.get('advanceContext') || '{}'));
     if (!Array.isArray(categories) || categories.length === 0) {
       return json({ error: 'No hay dominios de gasto disponibles para clasificar los soportes.' }, 400);
     }
+    if (!Array.isArray(costCenters) || costCenters.length === 0) {
+      return json({ error: 'No hay centros de costos disponibles para clasificar las legalizaciones.' }, 400);
+    }
 
     const receipts = [];
     for (let index = 0; index < files.length; index += 1) {
-      receipts.push(await analyzeFile({ apiKey, file: files[index], index, categories, advanceContext }));
+      receipts.push(await analyzeFile({ apiKey, file: files[index], index, categories, costCenters, advanceContext }));
     }
 
     return json({ receipts });
