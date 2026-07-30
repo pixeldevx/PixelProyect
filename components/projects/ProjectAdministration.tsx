@@ -118,7 +118,7 @@ type CostCenterAllocation = {
 
 type ReceiptDocumentType = 'invoice' | 'cash_receipt';
 
-type ReceiptStatus = 'submitted' | 'approved' | 'approved_modified' | 'returned' | 'rejected';
+type ReceiptStatus = 'submitted' | 'approved' | 'approved_modified' | 'audit_pending' | 'audit_passed' | 'audit_alert' | 'returned' | 'rejected';
 
 type ReceiptFieldChange = {
   field: string;
@@ -128,7 +128,7 @@ type ReceiptFieldChange = {
 };
 
 type ReceiptRevision = {
-  type: 'returned' | 'resubmitted' | 'approved' | 'approved_modified' | 'support_replaced';
+  type: 'returned' | 'resubmitted' | 'approved' | 'approved_modified' | 'audit_pending' | 'audit_passed' | 'audit_alert' | 'support_replaced';
   actorId?: string | null;
   actorName?: string;
   at: string;
@@ -174,6 +174,21 @@ type AdvanceReceipt = {
   dianVerifiedBy?: string | null;
   dianVerifiedByName?: string;
   dianDocumentUrl?: string;
+  accountingAuditStatus?: 'pending' | 'matched' | 'alert' | 'not_applicable';
+  accountingAuditBatchId?: string;
+  accountingAuditBatchName?: string;
+  accountingAuditedAt?: string;
+  accountingAuditedBy?: string | null;
+  accountingAuditedByName?: string;
+  accountingAuditMessage?: string;
+  accountingAuditMatch?: {
+    cufe?: string;
+    invoiceNumber?: string;
+    taxId?: string;
+    businessName?: string;
+    amount?: number;
+    date?: string;
+  };
   billingPaymentId?: string;
   aiExtracted?: boolean;
   aiConfidence?: number;
@@ -272,6 +287,16 @@ type TravelAdvance = {
   status: 'submitted' | 'pending_payment' | 'partially_paid' | 'paid' | 'approved' | 'completed' | 'returned' | 'rejected' | 'closed';
   items: AdvanceItem[];
   receipts?: AdvanceReceipt[];
+  dianAuditBatches?: Array<{
+    id: string;
+    fileName: string;
+    rowCount: number;
+    matchedCount: number;
+    alertCount: number;
+    uploadedAt: string;
+    uploadedBy?: string | null;
+    uploadedByName?: string;
+  }>;
   amountRequested: number;
   amountApproved: number;
   amountLegalized: number;
@@ -1524,6 +1549,9 @@ const receiptStatusConfig: Record<AdvanceReceipt['status'], { label: string; cla
   submitted: { label: 'Por revisar', className: 'bg-amber-50 text-amber-700 ring-amber-100' },
   approved: { label: 'Aceptado', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
   approved_modified: { label: 'Aprobado con modificación', className: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
+  audit_pending: { label: 'Por auditoría DIAN', className: 'bg-cyan-50 text-cyan-700 ring-cyan-100' },
+  audit_passed: { label: 'Auditada DIAN', className: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
+  audit_alert: { label: 'Alerta auditoría', className: 'bg-red-50 text-red-700 ring-red-100' },
   returned: { label: 'Devuelto', className: 'bg-rose-50 text-rose-700 ring-rose-100' },
   rejected: { label: 'Rechazado', className: 'bg-rose-50 text-rose-700 ring-rose-100' },
 };
@@ -1557,10 +1585,26 @@ const getReceiptDocumentType = (value: any): ReceiptDocumentType =>
 const getReceiptDocumentTypeMeta = (value: any) =>
   receiptDocumentTypeConfig[getReceiptDocumentType(value)];
 
-const APPROVED_RECEIPT_STATUSES: ReceiptStatus[] = ['approved', 'approved_modified'];
+const APPROVED_RECEIPT_STATUSES: ReceiptStatus[] = ['approved', 'approved_modified', 'audit_passed'];
+const RECEIPT_STATUSES_READY_FOR_DIAN_AUDIT: ReceiptStatus[] = ['approved', 'approved_modified', 'audit_pending', 'audit_alert'];
 
 const isApprovedReceipt = (receipt: Pick<AdvanceReceipt, 'status'>) =>
   APPROVED_RECEIPT_STATUSES.includes(receipt.status);
+
+const isInvoiceReceipt = (receipt: Pick<AdvanceReceipt, 'documentType'>) =>
+  getReceiptDocumentType(receipt.documentType) === 'invoice';
+
+const needsDianAccountingAudit = (receipt: Pick<AdvanceReceipt, 'documentType' | 'status'>) =>
+  isInvoiceReceipt(receipt) && RECEIPT_STATUSES_READY_FOR_DIAN_AUDIT.includes(receipt.status);
+
+const hasDianAccountingAuditAlert = (receipt: Pick<AdvanceReceipt, 'documentType' | 'status'>) =>
+  isInvoiceReceipt(receipt) && receipt.status === 'audit_alert';
+
+const hasPendingDianAccountingAudit = (receipt: Pick<AdvanceReceipt, 'documentType' | 'status'>) =>
+  isInvoiceReceipt(receipt) && (receipt.status === 'audit_pending' || receipt.status === 'audit_alert');
+
+const isReceiptAdministrativelyReviewed = (receipt: Pick<AdvanceReceipt, 'status'>) =>
+  ['approved', 'approved_modified', 'audit_pending', 'audit_passed', 'audit_alert'].includes(receipt.status);
 
 const canDeleteUnlegalizedReceipt = (receipt: Pick<AdvanceReceipt, 'status'>) => !isApprovedReceipt(receipt);
 
@@ -1616,6 +1660,165 @@ const getReceiptIdentity = (receipt: Partial<ReceiptIdentityInput>) => {
   }
 
   return null;
+};
+
+type DianAuditRow = {
+  rowNumber: number;
+  cufe: string;
+  invoiceNumber: string;
+  taxId: string;
+  businessName: string;
+  amount: number;
+  date: string;
+  raw: Record<string, string>;
+};
+
+const normalizeDianAuditHeader = (value: any) =>
+  normalizeReceiptToken(value).replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+
+const normalizeDianAuditComparable = (value: any) =>
+  normalizeReceiptToken(value).replace(/[^a-z0-9]/g, '');
+
+const parseDianAuditAmount = (value: any) => {
+  const raw = String(value ?? '').replace(/\s+/g, '').replace(/COP|\$/gi, '');
+  if (!raw) return 0;
+  const normalized =
+    raw.includes(',') && raw.includes('.')
+      ? raw.lastIndexOf(',') > raw.lastIndexOf('.')
+        ? raw.replace(/\./g, '').replace(',', '.')
+        : raw.replace(/,/g, '')
+      : raw.includes(',')
+        ? raw.replace(',', '.')
+        : raw;
+  return asNumber(normalized);
+};
+
+const parseDianAuditDelimitedRows = (text: string) => {
+  const cleanText = text.replace(/^\uFEFF/, '');
+  const firstLine = cleanText.split(/\r?\n/, 1)[0] || '';
+  const delimiter = firstLine.includes('\t') ? '\t' : firstLine.includes(';') ? ';' : ',';
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+
+  for (let index = 0; index < cleanText.length; index += 1) {
+    const character = cleanText[index];
+    const nextCharacter = cleanText[index + 1];
+
+    if (character === '"') {
+      if (quoted && nextCharacter === '"') {
+        cell += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+
+    if (!quoted && character === delimiter) {
+      row.push(cell.trim());
+      cell = '';
+      continue;
+    }
+
+    if (!quoted && (character === '\n' || character === '\r')) {
+      if (character === '\r' && nextCharacter === '\n') index += 1;
+      row.push(cell.trim());
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
+      cell = '';
+      continue;
+    }
+
+    cell += character;
+  }
+
+  row.push(cell.trim());
+  if (row.some(Boolean)) rows.push(row);
+  return rows;
+};
+
+const pickDianAuditCell = (row: Record<string, string>, candidates: string[]) => {
+  const keys = Object.keys(row);
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeDianAuditHeader(candidate);
+    const exact = keys.find((key) => key === normalizedCandidate);
+    if (exact && row[exact]) return row[exact];
+    const partial = keys.find((key) => key.includes(normalizedCandidate) || normalizedCandidate.includes(key));
+    if (partial && row[partial]) return row[partial];
+  }
+  return '';
+};
+
+const buildDianAuditRowsFromText = (text: string): DianAuditRow[] => {
+  const rows = parseDianAuditDelimitedRows(text);
+  const [headers = [], ...body] = rows;
+  const normalizedHeaders = headers.map(normalizeDianAuditHeader);
+  return body
+    .map((cells, rowIndex) => {
+      const raw = normalizedHeaders.reduce<Record<string, string>>((acc, header, index) => {
+        if (header) acc[header] = cells[index] || '';
+        return acc;
+      }, {});
+      const cufe = normalizeCufe(pickDianAuditCell(raw, ['cufe', 'cude', 'codigo unico', 'codigo unico de factura', 'documentkey', 'documento electronico']));
+      const invoiceNumber = pickDianAuditCell(raw, ['numero factura', 'no factura', 'factura', 'numero', 'prefijo numero']);
+      const taxId = pickDianAuditCell(raw, ['nit emisor', 'nit proveedor', 'nit', 'documento proveedor', 'identificacion proveedor']);
+      const businessName = pickDianAuditCell(raw, ['razon social', 'proveedor', 'emisor', 'nombre proveedor']);
+      const amount = parseDianAuditAmount(pickDianAuditCell(raw, ['valor total', 'total', 'valor factura', 'monto', 'importe']));
+      const date = pickDianAuditCell(raw, ['fecha emision', 'fecha', 'fecha factura']);
+
+      return {
+        rowNumber: rowIndex + 2,
+        cufe,
+        invoiceNumber: invoiceNumber.trim(),
+        taxId: taxId.trim(),
+        businessName: businessName.trim(),
+        amount,
+        date: date.trim(),
+        raw,
+      };
+    })
+    .filter((row) => row.cufe || row.invoiceNumber || row.taxId || row.businessName || row.amount > 0);
+};
+
+const getDianAuditReceiptKeyCandidates = (receipt: AdvanceReceipt) => {
+  const cufe = normalizeCufe(receipt.cufe || '').toLowerCase();
+  const invoiceNumber = normalizeDianAuditComparable(receipt.invoiceNumber);
+  const taxId = normalizeDianAuditComparable(receipt.taxId);
+  const businessName = normalizeDianAuditComparable(receipt.businessName);
+  const amount = asNumber(receipt.amount).toFixed(2);
+  return [
+    cufe ? `cufe:${cufe}` : '',
+    invoiceNumber && taxId ? `invoice-tax:${invoiceNumber}:${taxId}` : '',
+    invoiceNumber && businessName ? `invoice-business:${invoiceNumber}:${businessName}` : '',
+    businessName && amount !== '0.00' ? `business-amount:${businessName}:${amount}` : '',
+  ].filter(Boolean);
+};
+
+const buildDianAuditIndex = (rows: DianAuditRow[]) => {
+  const index = new Map<string, DianAuditRow>();
+  rows.forEach((row) => {
+    const cufe = normalizeCufe(row.cufe || '').toLowerCase();
+    const invoiceNumber = normalizeDianAuditComparable(row.invoiceNumber);
+    const taxId = normalizeDianAuditComparable(row.taxId);
+    const businessName = normalizeDianAuditComparable(row.businessName);
+    const amount = asNumber(row.amount).toFixed(2);
+    [
+      cufe ? `cufe:${cufe}` : '',
+      invoiceNumber && taxId ? `invoice-tax:${invoiceNumber}:${taxId}` : '',
+      invoiceNumber && businessName ? `invoice-business:${invoiceNumber}:${businessName}` : '',
+      businessName && amount !== '0.00' ? `business-amount:${businessName}:${amount}` : '',
+    ].filter(Boolean).forEach((key) => {
+      if (!index.has(key)) index.set(key, row);
+    });
+  });
+  return index;
+};
+
+const findDianAuditMatch = (receipt: AdvanceReceipt, rows: DianAuditRow[]) => {
+  const index = buildDianAuditIndex(rows);
+  return getDianAuditReceiptKeyCandidates(receipt).map((key) => index.get(key)).find(Boolean) || null;
 };
 
 const buildDianDocumentUrl = (cufe: string) =>
@@ -1707,7 +1910,7 @@ export function ProjectAdministration({
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [locationsLoaded, setLocationsLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'requests' | 'approvals' | 'payables' | 'receipts' | 'conciliation' | 'payments' | 'settings'>('requests');
+  const [view, setView] = useState<'requests' | 'approvals' | 'payables' | 'receipts' | 'audit' | 'conciliation' | 'payments' | 'settings'>('requests');
   const [contractorAccountView, setContractorAccountView] = useState<'all' | 'approvals' | 'humanTalent' | 'accounting' | 'paid' | 'rejected'>('all');
   const [contractorAccountSearch, setContractorAccountSearch] = useState('');
   const [showPaidContractorAccounts, setShowPaidContractorAccounts] = useState(false);
@@ -1728,6 +1931,8 @@ export function ProjectAdministration({
   const [advanceSearch, setAdvanceSearch] = useState('');
   const [showPaidAdvances, setShowPaidAdvances] = useState(false);
   const [showReconciledAdvances, setShowReconciledAdvances] = useState(false);
+  const [dianAuditFile, setDianAuditFile] = useState<File | null>(null);
+  const [dianAuditRows, setDianAuditRows] = useState<DianAuditRow[]>([]);
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [advanceForm, setAdvanceForm] = useState(() => buildEmptyAdvanceForm(currentUser, teamMembers));
   const [advanceTaskSearch, setAdvanceTaskSearch] = useState('');
@@ -2466,6 +2671,37 @@ export function ProjectAdministration({
           };
         }),
     [filteredAdvances, findDuplicateReceiptUsage]
+  );
+
+  const auditAdvanceGroups = useMemo(
+    () =>
+      filteredAdvances
+        .filter((advance) => advance.status !== 'closed' && advance.reconciliationStatus !== 'reconciled')
+        .map((advance) => {
+          const auditReceipts = (advance.receipts || []).filter(needsDianAccountingAudit);
+          const pending = auditReceipts.filter((receipt) => receipt.status === 'audit_pending' || receipt.status === 'approved' || receipt.status === 'approved_modified');
+          const alerts = auditReceipts.filter(hasDianAccountingAuditAlert);
+          const passed = (advance.receipts || []).filter((receipt) => receipt.status === 'audit_passed');
+          return {
+            advance,
+            receipts: auditReceipts,
+            pending,
+            alerts,
+            passed,
+          };
+        })
+        .filter((group) => group.receipts.length > 0 || group.passed.length > 0),
+    [filteredAdvances]
+  );
+
+  const auditPendingCount = useMemo(
+    () => auditAdvanceGroups.reduce((sum, group) => sum + group.pending.length, 0),
+    [auditAdvanceGroups]
+  );
+
+  const auditAlertCount = useMemo(
+    () => auditAdvanceGroups.reduce((sum, group) => sum + group.alerts.length, 0),
+    [auditAdvanceGroups]
   );
 
   const reconciliationAdvances = useMemo(
@@ -4762,45 +4998,10 @@ export function ProjectAdministration({
     setSubmitting(true);
     try {
       const changes = getReceiptEditorChanges(latestReceipt, receiptEditorForm);
-      const status: 'approved' | 'approved_modified' = changes.length > 0 ? 'approved_modified' : 'approved';
+      const shouldQueueDianAudit = documentType === 'invoice';
+      const status: ReceiptStatus = shouldQueueDianAudit ? 'audit_pending' : changes.length > 0 ? 'approved_modified' : 'approved';
       const now = new Date().toISOString();
-      const documentMeta = getReceiptDocumentTypeMeta(documentType);
-      const paymentData = {
-        projectId,
-        description: `Legalización anticipo: ${category.name}`,
-        vendor: receiptEditorForm.businessName.trim() || 'Proveedor sin nombre',
-        amount,
-        date: new Date(`${receiptEditorForm.date || todayInputValue()}T00:00:00`),
-        status: 'paid',
-        budgetLineId: null,
-        budgetPieceId: null,
-        notes: [
-          documentMeta.label,
-          receiptEditorForm.invoiceNumber.trim() ? `${documentMeta.numberLabel}: ${receiptEditorForm.invoiceNumber.trim()}` : null,
-          receiptEditorForm.description.trim(),
-          cufe ? `CUFE: ${cufe}` : null,
-          changes.length > 0 ? 'Aprobado con modificación administrativa' : null,
-        ].filter(Boolean).join(' · '),
-        source: 'advance_receipt',
-        advanceId: latestAdvance.id,
-        receiptId: latestReceipt.id,
-        documentType,
-        documentTypeLabel: documentMeta.label,
-        expenseCategoryId: category.id,
-        updatedAt: serverTimestamp(),
-      };
-
-      let billingPaymentId = latestReceipt.billingPaymentId || '';
-      if (billingPaymentId) {
-        await updateDoc(doc(db, 'projects', projectId, 'billingPayments', billingPaymentId), paymentData);
-      } else {
-        const paymentRef = await addDoc(collection(db, 'projects', projectId, 'billingPayments'), {
-          ...paymentData,
-          createdAt: serverTimestamp(),
-          createdBy: currentUser?.uid || null,
-        });
-        billingPaymentId = paymentRef.id;
-      }
+      let billingPaymentId = shouldQueueDianAudit ? '' : latestReceipt.billingPaymentId || '';
 
       const approvedReceipt: AdvanceReceipt = {
         ...latestReceipt,
@@ -4826,6 +5027,8 @@ export function ProjectAdministration({
         dianVerifiedBy: receiptEditorForm.dianVerifiedAt ? currentUser?.uid || null : null,
         dianVerifiedByName: receiptEditorForm.dianVerifiedAt ? getCurrentUserName(currentUser) : '',
         dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : '',
+        accountingAuditStatus: shouldQueueDianAudit ? 'pending' : 'not_applicable',
+        accountingAuditMessage: shouldQueueDianAudit ? 'Factura aprobada administrativamente y pendiente de cruce con base DIAN.' : '',
         billingPaymentId,
         revisions: [
           ...(latestReceipt.revisions || []),
@@ -4839,6 +5042,11 @@ export function ProjectAdministration({
           },
         ],
       };
+
+      if (!shouldQueueDianAudit) {
+        billingPaymentId = await createAdvanceReceiptBillingPayment(latestAdvance, approvedReceipt, changes);
+        approvedReceipt.billingPaymentId = billingPaymentId;
+      }
 
       const nextReceipts = (latestAdvance.receipts || []).map((item) =>
         item.id === latestReceipt.id ? approvedReceipt : item
@@ -4855,7 +5063,8 @@ export function ProjectAdministration({
       const difference = coverage.balance;
       const shouldStayCompleted = latestAdvance.status === 'completed';
       const nextAdvanceStatus: TravelAdvance['status'] = shouldStayCompleted ? 'completed' : 'approved';
-      const allReceiptsReviewed = nextReceipts.every(isApprovedReceipt);
+      const allReceiptsReadyForReconciliation = nextReceipts.every(isApprovedReceipt);
+      const hasPendingAudit = nextReceipts.some(hasPendingDianAccountingAudit);
       const reconciliation = getAdvanceReconciliation({
         ...latestAdvance,
         receipts: nextReceipts,
@@ -4863,7 +5072,7 @@ export function ProjectAdministration({
         amountLegalized,
       });
       const reconciliationStatus: AdvanceReconciliationStatus | null = shouldStayCompleted
-        ? allReceiptsReviewed
+        ? allReceiptsReadyForReconciliation
           ? reconciliation.returnRequired > 0
             ? latestAdvance.returnSupport
               ? 'ready'
@@ -4883,16 +5092,20 @@ export function ProjectAdministration({
         status: nextAdvanceStatus,
         reconciliationStatus,
         nextAction: shouldStayCompleted
-          ? allReceiptsReviewed
+          ? hasPendingAudit
+            ? 'audit_dian_receipts'
+            : allReceiptsReadyForReconciliation
             ? 'reconcile_advance'
             : 'validate_receipt'
-          : 'justify_advance',
-        pendingRole: shouldStayCompleted ? 'administrative_validation' : null,
-        inboxTargetUserId: shouldStayCompleted ? null : latestAdvance.requesterId,
+          : shouldQueueDianAudit
+            ? 'audit_dian_receipts'
+            : 'justify_advance',
+        pendingRole: shouldStayCompleted || shouldQueueDianAudit ? 'administrative_validation' : null,
+        inboxTargetUserId: shouldStayCompleted || shouldQueueDianAudit ? null : latestAdvance.requesterId,
         closedAt: null,
         updatedAt: serverTimestamp(),
       });
-      await logAdministrativeEvent(latestAdvance.id, status === 'approved_modified' ? 'receipt_approved_modified' : 'receipt_approved', {
+      await logAdministrativeEvent(latestAdvance.id, shouldQueueDianAudit ? 'receipt_pending_dian_audit' : status === 'approved_modified' ? 'receipt_approved_modified' : 'receipt_approved', {
         receiptId: latestReceipt.id,
         documentType,
         amount,
@@ -4903,7 +5116,7 @@ export function ProjectAdministration({
         dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : null,
       });
 
-      toast.success(status === 'approved_modified' ? 'Soporte aprobado con modificación y auditoría guardada.' : 'Soporte aprobado y costo real registrado.');
+      toast.success(shouldQueueDianAudit ? 'Factura aprobada y enviada a Auditoría DIAN.' : status === 'approved_modified' ? 'Soporte aprobado con modificación y costo real registrado.' : 'Soporte aprobado y costo real registrado.');
       setReviewComment('');
       closeReceiptEditor();
     } catch (error: any) {
@@ -5015,6 +5228,15 @@ export function ProjectAdministration({
         dianVerifiedBy: null,
         dianVerifiedByName: '',
         dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : '',
+        accountingAuditStatus: documentType === 'invoice' ? 'pending' : 'not_applicable',
+        accountingAuditBatchId: '',
+        accountingAuditBatchName: '',
+        accountingAuditedAt: '',
+        accountingAuditedBy: null,
+        accountingAuditedByName: '',
+        accountingAuditMessage: '',
+        accountingAuditMatch: undefined,
+        billingPaymentId: documentType === 'invoice' ? '' : latestReceipt.billingPaymentId || '',
         revisions: [
           ...(latestReceipt.revisions || []),
           {
@@ -5188,6 +5410,10 @@ export function ProjectAdministration({
                 reviewedBy: currentUser?.uid || null,
                 reviewedByName: getCurrentUserName(currentUser),
                 reviewComment: reviewComment.trim(),
+                accountingAuditStatus: hasDianAccountingAuditAlert(item) ? 'alert' : item.accountingAuditStatus,
+                accountingAuditMessage: hasDianAccountingAuditAlert(item)
+                  ? `Devuelta desde auditoría DIAN: ${reviewComment.trim()}`
+                  : item.accountingAuditMessage,
                 revisions: [
                   ...(item.revisions || []),
                   {
@@ -5195,7 +5421,9 @@ export function ProjectAdministration({
                     actorId: currentUser?.uid || null,
                     actorName: getCurrentUserName(currentUser),
                     at: now,
-                    comment: reviewComment.trim(),
+                    comment: hasDianAccountingAuditAlert(item)
+                      ? `Devolución de auditoría DIAN: ${reviewComment.trim()}`
+                      : reviewComment.trim(),
                   },
                 ],
               }
@@ -5314,6 +5542,11 @@ export function ProjectAdministration({
       return;
     }
     if (!nextReceipts.every(isApprovedReceipt)) {
+      const auditCount = nextReceipts.filter(hasPendingDianAccountingAudit).length;
+      if (auditCount > 0) {
+        toast.error(`Aún ${auditCount === 1 ? 'hay 1 factura pendiente' : `hay ${auditCount} facturas pendientes`} de auditoría DIAN.`);
+        return;
+      }
       const pendingCount = nextReceipts.filter((receipt) => !isApprovedReceipt(receipt)).length;
       toast.error(`Aún ${pendingCount === 1 ? 'hay 1 legalización pendiente' : `hay ${pendingCount} legalizaciones pendientes`} de aprobación administrativa.`);
       return;
@@ -6044,6 +6277,230 @@ export function ProjectAdministration({
     }
   };
 
+  const createAdvanceReceiptBillingPayment = async (
+    advance: TravelAdvance,
+    receipt: AdvanceReceipt,
+    changes: ReceiptFieldChange[] = []
+  ) => {
+    const documentType = getReceiptDocumentType(receipt.documentType);
+    const documentMeta = getReceiptDocumentTypeMeta(documentType);
+    const paymentData = {
+      projectId,
+      description: `Legalización anticipo: ${receipt.categoryName}`,
+      vendor: receipt.businessName?.trim() || 'Proveedor sin nombre',
+      amount: asNumber(receipt.amount),
+      date: new Date(`${receipt.date || todayInputValue()}T00:00:00`),
+      status: 'paid',
+      budgetLineId: null,
+      budgetPieceId: null,
+      notes: [
+        documentMeta.label,
+        receipt.invoiceNumber?.trim() ? `${documentMeta.numberLabel}: ${receipt.invoiceNumber.trim()}` : null,
+        receipt.description?.trim(),
+        receipt.cufe ? `CUFE: ${receipt.cufe}` : null,
+        receipt.status === 'audit_passed' ? 'Auditoría DIAN aprobada' : null,
+        changes.length > 0 ? 'Aprobado con modificación administrativa' : null,
+      ].filter(Boolean).join(' · '),
+      source: 'advance_receipt',
+      advanceId: advance.id,
+      receiptId: receipt.id,
+      documentType,
+      documentTypeLabel: documentMeta.label,
+      expenseCategoryId: receipt.categoryId,
+      updatedAt: serverTimestamp(),
+    };
+
+    if (receipt.billingPaymentId) {
+      await updateDoc(doc(db, 'projects', projectId, 'billingPayments', receipt.billingPaymentId), paymentData);
+      return receipt.billingPaymentId;
+    }
+
+    const paymentRef = await addDoc(collection(db, 'projects', projectId, 'billingPayments'), {
+      ...paymentData,
+      createdAt: serverTimestamp(),
+      createdBy: currentUser?.uid || null,
+    });
+    return paymentRef.id;
+  };
+
+  const handleDianAuditFileSelected = async (file: File | null) => {
+    setDianAuditFile(file);
+    setDianAuditRows([]);
+    if (!file) return;
+
+    if (/\.(xlsx|xls)$/i.test(file.name)) {
+      toast.error('Por ahora carga la base DIAN exportada desde Excel como CSV o TXT separado por tabulaciones.');
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const rows = buildDianAuditRowsFromText(text);
+      if (rows.length === 0) {
+        toast.error('No se encontraron filas válidas en la base DIAN.');
+        return;
+      }
+      setDianAuditRows(rows);
+      toast.success(`Base DIAN cargada en memoria: ${rows.length} fila${rows.length === 1 ? '' : 's'} listas para auditar.`);
+    } catch (error: any) {
+      console.error('Error reading DIAN audit file:', error);
+      toast.error(error?.message || 'No se pudo leer la base DIAN.');
+    }
+  };
+
+  const handleExecuteDianAudit = async () => {
+    if (!canValidate) {
+      toast.error('Solo el área administrativa puede ejecutar la auditoría DIAN.');
+      return;
+    }
+    if (!dianAuditFile || dianAuditRows.length === 0) {
+      toast.error('Carga primero la base DIAN en formato CSV o TXT.');
+      return;
+    }
+
+    const candidates = auditAdvanceGroups.flatMap((group) =>
+      group.receipts.map((receipt) => ({ advance: group.advance, receipt }))
+    );
+    if (candidates.length === 0) {
+      toast.info('No hay facturas pendientes de auditoría.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const now = new Date().toISOString();
+      let matchedCount = 0;
+      let alertCount = 0;
+      const auditBatchRef = await addDoc(collection(db, 'projects', projectId, 'dianAuditBatches'), {
+        projectId,
+        fileName: dianAuditFile.name,
+        fileSize: dianAuditFile.size,
+        rowCount: dianAuditRows.length,
+        uploadedAt: serverTimestamp(),
+        uploadedBy: currentUser?.uid || null,
+        uploadedByName: getCurrentUserName(currentUser),
+        rows: dianAuditRows.slice(0, 2500),
+        status: 'processing',
+      });
+      const batchSummary = {
+        id: auditBatchRef.id,
+        fileName: dianAuditFile.name,
+        rowCount: dianAuditRows.length,
+        matchedCount: 0,
+        alertCount: 0,
+        uploadedAt: now,
+        uploadedBy: currentUser?.uid || null,
+        uploadedByName: getCurrentUserName(currentUser),
+      };
+
+      for (const group of auditAdvanceGroups) {
+        const latestAdvance = advances.find((advance) => advance.id === group.advance.id) || group.advance;
+        let changed = false;
+        let groupMatchedCount = 0;
+        let groupAlertCount = 0;
+        const nextReceipts = await Promise.all((latestAdvance.receipts || []).map(async (receipt) => {
+          if (!needsDianAccountingAudit(receipt)) return receipt;
+          const match = findDianAuditMatch(receipt, dianAuditRows);
+          if (match) {
+            matchedCount += 1;
+            groupMatchedCount += 1;
+            changed = true;
+            const auditedReceipt: AdvanceReceipt = {
+              ...receipt,
+              status: 'audit_passed',
+              accountingAuditStatus: 'matched',
+              accountingAuditBatchId: auditBatchRef.id,
+              accountingAuditBatchName: dianAuditFile.name,
+              accountingAuditedAt: now,
+              accountingAuditedBy: currentUser?.uid || null,
+              accountingAuditedByName: getCurrentUserName(currentUser),
+              accountingAuditMessage: `Cruce encontrado en fila ${match.rowNumber} de la base DIAN.`,
+              accountingAuditMatch: {
+                cufe: match.cufe,
+                invoiceNumber: match.invoiceNumber,
+                taxId: match.taxId,
+                businessName: match.businessName,
+                amount: match.amount,
+                date: match.date,
+              },
+              revisions: [
+                ...(receipt.revisions || []),
+                {
+                  type: 'audit_passed',
+                  actorId: currentUser?.uid || null,
+                  actorName: getCurrentUserName(currentUser),
+                  at: now,
+                  comment: `Cruce DIAN aprobado con ${dianAuditFile.name}, fila ${match.rowNumber}.`,
+                },
+              ],
+            };
+            const billingPaymentId = await createAdvanceReceiptBillingPayment(latestAdvance, auditedReceipt, auditedReceipt.approvalChanges || []);
+            return { ...auditedReceipt, billingPaymentId };
+          }
+
+          alertCount += 1;
+          groupAlertCount += 1;
+          changed = true;
+          return {
+            ...receipt,
+            status: 'audit_alert' as const,
+            accountingAuditStatus: 'alert' as const,
+            accountingAuditBatchId: auditBatchRef.id,
+            accountingAuditBatchName: dianAuditFile.name,
+            accountingAuditedAt: now,
+            accountingAuditedBy: currentUser?.uid || null,
+            accountingAuditedByName: getCurrentUserName(currentUser),
+            accountingAuditMessage: 'No se encontró coincidencia contable en la base DIAN cargada.',
+            revisions: [
+              ...(receipt.revisions || []),
+              {
+                type: 'audit_alert' as const,
+                actorId: currentUser?.uid || null,
+                actorName: getCurrentUserName(currentUser),
+                at: now,
+                comment: `No cruzó contra ${dianAuditFile.name}.`,
+              },
+            ],
+          };
+        }));
+
+        if (changed) {
+          const amountLegalized = nextReceipts.filter(isApprovedReceipt).reduce((sum, receipt) => sum + asNumber(receipt.amount), 0);
+          const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
+          const coverage = getAdvanceFinancialCoverage({ ...latestAdvance, receipts: nextReceipts, amountApproved, amountLegalized });
+          const hasPendingAudit = nextReceipts.some(hasPendingDianAccountingAudit);
+          const hasSubmittedReceipts = nextReceipts.some((receipt) => receipt.status === 'submitted');
+          await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
+            receipts: nextReceipts,
+            dianAuditBatches: [...(latestAdvance.dianAuditBatches || []), { ...batchSummary, matchedCount: groupMatchedCount, alertCount: groupAlertCount }],
+            amountLegalized,
+            balance: Math.max(0, coverage.balance),
+            nextAction: hasSubmittedReceipts ? 'validate_receipt' : hasPendingAudit ? 'audit_dian_receipts' : 'justify_advance',
+            pendingRole: hasSubmittedReceipts || hasPendingAudit ? 'administrative_validation' : null,
+            inboxTargetUserId: hasSubmittedReceipts || hasPendingAudit ? null : latestAdvance.requesterId,
+            reconciliationStatus: null,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+
+      await updateDoc(doc(db, 'projects', projectId, 'dianAuditBatches', auditBatchRef.id), {
+        matchedCount,
+        alertCount,
+        status: 'completed',
+        completedAt: serverTimestamp(),
+      });
+      toast.success(`Auditoría DIAN ejecutada: ${matchedCount} factura${matchedCount === 1 ? '' : 's'} cruzada${matchedCount === 1 ? '' : 's'} y ${alertCount} en alerta.`);
+      setDianAuditFile(null);
+      setDianAuditRows([]);
+    } catch (error: any) {
+      console.error('Error executing DIAN audit:', error);
+      toast.error(error?.message || 'No se pudo ejecutar la auditoría DIAN.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const analyzeReceiptFilesForAdvance = async (advance: TravelAdvance, files: File[]): Promise<AiReceiptDraft[]> => {
     const body = new FormData();
     files.forEach((file) => body.append('files', file));
@@ -6684,6 +7141,7 @@ export function ProjectAdministration({
             ['approvals', 'Anticipos por aprobar', approvalAdvances.length],
             ['payables', 'Anticipos por pagar', payableAdvances.length],
             ['receipts', 'Legalizaciones', receipts.length],
+            ['audit', 'Auditoría DIAN', auditPendingCount + auditAlertCount],
             ['conciliation', 'Conciliación', reconciliationAdvances.filter((item) => item.advance.reconciliationStatus !== 'reconciled').length],
             ['payments', 'Costos reales', realCostAdvanceGroups.length],
             ['settings', 'Dominios', categoryOptions.length + costCenterOptions.length],
@@ -6707,6 +7165,8 @@ export function ProjectAdministration({
           <span className="rounded-md bg-amber-50 px-2 py-1 text-amber-700">{metrics.pendingValidation} por validar</span>
           <span className="rounded-md bg-violet-50 px-2 py-1 text-violet-700">{metrics.pendingPayment} por pagar</span>
           <span className="rounded-md bg-fuchsia-50 px-2 py-1 text-fuchsia-700">{metrics.partiallyPaid} abonados</span>
+          <span className="rounded-md bg-cyan-50 px-2 py-1 text-cyan-700">{auditPendingCount} por auditar</span>
+          <span className="rounded-md bg-red-50 px-2 py-1 text-red-700">{auditAlertCount} alertas DIAN</span>
           <span className="rounded-md bg-orange-50 px-2 py-1 text-orange-700">{metrics.returned} devueltos</span>
         </div>
       </div>
@@ -7123,6 +7583,152 @@ export function ProjectAdministration({
                     </section>
                   );
                 })
+              )}
+            </div>
+          )}
+
+          {view === 'audit' && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-cyan-200 bg-gradient-to-r from-cyan-50 to-white p-4 shadow-sm">
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 text-cyan-800">
+                      <ShieldCheck size={20} />
+                      <h3 className="text-lg font-black">Auditoría DIAN de facturas</h3>
+                    </div>
+                    <p className="mt-1 max-w-3xl text-sm font-medium text-slate-600">
+                      Cruza únicamente facturas aprobadas en legalización contra la base DIAN antes de permitir la conciliación.
+                      Las que no crucen quedan en alerta y pueden devolverse para subsanación.
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <input
+                      id="dian-audit-file"
+                      type="file"
+                      accept=".csv,.txt,.tsv,text/csv,text/plain"
+                      className="hidden"
+                      onChange={(event) => void handleDianAuditFileSelected(event.target.files?.[0] || null)}
+                    />
+                    <label
+                      htmlFor="dian-audit-file"
+                      className="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-cyan-200 bg-white px-3 text-xs font-black text-cyan-700 transition hover:bg-cyan-50"
+                    >
+                      <UploadCloud size={15} />
+                      Cargar base DIAN
+                    </label>
+                    <Button
+                      type="button"
+                      onClick={() => void handleExecuteDianAudit()}
+                      disabled={submitting || dianAuditRows.length === 0}
+                      className="bg-cyan-700 text-white hover:bg-cyan-800"
+                    >
+                      {submitting ? <Loader2 size={15} className="mr-2 animate-spin" /> : <ShieldCheck size={15} className="mr-2" />}
+                      Ejecutar auditoría
+                    </Button>
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-4">
+                  <ReceiptGroupMetric label="Base cargada" value={dianAuditFile ? dianAuditFile.name : 'Sin archivo'} tone="slate" />
+                  <ReceiptGroupMetric label="Filas leídas" value={`${dianAuditRows.length}`} tone="indigo" />
+                  <ReceiptGroupMetric label="Por auditar" value={`${auditPendingCount}`} tone="amber" />
+                  <ReceiptGroupMetric label="Alertas" value={`${auditAlertCount}`} tone={auditAlertCount ? 'rose' : 'emerald'} />
+                </div>
+                <p className="mt-3 text-xs font-bold text-slate-500">
+                  Exporta la base desde Excel como CSV/TXT. Columnas reconocidas: CUFE/CUDE, No. factura, NIT, proveedor, valor total y fecha.
+                </p>
+              </div>
+
+              {auditAdvanceGroups.length === 0 ? (
+                <EmptyState
+                  title="Sin facturas pendientes de auditoría"
+                  body="Las facturas aparecerán aquí cuando sean aprobadas desde Legalizaciones. Los recibos de caja no requieren cruce DIAN."
+                />
+              ) : (
+                auditAdvanceGroups.map((group) => (
+                  <section key={group.advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                    <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50 p-4 lg:flex-row lg:items-center lg:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-md bg-cyan-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700 ring-1 ring-cyan-100">Auditoría DIAN</span>
+                          {group.advance.customId && <span className="rounded-md bg-slate-900 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">ID {group.advance.customId}</span>}
+                          {group.alerts.length > 0 && <span className="rounded-md bg-red-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-red-700 ring-1 ring-red-100">{group.alerts.length} alerta{group.alerts.length === 1 ? '' : 's'}</span>}
+                        </div>
+                        <h4 className="mt-2 truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</h4>
+                        <p className="mt-1 text-xs font-bold text-slate-500">{group.advance.requesterName} · {group.advance.destination}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => setViewingAdvance(group.advance)}>
+                          <FileText size={14} className="mr-2" />
+                          Ver anticipo
+                        </Button>
+                      </div>
+                    </div>
+                    <AdvanceLifecycle advance={group.advance} compact />
+                    <div className="divide-y divide-slate-100">
+                      {group.receipts.length === 0 ? (
+                        <div className="p-4 text-sm font-bold text-emerald-700">Todas las facturas de este anticipo ya pasaron auditoría DIAN.</div>
+                      ) : (
+                        group.receipts.map((receipt) => {
+                          const statusMeta = getReceiptStatusMeta(receipt.status);
+                          const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
+                          return (
+                            <div key={receipt.id} className={`grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center ${receipt.status === 'audit_alert' ? 'border-l-4 border-red-500 bg-red-50/70' : ''}`}>
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm font-black text-slate-950">{receipt.categoryName}</span>
+                                  <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${documentMeta.className}`}>
+                                    {documentMeta.shortLabel}
+                                  </span>
+                                  <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ring-1 ${statusMeta.className}`}>
+                                    {statusMeta.label}
+                                  </span>
+                                  <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-black text-slate-700">{formatMoney(receipt.amount)}</span>
+                                </div>
+                                <p className="mt-1 text-sm font-semibold text-slate-600">{receipt.businessName || 'Sin razón social'} · {formatDate(receipt.date)}</p>
+                                <p className="mt-1 break-words text-xs font-semibold text-slate-400">
+                                  {receipt.invoiceNumber ? `${documentMeta.numberLabel} ${receipt.invoiceNumber}` : documentMeta.label}
+                                  {receipt.taxId ? ` · NIT ${receipt.taxId}` : ''}
+                                  {receipt.cufe ? ` · CUFE ${receipt.cufe}` : ''}
+                                </p>
+                                {receipt.accountingAuditMessage && (
+                                  <div className={`mt-3 rounded-lg border px-3 py-2 text-xs font-bold ${receipt.status === 'audit_alert' ? 'border-red-200 bg-white text-red-700' : 'border-cyan-200 bg-cyan-50 text-cyan-700'}`}>
+                                    {receipt.accountingAuditMessage}
+                                  </div>
+                                )}
+                                <div className="mt-3 flex flex-wrap gap-3">
+                                  {(receipt.fileUrl || receipt.storagePath) && (
+                                    <SecureDocumentLink storagePath={receipt.storagePath} fallbackUrl={receipt.fileUrl} className="inline-flex items-center gap-1 text-xs font-black text-indigo-600 hover:text-indigo-800">
+                                      <FileImage size={14} /> Ver soporte
+                                    </SecureDocumentLink>
+                                  )}
+                                  {receipt.dianDocumentUrl && (
+                                    <a href={receipt.dianDocumentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-black text-sky-700 hover:text-sky-900">
+                                      <ExternalLink size={14} /> Consultar en DIAN
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap justify-end gap-2">
+                                {canValidate && receipt.status === 'audit_alert' && (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openReviewAction({ type: 'returnReceipt', advance: group.advance, receipt })}
+                                    className="border-rose-200 text-rose-700 hover:bg-rose-50"
+                                  >
+                                    <RotateCcw size={14} className="mr-1" />
+                                    Devolver a legalización
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </section>
+                ))
               )}
             </div>
           )}
@@ -10266,7 +10872,9 @@ function LocalFilePreview({ file }: { file: File }) {
 
 function AdvanceLifecycle({ advance, compact = false }: { advance: TravelAdvance; compact?: boolean }) {
   const receipts = advance.receipts || [];
-  const allLegalizationsApproved = receipts.length > 0 && receipts.every(isApprovedReceipt);
+  const allLegalizationsReviewed = receipts.length > 0 && receipts.every(isReceiptAdministrativelyReviewed);
+  const invoiceReceipts = receipts.filter(isInvoiceReceipt);
+  const dianAuditComplete = invoiceReceipts.length === 0 || invoiceReceipts.every((receipt) => receipt.status === 'audit_passed' || isApprovedReceipt(receipt));
   const requesterClosed = Boolean(advance.completedAt) && ['completed', 'closed'].includes(advance.status);
   const reconciled = advance.reconciliationStatus === 'reconciled';
   const paymentSummary = getAdvancePaymentSummary(advance);
@@ -10274,7 +10882,8 @@ function AdvanceLifecycle({ advance, compact = false }: { advance: TravelAdvance
     { label: 'Creación', complete: true },
     { label: 'Aprobación', complete: Boolean(advance.approvalSignature) || ['pending_payment', 'partially_paid', 'paid', 'approved', 'completed', 'closed'].includes(advance.status) },
     { label: paymentSummary.isPartiallyPaid ? `Por pagar ${paymentSummary.progress}%` : 'Por pagar', complete: paymentSummary.isFullyPaid || ['paid', 'approved', 'completed', 'closed'].includes(advance.status) },
-    { label: 'Legalizaciones', complete: allLegalizationsApproved },
+    { label: 'Legalizaciones', complete: allLegalizationsReviewed },
+    { label: 'Auditoría DIAN', complete: receipts.length > 0 && dianAuditComplete },
     { label: 'Cierre funcionario', complete: requesterClosed },
     { label: 'Conciliación', complete: reconciled },
     { label: 'Informe final', complete: reconciled && advance.status === 'closed' },
@@ -10283,7 +10892,7 @@ function AdvanceLifecycle({ advance, compact = false }: { advance: TravelAdvance
 
   return (
     <div className={`overflow-x-auto border-t border-slate-100 bg-white ${compact ? 'px-3 py-2.5' : 'px-4 py-3'}`} aria-label="Ciclo de vida del anticipo">
-      <div className="grid min-w-[820px] grid-cols-7">
+      <div className="grid min-w-[920px] grid-cols-8">
         {steps.map((step, index) => {
           const active = index === activeIndex;
           return (
@@ -10348,8 +10957,9 @@ function AdvanceCard({
       ? Math.min(100, Math.round((getAdvanceJustifiedAmount(advance) / asNumber(advance.amountApproved)) * 100))
       : 0;
   const advanceReceipts = advance.receipts || [];
-  const pendingApprovalCount = advanceReceipts.filter((receipt) => !isApprovedReceipt(receipt)).length;
-  const allLegalizationsApproved = advanceReceipts.length > 0 && pendingApprovalCount === 0;
+  const pendingAuditCount = advanceReceipts.filter(hasPendingDianAccountingAudit).length;
+  const pendingApprovalCount = advanceReceipts.filter((receipt) => !isReceiptAdministrativelyReviewed(receipt)).length;
+  const allLegalizationsApproved = advanceReceipts.length > 0 && advanceReceipts.every(isApprovedReceipt);
 
   return (
     <article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -10444,11 +11054,11 @@ function AdvanceCard({
               variant="outline"
               onClick={onComplete}
               disabled={!allLegalizationsApproved}
-              title={!allLegalizationsApproved ? 'Todas las legalizaciones deben estar aprobadas antes del cierre.' : 'Cerrar como solicitante y enviar a conciliación.'}
+              title={!allLegalizationsApproved ? 'Todas las legalizaciones y facturas deben estar aprobadas por auditoría antes del cierre.' : 'Cerrar como solicitante y enviar a conciliación.'}
               className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
             >
               <CheckCircle2 size={15} className="mr-2" />
-              {allLegalizationsApproved ? 'Cerrar y enviar a conciliación' : `${pendingApprovalCount} por aprobar`}
+              {allLegalizationsApproved ? 'Cerrar y enviar a conciliación' : pendingAuditCount > 0 ? `${pendingAuditCount} por auditoría DIAN` : `${pendingApprovalCount} por aprobar`}
             </Button>
           )}
           {canValidate && advance.status === 'submitted' && (
