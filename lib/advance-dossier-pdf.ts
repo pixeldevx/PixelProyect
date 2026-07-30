@@ -579,54 +579,69 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
     y -= boxHeight + 12;
   };
 
-  const addAttachmentDivider = (attachment: AdvanceDossierAttachment, ordinal?: number) => {
-    const divider = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    divider.drawRectangle({
-      x: 0,
-      y: 0,
-      width: PAGE_WIDTH,
-      height: PAGE_HEIGHT,
-      color: HEADER_NAVY,
+  const buildAttachmentReference = (
+    attachment: AdvanceDossierAttachment,
+    ordinal?: number,
+    pageNumber?: number,
+    totalPages?: number
+  ) => {
+    const title = ordinal ? `ANEXO ${ordinal} - ${attachment.label}` : `ANEXO - ${attachment.label}`;
+    const pageSuffix =
+      totalPages && totalPages > 1 && pageNumber
+        ? ` - pagina ${pageNumber} de ${totalPages}`
+        : '';
+    return {
+      title: `${title}${pageSuffix}`,
+      detail:
+        attachment.description ||
+        attachment.fileName ||
+        'Documento soporte incorporado al expediente.',
+    };
+  };
+
+  const drawAttachmentInlineReference = (
+    target: PDFPage,
+    attachment: AdvanceDossierAttachment,
+    ordinal?: number,
+    pageNumber?: number,
+    totalPages?: number
+  ) => {
+    const { width, height } = target.getSize();
+    const reference = buildAttachmentReference(attachment, ordinal, pageNumber, totalPages);
+    const boxWidth = Math.min(Math.max(width - 48, 220), 500);
+    const boxHeight = 34;
+    const x = Math.max(18, Math.min(MARGIN_X, (width - boxWidth) / 2));
+    const top = height - 18;
+
+    target.drawRectangle({
+      x,
+      y: top - boxHeight,
+      width: boxWidth,
+      height: boxHeight,
+      color: WHITE,
+      borderColor: SLATE_300,
+      borderWidth: 0.7,
     });
-    divider.drawRectangle({
-      x: MARGIN_X,
-      y: PAGE_HEIGHT - 235,
-      width: 7,
-      height: 145,
+    target.drawRectangle({
+      x,
+      y: top - boxHeight,
+      width: 4,
+      height: boxHeight,
       color: TEAL,
     });
-    divider.drawText('ANEXO DOCUMENTAL', {
-      x: MARGIN_X + 28,
-      y: PAGE_HEIGHT - 105,
-      size: 10,
+    target.drawText(fitText(fonts.bold, reference.title.toUpperCase(), 7.5, boxWidth - 18), {
+      x: x + 10,
+      y: top - 13,
+      size: 7.5,
       font: fonts.bold,
-      color: rgb(0.55, 0.97, 0.87),
+      color: INDIGO,
     });
-    const title = ordinal ? `${ordinal}. ${attachment.label}` : attachment.label;
-    const titleLines = wrapText(fonts.bold, title.toUpperCase(), 22, CONTENT_WIDTH - 38);
-    drawTextOnPage(divider, titleLines, MARGIN_X + 28, PAGE_HEIGHT - 145, fonts.bold, 22, WHITE, 27);
-    const descriptionLines = wrapText(
-      fonts.regular,
-      attachment.description || 'El documento cargado se incorpora completo en las páginas siguientes.',
-      11,
-      CONTENT_WIDTH - 38
-    );
-    drawTextOnPage(
-      divider,
-      descriptionLines,
-      MARGIN_X + 28,
-      PAGE_HEIGHT - 155 - titleLines.length * 27,
-      fonts.regular,
-      11,
-      rgb(0.8, 0.84, 0.9),
-      15
-    );
-    divider.drawText('El soporte original se anexa a continuación.', {
-      x: MARGIN_X + 28,
-      y: 72,
-      size: 10,
-      font: fonts.bold,
-      color: WHITE,
+    target.drawText(fitText(fonts.regular, reference.detail, 6.8, boxWidth - 18), {
+      x: x + 10,
+      y: top - 26,
+      size: 6.8,
+      font: fonts.regular,
+      color: SLATE_700,
     });
   };
 
@@ -674,33 +689,32 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
   };
 
   const appendPreparedAttachment = (prepared: PreparedAttachment, ordinal?: number) => {
-    addAttachmentDivider(prepared.attachment, ordinal);
-
     if (prepared.kind === 'pdf') {
-      prepared.pages.forEach((copiedPage) => pdf.addPage(copiedPage));
+      const totalPages = prepared.pages.length;
+      prepared.pages.forEach((copiedPage, pageIndex) => {
+        const addedPage = pdf.addPage(copiedPage);
+        drawAttachmentInlineReference(
+          addedPage,
+          prepared.attachment,
+          ordinal,
+          pageIndex + 1,
+          totalPages
+        );
+      });
       return;
     }
 
     const image = prepared.image;
     const imagePage = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    imagePage.drawText(
-      fitText(fonts.bold, prepared.attachment.label.toUpperCase(), 8, CONTENT_WIDTH),
-      {
-        x: MARGIN_X,
-        y: PAGE_HEIGHT - 30,
-        size: 8,
-        font: fonts.bold,
-        color: SLATE_700,
-      }
-    );
+    drawAttachmentInlineReference(imagePage, prepared.attachment, ordinal);
     const availableWidth = CONTENT_WIDTH;
-    const availableHeight = PAGE_HEIGHT - 86;
+    const availableHeight = PAGE_HEIGHT - 108;
     const scale = Math.min(availableWidth / image.width, availableHeight / image.height, 1);
     const imageWidth = image.width * scale;
     const imageHeight = image.height * scale;
     imagePage.drawImage(image, {
       x: (PAGE_WIDTH - imageWidth) / 2,
-      y: (PAGE_HEIGHT - imageHeight) / 2 - 8,
+      y: Math.max(42, (PAGE_HEIGHT - imageHeight) / 2 - 24),
       width: imageWidth,
       height: imageHeight,
     });
@@ -739,7 +753,7 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
     }
     page.drawText(
       normalizePdfText(
-        `${preparedAttachments.length} documento${preparedAttachments.length === 1 ? '' : 's'} se anexa${preparedAttachments.length === 1 ? '' : 'n'} completo${preparedAttachments.length === 1 ? '' : 's'} a continuación.`
+        `${preparedAttachments.length} documento${preparedAttachments.length === 1 ? '' : 's'} se anexa${preparedAttachments.length === 1 ? '' : 'n'} completo${preparedAttachments.length === 1 ? '' : 's'} con una referencia compacta dentro del mismo soporte, sin hojas separadoras.`
       ),
       {
         x: MARGIN_X,
@@ -915,26 +929,4 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
     bytes: await pdf.save(),
     omittedAttachments,
   };
-};
-
-const drawTextOnPage = (
-  page: PDFPage,
-  lines: string[],
-  x: number,
-  startY: number,
-  font: PDFFont,
-  size: number,
-  color: ReturnType<typeof rgb>,
-  lineHeight: number
-) => {
-  lines.forEach((line, index) => {
-    if (!line) return;
-    page.drawText(line, {
-      x,
-      y: startY - index * lineHeight,
-      size,
-      font,
-      color,
-    });
-  });
 };
