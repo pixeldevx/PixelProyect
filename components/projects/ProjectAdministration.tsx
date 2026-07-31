@@ -4994,35 +4994,57 @@ export function ProjectAdministration({
     return changes;
   };
 
-  const openDianLookup = () => {
+  const verifyReceiptAgainstDianAuditBase = () => {
     if (!receiptEditorForm) return;
-    const cufe = normalizeCufe(receiptEditorForm.cufe);
-    if (!cufe) {
-      toast.error('Ingresa el CUFE antes de consultar la DIAN.');
+    if (activeDianAuditRows.length === 0) {
+      toast.error('Primero carga o conserva una base vigente en Auditoría DIAN.');
       return;
     }
-    const dianDocumentUrl = buildDianDocumentUrl(cufe);
-    window.open(dianDocumentUrl, '_blank', 'noopener,noreferrer');
-    setReceiptEditorForm((current) => current ? {
-      ...current,
-      cufe,
-      dianVerificationStatus: 'pending',
-      dianLookupOpenedAt: new Date().toISOString(),
-      dianDocumentUrl,
-    } : current);
-  };
+    const receiptForAudit: AdvanceReceipt = {
+      id: receiptEditor?.receipt.id || 'receipt-editor',
+      documentType: getReceiptDocumentType(receiptEditorForm.documentType),
+      categoryId: receiptEditorForm.categoryId,
+      categoryName: categoryOptions.find((category) => category.id === receiptEditorForm.categoryId)?.name || '',
+      amount: asNumber(receiptEditorForm.amount),
+      date: receiptEditorForm.date,
+      businessName: receiptEditorForm.businessName,
+      taxId: receiptEditorForm.taxId,
+      invoiceNumber: receiptEditorForm.invoiceNumber,
+      cufe: normalizeCufe(receiptEditorForm.cufe),
+      status: receiptEditor?.receipt.status || 'submitted',
+      createdAt: receiptEditor?.receipt.createdAt || new Date().toISOString(),
+    };
+    const hasIdentity = getDianAuditReceiptKeyCandidates(receiptForAudit).length > 0;
+    if (!hasIdentity) {
+      toast.error('Ingresa CUFE, número de factura con NIT, o proveedor y valor para cruzar contra la base DIAN.');
+      return;
+    }
 
-  const confirmDianLookup = () => {
-    if (!receiptEditorForm?.dianLookupOpenedAt) {
-      toast.error('Primero consulta el CUFE en el portal oficial de la DIAN.');
+    const insight = findDianAuditInsight(receiptForAudit, activeDianAuditRows);
+    if (!insight.match) {
+      setReceiptEditorForm((current) => current ? {
+        ...current,
+        dianVerificationStatus: 'failed',
+        dianLookupOpenedAt: new Date().toISOString(),
+      } : current);
+      toast.error(insight.message);
       return;
     }
+
+    const matchedCufe = normalizeCufe(insight.match.cufe || receiptForAudit.cufe || '');
     setReceiptEditorForm((current) => current ? {
       ...current,
+      cufe: current.cufe || matchedCufe,
       dianVerificationStatus: 'confirmed',
       dianVerifiedAt: new Date().toISOString(),
+      dianLookupOpenedAt: new Date().toISOString(),
+      dianDocumentUrl: matchedCufe ? buildDianDocumentUrl(matchedCufe) : current.dianDocumentUrl,
     } : current);
-    toast.success('Consulta CUFE confirmada y vinculada a la trazabilidad.');
+    if (insight.creditNotes.length > 0) {
+      toast.warning(`${insight.message} La factura quedará marcada para revisión en Auditoría DIAN.`);
+    } else {
+      toast.success(`Factura cruzada contra la base DIAN vigente: ${activeDianAuditFileName || 'base cargada'}.`);
+    }
   };
 
   const handleCreateAdvance = async () => {
@@ -5312,8 +5334,8 @@ export function ProjectAdministration({
       toast.error('Este tipo de gasto requiere CUFE para aprobar la factura.');
       return;
     }
-    if (documentType === 'invoice' && cufe && receiptEditorForm.dianVerificationStatus !== 'confirmed') {
-      toast.error('Consulta y confirma el CUFE en la DIAN antes de aprobar.');
+    if (documentType === 'invoice' && activeDianAuditRows.length > 0 && receiptEditorForm.dianVerificationStatus !== 'confirmed') {
+      toast.error('Cruza esta factura contra la base DIAN vigente antes de aprobarla.');
       return;
     }
     const duplicateUsage = findDuplicateReceiptUsage(
@@ -8038,7 +8060,7 @@ export function ProjectAdministration({
                                     )}
                                     {receipt.dianVerificationStatus === 'confirmed' && (
                                       <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-700 ring-1 ring-emerald-200">
-                                        <ShieldCheck size={12} /> CUFE confirmado
+                                        <ShieldCheck size={12} /> Cruzada DIAN
                                       </span>
                                     )}
                                   </div>
@@ -10549,7 +10571,7 @@ export function ProjectAdministration({
                 <SignatureSummary title="Firma aprobador" signature={selectedAdvance.approvalSignature} />
               </div>
               <div className="mt-5 rounded-xl bg-slate-50 p-3 text-xs font-semibold leading-5 text-slate-500">
-                La validación DIAN por CUFE queda preparada para facturas electrónicas. Los recibos de caja quedan aceptados
+                Las facturas electrónicas se cruzan contra la base vigente de Auditoría DIAN. Los recibos de caja quedan aceptados
                 como soporte manual cuando no se consiga factura en campo.
               </div>
             </div>
@@ -10687,33 +10709,34 @@ export function ProjectAdministration({
                 </div>
 
                 {receiptEditorForm.documentType === 'invoice' ? (
-                  <div className={`rounded-xl border p-4 ${receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'border-emerald-200 bg-emerald-50' : 'border-sky-200 bg-sky-50'}`}>
+                  <div className={`rounded-xl border p-4 ${receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'border-emerald-200 bg-emerald-50' : receiptEditorForm.dianVerificationStatus === 'failed' ? 'border-rose-200 bg-rose-50' : 'border-cyan-200 bg-cyan-50'}`}>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <p className="flex items-center gap-2 text-sm font-black text-slate-950">
-                          <ShieldCheck size={17} className={receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'text-emerald-600' : 'text-sky-600'} />
-                          Verificación oficial de CUFE
+                          <ShieldCheck size={17} className={receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'text-emerald-600' : receiptEditorForm.dianVerificationStatus === 'failed' ? 'text-rose-600' : 'text-cyan-600'} />
+                          Cruce contra base DIAN vigente
                         </p>
                         <p className="mt-1 text-xs font-semibold text-slate-600">
                           {receiptEditorForm.dianVerificationStatus === 'confirmed'
-                            ? 'Consulta confirmada y URL oficial vinculada a la legalización.'
-                            : 'Consulta el documento en el portal oficial y confirma el resultado para dejar trazabilidad.'}
+                            ? `Factura encontrada en ${activeDianAuditFileName || 'la base DIAN vigente'}.`
+                            : receiptEditorForm.dianVerificationStatus === 'failed'
+                              ? 'No se encontró coincidencia exacta en la base DIAN vigente.'
+                              : activeDianAuditRows.length > 0
+                                ? `Base disponible: ${activeDianAuditFileName || 'base DIAN vigente'} · ${activeDianAuditRowCount} filas.`
+                                : 'No hay base DIAN vigente. Puedes aprobar administrativamente y quedará pendiente para Auditoría DIAN.'}
                         </p>
                       </div>
-                      <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'bg-emerald-600 text-white' : 'bg-white text-sky-700 ring-1 ring-sky-200'}`}>
-                        {receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'CUFE confirmado' : 'Pendiente'}
+                      <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'bg-emerald-600 text-white' : receiptEditorForm.dianVerificationStatus === 'failed' ? 'bg-white text-rose-700 ring-1 ring-rose-200' : 'bg-white text-cyan-700 ring-1 ring-cyan-200'}`}>
+                        {receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'Cruzada' : receiptEditorForm.dianVerificationStatus === 'failed' ? 'Sin cruce' : 'Pendiente'}
                       </span>
                     </div>
                     <div className="mt-4 flex flex-wrap gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={openDianLookup} className="border-sky-200 bg-white text-sky-700 hover:bg-sky-100">
-                        <ExternalLink size={14} className="mr-1" /> Consultar en DIAN
-                      </Button>
-                      <Button type="button" size="sm" onClick={confirmDianLookup} disabled={!receiptEditorForm.dianLookupOpenedAt} className="bg-emerald-600 text-white hover:bg-emerald-700">
-                        <CheckCircle2 size={14} className="mr-1" /> Confirmar consulta
+                      <Button type="button" size="sm" onClick={verifyReceiptAgainstDianAuditBase} disabled={activeDianAuditRows.length === 0} className="bg-cyan-700 text-white hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300">
+                        <CheckCircle2 size={14} className="mr-1" /> Cruzar con base DIAN
                       </Button>
                       {receiptEditorForm.dianDocumentUrl && (
                         <a href={receiptEditorForm.dianDocumentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md px-3 py-2 text-xs font-black text-slate-600 hover:bg-white">
-                          Abrir documento oficial <ExternalLink size={13} />
+                          Abrir referencia DIAN <ExternalLink size={13} />
                         </a>
                       )}
                     </div>
