@@ -3458,10 +3458,43 @@ export function ProjectAdministration({
         return;
       }
 
+      const receiptsForReport =
+        scope === 'partialClose'
+          ? (advance.receipts || []).map((receipt) => {
+              if (isAccountingAcceptedReceipt(receipt)) return receipt;
+              if (!isInvoiceReceipt(receipt) || activeDianAuditRows.length === 0) return receipt;
+
+              const auditInsight = findDianAuditInsight(receipt, activeDianAuditRows);
+              if (auditInsight.status !== 'matched' || !auditInsight.match) return receipt;
+
+              return {
+                ...receipt,
+                status: 'audit_passed' as const,
+                accountingAuditStatus: 'matched' as const,
+                accountingAuditBatchId: receipt.accountingAuditBatchId || latestDianAuditBatch?.id || '',
+                accountingAuditBatchName: receipt.accountingAuditBatchName || activeDianAuditFileName,
+                accountingAuditMessage: auditInsight.message,
+                accountingAuditSeverity: auditInsight.severity,
+                accountingAuditRecommendation: auditInsight.recommendation,
+                accountingAuditProviderHistory: auditInsight.providerHistory,
+                accountingAuditCreditNotes: auditInsight.creditNotes,
+                accountingAuditMatch: {
+                  cufe: auditInsight.match.cufe,
+                  invoiceNumber: auditInsight.match.invoiceNumber,
+                  taxId: auditInsight.match.taxId,
+                  businessName: auditInsight.match.businessName,
+                  amount: auditInsight.match.amount,
+                  date: auditInsight.match.date,
+                  documentType: auditInsight.match.documentType,
+                  rowNumber: auditInsight.match.rowNumber,
+                },
+              };
+            })
+          : advance.receipts || [];
       const reportReceipts =
         scope === 'advance' || scope === 'payment'
           ? []
-          : (advance.receipts || []).filter((receipt) =>
+          : receiptsForReport.filter((receipt) =>
               scope === 'partialClose'
                 ? isAccountingAcceptedReceipt(receipt)
                 : isApprovedReceipt(receipt)
@@ -3502,7 +3535,7 @@ export function ProjectAdministration({
         realCost,
       });
     },
-    [downloadAdvanceDossier]
+    [activeDianAuditFileName, activeDianAuditRows, downloadAdvanceDossier, latestDianAuditBatch]
   );
 
   const currentActorIds = useMemo(() => {
@@ -5362,10 +5395,39 @@ export function ProjectAdministration({
     setSubmitting(true);
     try {
       const changes = getReceiptEditorChanges(latestReceipt, receiptEditorForm);
-      const shouldQueueDianAudit = documentType === 'invoice';
-      const status: ReceiptStatus = shouldQueueDianAudit ? 'audit_pending' : changes.length > 0 ? 'approved_modified' : 'approved';
+      const receiptForAudit: AdvanceReceipt = {
+        ...latestReceipt,
+        documentType,
+        categoryId: category.id,
+        categoryName: category.name,
+        amount,
+        date: receiptEditorForm.date,
+        businessName: receiptEditorForm.businessName.trim(),
+        taxId: receiptEditorForm.taxId.trim(),
+        invoiceNumber: receiptEditorForm.invoiceNumber.trim(),
+        cufe,
+      };
+      const auditBaseInsight =
+        documentType === 'invoice' &&
+        receiptEditorForm.dianVerificationSource === 'audit_base' &&
+        activeDianAuditRows.length > 0
+          ? findDianAuditInsight(receiptForAudit, activeDianAuditRows)
+          : null;
+      const status: ReceiptStatus =
+        documentType === 'invoice'
+          ? auditBaseInsight?.status === 'matched'
+            ? 'audit_passed'
+            : auditBaseInsight?.status === 'alert'
+              ? 'audit_alert'
+              : 'audit_pending'
+          : changes.length > 0
+            ? 'approved_modified'
+            : 'approved';
+      const shouldQueueDianAudit = documentType === 'invoice' && status === 'audit_pending';
+      const shouldHoldDianAuditAlert = documentType === 'invoice' && status === 'audit_alert';
+      const shouldCreateBillingPayment = documentType !== 'invoice' || status === 'audit_passed';
       const now = new Date().toISOString();
-      let billingPaymentId = shouldQueueDianAudit ? '' : latestReceipt.billingPaymentId || '';
+      let billingPaymentId = shouldCreateBillingPayment ? latestReceipt.billingPaymentId || '' : '';
 
       const approvedReceipt: AdvanceReceipt = {
         ...latestReceipt,
@@ -5395,14 +5457,40 @@ export function ProjectAdministration({
         dianVerifiedByName: receiptEditorForm.dianVerifiedAt ? getCurrentUserName(currentUser) : '',
         dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : '',
         dianVerificationSource: documentType === 'invoice' ? receiptEditorForm.dianVerificationSource : undefined,
-        accountingAuditStatus: shouldQueueDianAudit ? 'pending' : 'not_applicable',
-        accountingAuditBatchId: shouldQueueDianAudit ? '' : latestReceipt.accountingAuditBatchId || '',
-        accountingAuditBatchName: shouldQueueDianAudit ? '' : latestReceipt.accountingAuditBatchName || '',
-        accountingAuditedAt: shouldQueueDianAudit ? '' : latestReceipt.accountingAuditedAt || '',
-        accountingAuditedBy: shouldQueueDianAudit ? null : latestReceipt.accountingAuditedBy || null,
-        accountingAuditedByName: shouldQueueDianAudit ? '' : latestReceipt.accountingAuditedByName || '',
-        accountingAuditMessage: shouldQueueDianAudit ? 'Factura aprobada administrativamente y pendiente de cruce con base DIAN.' : '',
-        accountingAuditMatch: shouldQueueDianAudit ? undefined : latestReceipt.accountingAuditMatch,
+        accountingAuditStatus:
+          documentType !== 'invoice'
+            ? 'not_applicable'
+            : status === 'audit_passed'
+              ? 'matched'
+              : status === 'audit_alert'
+                ? 'alert'
+                : 'pending',
+        accountingAuditBatchId: auditBaseInsight ? latestDianAuditBatch?.id || '' : shouldQueueDianAudit ? '' : latestReceipt.accountingAuditBatchId || '',
+        accountingAuditBatchName: auditBaseInsight ? activeDianAuditFileName : shouldQueueDianAudit ? '' : latestReceipt.accountingAuditBatchName || '',
+        accountingAuditedAt: auditBaseInsight ? now : shouldQueueDianAudit ? '' : latestReceipt.accountingAuditedAt || '',
+        accountingAuditedBy: auditBaseInsight ? currentUser?.uid || null : shouldQueueDianAudit ? null : latestReceipt.accountingAuditedBy || null,
+        accountingAuditedByName: auditBaseInsight ? getCurrentUserName(currentUser) : shouldQueueDianAudit ? '' : latestReceipt.accountingAuditedByName || '',
+        accountingAuditMessage:
+          auditBaseInsight?.message ||
+          (shouldQueueDianAudit ? 'Factura aprobada administrativamente y pendiente de cruce con base DIAN.' : ''),
+        accountingAuditSeverity: auditBaseInsight?.severity,
+        accountingAuditRecommendation: auditBaseInsight?.recommendation,
+        accountingAuditProviderHistory: auditBaseInsight?.providerHistory,
+        accountingAuditCreditNotes: auditBaseInsight?.creditNotes,
+        accountingAuditMatch: auditBaseInsight?.match
+          ? {
+              cufe: auditBaseInsight.match.cufe,
+              invoiceNumber: auditBaseInsight.match.invoiceNumber,
+              taxId: auditBaseInsight.match.taxId,
+              businessName: auditBaseInsight.match.businessName,
+              amount: auditBaseInsight.match.amount,
+              date: auditBaseInsight.match.date,
+              documentType: auditBaseInsight.match.documentType,
+              rowNumber: auditBaseInsight.match.rowNumber,
+            }
+          : shouldQueueDianAudit || shouldHoldDianAuditAlert
+            ? undefined
+            : latestReceipt.accountingAuditMatch,
         billingPaymentId,
         revisions: [
           ...(latestReceipt.revisions || []),
@@ -5417,7 +5505,7 @@ export function ProjectAdministration({
         ],
       };
 
-      if (!shouldQueueDianAudit) {
+      if (shouldCreateBillingPayment) {
         billingPaymentId = await createAdvanceReceiptBillingPayment(latestAdvance, approvedReceipt, changes);
         approvedReceipt.billingPaymentId = billingPaymentId;
       }
