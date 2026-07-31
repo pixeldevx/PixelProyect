@@ -43,6 +43,7 @@ export type AdvanceDossierReport = {
   costCenters: string[][];
   signatures: AdvanceDossierSignature[];
   paymentDetails: Array<{ label: string; value: string }>;
+  legalizationPresenterDetails?: Array<{ label: string; value: string }>;
   legalizationSummary?: Array<{ label: string; value: string }>;
   legalizations: string[][];
   reconciliationDetails: Array<{ label: string; value: string }>;
@@ -921,6 +922,10 @@ export const generateAdvanceDossierPdf = async (report: AdvanceDossierReport) =>
   if (sections.legalizations) {
     drawSectionTitle(sectionNumber, `Legalización del anticipo - ${report.advanceId}`, true);
     sectionNumber += 1;
+    if (report.legalizationPresenterDetails?.length) {
+      drawSubheading('Datos del anticipo presentado');
+      drawKeyValues(report.legalizationPresenterDetails);
+    }
     if (report.legalizationSummary?.length) {
       drawMetrics(report.legalizationSummary);
     }

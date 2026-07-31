@@ -3402,6 +3402,20 @@ export function ProjectAdministration({
                 ]),
               ]
             : [],
+          legalizationPresenterDetails: includeLegalizations ? [
+            { label: 'Presentado por', value: advance.requesterName || 'Sin solicitante' },
+            { label: 'Correo', value: advance.requesterEmail || 'Sin correo' },
+            {
+              label: 'Cargo',
+              value: advance.requesterSignature?.jobTitle || 'Sin cargo registrado',
+            },
+            { label: 'Destino', value: advance.destination || 'Sin destino' },
+            {
+              label: 'Periodo',
+              value: `${formatDate(advance.travelStart)} - ${formatDate(advance.travelEnd)}`,
+            },
+            { label: 'Proyecto', value: project?.name || project?.title || projectId },
+          ] : [],
           legalizationSummary: includeLegalizations ? [
             {
               label: scope === 'partialClose' ? 'Total cierre parcial' : 'Total legalizaciones aceptadas',
