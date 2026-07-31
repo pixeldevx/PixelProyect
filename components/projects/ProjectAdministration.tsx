@@ -136,6 +136,17 @@ type ReceiptRevision = {
   changes?: ReceiptFieldChange[];
 };
 
+type DianProviderHistoryItem = {
+  rowNumber: number;
+  documentType: string;
+  documentTypeKind: 'invoice' | 'credit_note' | 'debit_note' | 'other';
+  invoiceNumber: string;
+  taxId: string;
+  businessName: string;
+  amount: number;
+  date: string;
+};
+
 type AdvanceReceipt = {
   id: string;
   documentType?: ReceiptDocumentType;
@@ -191,7 +202,13 @@ type AdvanceReceipt = {
     businessName?: string;
     amount?: number;
     date?: string;
+    documentType?: string;
+    rowNumber?: number;
   };
+  accountingAuditSeverity?: 'info' | 'warning' | 'critical';
+  accountingAuditRecommendation?: string;
+  accountingAuditProviderHistory?: DianProviderHistoryItem[];
+  accountingAuditCreditNotes?: DianProviderHistoryItem[];
   billingPaymentId?: string;
   aiExtracted?: boolean;
   aiConfidence?: number;
@@ -1713,6 +1730,8 @@ const getReceiptIdentity = (receipt: Partial<ReceiptIdentityInput>) => {
 
 type DianAuditRow = {
   rowNumber: number;
+  documentType: string;
+  documentTypeKind: DianProviderHistoryItem['documentTypeKind'];
   cufe: string;
   invoiceNumber: string;
   taxId: string;
@@ -1722,11 +1741,52 @@ type DianAuditRow = {
   raw: Record<string, string>;
 };
 
+type DianAuditBatch = {
+  id: string;
+  fileName: string;
+  fileSize?: number;
+  rowCount: number;
+  matchedCount?: number;
+  alertCount?: number;
+  creditNoteCount?: number;
+  uploadedAt?: any;
+  uploadedBy?: string | null;
+  uploadedByName?: string;
+  completedAt?: any;
+  status?: 'processing' | 'completed' | 'failed';
+  rows?: DianAuditRow[];
+};
+
 const normalizeDianAuditHeader = (value: any) =>
   normalizeReceiptToken(value).replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
 const normalizeDianAuditComparable = (value: any) =>
   normalizeReceiptToken(value).replace(/[^a-z0-9]/g, '');
+
+const getDianDocumentTypeKind = (value: any): DianProviderHistoryItem['documentTypeKind'] => {
+  const normalized = normalizeDianAuditHeader(value);
+  if (!normalized) return 'other';
+  if (
+    normalized.includes('nota_credito') ||
+    normalized.includes('credit_note') ||
+    normalized === 'nc' ||
+    normalized.includes('ncredito') ||
+    normalized.includes('credito')
+  ) {
+    return 'credit_note';
+  }
+  if (
+    normalized.includes('nota_debito') ||
+    normalized.includes('debit_note') ||
+    normalized === 'nd' ||
+    normalized.includes('ndebito') ||
+    normalized.includes('debito')
+  ) {
+    return 'debit_note';
+  }
+  if (normalized.includes('factura') || normalized.includes('invoice') || normalized.includes('venta')) return 'invoice';
+  return 'other';
+};
 
 const parseDianAuditAmount = (value: any) => {
   const raw = String(value ?? '').replace(/\s+/g, '').replace(/COP|\$/gi, '');
@@ -1800,27 +1860,32 @@ const pickDianAuditCell = (row: Record<string, string>, candidates: string[]) =>
   return '';
 };
 
-const buildDianAuditRowsFromText = (text: string): DianAuditRow[] => {
-  const rows = parseDianAuditDelimitedRows(text);
+const buildDianAuditRowsFromMatrix = (rows: any[][]): DianAuditRow[] => {
   const [headers = [], ...body] = rows;
   const normalizedHeaders = headers.map(normalizeDianAuditHeader);
   return body
     .map((cells, rowIndex) => {
       const raw = normalizedHeaders.reduce<Record<string, string>>((acc, header, index) => {
-        if (header) acc[header] = cells[index] || '';
+        if (header) acc[header] = String(cells[index] ?? '');
         return acc;
       }, {});
+      const documentType = pickDianAuditCell(raw, ['tipo documento', 'tipo de documento', 'tipo', 'documento tipo', 'clase documento', 'document type']);
       const cufe = normalizeCufe(pickDianAuditCell(raw, ['cufe', 'cude', 'codigo unico', 'codigo unico de factura', 'documentkey', 'documento electronico']));
-      const invoiceNumber = pickDianAuditCell(raw, ['numero factura', 'no factura', 'factura', 'numero', 'prefijo numero']);
+      const invoiceNumber = pickDianAuditCell(raw, ['numero factura', 'no factura', 'factura', 'numero', 'prefijo numero', 'folio']);
+      const invoicePrefix = pickDianAuditCell(raw, ['prefijo', 'prefix']);
+      const invoiceFolio = pickDianAuditCell(raw, ['folio']);
       const taxId = pickDianAuditCell(raw, ['nit emisor', 'nit proveedor', 'nit', 'documento proveedor', 'identificacion proveedor']);
-      const businessName = pickDianAuditCell(raw, ['razon social', 'proveedor', 'emisor', 'nombre proveedor']);
+      const businessName = pickDianAuditCell(raw, ['razon social', 'nombre emisor', 'nombre proveedor', 'proveedor', 'emisor']);
       const amount = parseDianAuditAmount(pickDianAuditCell(raw, ['valor total', 'total', 'valor factura', 'monto', 'importe']));
       const date = pickDianAuditCell(raw, ['fecha emision', 'fecha', 'fecha factura']);
+      const resolvedInvoiceNumber = invoiceNumber.trim() || (invoicePrefix && invoiceFolio ? `${invoicePrefix}${invoiceFolio}` : invoiceFolio);
 
       return {
         rowNumber: rowIndex + 2,
+        documentType: documentType.trim(),
+        documentTypeKind: getDianDocumentTypeKind(documentType),
         cufe,
-        invoiceNumber: invoiceNumber.trim(),
+        invoiceNumber: resolvedInvoiceNumber.trim(),
         taxId: taxId.trim(),
         businessName: businessName.trim(),
         amount,
@@ -1829,6 +1894,19 @@ const buildDianAuditRowsFromText = (text: string): DianAuditRow[] => {
       };
     })
     .filter((row) => row.cufe || row.invoiceNumber || row.taxId || row.businessName || row.amount > 0);
+};
+
+const buildDianAuditRowsFromText = (text: string): DianAuditRow[] =>
+  buildDianAuditRowsFromMatrix(parseDianAuditDelimitedRows(text));
+
+const buildDianAuditRowsFromExcelFile = async (file: File): Promise<DianAuditRow[]> => {
+  const XLSX = await import('xlsx');
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) return [];
+  const sheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' }) as any[][];
+  return buildDianAuditRowsFromMatrix(rows);
 };
 
 const getDianAuditReceiptKeyCandidates = (receipt: AdvanceReceipt) => {
@@ -1845,18 +1923,31 @@ const getDianAuditReceiptKeyCandidates = (receipt: AdvanceReceipt) => {
   ].filter(Boolean);
 };
 
+const getDianAuditRowInvoiceCandidates = (row: DianAuditRow) => {
+  const invoiceNumber = normalizeDianAuditComparable(row.invoiceNumber);
+  const prefix = normalizeDianAuditComparable(row.raw.prefijo || row.raw.prefix);
+  const folio = normalizeDianAuditComparable(row.raw.folio);
+  return Array.from(new Set([
+    invoiceNumber,
+    prefix && folio ? `${prefix}${folio}` : '',
+    folio,
+  ].filter(Boolean)));
+};
+
 const buildDianAuditIndex = (rows: DianAuditRow[]) => {
   const index = new Map<string, DianAuditRow>();
   rows.forEach((row) => {
     const cufe = normalizeCufe(row.cufe || '').toLowerCase();
-    const invoiceNumber = normalizeDianAuditComparable(row.invoiceNumber);
+    const invoiceNumbers = getDianAuditRowInvoiceCandidates(row);
     const taxId = normalizeDianAuditComparable(row.taxId);
     const businessName = normalizeDianAuditComparable(row.businessName);
     const amount = asNumber(row.amount).toFixed(2);
     [
       cufe ? `cufe:${cufe}` : '',
-      invoiceNumber && taxId ? `invoice-tax:${invoiceNumber}:${taxId}` : '',
-      invoiceNumber && businessName ? `invoice-business:${invoiceNumber}:${businessName}` : '',
+      ...invoiceNumbers.flatMap((invoiceNumber) => [
+        taxId ? `invoice-tax:${invoiceNumber}:${taxId}` : '',
+        businessName ? `invoice-business:${invoiceNumber}:${businessName}` : '',
+      ]),
       businessName && amount !== '0.00' ? `business-amount:${businessName}:${amount}` : '',
     ].filter(Boolean).forEach((key) => {
       if (!index.has(key)) index.set(key, row);
@@ -1868,6 +1959,83 @@ const buildDianAuditIndex = (rows: DianAuditRow[]) => {
 const findDianAuditMatch = (receipt: AdvanceReceipt, rows: DianAuditRow[]) => {
   const index = buildDianAuditIndex(rows);
   return getDianAuditReceiptKeyCandidates(receipt).map((key) => index.get(key)).find(Boolean) || null;
+};
+
+const toDianProviderHistoryItem = (row: DianAuditRow): DianProviderHistoryItem => ({
+  rowNumber: row.rowNumber,
+  documentType: row.documentType || 'Sin tipo',
+  documentTypeKind: row.documentTypeKind,
+  invoiceNumber: row.invoiceNumber,
+  taxId: row.taxId,
+  businessName: row.businessName,
+  amount: row.amount,
+  date: row.date,
+});
+
+const getDianProviderHistory = (receipt: AdvanceReceipt, rows: DianAuditRow[]) => {
+  const receiptTaxId = normalizeDianAuditComparable(receipt.taxId);
+  const receiptBusiness = normalizeDianAuditComparable(receipt.businessName);
+  if (!receiptTaxId && !receiptBusiness) return [];
+
+  return rows
+    .filter((row) => {
+      const rowTaxId = normalizeDianAuditComparable(row.taxId);
+      const rowBusiness = normalizeDianAuditComparable(row.businessName);
+      if (receiptTaxId && rowTaxId && receiptTaxId === rowTaxId) return true;
+      return Boolean(receiptBusiness && rowBusiness && receiptBusiness === rowBusiness);
+    })
+    .map(toDianProviderHistoryItem)
+    .sort((left, right) => {
+      const leftTime = getDateValue(left.date)?.getTime() || 0;
+      const rightTime = getDateValue(right.date)?.getTime() || 0;
+      return rightTime - leftTime;
+    })
+    .slice(0, 12);
+};
+
+const findDianAuditInsight = (receipt: AdvanceReceipt, rows: DianAuditRow[]) => {
+  const match = findDianAuditMatch(receipt, rows);
+  const providerHistory = getDianProviderHistory(receipt, rows);
+  const creditNotes = providerHistory.filter((item) => item.documentTypeKind === 'credit_note');
+  const hasCreditNoteRisk = creditNotes.length > 0;
+
+  if (match && hasCreditNoteRisk) {
+    return {
+      match,
+      providerHistory,
+      creditNotes,
+      status: 'alert' as const,
+      severity: 'warning' as const,
+      message: `La factura cruza en fila ${match.rowNumber}, pero el proveedor registra ${creditNotes.length} nota${creditNotes.length === 1 ? '' : 's'} crédito en la base DIAN.`,
+      recommendation: 'Revisar el historial del proveedor antes de cerrar la auditoría. Si la nota crédito afecta este soporte, devuélvelo o edita la legalización; si no aplica, acepta la auditoría.',
+    };
+  }
+
+  if (match) {
+    return {
+      match,
+      providerHistory,
+      creditNotes,
+      status: 'matched' as const,
+      severity: 'info' as const,
+      message: `Cruce encontrado en fila ${match.rowNumber} de la base DIAN.`,
+      recommendation: 'Factura cruzada sin alertas relevantes del proveedor.',
+    };
+  }
+
+  return {
+    match: null,
+    providerHistory,
+    creditNotes,
+    status: 'alert' as const,
+    severity: 'critical' as const,
+    message: hasCreditNoteRisk
+      ? `No se encontró coincidencia exacta y el proveedor registra ${creditNotes.length} nota${creditNotes.length === 1 ? '' : 's'} crédito en la base DIAN.`
+      : 'No se encontró coincidencia contable en la base DIAN cargada.',
+    recommendation: hasCreditNoteRisk
+      ? 'Validar si la nota crédito corrige o anula el soporte. Puedes devolverlo a legalización o editar la legalización antes de volver a auditar.'
+      : 'Revisar número, NIT, valor, fecha y CUFE. Si el soporte está errado, devuélvelo a legalización.',
+  };
 };
 
 const buildDianDocumentUrl = (cufe: string) =>
@@ -1988,6 +2156,7 @@ export function ProjectAdministration({
   const [showReconciledAdvances, setShowReconciledAdvances] = useState(false);
   const [dianAuditFile, setDianAuditFile] = useState<File | null>(null);
   const [dianAuditRows, setDianAuditRows] = useState<DianAuditRow[]>([]);
+  const [dianAuditBatches, setDianAuditBatches] = useState<DianAuditBatch[]>([]);
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [advanceForm, setAdvanceForm] = useState(() => buildEmptyAdvanceForm(currentUser, teamMembers));
   const [advanceTaskSearch, setAdvanceTaskSearch] = useState('');
@@ -2175,6 +2344,15 @@ export function ProjectAdministration({
         },
         (error) => {
           console.error('Error loading billing payments for admin module:', error);
+        }
+      ),
+      onSnapshot(
+        query(collection(db, 'projects', projectId, 'dianAuditBatches'), orderBy('uploadedAt', 'desc')),
+        (snapshot) => {
+          setDianAuditBatches(snapshot.docs.map((snap) => ({ id: snap.id, ...snap.data() } as DianAuditBatch)));
+        },
+        (error) => {
+          console.error('Error loading DIAN audit batches:', error);
         }
       ),
     ];
@@ -2790,6 +2968,21 @@ export function ProjectAdministration({
     () => auditAdvanceGroups.reduce((sum, group) => sum + group.alerts.length, 0),
     [auditAdvanceGroups]
   );
+
+  const latestDianAuditBatch = useMemo(
+    () => dianAuditBatches.find((batch) => Array.isArray(batch.rows) && batch.rows.length > 0) || dianAuditBatches[0] || null,
+    [dianAuditBatches]
+  );
+
+  const activeDianAuditRows = useMemo(
+    () => dianAuditRows.length > 0 ? dianAuditRows : latestDianAuditBatch?.rows || [],
+    [dianAuditRows, latestDianAuditBatch]
+  );
+
+  const activeDianAuditFileName = dianAuditFile?.name || latestDianAuditBatch?.fileName || '';
+  const activeDianAuditRowCount = dianAuditRows.length > 0 ? dianAuditRows.length : latestDianAuditBatch?.rowCount || activeDianAuditRows.length;
+  const activeDianAuditCreditNoteCount = activeDianAuditRows.filter((row) => row.documentTypeKind === 'credit_note').length;
+  const hasPendingDianReplacement = Boolean(dianAuditFile && dianAuditRows.length > 0);
 
   const reconciliationAdvances = useMemo(
     () =>
@@ -6507,20 +6700,16 @@ export function ProjectAdministration({
     setDianAuditRows([]);
     if (!file) return;
 
-    if (/\.(xlsx|xls)$/i.test(file.name)) {
-      toast.error('Por ahora carga la base DIAN exportada desde Excel como CSV o TXT separado por tabulaciones.');
-      return;
-    }
-
     try {
-      const text = await file.text();
-      const rows = buildDianAuditRowsFromText(text);
+      const rows = /\.(xlsx|xls)$/i.test(file.name)
+        ? await buildDianAuditRowsFromExcelFile(file)
+        : buildDianAuditRowsFromText(await file.text());
       if (rows.length === 0) {
         toast.error('No se encontraron filas válidas en la base DIAN.');
         return;
       }
       setDianAuditRows(rows);
-      toast.success(`Base DIAN cargada en memoria: ${rows.length} fila${rows.length === 1 ? '' : 's'} listas para auditar.`);
+      toast.success(`Base DIAN lista para reemplazar la vigente: ${rows.length} fila${rows.length === 1 ? '' : 's'} y ${rows.filter((row) => row.documentTypeKind === 'credit_note').length} nota${rows.filter((row) => row.documentTypeKind === 'credit_note').length === 1 ? '' : 's'} crédito.`);
     } catch (error: any) {
       console.error('Error reading DIAN audit file:', error);
       toast.error(error?.message || 'No se pudo leer la base DIAN.');
@@ -6532,8 +6721,10 @@ export function ProjectAdministration({
       toast.error('Solo el área administrativa puede ejecutar la auditoría DIAN.');
       return;
     }
-    if (!dianAuditFile || dianAuditRows.length === 0) {
-      toast.error('Carga primero la base DIAN en formato CSV o TXT.');
+    const rowsForAudit = activeDianAuditRows;
+    const auditFileName = activeDianAuditFileName;
+    if (rowsForAudit.length === 0 || !auditFileName) {
+      toast.error('Carga primero la base DIAN en Excel, CSV o TXT.');
       return;
     }
 
@@ -6550,26 +6741,31 @@ export function ProjectAdministration({
       const now = new Date().toISOString();
       let matchedCount = 0;
       let alertCount = 0;
-      const auditBatchRef = await addDoc(collection(db, 'projects', projectId, 'dianAuditBatches'), {
-        projectId,
-        fileName: dianAuditFile.name,
-        fileSize: dianAuditFile.size,
-        rowCount: dianAuditRows.length,
-        uploadedAt: serverTimestamp(),
-        uploadedBy: currentUser?.uid || null,
-        uploadedByName: getCurrentUserName(currentUser),
-        rows: dianAuditRows.slice(0, 2500),
-        status: 'processing',
-      });
+      const replacementFile = dianAuditFile;
+      const isReplacingDianBase = Boolean(replacementFile && dianAuditRows.length > 0);
+      const auditBatchRef = isReplacingDianBase
+        ? await addDoc(collection(db, 'projects', projectId, 'dianAuditBatches'), {
+            projectId,
+            fileName: replacementFile!.name,
+            fileSize: replacementFile!.size,
+            rowCount: rowsForAudit.length,
+            creditNoteCount: rowsForAudit.filter((row) => row.documentTypeKind === 'credit_note').length,
+            uploadedAt: serverTimestamp(),
+            uploadedBy: currentUser?.uid || null,
+            uploadedByName: getCurrentUserName(currentUser),
+            rows: rowsForAudit.slice(0, 2500),
+            status: 'processing',
+          })
+        : doc(db, 'projects', projectId, 'dianAuditBatches', latestDianAuditBatch!.id);
       const batchSummary = {
         id: auditBatchRef.id,
-        fileName: dianAuditFile.name,
-        rowCount: dianAuditRows.length,
+        fileName: auditFileName,
+        rowCount: rowsForAudit.length,
         matchedCount: 0,
         alertCount: 0,
         uploadedAt: now,
-        uploadedBy: currentUser?.uid || null,
-        uploadedByName: getCurrentUserName(currentUser),
+        uploadedBy: isReplacingDianBase ? currentUser?.uid || null : latestDianAuditBatch?.uploadedBy || null,
+        uploadedByName: isReplacingDianBase ? getCurrentUserName(currentUser) : latestDianAuditBatch?.uploadedByName || '',
       };
 
       for (const group of auditAdvanceGroups) {
@@ -6587,8 +6783,8 @@ export function ProjectAdministration({
                 costCenterName: resolvedCostCenter.name,
                 costCenterSource: 'advance_provisional' as const,
               };
-          const match = findDianAuditMatch(receipt, dianAuditRows);
-          if (match) {
+          const auditInsight = findDianAuditInsight(receipt, rowsForAudit);
+          if (auditInsight.status === 'matched' && auditInsight.match) {
             matchedCount += 1;
             groupMatchedCount += 1;
             changed = true;
@@ -6598,18 +6794,24 @@ export function ProjectAdministration({
               status: 'audit_passed',
               accountingAuditStatus: 'matched',
               accountingAuditBatchId: auditBatchRef.id,
-              accountingAuditBatchName: dianAuditFile.name,
+              accountingAuditBatchName: auditFileName,
               accountingAuditedAt: now,
               accountingAuditedBy: currentUser?.uid || null,
               accountingAuditedByName: getCurrentUserName(currentUser),
-              accountingAuditMessage: `Cruce encontrado en fila ${match.rowNumber} de la base DIAN.`,
+              accountingAuditMessage: auditInsight.message,
+              accountingAuditSeverity: auditInsight.severity,
+              accountingAuditRecommendation: auditInsight.recommendation,
+              accountingAuditProviderHistory: auditInsight.providerHistory,
+              accountingAuditCreditNotes: auditInsight.creditNotes,
               accountingAuditMatch: {
-                cufe: match.cufe,
-                invoiceNumber: match.invoiceNumber,
-                taxId: match.taxId,
-                businessName: match.businessName,
-                amount: match.amount,
-                date: match.date,
+                cufe: auditInsight.match.cufe,
+                invoiceNumber: auditInsight.match.invoiceNumber,
+                taxId: auditInsight.match.taxId,
+                businessName: auditInsight.match.businessName,
+                amount: auditInsight.match.amount,
+                date: auditInsight.match.date,
+                documentType: auditInsight.match.documentType,
+                rowNumber: auditInsight.match.rowNumber,
               },
               revisions: [
                 ...(receipt.revisions || []),
@@ -6618,7 +6820,7 @@ export function ProjectAdministration({
                   actorId: currentUser?.uid || null,
                   actorName: getCurrentUserName(currentUser),
                   at: now,
-                  comment: `Cruce DIAN aprobado con ${dianAuditFile.name}, fila ${match.rowNumber}.`,
+                  comment: `Cruce DIAN aprobado con ${auditFileName}, fila ${auditInsight.match.rowNumber}.`,
                 },
               ],
             };
@@ -6635,11 +6837,27 @@ export function ProjectAdministration({
             status: 'audit_alert' as const,
             accountingAuditStatus: 'alert' as const,
             accountingAuditBatchId: auditBatchRef.id,
-            accountingAuditBatchName: dianAuditFile.name,
+            accountingAuditBatchName: auditFileName,
             accountingAuditedAt: now,
             accountingAuditedBy: currentUser?.uid || null,
             accountingAuditedByName: getCurrentUserName(currentUser),
-            accountingAuditMessage: 'No se encontró coincidencia contable en la base DIAN cargada.',
+            accountingAuditMessage: auditInsight.message,
+            accountingAuditSeverity: auditInsight.severity,
+            accountingAuditRecommendation: auditInsight.recommendation,
+            accountingAuditProviderHistory: auditInsight.providerHistory,
+            accountingAuditCreditNotes: auditInsight.creditNotes,
+            accountingAuditMatch: auditInsight.match
+              ? {
+                  cufe: auditInsight.match.cufe,
+                  invoiceNumber: auditInsight.match.invoiceNumber,
+                  taxId: auditInsight.match.taxId,
+                  businessName: auditInsight.match.businessName,
+                  amount: auditInsight.match.amount,
+                  date: auditInsight.match.date,
+                  documentType: auditInsight.match.documentType,
+                  rowNumber: auditInsight.match.rowNumber,
+                }
+              : undefined,
             revisions: [
               ...(receipt.revisions || []),
               {
@@ -6647,7 +6865,7 @@ export function ProjectAdministration({
                 actorId: currentUser?.uid || null,
                 actorName: getCurrentUserName(currentUser),
                 at: now,
-                comment: `No cruzó contra ${dianAuditFile.name}.`,
+                comment: `${auditInsight.message} Base: ${auditFileName}.`,
               },
             ],
           };
@@ -6661,7 +6879,10 @@ export function ProjectAdministration({
           const hasSubmittedReceipts = nextReceipts.some((receipt) => receipt.status === 'submitted');
           await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
             receipts: nextReceipts,
-            dianAuditBatches: [...(latestAdvance.dianAuditBatches || []), { ...batchSummary, matchedCount: groupMatchedCount, alertCount: groupAlertCount }],
+            dianAuditBatches: [
+              ...(latestAdvance.dianAuditBatches || []).filter((batch) => batch.id !== batchSummary.id),
+              { ...batchSummary, matchedCount: groupMatchedCount, alertCount: groupAlertCount },
+            ],
             amountLegalized,
             balance: Math.max(0, coverage.balance),
             nextAction: hasSubmittedReceipts ? 'validate_receipt' : hasPendingAudit ? 'audit_dian_receipts' : 'justify_advance',
@@ -6680,11 +6901,90 @@ export function ProjectAdministration({
         completedAt: serverTimestamp(),
       });
       toast.success(`Auditoría DIAN ejecutada: ${matchedCount} factura${matchedCount === 1 ? '' : 's'} cruzada${matchedCount === 1 ? '' : 's'} y ${alertCount} en alerta.`);
-      setDianAuditFile(null);
-      setDianAuditRows([]);
+      if (isReplacingDianBase) {
+        setDianAuditFile(null);
+        setDianAuditRows([]);
+      }
     } catch (error: any) {
       console.error('Error executing DIAN audit:', error);
       toast.error(error?.message || 'No se pudo ejecutar la auditoría DIAN.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAcceptDianAuditAlert = async (advance: TravelAdvance, receipt: AdvanceReceipt) => {
+    if (!canValidate) {
+      toast.error('Solo el área administrativa puede aceptar una alerta DIAN.');
+      return;
+    }
+    if (!receipt.accountingAuditMatch) {
+      toast.error('Esta alerta no tiene coincidencia exacta en la base DIAN. Debe editarse o devolverse.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const now = new Date().toISOString();
+      const latestAdvance = advances.find((item) => item.id === advance.id) || advance;
+      let updatedReceiptForPayment: AdvanceReceipt | null = null;
+      const nextReceipts = await Promise.all((latestAdvance.receipts || []).map(async (item) => {
+        if (item.id !== receipt.id) return item;
+        const acceptedReceipt: AdvanceReceipt = {
+          ...item,
+          status: 'audit_passed',
+          accountingAuditStatus: 'matched',
+          accountingAuditedAt: now,
+          accountingAuditedBy: currentUser?.uid || null,
+          accountingAuditedByName: getCurrentUserName(currentUser),
+          accountingAuditSeverity: 'warning',
+          accountingAuditMessage: `${item.accountingAuditMessage || 'Factura cruzada con alerta DIAN.'} Aceptada manualmente tras revisión administrativa.`,
+          accountingAuditRecommendation: 'Alerta revisada y aceptada por administración.',
+          revisions: [
+            ...(item.revisions || []),
+            {
+              type: 'audit_passed',
+              actorId: currentUser?.uid || null,
+              actorName: getCurrentUserName(currentUser),
+              at: now,
+              comment: 'Alerta DIAN aceptada manualmente tras revisar el historial del proveedor.',
+            },
+          ],
+        };
+        const billingPaymentId = await createAdvanceReceiptBillingPayment(latestAdvance, acceptedReceipt, acceptedReceipt.approvalChanges || []);
+        updatedReceiptForPayment = { ...acceptedReceipt, billingPaymentId };
+        return updatedReceiptForPayment;
+      }));
+
+      if (!updatedReceiptForPayment) {
+        toast.error('No se encontró la factura para aceptar la auditoría.');
+        return;
+      }
+
+      const amountLegalized = nextReceipts.filter(isApprovedReceipt).reduce((sum, item) => sum + asNumber(item.amount), 0);
+      const amountApproved = asNumber(latestAdvance.amountApproved || latestAdvance.amountRequested);
+      const coverage = getAdvanceFinancialCoverage({ ...latestAdvance, receipts: nextReceipts, amountApproved, amountLegalized });
+      const hasPendingAudit = nextReceipts.some(hasPendingDianAccountingAudit);
+      const hasSubmittedReceipts = nextReceipts.some((item) => item.status === 'submitted');
+
+      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
+        receipts: nextReceipts,
+        amountLegalized,
+        balance: Math.max(0, coverage.balance),
+        nextAction: hasSubmittedReceipts ? 'validate_receipt' : hasPendingAudit ? 'audit_dian_receipts' : 'justify_advance',
+        pendingRole: hasSubmittedReceipts || hasPendingAudit ? 'administrative_validation' : null,
+        inboxTargetUserId: hasSubmittedReceipts || hasPendingAudit ? null : latestAdvance.requesterId,
+        updatedAt: serverTimestamp(),
+      });
+      await logAdministrativeEvent(latestAdvance.id, 'receipt_dian_alert_accepted', {
+        receiptId: receipt.id,
+        invoiceNumber: receipt.invoiceNumber || null,
+        provider: receipt.businessName || null,
+      });
+      toast.success('Alerta DIAN aceptada y factura habilitada para conciliación.');
+    } catch (error: any) {
+      console.error('Error accepting DIAN audit alert:', error);
+      toast.error(error?.message || 'No se pudo aceptar la alerta DIAN.');
     } finally {
       setSubmitting(false);
     }
@@ -7834,7 +8134,7 @@ export function ProjectAdministration({
                     <input
                       id="dian-audit-file"
                       type="file"
-                      accept=".csv,.txt,.tsv,text/csv,text/plain"
+                      accept=".xlsx,.xls,.csv,.txt,.tsv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/plain"
                       className="hidden"
                       onChange={(event) => void handleDianAuditFileSelected(event.target.files?.[0] || null)}
                     />
@@ -7848,7 +8148,7 @@ export function ProjectAdministration({
                     <Button
                       type="button"
                       onClick={() => void handleExecuteDianAudit()}
-                      disabled={submitting || dianAuditRows.length === 0}
+                      disabled={submitting || activeDianAuditRows.length === 0}
                       className="bg-cyan-700 text-white hover:bg-cyan-800"
                     >
                       {submitting ? <Loader2 size={15} className="mr-2 animate-spin" /> : <ShieldCheck size={15} className="mr-2" />}
@@ -7857,13 +8157,17 @@ export function ProjectAdministration({
                   </div>
                 </div>
                 <div className="mt-4 grid gap-3 md:grid-cols-4">
-                  <ReceiptGroupMetric label="Base cargada" value={dianAuditFile ? dianAuditFile.name : 'Sin archivo'} tone="slate" />
-                  <ReceiptGroupMetric label="Filas leídas" value={`${dianAuditRows.length}`} tone="indigo" />
+                  <ReceiptGroupMetric label={hasPendingDianReplacement ? 'Base por reemplazar' : 'Base vigente'} value={activeDianAuditFileName || 'Sin archivo'} tone="slate" />
+                  <ReceiptGroupMetric label="Cargada" value={hasPendingDianReplacement ? 'Pendiente de ejecutar' : latestDianAuditBatch?.uploadedAt ? formatDate(latestDianAuditBatch.uploadedAt) : 'Sin fecha'} tone="indigo" />
+                  <ReceiptGroupMetric label="Filas leídas" value={`${activeDianAuditRowCount}`} tone="indigo" />
+                  <ReceiptGroupMetric label="Notas crédito" value={`${activeDianAuditCreditNoteCount}`} tone={activeDianAuditCreditNoteCount ? 'amber' : 'emerald'} />
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
                   <ReceiptGroupMetric label="Por auditar" value={`${auditPendingCount}`} tone="amber" />
                   <ReceiptGroupMetric label="Alertas" value={`${auditAlertCount}`} tone={auditAlertCount ? 'rose' : 'emerald'} />
                 </div>
                 <p className="mt-3 text-xs font-bold text-slate-500">
-                  Exporta la base desde Excel como CSV/TXT. Columnas reconocidas: CUFE/CUDE, No. factura, NIT, proveedor, valor total y fecha.
+                  Columnas reconocidas: CUFE/CUDE, No. factura, NIT, proveedor, valor total, fecha y tipo documento. La base vigente se reutiliza hasta que cargues y ejecutes un archivo nuevo.
                 </p>
               </div>
 
@@ -7925,8 +8229,54 @@ export function ProjectAdministration({
                                 </p>
                                 {receipt.accountingAuditMessage && (
                                   <div className={`mt-3 rounded-lg border px-3 py-2 text-xs font-bold ${receipt.status === 'audit_alert' ? 'border-red-200 bg-white text-red-700' : 'border-cyan-200 bg-cyan-50 text-cyan-700'}`}>
-                                    {receipt.accountingAuditMessage}
+                                    <p>{receipt.accountingAuditMessage}</p>
+                                    {receipt.accountingAuditRecommendation && (
+                                      <p className="mt-1 font-semibold text-slate-600">{receipt.accountingAuditRecommendation}</p>
+                                    )}
                                   </div>
+                                )}
+                                {receipt.status === 'audit_alert' && (receipt.accountingAuditCreditNotes || []).length > 0 && (
+                                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Notas crédito del proveedor</p>
+                                    <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                      {(receipt.accountingAuditCreditNotes || []).slice(0, 4).map((item) => (
+                                        <div key={`${receipt.id}-credit-${item.rowNumber}`} className="rounded-md bg-white px-3 py-2 text-xs font-bold text-slate-700 ring-1 ring-amber-100">
+                                          <p className="text-amber-700">{item.documentType || 'Nota crédito'} · fila {item.rowNumber}</p>
+                                          <p>{item.invoiceNumber || 'Sin número'} · {formatMoney(item.amount)}</p>
+                                          <p className="text-slate-500">{formatDate(item.date)}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {receipt.status === 'audit_alert' && (receipt.accountingAuditProviderHistory || []).length > 0 && (
+                                  <details className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+                                    <summary className="cursor-pointer text-xs font-black uppercase tracking-[0.14em] text-slate-600">
+                                      Historial DIAN del proveedor ({receipt.accountingAuditProviderHistory?.length || 0})
+                                    </summary>
+                                    <div className="mt-3 overflow-x-auto">
+                                      <table className="min-w-full text-left text-xs">
+                                        <thead className="text-[10px] uppercase tracking-[0.14em] text-slate-400">
+                                          <tr>
+                                            <th className="py-2 pr-3">Tipo</th>
+                                            <th className="py-2 pr-3">Documento</th>
+                                            <th className="py-2 pr-3">Fecha</th>
+                                            <th className="py-2 pr-3 text-right">Valor</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100 font-semibold text-slate-600">
+                                          {(receipt.accountingAuditProviderHistory || []).map((item) => (
+                                            <tr key={`${receipt.id}-history-${item.rowNumber}`}>
+                                              <td className="py-2 pr-3">{item.documentType || 'Sin tipo'}</td>
+                                              <td className="py-2 pr-3">{item.invoiceNumber || `Fila ${item.rowNumber}`}</td>
+                                              <td className="py-2 pr-3">{formatDate(item.date)}</td>
+                                              <td className="py-2 pr-3 text-right font-black">{formatMoney(item.amount)}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </details>
                                 )}
                                 <div className="mt-3 flex flex-wrap gap-3">
                                   {(receipt.fileUrl || receipt.storagePath) && (
@@ -7955,6 +8305,20 @@ export function ProjectAdministration({
                                   </Button>
                                 )}
                                 {canValidate && receipt.status === 'audit_alert' && (
+                                  <>
+                                    {receipt.accountingAuditMatch && (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => void handleAcceptDianAuditAlert(group.advance, receipt)}
+                                        disabled={submitting}
+                                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                                      >
+                                        <ShieldCheck size={14} className="mr-1" />
+                                        Aceptar revisión
+                                      </Button>
+                                    )}
                                   <Button
                                     type="button"
                                     size="sm"
@@ -7965,6 +8329,7 @@ export function ProjectAdministration({
                                     <RotateCcw size={14} className="mr-1" />
                                     Devolver a legalización
                                   </Button>
+                                  </>
                                 )}
                               </div>
                             </div>
