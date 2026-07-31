@@ -253,6 +253,7 @@ type AdvanceReconciliationSupport = {
 type AdvanceReconciliationStatus = 'pending_validation' | 'pending_return' | 'pending_compensation' | 'ready' | 'reconciled';
 
 type AdvanceReportScope = 'advance' | 'payment' | 'justifications' | 'partialClose' | 'reconciliation' | 'full';
+type DianAuditStatusFilter = 'all' | 'pending' | 'alerts' | 'passed';
 
 type AdvanceSignatureSnapshot = {
   signatureUrl: string;
@@ -2160,6 +2161,9 @@ export function ProjectAdministration({
   const [dianAuditFile, setDianAuditFile] = useState<File | null>(null);
   const [dianAuditRows, setDianAuditRows] = useState<DianAuditRow[]>([]);
   const [dianAuditBatches, setDianAuditBatches] = useState<DianAuditBatch[]>([]);
+  const [dianAuditSearch, setDianAuditSearch] = useState('');
+  const [dianAuditStatusFilter, setDianAuditStatusFilter] = useState<DianAuditStatusFilter>('all');
+  const [collapsedDianAuditGroups, setCollapsedDianAuditGroups] = useState<Record<string, boolean>>({});
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [advanceForm, setAdvanceForm] = useState(() => buildEmptyAdvanceForm(currentUser, teamMembers));
   const [advanceTaskSearch, setAdvanceTaskSearch] = useState('');
@@ -2971,6 +2975,70 @@ export function ProjectAdministration({
     () => auditAdvanceGroups.reduce((sum, group) => sum + group.alerts.length, 0),
     [auditAdvanceGroups]
   );
+
+  const auditPassedCount = useMemo(
+    () => auditAdvanceGroups.reduce((sum, group) => sum + group.passed.length, 0),
+    [auditAdvanceGroups]
+  );
+
+  const visibleDianAuditGroups = useMemo(() => {
+    const normalizeSearch = (value: any) =>
+      String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+    const search = normalizeSearch(dianAuditSearch).trim();
+    const matchesStatus = (receipt: AdvanceReceipt) => {
+      if (dianAuditStatusFilter === 'all') return true;
+      if (dianAuditStatusFilter === 'pending') {
+        return receipt.status === 'audit_pending' || receipt.status === 'approved' || receipt.status === 'approved_modified';
+      }
+      if (dianAuditStatusFilter === 'alerts') return receipt.status === 'audit_alert';
+      return receipt.status === 'audit_passed';
+    };
+
+    return auditAdvanceGroups
+      .map((group) => {
+        const advanceSearchText = normalizeSearch([
+          group.advance.customId,
+          group.advance.id,
+          group.advance.requesterName,
+          group.advance.requesterEmail,
+          group.advance.destination,
+          group.advance.department,
+          group.advance.municipality,
+          group.advance.purpose,
+          ...(group.advance.taskTitles || []),
+        ].join(' '));
+        const advanceMatches = Boolean(search && advanceSearchText.includes(search));
+        const visibleReceipts = [...group.receipts, ...group.passed].filter((receipt) => {
+          if (!matchesStatus(receipt)) return false;
+          if (!search || advanceMatches) return true;
+
+          const receiptSearchText = normalizeSearch([
+            receipt.categoryName,
+            receipt.businessName,
+            receipt.taxId,
+            receipt.invoiceNumber,
+            receipt.cufe,
+            receipt.amount,
+            receipt.date,
+            receipt.costCenterName,
+            receipt.accountingAuditMessage,
+            receipt.accountingAuditRecommendation,
+            receipt.accountingAuditBatchName,
+            receipt.fileName,
+          ].join(' '));
+          return receiptSearchText.includes(search);
+        });
+
+        return {
+          ...group,
+          visibleReceipts,
+        };
+      })
+      .filter((group) => group.visibleReceipts.length > 0);
+  }, [auditAdvanceGroups, dianAuditSearch, dianAuditStatusFilter]);
 
   const latestDianAuditBatch = useMemo(
     () => dianAuditBatches.find((batch) => Array.isArray(batch.rows) && batch.rows.length > 0) || dianAuditBatches[0] || null,
@@ -8284,39 +8352,134 @@ export function ProjectAdministration({
                 <p className="mt-3 text-xs font-bold text-slate-500">
                   Columnas reconocidas: CUFE/CUDE, No. factura, NIT, proveedor, valor total, fecha y tipo documento. La base vigente se reutiliza hasta que cargues y ejecutes un archivo nuevo.
                 </p>
-              </div>
-
-              {auditAdvanceGroups.length === 0 ? (
-                <EmptyState
-                  title="Sin facturas pendientes de auditoría"
-                  body="Las facturas aparecerán aquí cuando sean aprobadas desde Legalizaciones. Los recibos de caja no requieren cruce DIAN."
-                />
-              ) : (
-                auditAdvanceGroups.map((group) => (
-                  <section key={group.advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                    <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50 p-4 lg:flex-row lg:items-center lg:justify-between">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-md bg-cyan-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700 ring-1 ring-cyan-100">Auditoría DIAN</span>
-                          {group.advance.customId && <span className="rounded-md bg-slate-900 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">ID {group.advance.customId}</span>}
-                          {group.alerts.length > 0 && <span className="rounded-md bg-red-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-red-700 ring-1 ring-red-100">{group.alerts.length} alerta{group.alerts.length === 1 ? '' : 's'}</span>}
-                        </div>
-                        <h4 className="mt-2 truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</h4>
-                        <p className="mt-1 text-xs font-bold text-slate-500">{group.advance.requesterName} · {group.advance.destination}</p>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button type="button" size="sm" variant="outline" onClick={() => setViewingAdvance(group.advance)}>
-                          <FileText size={14} className="mr-2" />
-                          Ver anticipo
-                        </Button>
+                <div className="mt-4 rounded-xl border border-cyan-100 bg-white p-3">
+                  <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        { id: 'all' as const, label: 'Todas', count: auditPendingCount + auditAlertCount + auditPassedCount },
+                        { id: 'pending' as const, label: 'Por auditar', count: auditPendingCount },
+                        { id: 'alerts' as const, label: 'Alertas', count: auditAlertCount },
+                        { id: 'passed' as const, label: 'Auditadas', count: auditPassedCount },
+                      ].map((option) => {
+                        const isActive = dianAuditStatusFilter === option.id;
+                        return (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => setDianAuditStatusFilter(option.id)}
+                            className={`inline-flex h-9 items-center gap-2 rounded-lg px-3 text-[11px] font-black uppercase tracking-[0.12em] ring-1 transition ${
+                              isActive
+                                ? 'bg-cyan-700 text-white ring-cyan-700'
+                                : 'bg-slate-50 text-slate-600 ring-slate-200 hover:bg-cyan-50 hover:text-cyan-700'
+                            }`}
+                          >
+                            {option.label}
+                            <span className={`rounded-md px-1.5 py-0.5 text-[10px] ${isActive ? 'bg-white/20 text-white' : 'bg-white text-slate-500 ring-1 ring-slate-200'}`}>
+                              {option.count}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCollapsedDianAuditGroups(
+                            Object.fromEntries(visibleDianAuditGroups.map((group) => [group.advance.id, false]))
+                          )
+                        }
+                        className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 hover:bg-slate-50"
+                      >
+                        Expandir todo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCollapsedDianAuditGroups(
+                            Object.fromEntries(visibleDianAuditGroups.map((group) => [group.advance.id, true]))
+                          )
+                        }
+                        className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 hover:bg-slate-50"
+                      >
+                        Colapsar todo
+                      </button>
+                      <div className="relative min-w-0 sm:w-80">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <input
+                          className={`${inputClass} h-9 pl-10 text-sm`}
+                          value={dianAuditSearch}
+                          onChange={(event) => setDianAuditSearch(event.target.value)}
+                          placeholder="Buscar factura, proveedor, NIT, CUFE o centro..."
+                        />
                       </div>
                     </div>
-                    <AdvanceLifecycle advance={group.advance} compact />
-                    <div className="divide-y divide-slate-100">
-                      {group.receipts.length === 0 && group.passed.length === 0 ? (
-                        <div className="p-4 text-sm font-bold text-emerald-700">Este anticipo no tiene facturas disponibles para auditoría.</div>
+                  </div>
+                </div>
+              </div>
+
+              {visibleDianAuditGroups.length === 0 ? (
+                <EmptyState
+                  title={dianAuditSearch.trim() || dianAuditStatusFilter !== 'all' ? 'No hay facturas con ese filtro' : 'Sin facturas pendientes de auditoría'}
+                  body={dianAuditSearch.trim() || dianAuditStatusFilter !== 'all' ? 'Prueba con otro proveedor, NIT, CUFE, factura o cambia el filtro de estado.' : 'Las facturas aparecerán aquí cuando sean aprobadas desde Legalizaciones. Los recibos de caja no requieren cruce DIAN.'}
+                />
+              ) : (
+                visibleDianAuditGroups.map((group) => {
+                  const hasActiveDianFilter = Boolean(dianAuditSearch.trim()) || dianAuditStatusFilter !== 'all';
+                  const isCollapsed = collapsedDianAuditGroups[group.advance.id] ?? (!hasActiveDianFilter && group.alerts.length === 0);
+                  return (
+                    <section key={group.advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                      <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50 p-4 lg:flex-row lg:items-center lg:justify-between">
+                        <button
+                          type="button"
+                          onClick={() => setCollapsedDianAuditGroups((current) => ({ ...current, [group.advance.id]: !isCollapsed }))}
+                          className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                        >
+                          <span className={`mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ring-1 ${isCollapsed ? 'bg-white text-slate-500 ring-slate-200' : 'bg-cyan-600 text-white ring-cyan-600'}`}>
+                            {isCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="flex flex-wrap items-center gap-2">
+                              <span className="rounded-md bg-cyan-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700 ring-1 ring-cyan-100">Auditoría DIAN</span>
+                              {group.advance.customId && <span className="rounded-md bg-slate-900 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">ID {group.advance.customId}</span>}
+                              {group.pending.length > 0 && <span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-amber-700 ring-1 ring-amber-100">{group.pending.length} por auditar</span>}
+                              {group.alerts.length > 0 && <span className="rounded-md bg-red-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-red-700 ring-1 ring-red-100">{group.alerts.length} alerta{group.alerts.length === 1 ? '' : 's'}</span>}
+                              {group.passed.length > 0 && <span className="rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-emerald-700 ring-1 ring-emerald-100">{group.passed.length} auditada{group.passed.length === 1 ? '' : 's'}</span>}
+                              {hasActiveDianFilter && <span className="rounded-md bg-indigo-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-indigo-700 ring-1 ring-indigo-100">{group.visibleReceipts.length} visibles</span>}
+                            </span>
+                            <span className="mt-2 block truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</span>
+                            <span className="mt-1 block text-xs font-bold text-slate-500">{group.advance.requesterName} · {group.advance.destination}</span>
+                          </span>
+                        </button>
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setCollapsedDianAuditGroups((current) => ({ ...current, [group.advance.id]: !isCollapsed }))}
+                            className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 hover:bg-slate-50"
+                          >
+                            {isCollapsed ? `Ver ${group.visibleReceipts.length} factura${group.visibleReceipts.length === 1 ? '' : 's'}` : 'Ocultar facturas'}
+                          </button>
+                          <Button type="button" size="sm" variant="outline" onClick={() => setViewingAdvance(group.advance)}>
+                            <FileText size={14} className="mr-2" />
+                            Ver anticipo
+                          </Button>
+                        </div>
+                      </div>
+                      {isCollapsed ? (
+                        <div className="grid gap-2 p-4 md:grid-cols-4">
+                          <ReceiptGroupMetric label="Facturas visibles" value={`${group.visibleReceipts.length}`} tone="slate" />
+                          <ReceiptGroupMetric label="Por auditar" value={`${group.pending.length}`} tone="amber" />
+                          <ReceiptGroupMetric label="Alertas" value={`${group.alerts.length}`} tone={group.alerts.length ? 'rose' : 'emerald'} />
+                          <ReceiptGroupMetric label="Auditadas" value={`${group.passed.length}`} tone="emerald" />
+                        </div>
                       ) : (
-                        [...group.receipts, ...group.passed].map((receipt) => {
+                        <>
+                          <AdvanceLifecycle advance={group.advance} compact />
+                          <div className="divide-y divide-slate-100">
+                            {group.visibleReceipts.length === 0 ? (
+                              <div className="p-4 text-sm font-bold text-emerald-700">Este anticipo no tiene facturas disponibles para el filtro seleccionado.</div>
+                            ) : (
+                              group.visibleReceipts.map((receipt) => {
                           const statusMeta = getReceiptStatusMeta(receipt.status);
                           const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
                           const receiptCostCenter = getReceiptCostCenter(receipt, group.advance);
@@ -8449,11 +8612,14 @@ export function ProjectAdministration({
                               </div>
                             </div>
                           );
-                        })
+                              })
+                            )}
+                          </div>
+                        </>
                       )}
-                    </div>
-                  </section>
-                ))
+                    </section>
+                  );
+                })
               )}
             </div>
           )}
