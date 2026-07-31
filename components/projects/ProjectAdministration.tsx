@@ -188,6 +188,7 @@ type AdvanceReceipt = {
   dianVerifiedBy?: string | null;
   dianVerifiedByName?: string;
   dianDocumentUrl?: string;
+  dianVerificationSource?: 'official_portal' | 'audit_base';
   accountingAuditStatus?: 'pending' | 'matched' | 'alert' | 'not_applicable';
   accountingAuditBatchId?: string;
   accountingAuditBatchName?: string;
@@ -648,6 +649,7 @@ type ReceiptEditorForm = {
   dianLookupOpenedAt: string;
   dianVerifiedAt: string;
   dianDocumentUrl: string;
+  dianVerificationSource?: 'official_portal' | 'audit_base';
 };
 
 type ProjectAdministrationProps = {
@@ -2080,6 +2082,7 @@ const buildReceiptEditorForm = (
     dianLookupOpenedAt: receipt.dianLookupOpenedAt || '',
     dianVerifiedAt: receipt.dianVerifiedAt || '',
     dianDocumentUrl: receipt.dianDocumentUrl || (cufe ? buildDianDocumentUrl(cufe) : ''),
+    dianVerificationSource: receipt.dianVerificationSource || (receipt.dianVerificationStatus === 'confirmed' ? 'official_portal' : undefined),
   };
 };
 
@@ -5039,6 +5042,7 @@ export function ProjectAdministration({
       dianVerifiedAt: new Date().toISOString(),
       dianLookupOpenedAt: new Date().toISOString(),
       dianDocumentUrl: matchedCufe ? buildDianDocumentUrl(matchedCufe) : current.dianDocumentUrl,
+      dianVerificationSource: 'audit_base',
     } : current);
     if (insight.creditNotes.length > 0) {
       toast.warning(`${insight.message} La factura quedará marcada para revisión en Auditoría DIAN.`);
@@ -5390,6 +5394,7 @@ export function ProjectAdministration({
         dianVerifiedBy: receiptEditorForm.dianVerifiedAt ? currentUser?.uid || null : null,
         dianVerifiedByName: receiptEditorForm.dianVerifiedAt ? getCurrentUserName(currentUser) : '',
         dianDocumentUrl: documentType === 'invoice' && cufe ? buildDianDocumentUrl(cufe) : '',
+        dianVerificationSource: documentType === 'invoice' ? receiptEditorForm.dianVerificationSource : undefined,
         accountingAuditStatus: shouldQueueDianAudit ? 'pending' : 'not_applicable',
         accountingAuditBatchId: shouldQueueDianAudit ? '' : latestReceipt.accountingAuditBatchId || '',
         accountingAuditBatchName: shouldQueueDianAudit ? '' : latestReceipt.accountingAuditBatchName || '',
@@ -8060,7 +8065,7 @@ export function ProjectAdministration({
                                     )}
                                     {receipt.dianVerificationStatus === 'confirmed' && (
                                       <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-700 ring-1 ring-emerald-200">
-                                        <ShieldCheck size={12} /> Cruzada DIAN
+                                        <ShieldCheck size={12} /> {receipt.dianVerificationSource === 'audit_base' ? 'Cruzada DIAN' : 'Validada DIAN'}
                                       </span>
                                     )}
                                   </div>
@@ -10613,6 +10618,9 @@ export function ProjectAdministration({
         const selectedCategory = categoryOptions.find((category) => category.id === receiptEditorForm.categoryId);
         const changes = getReceiptEditorChanges(receiptEditor.receipt, receiptEditorForm);
         const requiresCufe = receiptEditorForm.documentType === 'invoice' && Boolean(selectedCategory?.requiresCufe);
+        const hasLegacyOfficialDianVerification =
+          receiptEditorForm.dianVerificationStatus === 'confirmed' &&
+          receiptEditorForm.dianVerificationSource !== 'audit_base';
         return (
           <ModalShell
             title={isAuditEdit ? 'Editar legalización desde Auditoría DIAN' : isReview ? 'Revisar y aprobar soporte' : 'Subsanar legalización devuelta'}
@@ -10641,6 +10649,7 @@ export function ProjectAdministration({
                           dianVerificationStatus: documentType === 'cash_receipt' ? 'not_applicable' : receiptEditorForm.cufe ? 'pending' : 'not_applicable',
                           dianLookupOpenedAt: '',
                           dianVerifiedAt: '',
+                          dianVerificationSource: undefined,
                         });
                       }}
                     >
@@ -10696,6 +10705,7 @@ export function ProjectAdministration({
                             dianLookupOpenedAt: '',
                             dianVerifiedAt: '',
                             dianDocumentUrl: cufe.trim() ? buildDianDocumentUrl(cufe) : '',
+                            dianVerificationSource: undefined,
                           });
                         }}
                       />
@@ -10718,7 +10728,9 @@ export function ProjectAdministration({
                         </p>
                         <p className="mt-1 text-xs font-semibold text-slate-600">
                           {receiptEditorForm.dianVerificationStatus === 'confirmed'
-                            ? `Factura encontrada en ${activeDianAuditFileName || 'la base DIAN vigente'}.`
+                            ? hasLegacyOfficialDianVerification
+                              ? 'Validación DIAN previa conservada. No necesitas repetirla si no cambias los datos del soporte.'
+                              : `Factura encontrada en ${activeDianAuditFileName || 'la base DIAN vigente'}.`
                             : receiptEditorForm.dianVerificationStatus === 'failed'
                               ? 'No se encontró coincidencia exacta en la base DIAN vigente.'
                               : activeDianAuditRows.length > 0
@@ -10727,7 +10739,7 @@ export function ProjectAdministration({
                         </p>
                       </div>
                       <span className={`rounded-md px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] ${receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'bg-emerald-600 text-white' : receiptEditorForm.dianVerificationStatus === 'failed' ? 'bg-white text-rose-700 ring-1 ring-rose-200' : 'bg-white text-cyan-700 ring-1 ring-cyan-200'}`}>
-                        {receiptEditorForm.dianVerificationStatus === 'confirmed' ? 'Cruzada' : receiptEditorForm.dianVerificationStatus === 'failed' ? 'Sin cruce' : 'Pendiente'}
+                        {receiptEditorForm.dianVerificationStatus === 'confirmed' ? hasLegacyOfficialDianVerification ? 'Validada previa' : 'Cruzada' : receiptEditorForm.dianVerificationStatus === 'failed' ? 'Sin cruce' : 'Pendiente'}
                       </span>
                     </div>
                     <div className="mt-4 flex flex-wrap gap-2">
