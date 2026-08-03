@@ -964,6 +964,20 @@ const getAdvancePaymentSummary = (advance: Partial<TravelAdvance>) => {
   };
 };
 
+const canAdvanceReceivePayment = (advance: Partial<TravelAdvance>) => {
+  const paymentSummary = getAdvancePaymentSummary(advance);
+  if (!advance.approvalSignature) return false;
+  if (paymentSummary.approved <= 0 || paymentSummary.balance <= 0.01) return false;
+  if (['submitted', 'returned', 'rejected', 'closed'].includes(String(advance.status || ''))) return false;
+  if (isAdvanceReconciled(advance)) return false;
+  return true;
+};
+
+const isAdvanceFullyPaidForQueue = (advance: Partial<TravelAdvance>) => {
+  const paymentSummary = getAdvancePaymentSummary(advance);
+  return paymentSummary.isFullyPaid || (advance.status === 'paid' && paymentSummary.balance <= 0.01);
+};
+
 const getAdvanceJustifiedAmount = (advance: Partial<TravelAdvance>) =>
   roundCurrency(
     (advance.receipts || [])
@@ -2618,7 +2632,7 @@ export function ProjectAdministration({
       0
     );
     const pendingValidation = advances.filter((advance) => advance.status === 'submitted').length;
-    const pendingPayment = advances.filter((advance) => advance.status === 'pending_payment' || advance.status === 'partially_paid').length;
+    const pendingPayment = advances.filter(canAdvanceReceivePayment).length;
     const partiallyPaid = advances.filter((advance) => getAdvancePaymentSummary(advance).isPartiallyPaid || advance.status === 'partially_paid').length;
     const returned = advances.filter(
       (advance) =>
@@ -2816,7 +2830,7 @@ export function ProjectAdministration({
   }, [scopedContractorAccounts]);
 
   const hiddenPaidAdvancesCount = useMemo(
-    () => filteredAdvances.filter((advance) => advance.status === 'paid').length,
+    () => filteredAdvances.filter(isAdvanceFullyPaidForQueue).length,
     [filteredAdvances]
   );
 
@@ -2841,9 +2855,8 @@ export function ProjectAdministration({
   const payableAdvances = useMemo(
     () =>
       filteredAdvances.filter((advance) =>
-        advance.status === 'pending_payment' ||
-        advance.status === 'partially_paid' ||
-        (showPaidAdvances && advance.status === 'paid')
+        canAdvanceReceivePayment(advance) ||
+        (showPaidAdvances && isAdvanceFullyPaidForQueue(advance))
       ),
     [filteredAdvances, showPaidAdvances]
   );
@@ -6259,8 +6272,8 @@ export function ProjectAdministration({
       return;
     }
     const latestAdvance = advances.find((advance) => advance.id === paymentAdvance.id) || paymentAdvance;
-    if (!['pending_payment', 'partially_paid'].includes(latestAdvance.status)) {
-      toast.error('Este anticipo ya no está pendiente de pago.');
+    if (!canAdvanceReceivePayment(latestAdvance)) {
+      toast.error('Este anticipo no tiene saldo pendiente de pago.');
       return;
     }
     if (!paymentFile) {
@@ -8033,12 +8046,12 @@ export function ProjectAdministration({
                           <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>
                           <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'rejectAdvance', advance })} className="border-rose-200 text-rose-700">Rechazar</Button>
                         </>}
-                        {['pending_payment', 'partially_paid'].includes(advance.status) && canValidate && <>
-                          <Button type="button" size="sm" onClick={() => openAdvancePayment(advance)} className="bg-violet-600 text-white hover:bg-violet-700"><CreditCard size={14} className="mr-2" />{advance.status === 'partially_paid' ? 'Registrar saldo' : 'Registrar pago'}</Button>
+                        {canAdvanceReceivePayment(advance) && canValidate && <>
+                          <Button type="button" size="sm" onClick={() => openAdvancePayment(advance)} className="bg-violet-600 text-white hover:bg-violet-700"><CreditCard size={14} className="mr-2" />{paymentSummary.hasPayment ? 'Registrar saldo' : 'Registrar pago'}</Button>
                           <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>
                         </>}
                         {advance.status === 'returned' && canCorrect && <Button type="button" size="sm" onClick={() => openAdvanceEditor(advance)} className="bg-orange-600 text-white hover:bg-orange-700"><PencilLine size={14} className="mr-2" />Corregir y reenviar</Button>}
-                        {advance.status === 'paid' && canManage && <Button type="button" size="sm" onClick={() => setSelectedAdvance(advance)} className="bg-sky-600 text-white hover:bg-sky-700"><ReceiptText size={14} className="mr-2" />Legalizar</Button>}
+                        {isAdvanceFullyPaidForQueue(advance) && canManage && <Button type="button" size="sm" onClick={() => setSelectedAdvance(advance)} className="bg-sky-600 text-white hover:bg-sky-700"><ReceiptText size={14} className="mr-2" />Legalizar</Button>}
                       </div>
                     </div>
                     <AdvanceLifecycle advance={advance} compact />
@@ -10136,7 +10149,7 @@ export function ProjectAdministration({
                 onSelect={(scope) => void downloadAdvanceReportOption(advance, scope)}
               />
               {(canManage || canValidate) && ['submitted', 'pending_payment', 'partially_paid', 'paid'].includes(advance.status) && <Button type="button" variant="outline" onClick={() => { setViewingAdvance(null); openAdvanceEditor(advance); }} className="border-indigo-200 text-indigo-700"><PencilLine size={15} className="mr-2" />Editar anticipo</Button>}
-              {canValidate && ['pending_payment', 'partially_paid'].includes(advance.status) && <Button type="button" onClick={() => { setViewingAdvance(null); openAdvancePayment(advance); }} className="bg-violet-600 font-bold text-white hover:bg-violet-700"><CreditCard size={15} className="mr-2" />{advance.status === 'partially_paid' ? 'Registrar saldo' : 'Registrar pago'}</Button>}
+              {canValidate && canAdvanceReceivePayment(advance) && <Button type="button" onClick={() => { setViewingAdvance(null); openAdvancePayment(advance); }} className="bg-violet-600 font-bold text-white hover:bg-violet-700"><CreditCard size={15} className="mr-2" />{paymentSummary.hasPayment ? 'Registrar saldo' : 'Registrar pago'}</Button>}
               <Button type="button" variant="outline" onClick={() => setViewingAdvance(null)}>Cerrar</Button>
             </ModalFooter>
           </ModalShell>
