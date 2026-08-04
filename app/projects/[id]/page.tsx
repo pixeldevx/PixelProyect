@@ -81,8 +81,8 @@ const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
 const DEFAULT_TASK_GROUP_COLOR = '#94a3b8';
 const PROJECT_BUDGET_ACCESS_ROLES = new Set(['admin', 'org_admin', 'manager', 'coordinador']);
-const DELETE_LINKED_DATA_CHUNK_SIZE = 8;
-const DELETE_TASK_CHUNK_SIZE = 40;
+const DELETE_TASK_CHUNK_SIZE = 6;
+const DELETE_RATE_REVERSAL_CHUNK_SIZE = 8;
 
 type TaskDeleteMode = 'single' | 'bulk' | 'tree';
 
@@ -1944,38 +1944,6 @@ export default function ProjectDetailsPage() {
         return { taskMap, taskRefs };
       };
 
-      const deleteTaskLinkedData = async (
-        taskId: string,
-        batchToUse: ReturnType<typeof writeBatch>,
-        storageDeletionPromises: Promise<void>[]
-      ) => {
-        const [qualitySnapshot, commentsSnapshot, documentsSnapshot] = await Promise.all([
-          getDocs(query(collection(db, 'projects', projectId, 'qualityEvents'), where('taskId', '==', taskId))),
-          getDocs(query(collection(db, 'projects', projectId, 'tasks', taskId, 'comments'))),
-          getDocs(query(collection(db, 'projects', projectId, 'documents'), where('taskId', '==', taskId))),
-        ]);
-
-        qualitySnapshot.docs.forEach((docSnap) => batchToUse.delete(docSnap.ref));
-        commentsSnapshot.docs.forEach((docSnap) => batchToUse.delete(docSnap.ref));
-        documentsSnapshot.docs.forEach((docSnap) => {
-          const data = docSnap.data();
-          const storagePaths = [...new Set([
-            data?.storagePath,
-            ...(Array.isArray(data?.versions)
-              ? data.versions.map((version: any) => version?.storagePath)
-              : []),
-          ].filter(Boolean))];
-          storagePaths.forEach((storagePath) => {
-            storageDeletionPromises.push(
-              deleteObject(ref(storage, storagePath)).catch((storageError) => {
-                console.warn('No se pudo eliminar el archivo asociado a la tarea:', storageError);
-              })
-            );
-          });
-          batchToUse.delete(docSnap.ref);
-        });
-      };
-
       const revertRateCard = (t: any, batchToUse: ReturnType<typeof writeBatch>) => {
         if (t.isRateCardTask && t.rateCardId && t.unitsToAdd) {
           if (!isWorkflowTaskType(t.type)) {
@@ -2086,44 +2054,17 @@ export default function ProjectDetailsPage() {
           .filter((parentTaskId: string | undefined): parentTaskId is string => typeof parentTaskId === 'string' && !taskIdsToDelete.has(parentTaskId))
       );
 
-      for (let index = 0; index < taskIdsToDeleteArray.length; index += DELETE_LINKED_DATA_CHUNK_SIZE) {
-        const chunk = taskIdsToDeleteArray.slice(index, index + DELETE_LINKED_DATA_CHUNK_SIZE);
-        const linkedDataBatch = writeBatch(db);
-        const storageDeletionPromises: Promise<void>[] = [];
-
-        setDeletionProgress({
-          stage: 'Limpiando datos asociados',
-          processed: Math.min(index + chunk.length, taskIdsToDeleteArray.length),
-          total: taskIdsToDeleteArray.length,
-          detail: `Comentarios, documentos y calidad · ${Math.min(index + chunk.length, taskIdsToDeleteArray.length)}/${taskIdsToDeleteArray.length}`,
-        });
-
-        for (const taskId of chunk) {
-          await deleteTaskLinkedData(taskId, linkedDataBatch, storageDeletionPromises);
-          await yieldToBrowser();
-        }
-        await Promise.all(storageDeletionPromises);
-        await linkedDataBatch.commit();
-        await yieldToBrowser();
-      }
-
       setDeletionProgress({
-        stage: 'Conservando bitácora histórica',
+        stage: 'Protegiendo historial asociado',
         processed: taskIdsToDeleteArray.length,
         total: taskIdsToDeleteArray.length,
-        detail: 'Se omite la limpieza global de bitácora para evitar tiempos de espera en proyectos pesados',
+        detail: 'Documentos, calidad y bitácora se conservan como historial para evitar tiempos de espera en proyectos pesados',
       });
       await yieldToBrowser();
 
       const taskEntriesToDelete = Array.from(taskMap.entries());
       for (let index = 0; index < taskEntriesToDelete.length; index += DELETE_TASK_CHUNK_SIZE) {
         const chunk = taskEntriesToDelete.slice(index, index + DELETE_TASK_CHUNK_SIZE);
-        const deleteBatch = writeBatch(db);
-
-        chunk.forEach(([taskId, taskToRemove]) => {
-          revertRateCard(taskToRemove, deleteBatch);
-          deleteBatch.delete(taskRefs.get(taskId) || doc(db, 'projects', projectId, 'tasks', taskId));
-        });
 
         setDeletionProgress({
           stage: 'Eliminando tareas',
@@ -2132,7 +2073,35 @@ export default function ProjectDetailsPage() {
           detail: `${Math.min(index + chunk.length, taskEntriesToDelete.length)}/${taskEntriesToDelete.length} eliminadas`,
         });
 
-        await deleteBatch.commit();
+        for (const [taskId] of chunk) {
+          await deleteDoc(taskRefs.get(taskId) || doc(db, 'projects', projectId, 'tasks', taskId));
+          await yieldToBrowser();
+        }
+      }
+
+      let rateCardReversalFailed = false;
+      for (let index = 0; index < taskEntriesToDelete.length; index += DELETE_RATE_REVERSAL_CHUNK_SIZE) {
+        const chunk = taskEntriesToDelete.slice(index, index + DELETE_RATE_REVERSAL_CHUNK_SIZE);
+        const rateBatch = writeBatch(db);
+
+        chunk.forEach(([, taskToRemove]) => {
+          revertRateCard(taskToRemove, rateBatch);
+        });
+
+        setDeletionProgress({
+          stage: 'Ajustando rate cards',
+          processed: Math.min(index + chunk.length, taskEntriesToDelete.length),
+          total: taskEntriesToDelete.length,
+          detail: `${Math.min(index + chunk.length, taskEntriesToDelete.length)}/${taskEntriesToDelete.length} revisadas`,
+        });
+
+        try {
+          await rateBatch.commit();
+        } catch (rateError) {
+          rateCardReversalFailed = true;
+          console.warn('No se pudieron registrar todos los reversos de rate cards durante la eliminación:', rateError);
+          break;
+        }
         await yieldToBrowser();
       }
 
@@ -2143,12 +2112,20 @@ export default function ProjectDetailsPage() {
           total: parentTaskIdsToRefresh.size,
           detail: 'Actualizando progreso de matrices afectadas',
         });
-        const { updateParentTaskStatus } = await import('@/lib/taskUtils');
-        await Promise.all(Array.from(parentTaskIdsToRefresh).map((parentTaskId) => updateParentTaskStatus(projectId, parentTaskId)));
+        try {
+          const { updateParentTaskStatus } = await import('@/lib/taskUtils');
+          await Promise.all(Array.from(parentTaskIdsToRefresh).map((parentTaskId) => updateParentTaskStatus(projectId, parentTaskId)));
+        } catch (parentRefreshError) {
+          console.warn('No se pudieron recalcular todas las tareas padre después de eliminar:', parentRefreshError);
+          toast.warning('Las tareas se eliminaron, pero algunas matrices padre podrían requerir recálculo al refrescar.');
+        }
       }
 
       setTaskToDelete(null);
       toast.success(taskIdsToDelete.size > 1 ? `${taskIdsToDelete.size} tareas y dependientes eliminados correctamente` : "Tarea eliminada correctamente");
+      if (rateCardReversalFailed) {
+        toast.warning('Las tareas se eliminaron, pero algunos ajustes de rate cards deberán revisarse desde el panel de saneamiento.');
+      }
     } catch (error: any) {
       console.error("Error deleting task:", error);
       toast.error(`Error al eliminar la tarea: ${error.message}`);
@@ -3918,12 +3895,12 @@ export default function ProjectDetailsPage() {
 	                <>
 	                  ¿Eliminar la tarea matriz <strong className="text-slate-900">&quot;{taskToDelete.title}&quot;</strong>
 	                  {taskToDelete.dependentHint ? <> y sus <strong className="text-slate-900">{taskToDelete.dependentHint} dependientes detectadas</strong></> : null}?
-	                  {' '}Se limpiarán subtareas, workflows, comentarios, documentos, calidad y enlaces de bitácora. Esta acción no se puede deshacer.
+	                  {' '}Se eliminarán la matriz, sus subtareas y workflows. Los documentos, calidad y bitácora se conservarán como historial asociado para evitar bloqueos en proyectos pesados. Esta acción no se puede deshacer.
 	                </>
 	              ) : taskToDelete.isBulk ? (
 	                <>
 	                  ¿Estás seguro de que deseas eliminar <strong className="text-slate-900">{taskToDelete.ids.length} tareas seleccionadas</strong>?
-	                  {' '}También se eliminarán sus subtareas, workflows y datos asociados. Esta acción no se puede deshacer.
+	                  {' '}También se eliminarán sus subtareas y workflows. Los documentos, calidad y bitácora se conservarán como historial asociado. Esta acción no se puede deshacer.
 	                </>
 	              ) : (
 	                <>
