@@ -81,8 +81,8 @@ const DEFAULT_TASK_GROUP_ID = '__ungrouped__';
 const DEFAULT_TASK_GROUP_NAME = 'Sin grupo';
 const DEFAULT_TASK_GROUP_COLOR = '#94a3b8';
 const PROJECT_BUDGET_ACCESS_ROLES = new Set(['admin', 'org_admin', 'manager', 'coordinador']);
-const DELETE_LINKED_DATA_CHUNK_SIZE = 25;
-const DELETE_TASK_CHUNK_SIZE = 100;
+const DELETE_LINKED_DATA_CHUNK_SIZE = 8;
+const DELETE_TASK_CHUNK_SIZE = 40;
 
 type TaskDeleteMode = 'single' | 'bulk' | 'tree';
 
@@ -1916,10 +1916,9 @@ export default function ProjectDetailsPage() {
         return;
       }
 
-      const collectTaskTreeFromDatabase = async (rootTask: any, rootIndex: number) => {
+      const collectTaskTreeFromLoadedTasks = async (rootTask: any, rootIndex: number) => {
         const taskMap = new Map<string, any>();
         const taskRefs = new Map<string, ReturnType<typeof doc>>();
-        const pendingParentIds: string[] = [rootTask.id];
         const localDependentIds = collectDependentTaskIds(rootTask.id);
 
         localDependentIds.forEach((taskId) => {
@@ -1934,38 +1933,13 @@ export default function ProjectDetailsPage() {
           taskRefs.set(rootTask.id, doc(db, 'projects', projectId, 'tasks', rootTask.id));
         }
 
-        const visitedParents = new Set<string>();
-        while (pendingParentIds.length > 0) {
-          const parentId = pendingParentIds.shift();
-          if (!parentId || visitedParents.has(parentId)) continue;
-          visitedParents.add(parentId);
-
-          setDeletionProgress({
-            stage: 'Identificando dependientes',
-            processed: rootIndex,
-            total: rootTasks.length,
-            detail: `${getTaskTitle(rootTask)} · ${taskMap.size} encontradas`,
-          });
-
-          const childrenSnapshot = await getDocs(query(
-            collection(db, 'projects', projectId, 'tasks'),
-            where('parentTaskId', '==', parentId)
-          ));
-
-          childrenSnapshot.docs.forEach((docSnap) => {
-            const childWasLoaded = taskMap.has(docSnap.id);
-            if (!childWasLoaded) {
-              taskMap.set(docSnap.id, { id: docSnap.id, ...docSnap.data() });
-              taskRefs.set(docSnap.id, docSnap.ref);
-            }
-
-            if (!localDependentIds.has(docSnap.id)) {
-              pendingParentIds.push(docSnap.id);
-            }
-          });
-
-          await yieldToBrowser();
-        }
+        setDeletionProgress({
+          stage: 'Identificando dependientes',
+          processed: rootIndex,
+          total: rootTasks.length,
+          detail: `${getTaskTitle(rootTask)} · ${taskMap.size} encontradas`,
+        });
+        await yieldToBrowser();
 
         return { taskMap, taskRefs };
       };
@@ -2000,52 +1974,6 @@ export default function ProjectDetailsPage() {
           });
           batchToUse.delete(docSnap.ref);
         });
-      };
-
-      const cleanLogbookTaskLinks = async (deletedTaskIds: Set<string>) => {
-        const logbookSnapshot = await getDocs(collection(db, 'projects', projectId, 'logbookEntries'));
-        const logbookBatch = writeBatch(db);
-        let changeCount = 0;
-
-        logbookSnapshot.docs.forEach((docSnap) => {
-          const data = docSnap.data();
-          let hasChanges = false;
-
-          const derivedLinks = Array.isArray(data.derivedLinks)
-            ? data.derivedLinks.filter((link: any) => !deletedTaskIds.has(link?.taskId))
-            : data.derivedLinks;
-
-          if (Array.isArray(data.derivedLinks) && derivedLinks.length !== data.derivedLinks.length) {
-            hasChanges = true;
-          }
-
-          const actionCandidates = Array.isArray(data.actionCandidates)
-            ? data.actionCandidates.map((candidate: any) => {
-                if (!candidate?.linkedTaskId || !deletedTaskIds.has(candidate.linkedTaskId)) return candidate;
-                hasChanges = true;
-                return {
-                  ...candidate,
-                  status: 'open',
-                  linkedTaskId: null,
-                  linkedTaskTitle: null,
-                  relationType: null,
-                };
-              })
-            : data.actionCandidates;
-
-          if (!hasChanges) return;
-
-          changeCount += 1;
-          logbookBatch.update(docSnap.ref, {
-            derivedLinks,
-            actionCandidates,
-            updatedAt: serverTimestamp(),
-          });
-        });
-
-        if (changeCount > 0) {
-          await logbookBatch.commit();
-        }
       };
 
       const revertRateCard = (t: any, batchToUse: ReturnType<typeof writeBatch>) => {
@@ -2134,7 +2062,7 @@ export default function ProjectDetailsPage() {
 
       for (let index = 0; index < rootTasks.length; index += 1) {
         const rootTask = rootTasks[index];
-        const collected = await collectTaskTreeFromDatabase(rootTask, index);
+        const collected = await collectTaskTreeFromLoadedTasks(rootTask, index);
         collected.taskMap.forEach((taskToRemove, taskId) => {
           taskMap.set(taskId, taskToRemove);
         });
@@ -2170,19 +2098,22 @@ export default function ProjectDetailsPage() {
           detail: `Comentarios, documentos y calidad · ${Math.min(index + chunk.length, taskIdsToDeleteArray.length)}/${taskIdsToDeleteArray.length}`,
         });
 
-        await Promise.all(chunk.map((taskId) => deleteTaskLinkedData(taskId, linkedDataBatch, storageDeletionPromises)));
+        for (const taskId of chunk) {
+          await deleteTaskLinkedData(taskId, linkedDataBatch, storageDeletionPromises);
+          await yieldToBrowser();
+        }
         await Promise.all(storageDeletionPromises);
         await linkedDataBatch.commit();
         await yieldToBrowser();
       }
 
       setDeletionProgress({
-        stage: 'Limpiando bitácora',
-        processed: 0,
-        total: 1,
-        detail: 'Quitando enlaces hacia tareas eliminadas',
+        stage: 'Conservando bitácora histórica',
+        processed: taskIdsToDeleteArray.length,
+        total: taskIdsToDeleteArray.length,
+        detail: 'Se omite la limpieza global de bitácora para evitar tiempos de espera en proyectos pesados',
       });
-      await cleanLogbookTaskLinks(taskIdsToDelete);
+      await yieldToBrowser();
 
       const taskEntriesToDelete = Array.from(taskMap.entries());
       for (let index = 0; index < taskEntriesToDelete.length; index += DELETE_TASK_CHUNK_SIZE) {
