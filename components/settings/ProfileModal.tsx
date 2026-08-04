@@ -45,6 +45,8 @@ export function ProfileModal({ user, isOpen, onClose }: ProfileModalProps) {
             ? getDocs(query(collection(db, 'team_members'), where('email', '==', user.email)))
             : Promise.resolve(null),
           getDocs(query(collection(db, 'team_members'), where('authUserId', '==', user.uid))),
+          getDocs(query(collection(db, 'team_members'), where('uid', '==', user.uid))),
+          getDocs(query(collection(db, 'team_members'), where('userId', '==', user.uid))),
         ]);
         const member = memberSnapshots.flatMap((snapshot) => snapshot?.docs || [])[0]?.data() || {};
         if (!active) return;
@@ -143,6 +145,8 @@ export function ProfileModal({ user, isOpen, onClose }: ProfileModalProps) {
           ? getDocs(query(collection(db, 'team_members'), where('email', '==', user.email)))
           : Promise.resolve(null),
         getDocs(query(collection(db, 'team_members'), where('authUserId', '==', user.uid))),
+        getDocs(query(collection(db, 'team_members'), where('uid', '==', user.uid))),
+        getDocs(query(collection(db, 'team_members'), where('userId', '==', user.uid))),
       ]);
       const matchingMembers = new Map<string, any>();
       memberSnapshots.forEach((snapshot) => snapshot?.docs.forEach((memberDoc) => matchingMembers.set(memberDoc.id, memberDoc)));

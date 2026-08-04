@@ -2163,6 +2163,7 @@ export function ProjectAdministration({
   const [contractorDocumentFiles, setContractorDocumentFiles] = useState<Partial<Record<ContractorAccountDocumentKind, File | null>>>({});
   const [isContractorParafiscalsDragging, setIsContractorParafiscalsDragging] = useState(false);
   const [contractorPaymentFile, setContractorPaymentFile] = useState<File | null>(null);
+  const [currentUserProfile, setCurrentUserProfile] = useState<any | null>(null);
   const [contractorAccountAction, setContractorAccountAction] = useState<{
     type: 'approve' | 'return' | 'reject' | 'account' | 'pay' | 'delete' | 'reassign';
     account: ContractorPaymentRequest;
@@ -2256,6 +2257,28 @@ export function ProjectAdministration({
   const [receiptSupportAction, setReceiptSupportAction] = useState<'replace' | 'reanalyze' | null>(null);
   const [expandedReceiptGroups, setExpandedReceiptGroups] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      setCurrentUserProfile(null);
+      return;
+    }
+
+    const unsubscribe = onSnapshot(
+      doc(db, 'users', currentUser.uid),
+      (profileSnapshot) => {
+        setCurrentUserProfile(profileSnapshot.exists() ? { id: profileSnapshot.id, ...profileSnapshot.data() } : null);
+      },
+      (error) => {
+        console.warn('No se pudo cargar el perfil global para validar la firma administrativa:', error);
+        setCurrentUserProfile(null);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [currentUser?.uid]);
 
   const openReviewAction = (action: NonNullable<ReviewAction>) => {
     setReviewComment('');
@@ -3662,6 +3685,45 @@ export function ProjectAdministration({
       );
     }) || null;
   }, [currentUser?.email, currentUser?.uid, teamMembers]);
+  const currentSignerProfile = useMemo(() => {
+    const currentEmail = String(currentUser?.email || '').trim().toLowerCase();
+    const profileEmail = String(currentUserProfile?.email || '').trim().toLowerCase();
+    const profileMatchesCurrentUser = Boolean(
+      currentUserProfile &&
+      (
+        currentUserProfile.id === currentUser?.uid ||
+        currentUserProfile.uid === currentUser?.uid ||
+        currentUserProfile.authUserId === currentUser?.uid ||
+        (currentEmail && profileEmail === currentEmail)
+      )
+    );
+
+    if (!currentSignerMember) {
+      if (!profileMatchesCurrentUser) return null;
+      return {
+        ...currentUserProfile,
+        id: currentUserProfile?.id || currentUser?.uid,
+        authUserId: currentUserProfile?.authUserId || currentUserProfile?.uid || currentUser?.uid,
+        email: currentUserProfile?.email || currentUser?.email || '',
+      };
+    }
+
+    if (!profileMatchesCurrentUser) return currentSignerMember;
+
+    return {
+      ...currentUserProfile,
+      ...currentSignerMember,
+      authUserId: currentSignerMember.authUserId || currentUserProfile?.authUserId || currentUserProfile?.uid || currentUser?.uid,
+      signatureUrl: currentSignerMember.signatureUrl || currentUserProfile?.signatureUrl || null,
+      signatureStoragePath: currentSignerMember.signatureStoragePath || currentUserProfile?.signatureStoragePath || null,
+      roleName: currentSignerMember.roleName || currentUserProfile?.roleName || currentUserProfile?.position || currentUserProfile?.jobTitle || null,
+      position: currentSignerMember.position || currentUserProfile?.position || currentUserProfile?.jobTitle || null,
+      jobTitle: currentSignerMember.jobTitle || currentUserProfile?.jobTitle || currentUserProfile?.position || null,
+      displayName: currentSignerMember.displayName || currentUserProfile?.displayName || currentUserProfile?.name || null,
+      name: currentSignerMember.name || currentUserProfile?.name || currentUserProfile?.displayName || null,
+      email: currentSignerMember.email || currentUserProfile?.email || currentUser?.email || '',
+    };
+  }, [currentSignerMember, currentUser?.email, currentUser?.uid, currentUserProfile]);
 
   const canGlobalAdminReassignContractorAccounts = userRole === 'admin';
   const contractorMemberOptions = useMemo(() => {
@@ -3694,22 +3756,22 @@ export function ProjectAdministration({
     }) || null;
   }, [contractorMemberOptions]);
   const selectedContractorMember = useMemo(() => {
-    if (!canGlobalAdminReassignContractorAccounts) return currentSignerMember;
-    return findContractorMemberById(selectedContractorMemberId) || currentSignerMember;
-  }, [canGlobalAdminReassignContractorAccounts, currentSignerMember, findContractorMemberById, selectedContractorMemberId]);
+    if (!canGlobalAdminReassignContractorAccounts) return currentSignerProfile;
+    return findContractorMemberById(selectedContractorMemberId) || currentSignerProfile;
+  }, [canGlobalAdminReassignContractorAccounts, currentSignerProfile, findContractorMemberById, selectedContractorMemberId]);
 
   useEffect(() => {
     if (!isContractorAccountModalOpen) return;
     if (canGlobalAdminReassignContractorAccounts) {
-      if (!selectedContractorMemberId && currentSignerMember) {
-        setSelectedContractorMemberId(getContractorMemberOptionId(currentSignerMember));
+      if (!selectedContractorMemberId && currentSignerProfile) {
+        setSelectedContractorMemberId(getContractorMemberOptionId(currentSignerProfile));
       }
       return;
     }
-    setSelectedContractorMemberId(currentSignerMember ? getContractorMemberOptionId(currentSignerMember) : '');
+    setSelectedContractorMemberId(currentSignerProfile ? getContractorMemberOptionId(currentSignerProfile) : '');
   }, [
     canGlobalAdminReassignContractorAccounts,
-    currentSignerMember,
+    currentSignerProfile,
     getContractorMemberOptionId,
     isContractorAccountModalOpen,
     selectedContractorMemberId,
@@ -3730,25 +3792,25 @@ export function ProjectAdministration({
   }, [currentUser]);
 
   const buildCurrentSignatureSnapshot = useCallback((): AdvanceSignatureSnapshot | null => {
-    if (!currentUser?.uid || !currentSignerMember?.signatureUrl) return null;
+    if (!currentUser?.uid || !currentSignerProfile?.signatureUrl) return null;
     return {
-      signatureUrl: currentSignerMember.signatureUrl,
-      signatureStoragePath: currentSignerMember.signatureStoragePath || undefined,
+      signatureUrl: currentSignerProfile.signatureUrl,
+      signatureStoragePath: currentSignerProfile.signatureStoragePath || undefined,
       signerUserId: String(currentUser.uid),
-      signerMemberId: currentSignerMember.id ? String(currentSignerMember.id) : undefined,
-      name: getMemberLabel(currentSignerMember) || getCurrentUserName(currentUser),
-      email: String(currentSignerMember.email || currentUser.email || ''),
+      signerMemberId: currentSignerProfile.id ? String(currentSignerProfile.id) : undefined,
+      name: getMemberLabel(currentSignerProfile) || getCurrentUserName(currentUser),
+      email: String(currentSignerProfile.email || currentUser.email || ''),
       jobTitle: String(
-        currentSignerMember.roleName ||
-        currentSignerMember.position ||
-        currentSignerMember.jobTitle ||
-        currentSignerMember.profileRole ||
-        currentSignerMember.systemRole ||
+        currentSignerProfile.roleName ||
+        currentSignerProfile.position ||
+        currentSignerProfile.jobTitle ||
+        currentSignerProfile.profileRole ||
+        currentSignerProfile.systemRole ||
         'Sin cargo configurado'
       ),
       signedAt: new Date().toISOString(),
     };
-  }, [currentSignerMember, currentUser]);
+  }, [currentSignerProfile, currentUser]);
 
   const currentContractorTokens = useMemo(() => {
     const tokens = new Set<string>();
