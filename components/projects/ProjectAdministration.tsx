@@ -1677,6 +1677,12 @@ const isAccountingAcceptedReceipt = (
   return !isInvoiceReceipt(receipt);
 };
 
+const canReceiptBePromotedForPartialCloseAudit = (
+  receipt: Pick<AdvanceReceipt, 'documentType' | 'status'>
+) =>
+  isInvoiceReceipt(receipt) &&
+  RECEIPT_STATUSES_READY_FOR_DIAN_AUDIT.includes(receipt.status);
+
 const needsDianAccountingAudit = (receipt: Pick<AdvanceReceipt, 'documentType' | 'status'>) =>
   isInvoiceReceipt(receipt) && RECEIPT_STATUSES_READY_FOR_DIAN_AUDIT.includes(receipt.status);
 
@@ -3169,6 +3175,13 @@ export function ProjectAdministration({
         const includePayment = ['payment', 'justifications', 'partialClose', 'reconciliation', 'full'].includes(scope);
         const includeLegalizations = ['justifications', 'partialClose', 'reconciliation', 'full'].includes(scope);
         const includeReconciliation = scope === 'reconciliation' || scope === 'full';
+        const safeReportReceipts = includeLegalizations
+          ? reportReceipts.filter((receipt) =>
+              scope === 'partialClose'
+                ? isAccountingAcceptedReceipt(receipt)
+                : isApprovedReceipt(receipt)
+            )
+          : [];
         const paymentSummary = getAdvancePaymentSummary(advance);
         const paymentSupports = paymentSummary.supports;
         const unavailableAttachments: string[] = [];
@@ -3263,7 +3276,7 @@ export function ProjectAdministration({
             : Promise.resolve(null),
           includeLegalizations
             ? Promise.all(
-                reportReceipts.map((receipt) =>
+                safeReportReceipts.map((receipt) =>
                   resolveProtectedAttachment(
                     receipt.storagePath,
                     receipt.fileUrl,
@@ -3280,13 +3293,13 @@ export function ProjectAdministration({
           advance.costCenters,
           asNumber(advance.amountApproved || advance.amountRequested)
         );
-        const reportLegalizationsTotal = reportReceipts.reduce(
+        const reportLegalizationsTotal = safeReportReceipts.reduce(
           (sum, receipt) => sum + asNumber(receipt.amount),
           0
         );
         const legalizationsRows = includeLegalizations
           ? [
-              ...reportReceipts.map((receipt, index) => {
+              ...safeReportReceipts.map((receipt, index) => {
                 const documentMeta = getReceiptDocumentTypeMeta(receipt.documentType);
                 const documentNumber = receipt.invoiceNumber || receipt.cufe || 'Sin número';
                 const receiptCostCenter = getReceiptCostCenter(receipt, advance);
@@ -3301,7 +3314,7 @@ export function ProjectAdministration({
                   formatMoney(receipt.amount),
                 ];
               }),
-              ...(reportReceipts.length > 0
+              ...(safeReportReceipts.length > 0
                 ? [[
                     '',
                     'TOTAL LEGALIZACIONES ACEPTADAS',
@@ -3309,7 +3322,7 @@ export function ProjectAdministration({
                     '',
                     '',
                     '',
-                    `${reportReceipts.length} soporte${reportReceipts.length === 1 ? '' : 's'}`,
+                    `${safeReportReceipts.length} soporte${safeReportReceipts.length === 1 ? '' : 's'}`,
                     formatMoney(reportLegalizationsTotal),
                   ]]
                 : []),
@@ -3351,7 +3364,7 @@ export function ProjectAdministration({
                   ? [
                       { label: 'Anticipado', value: formatMoney(coverage.approved) },
                       { label: 'Cierre parcial', value: formatMoney(reportLegalizationsTotal) },
-                      { label: 'Legalizaciones aceptadas', value: String(reportReceipts.length) },
+                      { label: 'Legalizaciones aceptadas', value: String(safeReportReceipts.length) },
                       { label: 'Generado hasta', value: formatDate(new Date()) },
                     ]
                 : [
@@ -3457,7 +3470,7 @@ export function ProjectAdministration({
               label: scope === 'partialClose' ? 'Total cierre parcial' : 'Total legalizaciones aceptadas',
               value: formatMoney(reportLegalizationsTotal),
             },
-            { label: 'Soportes incluidos', value: String(reportReceipts.length) },
+            { label: 'Soportes incluidos', value: String(safeReportReceipts.length) },
             { label: 'Corte', value: formatDate(new Date()) },
           ] : [],
           legalizations: legalizationsRows,
@@ -3500,7 +3513,7 @@ export function ProjectAdministration({
                 })
               : [],
           legalizationAttachments: includeLegalizations
-            ? reportReceipts.flatMap((receipt, index) => {
+            ? safeReportReceipts.flatMap((receipt, index) => {
                 const asset = receiptSupportAssets[index];
                 return asset
                   ? [{
@@ -3580,7 +3593,7 @@ export function ProjectAdministration({
         scope === 'partialClose'
           ? (advance.receipts || []).map((receipt) => {
               if (isAccountingAcceptedReceipt(receipt)) return receipt;
-              if (!isInvoiceReceipt(receipt) || activeDianAuditRows.length === 0) return receipt;
+              if (!canReceiptBePromotedForPartialCloseAudit(receipt) || activeDianAuditRows.length === 0) return receipt;
 
               const auditInsight = findDianAuditInsight(receipt, activeDianAuditRows);
               if (auditInsight.status !== 'matched' || !auditInsight.match) return receipt;
