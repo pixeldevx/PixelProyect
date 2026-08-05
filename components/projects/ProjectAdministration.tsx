@@ -1712,6 +1712,7 @@ type ReceiptIdentityInput = Pick<
 
 type ReceiptDuplicateUsage = {
   advanceId: string;
+  advanceCustomId?: string | null;
   advanceTitle: string;
   requesterName: string;
   receiptId: string;
@@ -1752,6 +1753,23 @@ const getReceiptIdentity = (receipt: Partial<ReceiptIdentityInput>) => {
   }
 
   return null;
+};
+
+const getReceiptCufeIdentity = (receipt: Partial<ReceiptIdentityInput>) => {
+  const documentType = getReceiptDocumentType(receipt.documentType);
+  const cufe = normalizeCufe(String(receipt.cufe || '')).toLowerCase();
+  return documentType === 'invoice' && cufe ? `invoice:cufe:${cufe}` : null;
+};
+
+const formatDuplicateReceiptUsageMessage = (usage: ReceiptDuplicateUsage, currentAdvanceId: string) => {
+  const advanceReference = usage.advanceCustomId || usage.advanceTitle || usage.advanceId;
+  const receiptReference = usage.invoiceNumber || usage.businessName || usage.receiptId;
+  const location =
+    usage.advanceId === currentAdvanceId
+      ? `en este mismo anticipo (${advanceReference})`
+      : `en el anticipo ${advanceReference}`;
+
+  return `Ya existe una factura con este CUFE ${location}, soporte ${receiptReference}.`;
 };
 
 type DianAuditRow = {
@@ -2968,6 +2986,7 @@ export function ProjectAdministration({
 
         const usage: ReceiptDuplicateUsage = {
           advanceId: advance.id,
+          advanceCustomId: advance.customId,
           advanceTitle: advance.purpose || advance.destination || 'Anticipo sin nombre',
           requesterName: advance.requesterName || 'Solicitante',
           receiptId: receipt.id,
@@ -2996,6 +3015,20 @@ export function ProjectAdministration({
     [receiptUsageIndex]
   );
 
+  const findDuplicateCufeUsage = useCallback(
+    (receiptLike: Partial<ReceiptIdentityInput>, currentAdvanceId: string, currentReceiptId?: string) => {
+      const identity = getReceiptCufeIdentity(receiptLike);
+      if (!identity) return null;
+
+      return (
+        (receiptUsageIndex.get(identity) || []).find(
+          (usage) => !(usage.advanceId === currentAdvanceId && usage.receiptId === currentReceiptId)
+        ) || null
+      );
+    },
+    [receiptUsageIndex]
+  );
+
   const receiptGroups = useMemo(
     () =>
       filteredAdvances
@@ -3013,7 +3046,11 @@ export function ProjectAdministration({
             .reduce((sum, receipt) => sum + asNumber(receipt.amount), 0);
           const pendingCount = advanceReceipts.filter((receipt) => receipt.status === 'submitted').length;
           const returnedCount = advanceReceipts.filter((receipt) => receipt.status === 'returned').length;
-          const duplicateCount = advanceReceipts.filter((receipt) => findDuplicateReceiptUsage(receipt, advance.id)).length;
+          const duplicateCount = advanceReceipts.filter(
+            (receipt) =>
+              findDuplicateCufeUsage(receipt, advance.id, receipt.id) ||
+              findDuplicateReceiptUsage(receipt, advance.id)
+          ).length;
           const approved = asNumber(advance.amountApproved || advance.amountRequested);
           const justified = getAdvanceJustifiedAmount(advance);
           const coverage = getAdvanceFinancialCoverage({ ...advance, amountApproved: approved, amountLegalized: legalized });
@@ -3036,7 +3073,7 @@ export function ProjectAdministration({
             progress: approved > 0 ? Math.min(100, Math.round((justified / approved) * 100)) : 0,
           };
         }),
-    [filteredAdvances, findDuplicateReceiptUsage]
+    [filteredAdvances, findDuplicateCufeUsage, findDuplicateReceiptUsage]
   );
 
   const auditAdvanceGroups = useMemo(
@@ -4935,6 +4972,14 @@ export function ProjectAdministration({
     [canValidate, currentActorIds, currentUser?.email]
   );
 
+  const canAdministrativelyDeleteReceipt = canManage || canValidate;
+
+  const canDeleteReceiptForUser = useCallback(
+    (receipt: Pick<AdvanceReceipt, 'status'>, advance: TravelAdvance) =>
+      canAdministrativelyDeleteReceipt || (canDeleteUnlegalizedReceipt(receipt) && canCorrectAdvanceReceipt(advance)),
+    [canAdministrativelyDeleteReceipt, canCorrectAdvanceReceipt]
+  );
+
   const removeReceiptDocumentArtifacts = async (receipt: AdvanceReceipt) => {
     const cleanupTasks: Promise<unknown>[] = [];
     if (receipt.documentId) {
@@ -5597,18 +5642,21 @@ export function ProjectAdministration({
       toast.error('Cruza esta factura contra la base DIAN vigente antes de aprobarla.');
       return;
     }
-    const duplicateUsage = findDuplicateReceiptUsage(
-      {
-        documentType,
-        cufe,
-        invoiceNumber: receiptEditorForm.invoiceNumber,
-        taxId: receiptEditorForm.taxId,
-        businessName: receiptEditorForm.businessName,
-        amount,
-        date: receiptEditorForm.date,
-      },
-      latestAdvance.id
-    );
+    const receiptIdentityCandidate = {
+      documentType,
+      cufe,
+      invoiceNumber: receiptEditorForm.invoiceNumber,
+      taxId: receiptEditorForm.taxId,
+      businessName: receiptEditorForm.businessName,
+      amount,
+      date: receiptEditorForm.date,
+    };
+    const duplicateCufeUsage = findDuplicateCufeUsage(receiptIdentityCandidate, latestAdvance.id, latestReceipt.id);
+    if (duplicateCufeUsage) {
+      toast.error(formatDuplicateReceiptUsageMessage(duplicateCufeUsage, latestAdvance.id));
+      return;
+    }
+    const duplicateUsage = findDuplicateReceiptUsage(receiptIdentityCandidate, latestAdvance.id);
     if (duplicateUsage) {
       toast.error(`Este soporte ya fue usado en "${duplicateUsage.advanceTitle}" por ${duplicateUsage.requesterName}.`);
       return;
@@ -5847,18 +5895,21 @@ export function ProjectAdministration({
       toast.error('Este tipo de gasto requiere CUFE para reenviar la factura.');
       return;
     }
-    const duplicateUsage = findDuplicateReceiptUsage(
-      {
-        documentType,
-        cufe,
-        invoiceNumber: receiptEditorForm.invoiceNumber,
-        taxId: receiptEditorForm.taxId,
-        businessName: receiptEditorForm.businessName,
-        amount,
-        date: receiptEditorForm.date,
-      },
-      latestAdvance.id
-    );
+    const receiptIdentityCandidate = {
+      documentType,
+      cufe,
+      invoiceNumber: receiptEditorForm.invoiceNumber,
+      taxId: receiptEditorForm.taxId,
+      businessName: receiptEditorForm.businessName,
+      amount,
+      date: receiptEditorForm.date,
+    };
+    const duplicateCufeUsage = findDuplicateCufeUsage(receiptIdentityCandidate, latestAdvance.id, latestReceipt.id);
+    if (duplicateCufeUsage) {
+      toast.error(formatDuplicateReceiptUsageMessage(duplicateCufeUsage, latestAdvance.id));
+      return;
+    }
+    const duplicateUsage = findDuplicateReceiptUsage(receiptIdentityCandidate, latestAdvance.id);
     if (duplicateUsage) {
       toast.error(`Este soporte ya fue usado en "${duplicateUsage.advanceTitle}" por ${duplicateUsage.requesterName}.`);
       return;
@@ -5998,8 +6049,8 @@ export function ProjectAdministration({
       toast.error('Solo administradores o coordinadores pueden eliminar anticipos.');
       return;
     }
-    if (isDeleteReceiptAction && !canCorrectAdvanceReceipt(reviewAction.advance)) {
-      toast.error('Solo el solicitante o el área administrativa pueden eliminar soportes sin legalizar.');
+    if (isDeleteReceiptAction && !canDeleteReceiptForUser(reviewAction.receipt, reviewAction.advance)) {
+      toast.error('Solo el solicitante puede eliminar soportes sin legalizar; el área administrativa puede eliminar cualquier legalización.');
       return;
     }
     if (!isDeleteAdvanceAction && !isDeleteReceiptAction && !canValidate) {
@@ -6160,8 +6211,8 @@ export function ProjectAdministration({
       if (reviewAction.type === 'deleteReceipt') {
         const latestAdvance = advances.find((advance) => advance.id === reviewAction.advance.id) || reviewAction.advance;
         const latestReceipt = (latestAdvance.receipts || []).find((receipt) => receipt.id === reviewAction.receipt.id) || reviewAction.receipt;
-        if (!canDeleteUnlegalizedReceipt(latestReceipt)) {
-          toast.error('Este soporte ya está legalizado y no puede eliminarse desde legalizaciones.');
+        if (!canDeleteReceiptForUser(latestReceipt, latestAdvance)) {
+          toast.error('No tienes permisos para eliminar este soporte.');
           return;
         }
 
@@ -6206,7 +6257,7 @@ export function ProjectAdministration({
           amount: asNumber(latestReceipt.amount),
           comment: reviewComment.trim(),
         });
-        toast.success('Soporte sin legalizar eliminado.');
+        toast.success(isApprovedReceipt(latestReceipt) ? 'Legalización aprobada eliminada por el área administrativa.' : 'Soporte sin legalizar eliminado.');
       }
 
       setReviewAction(null);
@@ -6899,18 +6950,21 @@ export function ProjectAdministration({
       return;
     }
     const cufe = normalizeCufe(receiptForm.cufe);
-    const duplicateUsage = findDuplicateReceiptUsage(
-      {
-        documentType,
-        cufe,
-        invoiceNumber: receiptForm.invoiceNumber,
-        taxId: receiptForm.taxId,
-        businessName: receiptForm.businessName,
-        amount,
-        date: receiptForm.date,
-      },
-      latestAdvance.id
-    );
+    const receiptIdentityCandidate = {
+      documentType,
+      cufe,
+      invoiceNumber: receiptForm.invoiceNumber,
+      taxId: receiptForm.taxId,
+      businessName: receiptForm.businessName,
+      amount,
+      date: receiptForm.date,
+    };
+    const duplicateCufeUsage = findDuplicateCufeUsage(receiptIdentityCandidate, latestAdvance.id);
+    if (duplicateCufeUsage) {
+      toast.error(formatDuplicateReceiptUsageMessage(duplicateCufeUsage, latestAdvance.id));
+      return;
+    }
+    const duplicateUsage = findDuplicateReceiptUsage(receiptIdentityCandidate, latestAdvance.id);
     if (duplicateUsage) {
       toast.error(`Este soporte ya fue usado en "${duplicateUsage.advanceTitle}" por ${duplicateUsage.requesterName}.`);
       return;
@@ -7635,7 +7689,7 @@ export function ProjectAdministration({
         return;
       }
 
-      const identity = getReceiptIdentity({
+      const receiptIdentityCandidate = {
         documentType,
         cufe,
         invoiceNumber: draft.invoiceNumber,
@@ -7643,25 +7697,20 @@ export function ProjectAdministration({
         businessName: draft.businessName,
         amount,
         date: draft.date || todayInputValue(),
-      });
+      };
+      const identity = getReceiptIdentity(receiptIdentityCandidate);
       if (identity && batchIdentities.has(identity)) {
         toast.error(`${draft.fileName} repite el mismo soporte de ${batchIdentities.get(identity)} dentro del lote.`);
         return;
       }
       if (identity) batchIdentities.set(identity, draft.fileName);
 
-      const duplicateUsage = findDuplicateReceiptUsage(
-        {
-          documentType,
-          cufe,
-          invoiceNumber: draft.invoiceNumber,
-          taxId: draft.taxId,
-          businessName: draft.businessName,
-          amount,
-          date: draft.date || todayInputValue(),
-        },
-        latestAdvance.id
-      );
+      const duplicateCufeUsage = findDuplicateCufeUsage(receiptIdentityCandidate, latestAdvance.id);
+      if (duplicateCufeUsage) {
+        toast.error(`${draft.fileName}: ${formatDuplicateReceiptUsageMessage(duplicateCufeUsage, latestAdvance.id)}`);
+        return;
+      }
+      const duplicateUsage = findDuplicateReceiptUsage(receiptIdentityCandidate, latestAdvance.id);
       if (duplicateUsage) {
         toast.error(`${draft.fileName} ya fue usado en "${duplicateUsage.advanceTitle}" por ${duplicateUsage.requesterName}.`);
         return;
@@ -8358,8 +8407,10 @@ export function ProjectAdministration({
                             const statusMeta = getReceiptStatusMeta(receipt.status);
                             const receiptCostCenter = getReceiptCostCenter(receipt, group.advance);
                             const isReturned = receipt.status === 'returned';
-                            const duplicateUsage = findDuplicateReceiptUsage(receipt, group.advance.id);
-                            const canDeleteReceipt = canDeleteUnlegalizedReceipt(receipt) && canCorrectAdvanceReceipt(group.advance);
+                            const duplicateUsage =
+                              findDuplicateCufeUsage(receipt, group.advance.id, receipt.id) ||
+                              findDuplicateReceiptUsage(receipt, group.advance.id);
+                            const canDeleteReceipt = canDeleteReceiptForUser(receipt, group.advance);
                             return (
                               <div
                                 key={receipt.id}
@@ -11312,7 +11363,9 @@ export function ProjectAdministration({
             reviewAction.type === 'deleteAdvance'
               ? 'Eliminar anticipo'
               : reviewAction.type === 'deleteReceipt'
-                ? 'Eliminar soporte sin legalizar'
+                ? isApprovedReceipt(reviewAction.receipt)
+                  ? 'Eliminar legalización aprobada'
+                  : 'Eliminar soporte'
               : reviewAction.type.includes('Receipt')
               ? 'Devolver soporte'
               : reviewAction.type === 'approveAdvance'
@@ -11325,7 +11378,7 @@ export function ProjectAdministration({
             reviewAction.type === 'deleteAdvance'
               ? 'Se eliminará el anticipo y los registros administrativos asociados.'
               : reviewAction.type === 'deleteReceipt'
-                ? 'Se retirará este soporte pendiente de la legalización del anticipo.'
+                ? 'Se retirará este soporte de la legalización del anticipo y se recalcularán los saldos.'
               : 'La decisión quedará en la trazabilidad administrativa.'
           }
           onClose={() => setReviewAction(null)}
@@ -11337,7 +11390,7 @@ export function ProjectAdministration({
           )}
           {reviewAction.type === 'deleteReceipt' && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold leading-6 text-rose-700">
-              Se eliminará &quot;{reviewAction.receipt.fileName || reviewAction.receipt.categoryName}&quot; de las legalizaciones pendientes. Los soportes ya legalizados no se pueden eliminar desde aquí.
+              Se eliminará &quot;{reviewAction.receipt.fileName || reviewAction.receipt.categoryName}&quot; de las legalizaciones del anticipo. Si ya estaba aprobada, esta acción solo está permitida para el perfil administrativo.
             </div>
           )}
           {reviewAction.type === 'approveAdvance' && (
