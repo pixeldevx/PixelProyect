@@ -58,7 +58,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const canAccessInventoryOverview = INVENTORY_OVERVIEW_ROLES.has(userRole || '') && rolePermissions.inventoryOverview;
   const canAccessBillingOverview = Boolean(rolePermissions.billingOverview);
   const canAccessPersonnelOverview = Boolean(rolePermissions.personnelOverview);
-  const canAccessAdministrationOverview = Boolean(rolePermissions.administrationProjectView);
+  const canAccessAdministrationOverview = Boolean(user);
   const roleLabel = ROLE_LABELS[userRole || ''] || 'Perfil de usuario';
   const displayName = user?.displayName || user?.email?.split('@')[0] || 'Usuario';
   const userInitial = displayName.charAt(0).toUpperCase();

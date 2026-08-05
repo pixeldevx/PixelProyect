@@ -25,11 +25,13 @@ import {
   onSnapshot,
   orderBy,
   query,
+  where,
 } from '@/lib/supabase/document-store';
 import { db } from '@/lib/backend';
 import { useAuth } from '@/hooks/useAuth';
 import { useRolePermissions } from '@/hooks/useRolePermissions';
 import { belongsToAnyOrganization, organizationNameFor } from '@/lib/organizations';
+import { ProjectAdministration } from '@/components/projects/ProjectAdministration';
 
 type ProjectRow = {
   id: string;
@@ -54,6 +56,14 @@ type TeamMemberRow = {
   organizationIds?: string[];
 };
 
+type TaskRow = {
+  id: string;
+  projectId?: string;
+  projectName?: string;
+  organizationId?: string;
+  [key: string]: any;
+};
+
 type ReceiptStatus = 'submitted' | 'approved' | 'approved_modified' | 'returned' | 'rejected';
 
 type AdvanceReceipt = {
@@ -65,6 +75,7 @@ type AdvanceReceipt = {
 type TravelAdvance = {
   id: string;
   projectId: string;
+  requesterId?: string;
   customId?: string | null;
   requesterName?: string;
   requesterEmail?: string;
@@ -224,6 +235,9 @@ const isApprovedReceipt = (receipt: AdvanceReceipt) =>
 const getProjectIdFromAdvanceSnapshot = (snapshot: any, data: any) =>
   data.projectId || snapshot.ref?.parent?.parent?.id || '';
 
+const getProjectIdFromTaskSnapshot = (snapshot: any, data: any) =>
+  data.projectId || snapshot.ref?.parent?.parent?.id || '';
+
 const buildCurrentUserIds = (user: any, teamMembers: TeamMemberRow[]) => {
   const email = normalizeEmail(user?.email);
   return Array.from(new Set([
@@ -232,6 +246,18 @@ const buildCurrentUserIds = (user: any, teamMembers: TeamMemberRow[]) => {
       .filter((member) => member.authUserId === user?.uid || normalizeEmail(member.email) === email)
       .map((member) => member.id),
   ].filter(Boolean)));
+};
+
+const recordBelongsToCurrentUser = (
+  record: { requesterId?: string | null; contractorId?: string | null; requesterEmail?: string | null; contractorEmail?: string | null },
+  user: any,
+  currentUserIds: string[]
+) => {
+  const email = normalizeEmail(user?.email);
+  const currentIds = new Set(currentUserIds.map(String));
+  const recordIds = [record.requesterId, record.contractorId].filter(Boolean).map(String);
+  const recordEmails = [record.requesterEmail, record.contractorEmail].map(normalizeEmail).filter(Boolean);
+  return recordIds.some((id) => currentIds.has(id)) || Boolean(email && recordEmails.includes(email));
 };
 
 const userCanAccessProject = ({
@@ -339,13 +365,30 @@ export default function AdministrationOverviewPage() {
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [advances, setAdvances] = useState<TravelAdvance[]>([]);
   const [advancesLoaded, setAdvancesLoaded] = useState(false);
+  const [operationProjectId, setOperationProjectId] = useState('');
+  const [operationProjectTasks, setOperationProjectTasks] = useState<TaskRow[]>([]);
+  const [operationProjectTasksLoading, setOperationProjectTasksLoading] = useState(false);
+  const [multiProjectActivityTasks, setMultiProjectActivityTasks] = useState<TaskRow[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedProjectId, setSelectedProjectId] = useState('all');
   const [selectedOrganizationId, setSelectedOrganizationId] = useState('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [showClosed, setShowClosed] = useState(false);
 
-  const canAccessAdministration = Boolean(permissions.administrationProjectView);
+  const canAccessAdministration = Boolean(user);
+  const hasAdministrativeControl = Boolean(
+    permissions.administrationProjectView &&
+      (
+        permissions.administrationProjectManage ||
+        permissions.administrationProjectValidate ||
+        userRole === 'admin' ||
+        userRole === 'org_admin' ||
+        (userRole ? ADMIN_ORGANIZATION_SCOPE_ROLES.has(userRole) : false)
+      )
+  );
+  const canManageAdministration = Boolean(hasAdministrativeControl && permissions.administrationProjectManage);
+  const canValidateAdministration = Boolean(hasAdministrativeControl && permissions.administrationProjectValidate);
+  const canConfigureAdministration = Boolean(hasAdministrativeControl && permissions.administrationConfigManage);
   const loading = canAccessAdministration && !advancesLoaded;
   const managedOrganizationIds = useMemo(
     () => (userOrganizationIds.length > 0 ? userOrganizationIds : userOrganizationId ? [userOrganizationId] : []),
@@ -453,6 +496,105 @@ export default function AdministrationOverviewPage() {
         : 'all',
     [selectedProjectId, visibleProjects]
   );
+  const visibleProjectIds = useMemo(() => visibleProjects.map((project) => project.id), [visibleProjects]);
+  const operationProject = useMemo(
+    () => visibleProjects.find((project) => project.id === operationProjectId) || visibleProjects[0] || null,
+    [operationProjectId, visibleProjects]
+  );
+  const activeOperationProjectId = operationProject?.id || '';
+  const operationActivityTasks = useMemo(() => {
+    const byKey = new Map<string, TaskRow>();
+    [...multiProjectActivityTasks, ...operationProjectTasks].forEach((task) => {
+      if (!task?.id) return;
+      const taskProjectId = task.projectId || activeOperationProjectId;
+      byKey.set(`${taskProjectId}:${task.id}`, {
+        ...task,
+        projectId: taskProjectId,
+        projectName: task.projectName || projectById.get(taskProjectId)?.name || operationProject?.name || '',
+      });
+    });
+    return [...byKey.values()];
+  }, [activeOperationProjectId, multiProjectActivityTasks, operationProject?.name, operationProjectTasks, projectById]);
+
+  useEffect(() => {
+    if (!visibleProjects.length) {
+      if (operationProjectId) setOperationProjectId('');
+      return;
+    }
+    if (!operationProjectId || !visibleProjects.some((project) => project.id === operationProjectId)) {
+      setOperationProjectId(visibleProjects[0].id);
+    }
+  }, [operationProjectId, visibleProjects]);
+
+  useEffect(() => {
+    if (!canAccessAdministration || !activeOperationProjectId) {
+      setOperationProjectTasks([]);
+      setOperationProjectTasksLoading(false);
+      return;
+    }
+
+    setOperationProjectTasksLoading(true);
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'projects', activeOperationProjectId, 'tasks'), orderBy('createdAt', 'desc')),
+      (snapshot) => {
+        setOperationProjectTasks(
+          snapshot.docs.map((taskDoc) => {
+            const data = taskDoc.data();
+            return {
+              id: taskDoc.id,
+              ...data,
+              projectId: data.projectId || activeOperationProjectId,
+              projectName: data.projectName || operationProject?.name || '',
+            } as TaskRow;
+          })
+        );
+        setOperationProjectTasksLoading(false);
+      },
+      (error) => {
+        console.error('Error loading tasks for global administration workspace:', error);
+        setOperationProjectTasks([]);
+        setOperationProjectTasksLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [activeOperationProjectId, canAccessAdministration, operationProject?.name]);
+
+  useEffect(() => {
+    if (!canAccessAdministration || visibleProjectIds.length === 0) {
+      setMultiProjectActivityTasks([]);
+      return;
+    }
+
+    const projectIdsForQuery = visibleProjectIds.slice(0, 100);
+    const unsubscribe = onSnapshot(
+      query(collectionGroup(db, 'tasks'), where('projectId', 'in', projectIdsForQuery)),
+      (snapshot) => {
+        setMultiProjectActivityTasks(
+          snapshot.docs
+            .map((taskDoc) => {
+              const data = taskDoc.data();
+              const taskProjectId = getProjectIdFromTaskSnapshot(taskDoc, data);
+              if (!taskProjectId || !scopedProjectIds.has(taskProjectId)) return null;
+              const sourceProject = projectById.get(taskProjectId);
+              return {
+                id: taskDoc.id,
+                ...data,
+                projectId: taskProjectId,
+                projectName: data.projectName || sourceProject?.name || '',
+              } as TaskRow;
+            })
+            .filter(Boolean) as TaskRow[]
+        );
+      },
+      (error) => {
+        console.error('Error loading cross-project activities for contractor accounts:', error);
+        setMultiProjectActivityTasks([]);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [canAccessAdministration, projectById, scopedProjectIds, visibleProjectIds]);
 
   const baseFilteredAdvances = useMemo(() => {
     const search = normalizeText(searchTerm);
@@ -460,6 +602,7 @@ export default function AdministrationOverviewPage() {
 
     return advances
       .filter((advance) => scopedProjectIds.has(advance.projectId))
+      .filter((advance) => hasAdministrativeControl || recordBelongsToCurrentUser(advance, user, currentUserIds))
       .filter((advance) => visibleProjectIds.has(advance.projectId))
       .filter((advance) => activeSelectedProjectId === 'all' || advance.projectId === activeSelectedProjectId)
       .filter((advance) => showClosed || (advance.status !== 'closed' && advance.reconciliationStatus !== 'reconciled'))
@@ -546,10 +689,10 @@ export default function AdministrationOverviewPage() {
                 <BriefcaseBusiness size={14} />
                 Administrativo general
               </div>
-              <h1 className="mt-3 text-2xl font-black tracking-tight sm:text-3xl">Control administrativo de anticipos</h1>
+              <h1 className="mt-3 text-2xl font-black tracking-tight sm:text-3xl">Administrativo global</h1>
               <p className="mt-2 text-sm font-semibold leading-6 text-slate-300">
-                Agrupa los anticipos de los proyectos donde tienes alcance administrativo, con filtros por proyecto,
-                organización, estado y búsqueda operativa.
+                Radica anticipos, legaliza soportes y presenta cuentas de cobro desde un solo lugar. Pixel muestra
+                únicamente lo que corresponde a tu perfil; los administrativos conservan el control global por proyecto.
               </p>
             </div>
             <div className="grid grid-cols-2 gap-2 text-right sm:grid-cols-4">
@@ -658,6 +801,73 @@ export default function AdministrationOverviewPage() {
                   </button>
                 ))}
               </div>
+            </section>
+
+            <section className="overflow-hidden rounded-xl border border-indigo-100 bg-white shadow-sm">
+              <div className="border-b border-indigo-100 bg-gradient-to-r from-indigo-50 to-white p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <div className="inline-flex items-center gap-2 rounded-md bg-indigo-100 px-3 py-1 text-[11px] font-black uppercase tracking-[0.2em] text-indigo-700">
+                      <BriefcaseBusiness size={14} />
+                      Ambiente operativo
+                    </div>
+                    <h2 className="mt-2 text-xl font-black tracking-tight text-slate-950">Radicación y gestión por proyecto</h2>
+                    <p className="mt-1 max-w-3xl text-sm font-semibold leading-6 text-slate-500">
+                      Selecciona el proyecto de trabajo. Los usuarios comunes pueden crear sus propios anticipos,
+                      legalizaciones y cuentas de cobro; los roles administrativos pueden aprobar, pagar y conciliar.
+                    </p>
+                  </div>
+                  <div className="min-w-0 lg:w-[380px]">
+                    <label className="mb-1 block text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                      Proyecto operativo
+                    </label>
+                    <select
+                      value={activeOperationProjectId}
+                      onChange={(event) => setOperationProjectId(event.target.value)}
+                      className="h-11 w-full rounded-lg border border-indigo-100 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/15"
+                    >
+                      {visibleProjects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name || project.id} · {organizationNameFor(project, organizations)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                {!hasAdministrativeControl && (
+                  <div className="mt-3 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs font-bold leading-5 text-sky-700">
+                    Estás en modo solicitante: puedes ver y modificar solo tus propias solicitudes cuando estén en tu poder.
+                  </div>
+                )}
+              </div>
+
+              {operationProject ? (
+                <div className="p-4">
+                  {operationProjectTasksLoading && (
+                    <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-500">
+                      Cargando tareas del proyecto seleccionado...
+                    </div>
+                  )}
+                  <ProjectAdministration
+                    key={operationProject.id}
+                    projectId={operationProject.id}
+                    project={operationProject}
+                    tasks={operationProjectTasks}
+                    contractorActivityTasks={operationActivityTasks}
+                    teamMembers={teamMembers}
+                    currentUser={user}
+                    userRole={userRole}
+                    canView={Boolean(operationProject)}
+                    canManage={canManageAdministration}
+                    canValidate={canValidateAdministration}
+                    canConfigure={canConfigureAdministration}
+                  />
+                </div>
+              ) : (
+                <div className="p-4">
+                  <EmptyState canAccess />
+                </div>
+              )}
             </section>
 
             {loading || permissionsLoading ? (

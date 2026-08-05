@@ -417,6 +417,8 @@ type ContractorAccountApproval = {
 type ContractorAccountActivityItem = {
   key: string;
   type: 'task' | 'subtask' | 'workflow_step';
+  projectId?: string | null;
+  projectName?: string;
   taskId: string;
   taskTitle: string;
   parentTaskId?: string | null;
@@ -657,6 +659,7 @@ type ProjectAdministrationProps = {
   projectId: string;
   project?: any;
   tasks?: any[];
+  contractorActivityTasks?: any[];
   teamMembers?: any[];
   currentUser: any;
   userRole?: string | null;
@@ -2135,6 +2138,7 @@ export function ProjectAdministration({
   projectId,
   project,
   tasks = [],
+  contractorActivityTasks,
   teamMembers = [],
   currentUser,
   userRole,
@@ -2439,13 +2443,21 @@ export function ProjectAdministration({
     () => tasks.filter((task) => advanceForm.taskIds.includes(task.id)),
     [advanceForm.taskIds, tasks]
   );
+  const contractorTaskPool = useMemo(
+    () => (Array.isArray(contractorActivityTasks) && contractorActivityTasks.length > 0 ? contractorActivityTasks : tasks),
+    [contractorActivityTasks, tasks]
+  );
   const selectedContractorAccountTasks = useMemo(
-    () => tasks.filter((task) => contractorAccountForm.taskIds.includes(task.id)),
-    [contractorAccountForm.taskIds, tasks]
+    () => contractorTaskPool.filter((task) => contractorAccountForm.taskIds.includes(task.id)),
+    [contractorAccountForm.taskIds, contractorTaskPool]
   );
   const taskById = useMemo(
     () => new Map(tasks.filter((task) => task?.id).map((task) => [task.id as string, task])),
     [tasks]
+  );
+  const contractorTaskById = useMemo(
+    () => new Map(contractorTaskPool.filter((task) => task?.id).map((task) => [task.id as string, task])),
+    [contractorTaskPool]
   );
   const getAdvanceTaskGroupId = useCallback((task: any) => {
     const visited = new Set<string>();
@@ -2495,13 +2507,19 @@ export function ProjectAdministration({
     () => new Set(tasks.map((task) => task?.parentTaskId).filter(Boolean).map(String)),
     [tasks]
   );
+  const contractorTaskIdsWithChildren = useMemo(
+    () => new Set(contractorTaskPool.map((task) => task?.parentTaskId).filter(Boolean).map(String)),
+    [contractorTaskPool]
+  );
   const contractorBillableActivities = useMemo(() => {
-    return tasks.flatMap((task) => {
+    return contractorTaskPool.flatMap((task) => {
       if (!task?.id) return [];
       const groupId = getAdvanceTaskGroupId(task);
       const group = advanceTaskGroupById.get(groupId);
-      const parentTask = task.parentTaskId ? taskById.get(task.parentTaskId) : null;
+      const parentTask = task.parentTaskId ? contractorTaskById.get(task.parentTaskId) : null;
       const base = {
+        projectId: task.projectId || projectId,
+        projectName: task.projectName || project?.name || '',
         taskId: String(task.id),
         parentTaskId: task.parentTaskId || null,
         rootTaskId: parentTask?.id ? String(parentTask.id) : String(task.id),
@@ -2537,7 +2555,7 @@ export function ProjectAdministration({
         });
       }
 
-      if (taskIdsWithChildren.has(String(task.id))) return [];
+      if (contractorTaskIdsWithChildren.has(String(task.id))) return [];
 
       const completedAt = toDateInputValue(getTaskCompletedDate(task));
       const dueDate = toDateInputValue(getTaskDueDate(task));
@@ -2560,7 +2578,7 @@ export function ProjectAdministration({
         actorTokens: collectTaskActorTokens(task),
       }];
     });
-  }, [advanceTaskGroupById, getAdvanceTaskGroupId, taskById, taskIdsWithChildren, tasks]);
+  }, [advanceTaskGroupById, contractorTaskById, contractorTaskIdsWithChildren, contractorTaskPool, getAdvanceTaskGroupId, project?.name, projectId]);
   const filteredAdvanceTasks = useMemo(() => {
     const search = normalizeTaskSearchText(advanceTaskSearch);
 
@@ -2645,8 +2663,40 @@ export function ProjectAdministration({
     }
   }, [advanceForm.costCenterId, costCenterOptions]);
 
+  const advanceActorIds = useMemo(() => {
+    const ids = new Set<string>();
+    const push = (value: unknown) => {
+      const normalized = String(value || '').trim();
+      if (normalized) ids.add(normalized);
+    };
+    push(currentUser?.uid);
+    teamMembers.forEach((member) => {
+      const emailMatches =
+        currentUser?.email &&
+        member?.email &&
+        String(member.email).toLowerCase() === String(currentUser.email).toLowerCase();
+      if (member?.id === currentUser?.uid || member?.authUserId === currentUser?.uid || emailMatches) {
+        push(member?.id);
+        push(member?.authUserId);
+        push(member?.uid);
+      }
+    });
+    return ids;
+  }, [currentUser?.email, currentUser?.uid, teamMembers]);
+  const canSeeAllAdvances = Boolean(canManage || canValidate || userRole === 'admin' || userRole === 'org_admin');
+  const canCreateAdvance = Boolean(currentUser?.uid);
+  const scopedAdvances = useMemo(() => {
+    if (canSeeAllAdvances) return advances;
+    const currentEmail = String(currentUser?.email || '').trim().toLowerCase();
+    return advances.filter((advance) => {
+      const requesterId = String(advance.requesterId || '').trim();
+      const requesterEmail = String(advance.requesterEmail || '').trim().toLowerCase();
+      return Boolean(requesterId && advanceActorIds.has(requesterId)) || Boolean(currentEmail && requesterEmail === currentEmail);
+    });
+  }, [advanceActorIds, advances, canSeeAllAdvances, currentUser?.email]);
+
   const metrics = useMemo(() => {
-    const activeAdvances = advances.filter((advance) => advance.status !== 'rejected');
+    const activeAdvances = scopedAdvances.filter((advance) => advance.status !== 'rejected');
     const requested = activeAdvances.reduce((sum, advance) => sum + asNumber(advance.amountRequested), 0);
     const anticipated = activeAdvances.reduce(
       (sum, advance) => sum + asNumber(advance.amountApproved || advance.amountRequested),
@@ -2660,16 +2710,18 @@ export function ProjectAdministration({
       (sum, advance) => sum + asNumber(advance.amountApproved || advance.amountRequested),
       0
     );
-    const pendingValidation = advances.filter((advance) => advance.status === 'submitted').length;
-    const pendingPayment = advances.filter(canAdvanceReceivePayment).length;
-    const partiallyPaid = advances.filter((advance) => getAdvancePaymentSummary(advance).isPartiallyPaid || advance.status === 'partially_paid').length;
-    const returned = advances.filter(
+    const pendingValidation = scopedAdvances.filter((advance) => advance.status === 'submitted').length;
+    const pendingPayment = scopedAdvances.filter(canAdvanceReceivePayment).length;
+    const partiallyPaid = scopedAdvances.filter((advance) => getAdvancePaymentSummary(advance).isPartiallyPaid || advance.status === 'partially_paid').length;
+    const returned = scopedAdvances.filter(
       (advance) =>
         advance.status === 'returned' || (advance.receipts || []).some((receipt) => receipt.status === 'returned')
     ).length;
-    const realAdminPayments = payments
-      .filter((payment) => payment.source === 'advance_receipt' && payment.status !== 'cancelled')
-      .reduce((sum, payment) => sum + asNumber(payment.amount), 0);
+    const realAdminPayments = canSeeAllAdvances
+      ? payments
+          .filter((payment) => payment.source === 'advance_receipt' && payment.status !== 'cancelled')
+          .reduce((sum, payment) => sum + asNumber(payment.amount), 0)
+      : 0;
 
     return {
       requested,
@@ -2686,13 +2738,13 @@ export function ProjectAdministration({
       returned,
       realAdminPayments,
     };
-  }, [advances, payments]);
+  }, [canSeeAllAdvances, payments, scopedAdvances]);
 
   const filteredAdvances = useMemo(() => {
     const search = advanceSearch.trim().toLowerCase();
-    if (!search) return advances;
+    if (!search) return scopedAdvances;
 
-    return advances.filter((advance) => {
+    return scopedAdvances.filter((advance) => {
       const linkedTaskTitles =
         Array.isArray(advance.taskTitles) && advance.taskTitles.length > 0
           ? advance.taskTitles
@@ -2718,7 +2770,7 @@ export function ProjectAdministration({
 
       return haystack.includes(search);
     });
-  }, [advanceSearch, advances]);
+  }, [advanceSearch, scopedAdvances]);
 
   const projectOrganizationIds = useMemo(() => getOrganizationIds(project), [project]);
   const projectOrganization = useMemo(() => {
@@ -2894,7 +2946,7 @@ export function ProjectAdministration({
 
   const receipts = useMemo(
     () =>
-      advances.flatMap((advance) =>
+      scopedAdvances.flatMap((advance) =>
         (advance.receipts || []).map((receipt) => ({
           ...receipt,
           advanceId: advance.id,
@@ -2903,7 +2955,7 @@ export function ProjectAdministration({
           advance,
         }))
       ),
-    [advances]
+    [scopedAdvances]
   );
 
   const receiptUsageIndex = useMemo(() => {
@@ -5255,7 +5307,7 @@ export function ProjectAdministration({
   };
 
   const handleCreateAdvance = async () => {
-    if (!canManage) {
+    if (!canCreateAdvance) {
       toast.error('No tienes permisos para crear anticipos.');
       return;
     }
@@ -6823,7 +6875,7 @@ export function ProjectAdministration({
   };
 
   const handleCreateReceipt = async () => {
-    if (!selectedAdvance || !canManage) return;
+    if (!selectedAdvance || (!canManage && !canCorrectAdvanceReceipt(selectedAdvance))) return;
     const category = categoryOptions.find((item) => item.id === receiptForm.categoryId);
     const costCenter = costCenterOptions.find((item) => item.id === receiptForm.costCenterId);
     const amount = asNumber(receiptForm.amount);
@@ -7555,7 +7607,7 @@ export function ProjectAdministration({
   };
 
   const handleCreateAiReceipts = async () => {
-    if (!selectedAdvance || !canManage) return;
+    if (!selectedAdvance || (!canManage && !canCorrectAdvanceReceipt(selectedAdvance))) return;
     const readyDrafts = aiReceiptDrafts.filter((draft) => draft.status !== 'error');
     if (readyDrafts.length === 0) {
       toast.error('No hay soportes listos para guardar.');
@@ -7904,7 +7956,7 @@ export function ProjectAdministration({
                 Dominios base
               </Button>
             )}
-            {adminWorkspace === 'advances' && canManage && (
+            {adminWorkspace === 'advances' && canCreateAdvance && (
               <Button type="button" onClick={openNewAdvance} className="bg-emerald-500 font-bold text-white hover:bg-emerald-600">
                 <Plus size={17} className="mr-2" />
                 Nuevo anticipo
@@ -7946,16 +7998,22 @@ export function ProjectAdministration({
       <>
       <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap gap-2">
-          {[
-            ['requests', 'Anticipos', advances.filter((advance) => showReconciledAdvances || !isAdvanceReconciled(advance)).length],
-            ['approvals', 'Anticipos por aprobar', approvalAdvances.length],
-            ['payables', 'Anticipos por pagar', payableAdvances.length],
-            ['receipts', 'Legalizaciones', receipts.length],
-            ['audit', 'Auditoría DIAN', auditPendingCount + auditAlertCount],
-            ['conciliation', 'Conciliación', reconciliationAdvances.filter((item) => item.advance.reconciliationStatus !== 'reconciled').length],
-            ['payments', 'Costos reales', realCostAdvanceGroups.length],
-            ['settings', 'Dominios', categoryOptions.length + costCenterOptions.length],
-          ].map(([id, label, count]) => (
+	          {(canManage || canValidate
+	            ? [
+	                ['requests', 'Anticipos', scopedAdvances.filter((advance) => showReconciledAdvances || !isAdvanceReconciled(advance)).length],
+	                ['approvals', 'Anticipos por aprobar', approvalAdvances.length],
+	                ['payables', 'Anticipos por pagar', payableAdvances.length],
+	                ['receipts', 'Legalizaciones', receipts.length],
+	                ['audit', 'Auditoría DIAN', auditPendingCount + auditAlertCount],
+	                ['conciliation', 'Conciliación', reconciliationAdvances.filter((item) => item.advance.reconciliationStatus !== 'reconciled').length],
+	                ['payments', 'Costos reales', realCostAdvanceGroups.length],
+	                ['settings', 'Dominios', categoryOptions.length + costCenterOptions.length],
+	              ]
+	            : [
+	                ['requests', 'Mis anticipos', requestAdvances.length],
+	                ['receipts', 'Mis legalizaciones', receipts.length],
+	              ]
+	          ).map(([id, label, count]) => (
             <button
               key={String(id)}
               type="button"
@@ -7970,15 +8028,21 @@ export function ProjectAdministration({
               <span className={`rounded-md px-1.5 py-0.5 text-[11px] ${view === id ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-600'}`}>{count}</span>
             </button>
           ))}
-        </div>
-        <div className="flex flex-wrap gap-2 text-xs font-bold">
-          <span className="rounded-md bg-amber-50 px-2 py-1 text-amber-700">{metrics.pendingValidation} por validar</span>
-          <span className="rounded-md bg-violet-50 px-2 py-1 text-violet-700">{metrics.pendingPayment} por pagar</span>
-          <span className="rounded-md bg-fuchsia-50 px-2 py-1 text-fuchsia-700">{metrics.partiallyPaid} abonados</span>
-          <span className="rounded-md bg-cyan-50 px-2 py-1 text-cyan-700">{auditPendingCount} por auditar</span>
-          <span className="rounded-md bg-red-50 px-2 py-1 text-red-700">{auditAlertCount} alertas DIAN</span>
-          <span className="rounded-md bg-orange-50 px-2 py-1 text-orange-700">{metrics.returned} devueltos</span>
-        </div>
+	        </div>
+	        <div className="flex flex-wrap gap-2 text-xs font-bold">
+	          {canManage || canValidate ? (
+	            <>
+	              <span className="rounded-md bg-amber-50 px-2 py-1 text-amber-700">{metrics.pendingValidation} por validar</span>
+	              <span className="rounded-md bg-violet-50 px-2 py-1 text-violet-700">{metrics.pendingPayment} por pagar</span>
+	              <span className="rounded-md bg-fuchsia-50 px-2 py-1 text-fuchsia-700">{metrics.partiallyPaid} abonados</span>
+	              <span className="rounded-md bg-cyan-50 px-2 py-1 text-cyan-700">{auditPendingCount} por auditar</span>
+	              <span className="rounded-md bg-red-50 px-2 py-1 text-red-700">{auditAlertCount} alertas DIAN</span>
+	              <span className="rounded-md bg-orange-50 px-2 py-1 text-orange-700">{metrics.returned} devueltos</span>
+	            </>
+	          ) : (
+	            <span className="rounded-md bg-sky-50 px-2 py-1 text-sky-700">Modo solicitante · solo tus trámites</span>
+	          )}
+	        </div>
       </div>
 
       {loading ? (
@@ -8015,12 +8079,12 @@ export function ProjectAdministration({
                     ? 'Ocultar conciliados'
                     : `Mostrar conciliados${hiddenReconciledAdvancesCount ? ` (${hiddenReconciledAdvancesCount})` : ''}`}
                 </button>
-                <span className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-500 ring-1 ring-slate-200">
-                  {requestAdvances.length} de {advances.length}
-                </span>
-              </div>
-              {advances.length === 0 ? (
-                <EmptyState title="No hay anticipos registrados" body="Crea el primer anticipo de viaje para iniciar el control administrativo del proyecto." />
+	                <span className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-500 ring-1 ring-slate-200">
+	                  {requestAdvances.length} de {scopedAdvances.length}
+	                </span>
+	              </div>
+	              {scopedAdvances.length === 0 ? (
+	                <EmptyState title="No hay anticipos registrados" body="Crea el primer anticipo de viaje para iniciar el control administrativo del proyecto." />
               ) : requestAdvances.length === 0 ? (
                 <EmptyState
                   title="Sin anticipos encontrados"
@@ -8126,7 +8190,7 @@ export function ProjectAdministration({
                           <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>
                         </>}
                         {advance.status === 'returned' && canCorrect && <Button type="button" size="sm" onClick={() => openAdvanceEditor(advance)} className="bg-orange-600 text-white hover:bg-orange-700"><PencilLine size={14} className="mr-2" />Corregir y reenviar</Button>}
-                        {isAdvanceFullyPaidForQueue(advance) && canManage && <Button type="button" size="sm" onClick={() => setSelectedAdvance(advance)} className="bg-sky-600 text-white hover:bg-sky-700"><ReceiptText size={14} className="mr-2" />Legalizar</Button>}
+                        {isAdvanceFullyPaidForQueue(advance) && (canManage || canCorrectAdvanceReceipt(advance)) && <Button type="button" size="sm" onClick={() => setSelectedAdvance(advance)} className="bg-sky-600 text-white hover:bg-sky-700"><ReceiptText size={14} className="mr-2" />Legalizar</Button>}
                       </div>
                     </div>
                     <AdvanceLifecycle advance={advance} compact />
@@ -9354,10 +9418,15 @@ export function ProjectAdministration({
                                     <span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-400">
                                       <span className="h-2 w-2 rounded-full" style={{ backgroundColor: advanceTaskGroupById.get(activity.groupId || '')?.color || '#94a3b8' }} />
                                       {activity.groupName || 'Sin grupo'}
-                                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-600 ring-1 ring-slate-200">
-                                        {activity.type === 'workflow_step' ? 'Paso workflow' : activity.type === 'subtask' ? 'Subtarea' : 'Tarea'}
-                                      </span>
-                                      {activity.rootTaskTitle && activity.rootTaskTitle !== activity.taskTitle && <span className="truncate">Raíz: {activity.rootTaskTitle}</span>}
+	                                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-600 ring-1 ring-slate-200">
+	                                        {activity.type === 'workflow_step' ? 'Paso workflow' : activity.type === 'subtask' ? 'Subtarea' : 'Tarea'}
+	                                      </span>
+	                                      {activity.projectName && (
+	                                        <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-indigo-700 ring-1 ring-indigo-100">
+	                                          {activity.projectName}
+	                                        </span>
+	                                      )}
+	                                      {activity.rootTaskTitle && activity.rootTaskTitle !== activity.taskTitle && <span className="truncate">Raíz: {activity.rootTaskTitle}</span>}
                                       <span className={`rounded-full px-2 py-0.5 ring-1 ${status.className}`}>{status.label}</span>
                                       <span>{formatDate(activity.date)}</span>
                                     </span>
@@ -12091,7 +12160,7 @@ function AdvanceCard({
             Ver anticipo
           </Button>
           <AdvanceReportMenu advance={advance} onSelect={onGenerateReport} />
-          {canManage && isAdvanceReadyForLegalization(advance) && (
+          {(canManage || canCorrect) && isAdvanceReadyForLegalization(advance) && (
             <Button type="button" size="sm" onClick={onOpenReceipt} className="bg-emerald-600 text-white hover:bg-emerald-700">
               <ReceiptText size={15} className="mr-2" />
               Legalizar
