@@ -210,6 +210,10 @@ type AdvanceReceipt = {
   accountingAuditRecommendation?: string;
   accountingAuditProviderHistory?: DianProviderHistoryItem[];
   accountingAuditCreditNotes?: DianProviderHistoryItem[];
+  accountingClosureId?: string;
+  accountingClosureKind?: 'partial' | 'final';
+  accountingClosureSequence?: number;
+  accountingClosedAt?: string;
   billingPaymentId?: string;
   aiExtracted?: boolean;
   aiConfidence?: number;
@@ -254,6 +258,27 @@ type AdvanceReconciliationStatus = 'pending_validation' | 'pending_return' | 'pe
 
 type AdvanceReportScope = 'advance' | 'payment' | 'justifications' | 'partialClose' | 'reconciliation' | 'full';
 type DianAuditStatusFilter = 'all' | 'pending' | 'alerts' | 'passed';
+
+type AdvanceAccountingClosure = {
+  id: string;
+  kind: 'partial' | 'final';
+  sequence: number;
+  title: string;
+  createdAt: string;
+  createdBy?: string | null;
+  createdByName?: string;
+  receiptIds: string[];
+  receiptSnapshots: AdvanceReceipt[];
+  amount: number;
+  supportCount: number;
+  previousClosedAmount: number;
+  cumulativeClosedAmount: number;
+  pendingAcceptedAmount: number;
+  reportScope: 'partialClose';
+  auditBatchIds?: string[];
+  auditBatchNames?: string[];
+  note?: string;
+};
 
 type AdvanceSignatureSnapshot = {
   signatureUrl: string;
@@ -311,6 +336,9 @@ type TravelAdvance = {
   status: 'submitted' | 'pending_payment' | 'partially_paid' | 'paid' | 'approved' | 'completed' | 'returned' | 'rejected' | 'closed';
   items: AdvanceItem[];
   receipts?: AdvanceReceipt[];
+  accountingClosures?: AdvanceAccountingClosure[];
+  lastAccountingClosureAt?: any;
+  finalAccountingClosureId?: string | null;
   dianAuditBatches?: Array<{
     id: string;
     fileName: string;
@@ -1007,15 +1035,62 @@ const getAdvanceReconciliation = (advance: Partial<TravelAdvance>) => {
 const isAdvanceReconciled = (advance: Partial<TravelAdvance>) =>
   advance.reconciliationStatus === 'reconciled' || advance.status === 'closed';
 
+const getAdvanceAccountingClosures = (advance: Partial<TravelAdvance>) =>
+  [...(advance.accountingClosures || [])].sort((left, right) => {
+    const sequenceDiff = asNumber(left.sequence) - asNumber(right.sequence);
+    if (sequenceDiff !== 0) return sequenceDiff;
+    const leftDate = getDateValue(left.createdAt)?.getTime() || 0;
+    const rightDate = getDateValue(right.createdAt)?.getTime() || 0;
+    return leftDate - rightDate;
+  });
+
+const getClosedAccountingReceiptIds = (advance: Partial<TravelAdvance>) => {
+  const ids = new Set<string>();
+  getAdvanceAccountingClosures(advance).forEach((closure) => {
+    (closure.receiptIds || []).forEach((receiptId) => ids.add(receiptId));
+  });
+  (advance.receipts || []).forEach((receipt) => {
+    if (receipt.accountingClosureId) ids.add(receipt.id);
+  });
+  return ids;
+};
+
+const getUnclosedAccountingAcceptedReceipts = (advance: Partial<TravelAdvance>) => {
+  const closedIds = getClosedAccountingReceiptIds(advance);
+  return (advance.receipts || []).filter(
+    (receipt) => isAccountingAcceptedReceipt(receipt) && !closedIds.has(receipt.id)
+  );
+};
+
+const getAccountingClosureReceipts = (
+  closure: AdvanceAccountingClosure,
+  advance: Partial<TravelAdvance>
+) =>
+  (closure.receiptSnapshots || []).length > 0
+    ? closure.receiptSnapshots
+    : (advance.receipts || []).filter((receipt) => (closure.receiptIds || []).includes(receipt.id));
+
+const hasFinalAccountingClosure = (advance: Partial<TravelAdvance>) =>
+  getAdvanceAccountingClosures(advance).some((closure) => closure.kind === 'final') ||
+  Boolean(advance.finalAccountingClosureId);
+
+const isAdvanceReadyForTotalAccountingClosure = (advance: Partial<TravelAdvance>) =>
+  advance.status === 'completed' || advance.status === 'closed' || Boolean(advance.completedAt);
+
+const hasBlockingAccountingClosureReceipts = (advance: Partial<TravelAdvance>) =>
+  (advance.receipts || []).some(
+    (receipt) => receipt.status !== 'rejected' && !isAccountingAcceptedReceipt(receipt)
+  );
+
 const getAdvanceReportAvailability = (advance: Partial<TravelAdvance>) => {
   const paymentSummary = getAdvancePaymentSummary(advance);
   const hasPayment = paymentSummary.hasPayment;
   const hasLegalizations = (advance.receipts || []).some(
     (receipt) => isApprovedReceipt(receipt)
   );
-  const hasPartialClose = (advance.receipts || []).some(
-    (receipt) => isAccountingAcceptedReceipt(receipt)
-  );
+  const hasPartialClose =
+    getUnclosedAccountingAcceptedReceipts(advance).length > 0 ||
+    getAdvanceAccountingClosures(advance).length > 0;
   const hasEnteredReconciliation =
     advance.status === 'completed' ||
     advance.status === 'closed' ||
@@ -3076,26 +3151,33 @@ export function ProjectAdministration({
     [filteredAdvances, findDuplicateCufeUsage, findDuplicateReceiptUsage]
   );
 
-  const auditAdvanceGroups = useMemo(
-    () =>
-      filteredAdvances
-        .filter((advance) => advance.status !== 'closed' && advance.reconciliationStatus !== 'reconciled')
-        .map((advance) => {
-          const auditReceipts = (advance.receipts || []).filter(needsDianAccountingAudit);
-          const pending = auditReceipts.filter((receipt) => receipt.status === 'audit_pending' || receipt.status === 'approved' || receipt.status === 'approved_modified');
-          const alerts = auditReceipts.filter(hasDianAccountingAuditAlert);
-          const passed = (advance.receipts || []).filter((receipt) => receipt.status === 'audit_passed');
-          return {
-            advance,
-            receipts: auditReceipts,
-            pending,
-            alerts,
-            passed,
-          };
-        })
-        .filter((group) => group.receipts.length > 0 || group.passed.length > 0),
-    [filteredAdvances]
-  );
+	  const auditAdvanceGroups = useMemo(
+	    () =>
+	      filteredAdvances
+	        .filter((advance) => {
+	          const hasAccountingClosures = getAdvanceAccountingClosures(advance).length > 0;
+	          return hasAccountingClosures || (advance.status !== 'closed' && advance.reconciliationStatus !== 'reconciled');
+	        })
+	        .map((advance) => {
+	          const auditReceipts = (advance.receipts || []).filter(needsDianAccountingAudit);
+	          const pending = auditReceipts.filter((receipt) => receipt.status === 'audit_pending' || receipt.status === 'approved' || receipt.status === 'approved_modified');
+	          const alerts = auditReceipts.filter(hasDianAccountingAuditAlert);
+	          const passed = (advance.receipts || []).filter((receipt) => receipt.status === 'audit_passed');
+	          const closures = getAdvanceAccountingClosures(advance);
+	          const unclosedAcceptedReceipts = getUnclosedAccountingAcceptedReceipts(advance);
+	          return {
+	            advance,
+	            receipts: auditReceipts,
+	            pending,
+	            alerts,
+	            passed,
+	            closures,
+	            unclosedAcceptedReceipts,
+	          };
+	        })
+	        .filter((group) => group.receipts.length > 0 || group.passed.length > 0 || group.closures.length > 0),
+	    [filteredAdvances]
+	  );
 
   const auditPendingCount = useMemo(
     () => auditAdvanceGroups.reduce((sum, group) => sum + group.pending.length, 0),
@@ -3141,10 +3223,22 @@ export function ProjectAdministration({
           group.advance.purpose,
           ...(group.advance.taskTitles || []),
         ].join(' '));
-        const advanceMatches = Boolean(search && advanceSearchText.includes(search));
-        const visibleReceipts = [...group.receipts, ...group.passed].filter((receipt) => {
-          if (!matchesStatus(receipt)) return false;
-          if (!search || advanceMatches) return true;
+	        const advanceMatches = Boolean(search && advanceSearchText.includes(search));
+	        const closureSearchText = normalizeSearch(
+	          group.closures.map((closure) => [
+	            closure.title,
+	            closure.kind,
+	            closure.sequence,
+	            closure.amount,
+	            closure.createdByName,
+	            closure.createdAt,
+	            ...(closure.auditBatchNames || []),
+	          ].join(' ')).join(' ')
+	        );
+	        const closuresMatch = Boolean(search && closureSearchText.includes(search));
+	        const visibleReceipts = [...group.receipts, ...group.passed].filter((receipt) => {
+	          if (!matchesStatus(receipt)) return false;
+	          if (!search || advanceMatches) return true;
 
           const receiptSearchText = normalizeSearch([
             receipt.categoryName,
@@ -3163,13 +3257,19 @@ export function ProjectAdministration({
           return receiptSearchText.includes(search);
         });
 
-        return {
-          ...group,
-          visibleReceipts,
-        };
-      })
-      .filter((group) => group.visibleReceipts.length > 0);
-  }, [auditAdvanceGroups, dianAuditSearch, dianAuditStatusFilter]);
+	        return {
+	          ...group,
+	          visibleReceipts,
+	          advanceMatches,
+	          closuresMatch,
+	        };
+	      })
+	      .filter(
+	        (group) =>
+	          group.visibleReceipts.length > 0 ||
+	          (group.closures.length > 0 && (!search || group.advanceMatches || group.closuresMatch))
+	      );
+	  }, [auditAdvanceGroups, dianAuditSearch, dianAuditStatusFilter]);
 
   const latestDianAuditBatch = useMemo(
     () => dianAuditBatches.find((batch) => Array.isArray(batch.rows) && batch.rows.length > 0) || dianAuditBatches[0] || null,
@@ -3251,6 +3351,7 @@ export function ProjectAdministration({
       filePrefix,
       scope,
       realCost,
+      accountingClosure,
     }: {
       advance: TravelAdvance;
       reportReceipts: AdvanceReceipt[];
@@ -3258,18 +3359,26 @@ export function ProjectAdministration({
       filePrefix: string;
       scope: AdvanceReportScope;
       realCost?: number;
+      accountingClosure?: AdvanceAccountingClosure;
     }) => {
       const toastId = toast.loading('Preparando el expediente y anexando los soportes...');
       try {
         const includePayment = ['payment', 'justifications', 'partialClose', 'reconciliation', 'full'].includes(scope);
         const includeLegalizations = ['justifications', 'partialClose', 'reconciliation', 'full'].includes(scope);
         const includeReconciliation = scope === 'reconciliation' || scope === 'full';
+        const reportGeneratedAt = accountingClosure?.createdAt || new Date();
+        const closureKindLabel = accountingClosure?.kind === 'final' ? 'Cierre total' : 'Cierre parcial';
+        const receiptSource = accountingClosure
+          ? accountingClosure.receiptSnapshots || []
+          : reportReceipts;
         const safeReportReceipts = includeLegalizations
-          ? reportReceipts.filter((receipt) =>
-              scope === 'partialClose'
+          ? accountingClosure
+            ? receiptSource
+            : receiptSource.filter((receipt) =>
+                scope === 'partialClose'
                 ? isAccountingAcceptedReceipt(receipt)
                 : isApprovedReceipt(receipt)
-            )
+              )
           : [];
         const paymentSummary = getAdvancePaymentSummary(advance);
         const paymentSupports = paymentSummary.supports;
@@ -3421,8 +3530,8 @@ export function ProjectAdministration({
           title,
           advanceId: advance.customId || 'Sin ID contable',
           projectName: project?.name || project?.title || projectId,
-          status: (statusConfig[advance.status] || statusConfig.submitted).label,
-          generatedAt: formatDate(new Date()),
+	          status: (statusConfig[advance.status] || statusConfig.submitted).label,
+	          generatedAt: formatDate(reportGeneratedAt),
           sections: {
             payment: includePayment,
             legalizations: includeLegalizations,
@@ -3450,12 +3559,20 @@ export function ProjectAdministration({
                     { label: 'Saldo', value: formatMoney(Math.max(0, coverage.balance)) },
                   ]
                 : scope === 'partialClose'
-                  ? [
-                      { label: 'Anticipado', value: formatMoney(coverage.approved) },
-                      { label: 'Cierre parcial', value: formatMoney(reportLegalizationsTotal) },
-                      { label: 'Legalizaciones aceptadas', value: String(safeReportReceipts.length) },
-                      { label: 'Generado hasta', value: formatDate(new Date()) },
-                    ]
+                  ? accountingClosure
+                    ? [
+                        { label: 'Anticipado', value: formatMoney(coverage.approved) },
+                        { label: closureKindLabel, value: formatMoney(reportLegalizationsTotal) },
+                        { label: 'Cierres previos', value: formatMoney(accountingClosure.previousClosedAmount) },
+                        { label: 'Acumulado cerrado', value: formatMoney(accountingClosure.cumulativeClosedAmount) },
+                        { label: 'Soportes del corte', value: String(safeReportReceipts.length) },
+                      ]
+                    : [
+	                      { label: 'Anticipado', value: formatMoney(coverage.approved) },
+	                      { label: 'Cierre parcial', value: formatMoney(reportLegalizationsTotal) },
+	                      { label: 'Legalizaciones aceptadas', value: String(safeReportReceipts.length) },
+	                      { label: 'Generado hasta', value: formatDate(reportGeneratedAt) },
+	                    ]
                 : [
                     { label: 'Anticipado', value: formatMoney(coverage.approved) },
                     { label: 'Justificado', value: formatMoney(getAdvanceJustifiedAmount(advance)) },
@@ -3552,16 +3669,47 @@ export function ProjectAdministration({
               label: 'Periodo',
               value: `${formatDate(advance.travelStart)} - ${formatDate(advance.travelEnd)}`,
             },
-            { label: 'Proyecto', value: project?.name || project?.title || projectId },
-          ] : [],
-          legalizationSummary: includeLegalizations ? [
-            {
-              label: scope === 'partialClose' ? 'Total cierre parcial' : 'Total legalizaciones aceptadas',
-              value: formatMoney(reportLegalizationsTotal),
-            },
-            { label: 'Soportes incluidos', value: String(safeReportReceipts.length) },
-            { label: 'Corte', value: formatDate(new Date()) },
-          ] : [],
+	            { label: 'Proyecto', value: project?.name || project?.title || projectId },
+	            ...(accountingClosure
+	              ? [
+	                  {
+	                    label: 'Cierre contable',
+	                    value: `${closureKindLabel} No. ${accountingClosure.sequence}`,
+	                  },
+	                  {
+	                    label: 'Fecha del cierre',
+	                    value: formatDate(accountingClosure.createdAt),
+	                  },
+	                  {
+	                    label: 'Cierres anteriores',
+	                    value: formatMoney(accountingClosure.previousClosedAmount),
+	                  },
+	                  {
+	                    label: 'Acumulado con este cierre',
+	                    value: formatMoney(accountingClosure.cumulativeClosedAmount),
+	                  },
+	                ]
+	              : []),
+	          ] : [],
+	          legalizationSummary: includeLegalizations ? [
+	            {
+	              label: accountingClosure
+	                ? `Total ${closureKindLabel.toLowerCase()}`
+	                : scope === 'partialClose'
+	                  ? 'Total cierre parcial'
+	                  : 'Total legalizaciones aceptadas',
+	              value: formatMoney(reportLegalizationsTotal),
+	            },
+	            { label: 'Soportes incluidos', value: String(safeReportReceipts.length) },
+	            { label: 'Corte', value: formatDate(reportGeneratedAt) },
+	            ...(accountingClosure
+	              ? [
+	                  { label: 'Cierres previos', value: formatMoney(accountingClosure.previousClosedAmount) },
+	                  { label: 'Acumulado cerrado', value: formatMoney(accountingClosure.cumulativeClosedAmount) },
+	                  { label: 'Pendiente aceptado sin cerrar', value: formatMoney(accountingClosure.pendingAcceptedAmount) },
+	                ]
+	              : []),
+	          ] : [],
           legalizations: legalizationsRows,
           reconciliationDetails: includeReconciliation ? [
             {
@@ -3678,6 +3826,12 @@ export function ProjectAdministration({
         return;
       }
 
+      const accountingClosures = getAdvanceAccountingClosures(advance);
+      const latestAccountingClosure = accountingClosures[accountingClosures.length - 1];
+      const closureForReport =
+        scope === 'partialClose' && getUnclosedAccountingAcceptedReceipts(advance).length === 0
+          ? latestAccountingClosure
+          : undefined;
       const receiptsForReport =
         scope === 'partialClose'
           ? (advance.receipts || []).map((receipt) => {
@@ -3714,11 +3868,17 @@ export function ProjectAdministration({
       const reportReceipts =
         scope === 'advance' || scope === 'payment'
           ? []
+          : closureForReport
+            ? closureForReport.receiptSnapshots || []
           : receiptsForReport.filter((receipt) =>
               scope === 'partialClose'
-                ? isAccountingAcceptedReceipt(receipt)
+                ? isAccountingAcceptedReceipt(receipt) && !getClosedAccountingReceiptIds(advance).has(receipt.id)
                 : isApprovedReceipt(receipt)
             );
+      if (scope === 'partialClose' && reportReceipts.length === 0 && !closureForReport) {
+        toast.info('No hay facturas nuevas para cierre parcial. Consulta los cierres históricos del anticipo.');
+        return;
+      }
       const reportMeta = {
         advance: {
           title: 'Informe del anticipo',
@@ -3733,8 +3893,8 @@ export function ProjectAdministration({
           filePrefix: 'anticipo-con-legalizaciones',
         },
         partialClose: {
-          title: 'Cierre parcial del anticipo',
-          filePrefix: 'cierre-parcial-anticipo',
+          title: closureForReport?.title || 'Cierre parcial del anticipo',
+          filePrefix: closureForReport?.kind === 'final' ? 'cierre-total-anticipo' : 'cierre-parcial-anticipo',
         },
         reconciliation: {
           title: 'Anticipo y conciliación',
@@ -3753,6 +3913,7 @@ export function ProjectAdministration({
         filePrefix: reportMeta.filePrefix,
         scope,
         realCost,
+        accountingClosure: closureForReport,
       });
     },
     [activeDianAuditFileName, activeDianAuditRows, downloadAdvanceDossier, latestDianAuditBatch]
@@ -6249,13 +6410,16 @@ export function ProjectAdministration({
           reconciliationStatus: shouldStayCompleted && hasReceipts ? latestAdvance.reconciliationStatus || null : null,
           updatedAt: serverTimestamp(),
         });
-        await removeReceiptDocumentArtifacts(latestReceipt);
+        if (!latestReceipt.accountingClosureId) {
+          await removeReceiptDocumentArtifacts(latestReceipt);
+        }
         await logAdministrativeEvent(latestAdvance.id, 'receipt_deleted', {
           receiptId: latestReceipt.id,
           documentId: latestReceipt.documentId || null,
           fileName: latestReceipt.fileName || null,
           amount: asNumber(latestReceipt.amount),
           comment: reviewComment.trim(),
+          preservedForAccountingClosure: Boolean(latestReceipt.accountingClosureId),
         });
         toast.success(isApprovedReceipt(latestReceipt) ? 'Legalización aprobada eliminada por el área administrativa.' : 'Soporte sin legalizar eliminado.');
       }
@@ -7376,6 +7540,132 @@ export function ProjectAdministration({
     } catch (error: any) {
       console.error('Error accepting DIAN audit alert:', error);
       toast.error(error?.message || 'No se pudo aceptar la alerta DIAN.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCreateAccountingClosure = async (advance: TravelAdvance, kind: 'partial' | 'final') => {
+    if (!canValidate) {
+      toast.error('Solo el área administrativa puede crear cierres contables.');
+      return;
+    }
+
+    const latestAdvance = advances.find((item) => item.id === advance.id) || advance;
+    const existingClosures = getAdvanceAccountingClosures(latestAdvance);
+    if (hasFinalAccountingClosure(latestAdvance)) {
+      toast.info('Este anticipo ya tiene cierre contable total.');
+      return;
+    }
+    if (kind === 'partial' && isAdvanceReadyForTotalAccountingClosure(latestAdvance)) {
+      toast.info('El anticipo ya fue cerrado por el funcionario. Usa cierre total para congelar el último corte.');
+      return;
+    }
+    if (kind === 'final' && !isAdvanceReadyForTotalAccountingClosure(latestAdvance)) {
+      toast.error('El cierre total se habilita cuando el funcionario cierre el anticipo.');
+      return;
+    }
+    if (kind === 'final' && hasBlockingAccountingClosureReceipts(latestAdvance)) {
+      toast.error('Antes del cierre total no deben quedar legalizaciones pendientes, devueltas o por auditoría DIAN.');
+      return;
+    }
+
+    const closedIds = getClosedAccountingReceiptIds(latestAdvance);
+    const acceptedReceipts = (latestAdvance.receipts || []).filter(isAccountingAcceptedReceipt);
+    const receiptsToClose = acceptedReceipts.filter((receipt) => !closedIds.has(receipt.id));
+    if (kind === 'partial' && receiptsToClose.length === 0) {
+      toast.info('No hay facturas nuevas auditadas para cierre parcial.');
+      return;
+    }
+    if (kind === 'final' && receiptsToClose.length === 0 && existingClosures.length === 0) {
+      toast.info('No hay legalizaciones auditadas para crear un cierre total.');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const sequence = existingClosures.length + 1;
+    const currentAmount = roundCurrency(receiptsToClose.reduce((sum, receipt) => sum + asNumber(receipt.amount), 0));
+    const previousClosedAmount = roundCurrency(existingClosures.reduce((sum, closure) => sum + asNumber(closure.amount), 0));
+    const cumulativeClosedAmount = roundCurrency(previousClosedAmount + currentAmount);
+    const closingReceiptIds = new Set(receiptsToClose.map((receipt) => receipt.id));
+    const pendingAcceptedAmount = roundCurrency(
+      acceptedReceipts
+        .filter((receipt) => !closedIds.has(receipt.id) && !closingReceiptIds.has(receipt.id))
+        .reduce((sum, receipt) => sum + asNumber(receipt.amount), 0)
+    );
+    const closure: AdvanceAccountingClosure = {
+      id: safeId(),
+      kind,
+      sequence,
+      title: kind === 'final' ? 'Cierre total del anticipo' : `Cierre parcial ${sequence} del anticipo`,
+      createdAt: now,
+      createdBy: currentUser?.uid || null,
+      createdByName: getCurrentUserName(currentUser),
+      receiptIds: receiptsToClose.map((receipt) => receipt.id),
+      receiptSnapshots: receiptsToClose.map((receipt) => ({
+        ...receipt,
+        accountingClosureKind: kind,
+        accountingClosureSequence: sequence,
+        accountingClosedAt: now,
+      })),
+      amount: currentAmount,
+      supportCount: receiptsToClose.length,
+      previousClosedAmount,
+      cumulativeClosedAmount,
+      pendingAcceptedAmount,
+      reportScope: 'partialClose',
+      auditBatchIds: Array.from(new Set(receiptsToClose.map((receipt) => receipt.accountingAuditBatchId).filter(Boolean) as string[])),
+      auditBatchNames: Array.from(new Set(receiptsToClose.map((receipt) => receipt.accountingAuditBatchName).filter(Boolean) as string[])),
+    };
+    const nextClosures = [...existingClosures, closure];
+    const nextReceipts = (latestAdvance.receipts || []).map((receipt) =>
+      closingReceiptIds.has(receipt.id)
+        ? {
+            ...receipt,
+            accountingClosureId: closure.id,
+            accountingClosureKind: kind,
+            accountingClosureSequence: sequence,
+            accountingClosedAt: now,
+          }
+        : receipt
+    );
+    const updatedAdvance = {
+      ...latestAdvance,
+      receipts: nextReceipts,
+      accountingClosures: nextClosures,
+      lastAccountingClosureAt: now,
+      finalAccountingClosureId: kind === 'final' ? closure.id : latestAdvance.finalAccountingClosureId || null,
+    };
+
+    setSubmitting(true);
+    try {
+      await updateDoc(doc(db, 'projects', projectId, 'advanceRequests', latestAdvance.id), {
+        receipts: nextReceipts,
+        accountingClosures: nextClosures,
+        lastAccountingClosureAt: now,
+        finalAccountingClosureId: kind === 'final' ? closure.id : latestAdvance.finalAccountingClosureId || null,
+        updatedAt: serverTimestamp(),
+      });
+      await logAdministrativeEvent(latestAdvance.id, kind === 'final' ? 'accounting_final_close_created' : 'accounting_partial_close_created', {
+        closureId: closure.id,
+        sequence,
+        amount: currentAmount,
+        receiptIds: closure.receiptIds,
+        previousClosedAmount,
+        cumulativeClosedAmount,
+      });
+      await downloadAdvanceDossier({
+        advance: updatedAdvance,
+        reportReceipts: closure.receiptSnapshots,
+        title: closure.title,
+        filePrefix: kind === 'final' ? 'cierre-total-anticipo' : 'cierre-parcial-anticipo',
+        scope: 'partialClose',
+        accountingClosure: closure,
+      });
+      toast.success(`${kind === 'final' ? 'Cierre total' : 'Cierre parcial'} guardado como histórico.`);
+    } catch (error: any) {
+      console.error('Error creating accounting closure:', error);
+      toast.error(error?.message || 'No se pudo crear el cierre contable.');
     } finally {
       setSubmitting(false);
     }
@@ -8641,11 +8931,28 @@ export function ProjectAdministration({
                   body={dianAuditSearch.trim() || dianAuditStatusFilter !== 'all' ? 'Prueba con otro proveedor, NIT, CUFE, factura o cambia el filtro de estado.' : 'Las facturas aparecerán aquí cuando sean aprobadas desde Legalizaciones. Los recibos de caja no requieren cruce DIAN.'}
                 />
               ) : (
-                visibleDianAuditGroups.map((group) => {
-                  const hasActiveDianFilter = Boolean(dianAuditSearch.trim()) || dianAuditStatusFilter !== 'all';
-                  const isCollapsed = collapsedDianAuditGroups[group.advance.id] ?? (!hasActiveDianFilter && group.alerts.length === 0);
-                  return (
-                    <section key={group.advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+	                visibleDianAuditGroups.map((group) => {
+	                  const hasActiveDianFilter = Boolean(dianAuditSearch.trim()) || dianAuditStatusFilter !== 'all';
+	                  const isCollapsed = collapsedDianAuditGroups[group.advance.id] ?? (!hasActiveDianFilter && group.alerts.length === 0);
+	                  const accountingClosures = group.closures;
+	                  const finalAccountingClosure = accountingClosures.find((closure) => closure.kind === 'final');
+	                  const unclosedAcceptedReceipts = group.unclosedAcceptedReceipts;
+	                  const requesterClosedForTotal = isAdvanceReadyForTotalAccountingClosure(group.advance);
+	                  const closureBlockedReceipts = hasBlockingAccountingClosureReceipts(group.advance);
+	                  const canCreatePartialClosure =
+	                    canValidate &&
+	                    !requesterClosedForTotal &&
+	                    !finalAccountingClosure &&
+	                    unclosedAcceptedReceipts.length > 0;
+	                  const canCreateFinalClosure =
+	                    canValidate &&
+	                    requesterClosedForTotal &&
+	                    !finalAccountingClosure &&
+	                    !closureBlockedReceipts &&
+	                    (unclosedAcceptedReceipts.length > 0 || accountingClosures.length > 0);
+	                  const closedAccountingAmount = accountingClosures.reduce((sum, closure) => sum + asNumber(closure.amount), 0);
+	                  return (
+	                    <section key={group.advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                       <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50 p-4 lg:flex-row lg:items-center lg:justify-between">
                         <button
                           type="button"
@@ -8660,9 +8967,11 @@ export function ProjectAdministration({
                               <span className="rounded-md bg-cyan-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700 ring-1 ring-cyan-100">Auditoría DIAN</span>
                               {group.advance.customId && <span className="rounded-md bg-slate-900 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white">ID {group.advance.customId}</span>}
                               {group.pending.length > 0 && <span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-amber-700 ring-1 ring-amber-100">{group.pending.length} por auditar</span>}
-                              {group.alerts.length > 0 && <span className="rounded-md bg-red-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-red-700 ring-1 ring-red-100">{group.alerts.length} alerta{group.alerts.length === 1 ? '' : 's'}</span>}
-                              {group.passed.length > 0 && <span className="rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-emerald-700 ring-1 ring-emerald-100">{group.passed.length} auditada{group.passed.length === 1 ? '' : 's'}</span>}
-                              {hasActiveDianFilter && <span className="rounded-md bg-indigo-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-indigo-700 ring-1 ring-indigo-100">{group.visibleReceipts.length} visibles</span>}
+	                              {group.alerts.length > 0 && <span className="rounded-md bg-red-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-red-700 ring-1 ring-red-100">{group.alerts.length} alerta{group.alerts.length === 1 ? '' : 's'}</span>}
+	                              {group.passed.length > 0 && <span className="rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-emerald-700 ring-1 ring-emerald-100">{group.passed.length} auditada{group.passed.length === 1 ? '' : 's'}</span>}
+	                              {unclosedAcceptedReceipts.length > 0 && <span className="rounded-md bg-violet-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-violet-700 ring-1 ring-violet-100">{unclosedAcceptedReceipts.length} nueva{unclosedAcceptedReceipts.length === 1 ? '' : 's'} para cierre</span>}
+	                              {accountingClosures.length > 0 && <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-slate-700 ring-1 ring-slate-200">{accountingClosures.length} cierre{accountingClosures.length === 1 ? '' : 's'} histórico{accountingClosures.length === 1 ? '' : 's'}</span>}
+	                              {hasActiveDianFilter && <span className="rounded-md bg-indigo-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-indigo-700 ring-1 ring-indigo-100">{group.visibleReceipts.length} visibles</span>}
                             </span>
                             <span className="mt-2 block truncate text-base font-black text-slate-950">{group.advance.purpose || group.advance.destination}</span>
                             <span className="mt-1 block text-xs font-bold text-slate-500">{group.advance.requesterName} · {group.advance.destination}</span>
@@ -8676,23 +8985,89 @@ export function ProjectAdministration({
                           >
                             {isCollapsed ? `Ver ${group.visibleReceipts.length} factura${group.visibleReceipts.length === 1 ? '' : 's'}` : 'Ocultar facturas'}
                           </button>
-                          <Button type="button" size="sm" variant="outline" onClick={() => setViewingAdvance(group.advance)}>
-                            <FileText size={14} className="mr-2" />
-                            Ver anticipo
-                          </Button>
-                        </div>
-                      </div>
-                      {isCollapsed ? (
-                        <div className="grid gap-2 p-4 md:grid-cols-4">
-                          <ReceiptGroupMetric label="Facturas visibles" value={`${group.visibleReceipts.length}`} tone="slate" />
-                          <ReceiptGroupMetric label="Por auditar" value={`${group.pending.length}`} tone="amber" />
-                          <ReceiptGroupMetric label="Alertas" value={`${group.alerts.length}`} tone={group.alerts.length ? 'rose' : 'emerald'} />
-                          <ReceiptGroupMetric label="Auditadas" value={`${group.passed.length}`} tone="emerald" />
-                        </div>
-                      ) : (
-                        <>
-                          <AdvanceLifecycle advance={group.advance} compact />
-                          <div className="divide-y divide-slate-100">
+	                          <Button type="button" size="sm" variant="outline" onClick={() => setViewingAdvance(group.advance)}>
+	                            <FileText size={14} className="mr-2" />
+	                            Ver anticipo
+	                          </Button>
+	                          {canCreatePartialClosure && (
+	                            <Button
+	                              type="button"
+	                              size="sm"
+	                              onClick={() => void handleCreateAccountingClosure(group.advance, 'partial')}
+	                              disabled={submitting}
+	                              className="bg-violet-600 text-white hover:bg-violet-700"
+	                            >
+	                              {submitting ? <Loader2 size={14} className="mr-2 animate-spin" /> : <CheckCircle2 size={14} className="mr-2" />}
+	                              Cerrar parcial
+	                            </Button>
+	                          )}
+	                          {canCreateFinalClosure && (
+	                            <Button
+	                              type="button"
+	                              size="sm"
+	                              onClick={() => void handleCreateAccountingClosure(group.advance, 'final')}
+	                              disabled={submitting}
+	                              className="bg-emerald-600 text-white hover:bg-emerald-700"
+	                            >
+	                              {submitting ? <Loader2 size={14} className="mr-2 animate-spin" /> : <CheckCircle2 size={14} className="mr-2" />}
+	                              Cierre total
+	                            </Button>
+	                          )}
+	                        </div>
+	                      </div>
+	                      {isCollapsed ? (
+	                        <div className="grid gap-2 p-4 md:grid-cols-4">
+	                          <ReceiptGroupMetric label="Facturas visibles" value={`${group.visibleReceipts.length}`} tone="slate" />
+	                          <ReceiptGroupMetric label="Por auditar" value={`${group.pending.length}`} tone="amber" />
+	                          <ReceiptGroupMetric label="Alertas" value={`${group.alerts.length}`} tone={group.alerts.length ? 'rose' : 'emerald'} />
+	                          <ReceiptGroupMetric label="Cerrado histórico" value={formatMoney(closedAccountingAmount)} tone="emerald" />
+	                        </div>
+	                      ) : (
+	                        <>
+	                          <AdvanceLifecycle advance={group.advance} compact />
+	                          {(accountingClosures.length > 0 || unclosedAcceptedReceipts.length > 0) && (
+	                            <div className="border-b border-slate-100 bg-white px-4 py-3">
+	                              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+	                                <div className="min-w-0">
+	                                  <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Histórico de cierres contables</p>
+	                                  <div className="mt-2 flex flex-wrap gap-2">
+	                                    {accountingClosures.length === 0 ? (
+	                                      <span className="rounded-lg border border-dashed border-violet-200 bg-violet-50 px-3 py-2 text-xs font-black text-violet-700">
+	                                        Sin cierres previos · {unclosedAcceptedReceipts.length} factura{unclosedAcceptedReceipts.length === 1 ? '' : 's'} lista{unclosedAcceptedReceipts.length === 1 ? '' : 's'} para el primer corte
+	                                      </span>
+	                                    ) : accountingClosures.map((closure) => (
+	                                      <button
+	                                        key={closure.id}
+	                                        type="button"
+	                                        onClick={() =>
+	                                          void downloadAdvanceDossier({
+	                                            advance: group.advance,
+	                                            reportReceipts: getAccountingClosureReceipts(closure, group.advance),
+	                                            title: closure.title,
+	                                            filePrefix: closure.kind === 'final' ? 'cierre-total-anticipo' : 'cierre-parcial-anticipo',
+	                                            scope: 'partialClose',
+	                                            accountingClosure: {
+	                                              ...closure,
+	                                              receiptSnapshots: getAccountingClosureReceipts(closure, group.advance),
+	                                            },
+	                                          })
+	                                        }
+	                                        className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
+	                                      >
+	                                        <Download size={13} />
+	                                        {closure.kind === 'final' ? 'Total' : `Parcial ${closure.sequence}`} · {formatMoney(closure.amount)} · {formatDate(closure.createdAt)}
+	                                      </button>
+	                                    ))}
+	                                  </div>
+	                                </div>
+	                                <div className="grid gap-2 sm:grid-cols-2 lg:w-[25rem]">
+	                                  <ReceiptGroupMetric label="Cerrado acumulado" value={formatMoney(closedAccountingAmount)} tone="emerald" />
+	                                  <ReceiptGroupMetric label="Nuevo para cierre" value={formatMoney(unclosedAcceptedReceipts.reduce((sum, receipt) => sum + asNumber(receipt.amount), 0))} tone={unclosedAcceptedReceipts.length ? 'indigo' : 'slate'} />
+	                                </div>
+	                              </div>
+	                            </div>
+	                          )}
+	                          <div className="divide-y divide-slate-100">
                             {group.visibleReceipts.length === 0 ? (
                               <div className="p-4 text-sm font-bold text-emerald-700">Este anticipo no tiene facturas disponibles para el filtro seleccionado.</div>
                             ) : (
