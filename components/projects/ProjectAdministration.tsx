@@ -4075,6 +4075,13 @@ export function ProjectAdministration({
     };
   }, [currentSignerProfile, currentUser]);
 
+  const getApprovalSignatureForAdvance = useCallback((advance: TravelAdvance): AdvanceSignatureSnapshot | null => {
+    if (advance.status === 'returned' && advance.approvalSignature) {
+      return advance.approvalSignature;
+    }
+    return buildCurrentSignatureSnapshot();
+  }, [buildCurrentSignatureSnapshot]);
+
   const currentContractorTokens = useMemo(() => {
     const tokens = new Set<string>();
     const add = (value: any) => {
@@ -6206,6 +6213,7 @@ export function ProjectAdministration({
     if (!reviewAction) return;
     const isDeleteAdvanceAction = reviewAction.type === 'deleteAdvance';
     const isDeleteReceiptAction = reviewAction.type === 'deleteReceipt';
+    const isAdvanceDecisionAction = ['approveAdvance', 'returnAdvance', 'rejectAdvance'].includes(reviewAction.type);
     if (isDeleteAdvanceAction && !canManage) {
       toast.error('Solo administradores o coordinadores pueden eliminar anticipos.');
       return;
@@ -6214,7 +6222,7 @@ export function ProjectAdministration({
       toast.error('Solo el solicitante puede eliminar soportes sin legalizar; el área administrativa puede eliminar cualquier legalización.');
       return;
     }
-    if (!isDeleteAdvanceAction && !isDeleteReceiptAction && !canValidate) {
+    if (!isDeleteAdvanceAction && !isDeleteReceiptAction && !(canValidate || (isAdvanceDecisionAction && canManage))) {
       toast.error('No tienes permisos para validar este proceso.');
       return;
     }
@@ -6222,13 +6230,15 @@ export function ProjectAdministration({
       toast.error('Explica qué debe corregirse antes de devolver el soporte.');
       return;
     }
-    const approvalSignature = reviewAction.type === 'approveAdvance' ? buildCurrentSignatureSnapshot() : null;
+    const approvalSignature = reviewAction.type === 'approveAdvance'
+      ? getApprovalSignatureForAdvance(reviewAction.advance)
+      : null;
     if (reviewAction.type === 'approveAdvance' && !reviewAction.advance.requesterSignature) {
       toast.error('El anticipo no tiene la firma verificable del solicitante. Devuélvelo para corrección.');
       return;
     }
     if (reviewAction.type === 'approveAdvance' && !approvalSignature) {
-      toast.error('Antes de aprobar debes cargar tu firma en Mi perfil.');
+      toast.error('Antes de aprobar debes cargar tu firma en Mi perfil o conservar una firma aprobadora previa del anticipo.');
       return;
     }
 
@@ -6257,6 +6267,8 @@ export function ProjectAdministration({
       }
 
       if (reviewAction.type === 'approveAdvance') {
+        const isReapproval = reviewAction.advance.status === 'returned';
+        const reusedApprovalSignature = Boolean(isReapproval && reviewAction.advance.approvalSignature);
         const approvedAmount = asNumber(reviewAction.advance.amountRequested);
         const coverage = getAdvanceFinancialCoverage({
           ...reviewAction.advance,
@@ -6279,11 +6291,12 @@ export function ProjectAdministration({
           approvedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-        await logAdministrativeEvent(reviewAction.advance.id, 'advance_approved', {
+        await logAdministrativeEvent(reviewAction.advance.id, isReapproval ? 'advance_reapproved' : 'advance_approved', {
           amount: approvedAmount,
           comment: reviewComment.trim(),
+          reusedApprovalSignature,
         });
-        toast.success('Anticipo firmado y aprobado. Queda pendiente de registrar el pago.');
+        toast.success(isReapproval ? 'Anticipo re-aprobado. Queda pendiente de registrar el pago.' : 'Anticipo firmado y aprobado. Queda pendiente de registrar el pago.');
       }
 
       if (reviewAction.type === 'returnAdvance' || reviewAction.type === 'rejectAdvance') {
@@ -6292,7 +6305,7 @@ export function ProjectAdministration({
           status: nextStatus,
           adminComment: reviewComment.trim(),
           amountApproved: nextStatus === 'returned' ? 0 : reviewAction.advance.amountApproved,
-          approvalSignature: nextStatus === 'returned' ? null : reviewAction.advance.approvalSignature || null,
+          approvalSignature: reviewAction.advance.approvalSignature || null,
           paymentApprovedAt: nextStatus === 'returned' ? null : reviewAction.advance.paymentApprovedAt || null,
           paymentApprovedBy: nextStatus === 'returned' ? null : reviewAction.advance.paymentApprovedBy || null,
           paymentApprovedByName: nextStatus === 'returned' ? '' : reviewAction.advance.paymentApprovedByName || '',
@@ -8495,11 +8508,12 @@ export function ProjectAdministration({
                 ) : (
                   <EmptyState title="No hay anticipos pendientes de pago" body={hiddenPaidAdvancesCount > 0 && !showPaidAdvances ? `Hay ${hiddenPaidAdvancesCount} anticipo${hiddenPaidAdvancesCount === 1 ? '' : 's'} pagado${hiddenPaidAdvancesCount === 1 ? '' : 's'} oculto${hiddenPaidAdvancesCount === 1 ? '' : 's'}. Activa “Mostrar pagados” para consultarlos.` : 'Los anticipos aparecerán aquí después de ser aprobados y firmados.'} />
                 )
-              ) : administrativeQueueAdvances.map((advance) => {
-                const status = statusConfig[advance.status] || statusConfig.submitted;
-                const canCorrect = requesterMatchesCurrentActor(advance.requesterId, advance.requesterEmail);
-                const paymentSummary = getAdvancePaymentSummary(advance);
-                return (
+	              ) : administrativeQueueAdvances.map((advance) => {
+	                const status = statusConfig[advance.status] || statusConfig.submitted;
+	                const canCorrect = requesterMatchesCurrentActor(advance.requesterId, advance.requesterEmail);
+	                const canReviewAdvance = canValidate || canManage;
+	                const paymentSummary = getAdvancePaymentSummary(advance);
+	                return (
                   <section key={advance.id} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                     <div className="flex flex-col gap-4 border-b border-slate-200 bg-slate-50 p-4 xl:flex-row xl:items-start xl:justify-between">
                       <div className="min-w-0">
@@ -8519,11 +8533,11 @@ export function ProjectAdministration({
                         {(canManage || canValidate) && ['submitted', 'pending_payment', 'paid'].includes(advance.status) && (
                           <Button type="button" size="sm" variant="outline" onClick={() => openAdvanceEditor(advance)} className="border-indigo-200 text-indigo-700 hover:bg-indigo-50"><PencilLine size={14} className="mr-2" />Editar</Button>
                         )}
-                        {advance.status === 'submitted' && canValidate && <>
-                          <Button type="button" size="sm" onClick={() => openReviewAction({ type: 'approveAdvance', advance })} className="bg-emerald-600 text-white hover:bg-emerald-700"><CheckCircle2 size={14} className="mr-2" />Aprobar y firmar</Button>
-                          <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>
-                          <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'rejectAdvance', advance })} className="border-rose-200 text-rose-700">Rechazar</Button>
-                        </>}
+	                        {['submitted', 'returned'].includes(advance.status) && canReviewAdvance && <>
+	                          <Button type="button" size="sm" onClick={() => openReviewAction({ type: 'approveAdvance', advance })} className="bg-emerald-600 text-white hover:bg-emerald-700"><CheckCircle2 size={14} className="mr-2" />{advance.status === 'returned' ? 'Reaprobar' : 'Aprobar y firmar'}</Button>
+	                          {advance.status === 'submitted' && <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>}
+	                          <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'rejectAdvance', advance })} className="border-rose-200 text-rose-700">Rechazar</Button>
+	                        </>}
                         {canAdvanceReceivePayment(advance) && canValidate && <>
                           <Button type="button" size="sm" onClick={() => openAdvancePayment(advance)} className="bg-violet-600 text-white hover:bg-violet-700"><CreditCard size={14} className="mr-2" />{paymentSummary.hasPayment ? 'Registrar saldo' : 'Registrar pago'}</Button>
                           <Button type="button" size="sm" variant="outline" onClick={() => openReviewAction({ type: 'returnAdvance', advance })} className="border-orange-200 text-orange-700"><RotateCcw size={14} className="mr-2" />Devolver</Button>
@@ -11741,13 +11755,15 @@ export function ProjectAdministration({
                 ? isApprovedReceipt(reviewAction.receipt)
                   ? 'Eliminar legalización aprobada'
                   : 'Eliminar soporte'
-              : reviewAction.type.includes('Receipt')
-              ? 'Devolver soporte'
-              : reviewAction.type === 'approveAdvance'
-                ? 'Aprobar anticipo'
-                : reviewAction.type === 'rejectAdvance'
-                  ? 'Rechazar anticipo'
-                  : 'Devolver anticipo'
+	              : reviewAction.type.includes('Receipt')
+	              ? 'Devolver soporte'
+	              : reviewAction.type === 'approveAdvance'
+	                ? reviewAction.advance.status === 'returned'
+	                  ? 'Reaprobar anticipo'
+	                  : 'Aprobar anticipo'
+	                : reviewAction.type === 'rejectAdvance'
+	                  ? 'Rechazar anticipo'
+	                  : 'Devolver anticipo'
           }
           subtitle={
             reviewAction.type === 'deleteAdvance'
@@ -11768,12 +11784,22 @@ export function ProjectAdministration({
               Se eliminará &quot;{reviewAction.receipt.fileName || reviewAction.receipt.categoryName}&quot; de las legalizaciones del anticipo. Si ya estaba aprobada, esta acción solo está permitida para el perfil administrativo.
             </div>
           )}
-          {reviewAction.type === 'approveAdvance' && (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <SignatureSummary title="Firma del solicitante" signature={reviewAction.advance.requesterSignature} />
-              <SignatureSummary title="Tu firma de aprobación" signature={buildCurrentSignatureSnapshot() || undefined} />
-            </div>
-          )}
+	          {reviewAction.type === 'approveAdvance' && (
+	            <div className="space-y-3">
+	              {reviewAction.advance.status === 'returned' && reviewAction.advance.approvalSignature && (
+	                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold leading-5 text-emerald-700">
+	                  Este anticipo fue devuelto y conserva una firma aprobadora previa. Al reaprobarlo se reutilizará esa firma sin modificar la firma del solicitante.
+	                </div>
+	              )}
+	              <div className="grid gap-3 sm:grid-cols-2">
+	                <SignatureSummary title="Firma del solicitante" signature={reviewAction.advance.requesterSignature} />
+	                <SignatureSummary
+	                  title={reviewAction.advance.status === 'returned' && reviewAction.advance.approvalSignature ? 'Firma aprobadora registrada' : 'Tu firma de aprobación'}
+	                  signature={getApprovalSignatureForAdvance(reviewAction.advance) || undefined}
+	                />
+	              </div>
+	            </div>
+	          )}
           <Field label={reviewAction.type === 'deleteAdvance' || reviewAction.type === 'deleteReceipt' ? 'Comentario administrativo (opcional)' : 'Comentario administrativo'}>
             <textarea
               className={textareaClass}
@@ -11801,13 +11827,15 @@ export function ProjectAdministration({
               }
             >
               {submitting && <Loader2 size={16} className="mr-2 animate-spin" />}
-              {reviewAction.type === 'deleteAdvance'
-                ? 'Eliminar anticipo'
-                : reviewAction.type === 'deleteReceipt'
-                  ? 'Eliminar soporte'
-                  : reviewAction.type === 'approveAdvance'
-                    ? 'Firmar y aprobar'
-                    : 'Confirmar'}
+	              {reviewAction.type === 'deleteAdvance'
+	                ? 'Eliminar anticipo'
+	                : reviewAction.type === 'deleteReceipt'
+	                  ? 'Eliminar soporte'
+	                  : reviewAction.type === 'approveAdvance'
+	                    ? reviewAction.advance.status === 'returned'
+	                      ? 'Reaprobar'
+	                      : 'Firmar y aprobar'
+	                    : 'Confirmar'}
             </Button>
           </ModalFooter>
         </ModalShell>
@@ -12507,6 +12535,7 @@ function AdvanceCard({
   const pendingAuditCount = advanceReceipts.filter(hasPendingDianAccountingAudit).length;
   const pendingApprovalCount = advanceReceipts.filter((receipt) => !isReceiptAdministrativelyReviewed(receipt)).length;
   const allLegalizationsApproved = advanceReceipts.length > 0 && advanceReceipts.every(isApprovedReceipt);
+  const canReviewAdvance = canValidate || canManage;
 
   return (
     <article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -12608,14 +12637,16 @@ function AdvanceCard({
               {allLegalizationsApproved ? 'Cerrar y enviar a conciliación' : pendingAuditCount > 0 ? `${pendingAuditCount} por auditoría DIAN` : `${pendingApprovalCount} por aprobar`}
             </Button>
           )}
-          {canValidate && advance.status === 'submitted' && (
+          {canReviewAdvance && ['submitted', 'returned'].includes(advance.status) && (
             <>
               <Button type="button" size="sm" onClick={onApprove} className="bg-indigo-600 text-white hover:bg-indigo-700">
-                Aprobar
+                {advance.status === 'returned' ? 'Reaprobar' : 'Aprobar'}
               </Button>
-              <Button type="button" size="sm" variant="outline" onClick={onReturn} className="border-orange-200 text-orange-700 hover:bg-orange-50">
-                Devolver
-              </Button>
+              {advance.status === 'submitted' && (
+                <Button type="button" size="sm" variant="outline" onClick={onReturn} className="border-orange-200 text-orange-700 hover:bg-orange-50">
+                  Devolver
+                </Button>
+              )}
               <Button type="button" size="sm" variant="outline" onClick={onReject} className="border-rose-200 text-rose-700 hover:bg-rose-50">
                 Rechazar
               </Button>
