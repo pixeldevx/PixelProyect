@@ -113,12 +113,13 @@ AI_MODEL_PUBLISHING_ENABLED=false
 ## Despliegue sugerido
 
 1. Aplicar la migración `0019_ai_feedback_backend.sql`.
-2. Desplegar con `AI_FEEDBACK_ENABLED=false`.
-3. Configurar `AI_MACHINE_HMAC_SECRET`.
-4. Configurar `AI_APPROVED_CLIP_REVISION` con el commit exacto del encoder de VANTI.
-5. Ejecutar smoke test con una licencia piloto.
-6. Activar `AI_FEEDBACK_ENABLED=true` sólo para el piloto.
-7. Medir aceptados, rechazados, duplicados, conflictos, latencia y distribución por clase.
+2. En Supabase Dashboard, ir a `Project Settings → API → Data API Settings → Exposed schemas` y agregar `ai_feedback` junto a los esquemas existentes. Las tablas siguen protegidas porque tienen RLS activo y sólo se otorgaron permisos a `service_role`.
+3. Desplegar con `AI_FEEDBACK_ENABLED=false`.
+4. Configurar `AI_MACHINE_HMAC_SECRET`.
+5. Configurar `AI_APPROVED_CLIP_REVISION` con el commit exacto del encoder de VANTI.
+6. Ejecutar smoke test con una licencia piloto.
+7. Activar `AI_FEEDBACK_ENABLED=true` sólo para el piloto.
+8. Medir aceptados, rechazados, duplicados, conflictos, latencia y distribución por clase.
 
 ## Rollback
 
