@@ -147,7 +147,11 @@ export const serializeLicense = (license: LicenseRecord) => {
   };
 };
 
-export const getLicenseRejection = (license: LicenseRecord | null, licenseKey: string) => {
+export const getLicenseRejection = (
+  license: LicenseRecord | null,
+  licenseKey: string,
+  options: { requireRemainingUses?: boolean } = {},
+) => {
   if (!license) {
     return {
       status: 404,
@@ -187,7 +191,7 @@ export const getLicenseRejection = (license: LicenseRecord | null, licenseKey: s
     }
   }
 
-  if (serialized.remaining_uses <= 0) {
+  if ((options.requireRemainingUses ?? true) && serialized.remaining_uses <= 0) {
     return {
       status: 400,
       body: {
