@@ -68,10 +68,14 @@ export async function GET(request: NextRequest) {
       application_id: 'vanti-suite',
       taxonomy_version: 'vanti-domains-1',
       taxonomy_checksum_sha256: VANTI_TAXONOMY_CHECKSUM,
+      approved_encoder: 'openai/clip-vit-base-patch32',
+      approved_encoder_revision: '3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268',
+      approved_preprocess_version: 'clip-default-1',
       media_mode: 'embedding_only',
       excluded_visual_classes: ['BALDIO', 'APARTAMENTO'],
+      strict_feedback_schema_version: '1.0',
       feedback_endpoint_requires_idempotency: true,
+      feedback_requires_training_scope: ['tenant', 'global'],
     },
   });
 }
-

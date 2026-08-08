@@ -11,7 +11,7 @@ Esta integración prepara a Pixel para recibir aprendizaje local de VANTI sin su
 - Pixel usa Next.js App Router para sus APIs.
 - El licenciamiento en nube ya vive en Supabase, en `public.licenses` y `public.license_usage_logs`.
 - La API IA reutiliza esa licencia existente y toma `licenses.id` como `tenant_id` inicial. No crea otro backend ni otra tabla de licencias.
-- Las tablas nuevas viven en el esquema separado `ai_feedback`.
+- Las tablas nuevas viven en el esquema separado `ai_feedback` y la app accede a ellas por RPC públicas protegidas para `service_role`; no se debe exponer el esquema en la Data API.
 - El cliente de escritorio nunca recibe credenciales de Supabase ni de almacenamiento.
 - Los endpoints de IA usan sesiones opacas cortas guardadas por hash; no contienen licencia ni `machine_id` crudo.
 
@@ -46,6 +46,8 @@ Estados por evento:
 Códigos principales:
 
 - `ENCODER_REVISION_REQUIRED`
+- `INVALID_SCHEMA_VERSION`
+- `INVALID_FIELD_TYPE`
 - `EMBEDDING_MISSING`
 - `EMBEDDING_INVALID`
 - `UNKNOWN_ENCODER`
@@ -82,10 +84,11 @@ Devuelve el contrato OpenAPI resumido.
 - `taxonomy_version`: `vanti-domains-1`
 - `taxonomy_checksum_sha256`: `c6ab8f8a168618083e24822acaa68315b6f5357a9c418562d2ad141dcf582813`
 - `approved_encoder`: `openai/clip-vit-base-patch32`
+- `approved_encoder_revision`: `3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268`
 - `approved_preprocess_version`: `clip-default-1`
 - clases excluidas para entrenamiento visual: `BALDIO`, `APARTAMENTO`
 
-El commit exacto del encoder debe configurarse en `AI_APPROVED_CLIP_REVISION` antes de aceptar datos entrenables. Mientras esté vacío, los eventos válidos se conservan como `accepted_not_trainable` con `ENCODER_REVISION_REQUIRED`.
+El commit exacto del encoder debe coincidir con `AI_APPROVED_CLIP_REVISION`. Para VANTI 2.2 el valor aprobado es `3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268`.
 
 ## Variables nuevas
 
@@ -101,7 +104,7 @@ AI_MAX_BODY_BYTES=2097152
 AI_IDEMPOTENCY_RETENTION_DAYS=30
 AI_DEFAULT_TAXONOMY_VERSION=vanti-domains-1
 AI_APPROVED_CLIP_MODEL=openai/clip-vit-base-patch32
-AI_APPROVED_CLIP_REVISION=<commit-sha-exacto>
+AI_APPROVED_CLIP_REVISION=3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268
 AI_APPROVED_PREPROCESS_VERSION=clip-default-1
 AI_MODEL_MANIFEST_TTL_SECONDS=300
 AI_MODEL_BUCKET=<bucket-privado>
@@ -112,13 +115,13 @@ AI_MODEL_PUBLISHING_ENABLED=false
 
 ## Despliegue sugerido
 
-1. Aplicar la migración `0019_ai_feedback_backend.sql`.
-2. En Supabase Dashboard, ir a `Project Settings → API → Data API Settings → Exposed schemas` y agregar `ai_feedback` junto a los esquemas existentes. Las tablas siguen protegidas porque tienen RLS activo y sólo se otorgaron permisos a `service_role`.
-3. Desplegar con `AI_FEEDBACK_ENABLED=false`.
+1. Aplicar las migraciones `0019_ai_feedback_backend.sql` y `0020_ai_feedback_activation_hardening.sql`.
+2. Mantener `ai_feedback` fuera de `Project Settings → API → Data API Settings → Exposed schemas`. Las funciones RPC públicas se ejecutan sólo con `service_role`.
+3. Desplegar con `AI_FEEDBACK_ENABLED=false` hasta terminar el smoke test.
 4. Configurar `AI_MACHINE_HMAC_SECRET`.
-5. Configurar `AI_APPROVED_CLIP_REVISION` con el commit exacto del encoder de VANTI.
+5. Configurar `AI_APPROVED_CLIP_REVISION=3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268`.
 6. Ejecutar smoke test con una licencia piloto.
-7. Activar `AI_FEEDBACK_ENABLED=true` sólo para el piloto.
+7. Activar `AI_FEEDBACK_ENABLED=true` en Vercel y habilitar explícitamente la política del tenant piloto en `ai_feedback.tenant_policies` con `feedback_enabled=true` y `training_scope='tenant'` o `'global'`.
 8. Medir aceptados, rechazados, duplicados, conflictos, latencia y distribución por clase.
 
 ## Rollback

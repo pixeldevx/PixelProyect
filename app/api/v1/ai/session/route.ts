@@ -9,7 +9,7 @@ import {
   parseAiJsonBody,
   sanitizeText,
 } from '@/lib/ai/api';
-import { AI_SCHEMA, getAiConfig } from '@/lib/ai/config';
+import { getAiConfig } from '@/lib/ai/config';
 import {
   createAiAccessToken,
   hashAiToken,
@@ -20,7 +20,6 @@ import {
   VANTI_CLIP_MODEL,
   VANTI_PREPROCESS_VERSION,
   VANTI_TAXONOMY_CHECKSUM,
-  VANTI_TAXONOMY_VERSION,
 } from '@/lib/ai/taxonomy';
 import {
   getClientIp,
@@ -95,92 +94,35 @@ export async function POST(request: NextRequest) {
 
     const tenantId = (license as LicenseRecord).id;
     const machineIdHmac = hmacMachineId(machineId);
-
-    const { data: policyRows, error: policyError } = await supabase
-      .schema(AI_SCHEMA)
-      .from('tenant_policies')
-      .select('*')
-      .eq('tenant_id', tenantId)
-      .eq('application_id', applicationId)
-      .limit(1);
-
-    if (policyError) throw policyError;
-
-    const persistedPolicy = Array.isArray(policyRows) && policyRows.length ? policyRows[0] : null;
-    const effectiveFeedbackEnabled = config.feedbackEnabled && Boolean(persistedPolicy?.feedback_enabled ?? true);
-    const trainingScope = effectiveFeedbackEnabled
-      ? String(persistedPolicy?.training_scope || 'tenant')
-      : 'none';
-    const policyVersion = String(persistedPolicy?.policy_version || config.policyVersion);
-
-    if (!persistedPolicy) {
-      const { error: insertPolicyError } = await supabase.schema(AI_SCHEMA).from('tenant_policies').insert({
-        tenant_id: tenantId,
-        application_id: applicationId,
-        feedback_enabled: config.feedbackEnabled,
-        training_scope: config.feedbackEnabled ? 'tenant' : 'none',
-        policy_version: config.policyVersion,
-        changed_by: 'system:ai-session-default',
-      });
-      if (insertPolicyError && insertPolicyError.code !== '23505') throw insertPolicyError;
-    }
-
-    const { data: installation, error: installationError } = await supabase
-      .schema(AI_SCHEMA)
-      .from('installations')
-      .upsert(
-        {
-          tenant_id: tenantId,
-          application_id: applicationId,
-          license_id: tenantId,
-          installation_uuid: installationUuid,
-          machine_id_hmac: machineIdHmac,
-          app_version: appVersion,
-          platform,
-          last_seen_at: new Date().toISOString(),
-        },
-        { onConflict: 'tenant_id,application_id,installation_uuid' },
-      )
-      .select('id, disabled_at')
-      .single();
-
-    if (installationError) throw installationError;
-    if (installation?.disabled_at) {
-      throw new AiHttpError(403, 'AI_INSTALLATION_DISABLED', 'La instalación está deshabilitada para IA.');
-    }
-
-    if (nonce) {
-      const expiresAt = new Date(Date.now() + config.sessionTtlSeconds * 1000).toISOString();
-      const { error: nonceError } = await supabase.schema(AI_SCHEMA).from('session_nonces').insert({
-        tenant_id: tenantId,
-        application_id: applicationId,
-        installation_id: installation.id,
-        nonce,
-        expires_at: expiresAt,
-      });
-
-      if (nonceError?.code === '23505') {
-        throw new AiHttpError(409, 'NONCE_REPLAY', 'El nonce de sesión ya fue usado.');
-      }
-      if (nonceError) throw nonceError;
-    }
-
     const accessToken = createAiAccessToken();
     const expiresAt = new Date(Date.now() + config.sessionTtlSeconds * 1000).toISOString();
     const scopes = ['ai.feedback:write', 'ai.model:read'];
 
-    const { error: sessionError } = await supabase.schema(AI_SCHEMA).from('ai_sessions').insert({
-      tenant_id: tenantId,
-      application_id: applicationId,
-      license_id: tenantId,
-      installation_id: installation.id,
-      token_sha256: hashAiToken(accessToken),
-      scopes,
-      request_id: requestId,
-      expires_at: expiresAt,
+    const { data: sessionRows, error: sessionError } = await supabase.rpc('create_ai_session_record', {
+      p_tenant_id: tenantId,
+      p_application_id: applicationId,
+      p_installation_uuid: installationUuid,
+      p_machine_id_hmac: machineIdHmac,
+      p_app_version: appVersion,
+      p_platform: platform,
+      p_nonce: nonce || null,
+      p_token_sha256: hashAiToken(accessToken),
+      p_scopes: scopes,
+      p_request_id: requestId,
+      p_expires_at: expiresAt,
+      p_policy_version: config.policyVersion,
+      p_global_feedback_enabled: config.feedbackEnabled,
     });
 
+    if (sessionError?.message?.includes('AI_NONCE_REPLAY')) {
+      throw new AiHttpError(409, 'NONCE_REPLAY', 'El nonce de sesión ya fue usado.');
+    }
     if (sessionError) throw sessionError;
+
+    const sessionPolicy = Array.isArray(sessionRows) ? sessionRows[0] : sessionRows;
+    const effectiveFeedbackEnabled = Boolean(sessionPolicy?.feedback_enabled);
+    const trainingScope = String(sessionPolicy?.training_scope || 'none');
+    const policyVersion = String(sessionPolicy?.policy_version || config.policyVersion);
 
     return aiJson(requestId, {
       access_token: accessToken,
@@ -217,4 +159,3 @@ export async function POST(request: NextRequest) {
     return aiError(requestId, 500, 'AI_SESSION_FAILED', 'No se pudo crear la sesión IA.');
   }
 }
-

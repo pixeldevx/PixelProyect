@@ -1,14 +1,8 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'crypto';
 import { NextRequest } from 'next/server';
-import {
-  getLicenseRejection,
-  getServerSupabase,
-  getBearerToken,
-  LICENSE_TABLE,
-  type LicenseRecord,
-} from '@/lib/license-server';
+import { getServerSupabase, getBearerToken } from '@/lib/license-server';
 import { AiHttpError, sha256Hex } from '@/lib/ai/api';
-import { AI_SCHEMA, getAiConfig } from '@/lib/ai/config';
+import { getAiConfig } from '@/lib/ai/config';
 
 export type AiSessionContext = {
   sessionId: string;
@@ -47,20 +41,15 @@ export const authenticateAiSession = async (
   }
 
   const supabase = getServerSupabase();
-  const { data: session, error } = await supabase
-    .schema(AI_SCHEMA)
-    .from('ai_sessions')
-    .select('id, tenant_id, license_id, application_id, installation_id, scopes, expires_at, revoked_at')
-    .eq('token_sha256', hashAiToken(token))
-    .maybeSingle();
+  const { data, error } = await supabase.rpc('authenticate_ai_session', {
+    p_token_sha256: hashAiToken(token),
+    p_required_scope: requiredScope,
+  });
 
   if (error) throw error;
-  if (!session || session.revoked_at) {
+  const session = Array.isArray(data) ? data[0] : data;
+  if (!session) {
     throw new AiHttpError(401, 'AI_TOKEN_INVALID', 'La sesión IA no es válida.');
-  }
-
-  if (new Date(session.expires_at).getTime() <= Date.now()) {
-    throw new AiHttpError(401, 'AI_TOKEN_EXPIRED', 'La sesión IA está vencida.');
   }
 
   const scopes = Array.isArray(session.scopes) ? session.scopes.map(String) : [];
@@ -68,34 +57,8 @@ export const authenticateAiSession = async (
     throw new AiHttpError(403, 'AI_SCOPE_FORBIDDEN', 'La sesión no tiene permisos para esta operación.');
   }
 
-  const { data: installation, error: installationError } = await supabase
-    .schema(AI_SCHEMA)
-    .from('installations')
-    .select('disabled_at')
-    .eq('id', session.installation_id)
-    .maybeSingle();
-
-  if (installationError) throw installationError;
-  if (!installation || installation.disabled_at) {
-    throw new AiHttpError(403, 'AI_INSTALLATION_DISABLED', 'La instalación no está habilitada para IA.');
-  }
-
-  const { data: license, error: licenseError } = await supabase
-    .from(LICENSE_TABLE)
-    .select('*')
-    .eq('id', session.license_id)
-    .maybeSingle();
-
-  if (licenseError) throw licenseError;
-  const rejection = getLicenseRejection((license || null) as LicenseRecord | null, '', {
-    requireRemainingUses: false,
-  });
-  if (rejection) {
-    throw new AiHttpError(403, 'AI_LICENSE_FORBIDDEN', rejection.body.message || 'La licencia no está habilitada.');
-  }
-
   return {
-    sessionId: String(session.id || randomUUID()),
+    sessionId: String(session.session_id || session.id || randomUUID()),
     tenantId: String(session.tenant_id),
     licenseId: String(session.license_id),
     applicationId: String(session.application_id),
@@ -103,4 +66,3 @@ export const authenticateAiSession = async (
     scopes,
   };
 };
-

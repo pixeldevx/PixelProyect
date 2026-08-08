@@ -51,19 +51,6 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = getServerSupabase();
-    const { data: currentLicense, error: currentLicenseError } = await supabase
-      .from(LICENSE_TABLE)
-      .select('*')
-      .eq('license_key', licenseKey)
-      .maybeSingle();
-
-    if (currentLicenseError) throw currentLicenseError;
-
-    const rejection = getLicenseRejection((currentLicense || null) as LicenseRecord | null, licenseKey);
-    if (rejection) {
-      return json({ success: false, ...rejection.body }, rejection.status);
-    }
-
     const rpcName = operationId ? 'consume_license_use_v2' : 'consume_license_use';
     const operationHash = operationId
       ? sha256Hex(stableStringify({
@@ -73,6 +60,21 @@ export async function POST(request: NextRequest) {
           os_info: osInfo || null,
         }))
       : null;
+
+    if (!operationId) {
+      const { data: currentLicense, error: currentLicenseError } = await supabase
+        .from(LICENSE_TABLE)
+        .select('*')
+        .eq('license_key', licenseKey)
+        .maybeSingle();
+
+      if (currentLicenseError) throw currentLicenseError;
+
+      const rejection = getLicenseRejection((currentLicense || null) as LicenseRecord | null, licenseKey);
+      if (rejection) {
+        return json({ success: false, ...rejection.body }, rejection.status);
+      }
+    }
 
     const { data, error } = await supabase.rpc(rpcName, {
       p_license_key: licenseKey,

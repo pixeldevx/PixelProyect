@@ -11,6 +11,8 @@ import {
 export type FeedbackStatus = 'accepted' | 'accepted_not_trainable' | 'duplicate' | 'rejected' | 'conflict';
 
 export type FeedbackReasonCode =
+  | 'INVALID_SCHEMA_VERSION'
+  | 'INVALID_FIELD_TYPE'
   | 'ENCODER_REVISION_REQUIRED'
   | 'EMBEDDING_MISSING'
   | 'EMBEDDING_INVALID'
@@ -161,7 +163,7 @@ const embeddingStatus = (
   l2Norm: number | null;
 } => {
   const embedding = features.clip_embedding;
-  const dimensions = Number(features.dimensions);
+  const dimensions = typeof features.dimensions === 'number' && Number.isInteger(features.dimensions) ? features.dimensions : null;
   if (!Array.isArray(embedding) || !embedding.length || dimensions === 0) {
     return { reason: 'EMBEDDING_MISSING', rejected: false, eligibleByEmbedding: false, embedding: null, l2Norm: null };
   }
@@ -170,12 +172,12 @@ const embeddingStatus = (
     return { reason: 'EMBEDDING_INVALID', rejected: true, eligibleByEmbedding: false, embedding: null, l2Norm: null };
   }
 
-  const numericEmbedding = embedding.map((item) => Number(item));
-  const invalid = numericEmbedding.some((item) => !Number.isFinite(item) || item < -1.001 || item > 1.001);
+  const invalid = embedding.some((item) => typeof item !== 'number' || !Number.isFinite(item) || item < -1.001 || item > 1.001);
   if (invalid) {
     return { reason: 'EMBEDDING_INVALID', rejected: true, eligibleByEmbedding: false, embedding: null, l2Norm: null };
   }
 
+  const numericEmbedding = embedding as number[];
   const norm = Math.sqrt(numericEmbedding.reduce((sum, item) => sum + item * item, 0));
   if (norm < 0.99 || norm > 1.01) {
     return { reason: 'EMBEDDING_INVALID', rejected: true, eligibleByEmbedding: false, embedding: null, l2Norm: norm };
@@ -226,8 +228,12 @@ export const validateFeedbackEvent = (event: unknown): ValidatedFeedbackEvent | 
   const photoSha256 = isLowerSha256(sample.photo_sha256) ? String(sample.photo_sha256) : '';
   const clientCreatedAt = parseIsoDate(event.created_at);
   const reviewedAt = parseIsoDate(review.reviewed_at);
-  const schemaVersion = normalizeString(event.schema_version, 16) || '1.0';
+  const schemaVersion = event.schema_version === '1.0' ? '1.0' : '';
   const taxonomyVersion = normalizeString(event.taxonomy_version, 80);
+
+  if (!schemaVersion) {
+    return { rejected: true, feedbackId: feedbackId || null, reasonCode: 'INVALID_SCHEMA_VERSION' };
+  }
 
   if (!feedbackId || !revisionId || supersedesFeedbackId === '' || !photoSha256 || !clientCreatedAt || !reviewedAt) {
     return { rejected: true, feedbackId: feedbackId || null, reasonCode: 'PRIVATE_FIELD_NOT_ALLOWED' };
@@ -246,6 +252,10 @@ export const validateFeedbackEvent = (event: unknown): ValidatedFeedbackEvent | 
   const decision = normalizeString(review.decision, 40) as ValidatedFeedbackEvent['review']['decision'];
   if (!['excel_confirmado', 'clasificacion_real', 'no_determinable'].includes(decision)) {
     return { rejected: true, feedbackId, reasonCode: 'NO_DETERMINABLE' };
+  }
+
+  if (typeof review.trainable !== 'boolean') {
+    return { rejected: true, feedbackId, reasonCode: 'INVALID_FIELD_TYPE' };
   }
 
   const usoReal = normalizeLabel(review.uso_real) || null;
@@ -282,7 +292,7 @@ export const validateFeedbackEvent = (event: unknown): ValidatedFeedbackEvent | 
         preprocessVersion: normalizeString(features.preprocess_version, 80),
         normalization: normalizeString(features.normalization, 20),
         dtype: normalizeString(features.dtype, 20),
-        dimensions: Number(features.dimensions) || 0,
+        dimensions: typeof features.dimensions === 'number' && Number.isInteger(features.dimensions) ? features.dimensions : 0,
         clipEmbedding: null,
         l2Norm: null,
       },
@@ -290,7 +300,7 @@ export const validateFeedbackEvent = (event: unknown): ValidatedFeedbackEvent | 
         decision,
         usoReal,
         actividadReal,
-        clientTrainable: Boolean(review.trainable),
+        clientTrainable: review.trainable,
         reviewedAt,
         finalUso,
         finalActividad,
@@ -331,7 +341,7 @@ export const validateFeedbackEvent = (event: unknown): ValidatedFeedbackEvent | 
   }
 
   const encoderRevision = normalizeString(features.encoder_revision, 120) || null;
-  const clientTrainable = Boolean(review.trainable);
+  const clientTrainable = review.trainable;
   let eligibleForTraining = clientTrainable && embedding.eligibleByEmbedding;
   let reasonCode: FeedbackReasonCode | null = embedding.reason;
   if (!encoderRevision || !approvedClipRevision || encoderRevision !== approvedClipRevision) {
@@ -367,7 +377,7 @@ export const validateFeedbackEvent = (event: unknown): ValidatedFeedbackEvent | 
       preprocessVersion,
       normalization: 'l2',
       dtype: 'float32',
-      dimensions: Number(features.dimensions) || 0,
+      dimensions: typeof features.dimensions === 'number' && Number.isInteger(features.dimensions) ? features.dimensions : 0,
       clipEmbedding: embedding.embedding,
       l2Norm: embedding.l2Norm,
     },

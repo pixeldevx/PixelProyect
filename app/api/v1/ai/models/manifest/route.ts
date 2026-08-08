@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AiHttpError, aiError, aiJson, getAiRequestId, sha256Hex, stableStringify } from '@/lib/ai/api';
-import { AI_SCHEMA, getAiConfig } from '@/lib/ai/config';
+import { getAiConfig } from '@/lib/ai/config';
 import { authenticateAiSession } from '@/lib/ai/session';
 import { vantiUsoLabels } from '@/lib/ai/taxonomy';
 import { getClientIp, getServerSupabase } from '@/lib/license-server';
@@ -21,40 +21,13 @@ export async function GET(request: NextRequest) {
     const appVersion = new URL(request.url).searchParams.get('app_version') || null;
 
     const supabase = getServerSupabase();
-    const baseSelect =
-      'application_id, training_scope, tenant_id, model_version, manifest_sequence, channel, task, classifier_type, encoder, encoder_revision, preprocess_version, taxonomy_version, labels, thresholds, calibration, metrics, artifact_format, artifact_key, artifact_size_bytes, artifact_sha256, signature_algorithm, signature_base64, signing_key_id, min_app_version, max_app_version, artifact_download_url, published_at, expires_at';
+    const { data: model, error: modelError } = await supabase.rpc('get_ai_model_manifest', {
+      p_tenant_id: session.tenantId,
+      p_application_id: session.applicationId,
+      p_channel: channel,
+    });
 
-    const { data: tenantModels, error: tenantError } = await supabase
-      .schema(AI_SCHEMA)
-      .from('model_versions')
-      .select(baseSelect)
-      .eq('application_id', session.applicationId)
-      .eq('tenant_id', session.tenantId)
-      .eq('training_scope', 'tenant')
-      .eq('channel', channel)
-      .eq('status', 'published')
-      .order('manifest_sequence', { ascending: false })
-      .limit(1);
-
-    if (tenantError) throw tenantError;
-
-    const { data: globalModels, error: globalError } = tenantModels?.length
-      ? { data: [], error: null }
-      : await supabase
-          .schema(AI_SCHEMA)
-          .from('model_versions')
-          .select(baseSelect)
-          .eq('application_id', session.applicationId)
-          .is('tenant_id', null)
-          .eq('training_scope', 'global')
-          .eq('channel', channel)
-          .eq('status', 'published')
-          .order('manifest_sequence', { ascending: false })
-          .limit(1);
-
-    if (globalError) throw globalError;
-
-    const model = tenantModels?.[0] || globalModels?.[0] || null;
+    if (modelError) throw modelError;
     if (!model) {
       const body = { available: false, reason: 'no_compatible_model' };
       const etag = `"${sha256Hex(stableStringify(body))}"`;
@@ -133,4 +106,3 @@ export async function GET(request: NextRequest) {
     return aiError(requestId, 503, 'AI_MODEL_MANIFEST_FAILED', 'No se pudo consultar el manifiesto del modelo.');
   }
 }
-

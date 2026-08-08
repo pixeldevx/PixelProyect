@@ -39,10 +39,9 @@ export const getAiConfig = () => {
     machineHmacSecret: process.env.AI_MACHINE_HMAC_SECRET || '',
     defaultTaxonomyVersion: process.env.AI_DEFAULT_TAXONOMY_VERSION || 'vanti-domains-1',
     approvedClipModel: process.env.AI_APPROVED_CLIP_MODEL || 'openai/clip-vit-base-patch32',
-    approvedClipRevision: process.env.AI_APPROVED_CLIP_REVISION || '',
+    approvedClipRevision: process.env.AI_APPROVED_CLIP_REVISION || '3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268',
     approvedPreprocessVersion: process.env.AI_APPROVED_PREPROCESS_VERSION || 'clip-default-1',
     policyVersion: process.env.AI_DATA_POLICY_VERSION || 'ai-data-policy-1',
     modelManifestTtlSeconds: toInteger(process.env.AI_MODEL_MANIFEST_TTL_SECONDS, 300, 60, 86_400),
   };
 };
-
